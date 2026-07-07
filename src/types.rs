@@ -170,13 +170,20 @@ impl Checker {
         for p in &fn_sig.params {
             vars.insert(p.name.clone(), p.ty.clone());
         }
+        Some(self.check_block_inner(block, &mut vars))
+    }
+
+    /// Type-check a block reusing an inherited variable table. Used for nested
+    /// `if`/`while` bodies and `else` branches so bindings from the enclosing
+    /// scope remain visible.
+    fn check_block_inner(&mut self, block: &Block, vars: &mut HashMap<String, Ty>) -> TypedBlock {
         let mut stmts = Vec::new();
         for stmt in &block.stmts {
-            if let Some(typed) = self.check_stmt(stmt, &mut vars) {
+            if let Some(typed) = self.check_stmt(stmt, vars) {
                 stmts.push(typed);
             }
         }
-        Some(TypedBlock { stmts, span: block.span })
+        TypedBlock { stmts, span: block.span }
     }
 
     fn check_stmt(&mut self, stmt: &Stmt, vars: &mut HashMap<String, Ty>) -> Option<TypedStmt> {
@@ -198,6 +205,24 @@ impl Checker {
                 TypedStmt::Return { value: value_typed, span: *span }
             }
             Stmt::Expr(expr) => TypedStmt::Expr(self.infer_expr(expr, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))),
+            Stmt::If { cond, then_block, else_block, span } => {
+                let cond_typed = self.infer_expr(cond, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
+                if !matches!(cond_typed.clone().into_ty(), Ty::Bool) {
+                    self.error("if condition must be of type bool", cond.span());
+                }
+                let then_typed = self.check_block_inner(then_block, &mut vars.clone());
+                let else_typed = else_block.as_ref().map(|b| self.check_block_inner(b, &mut vars.clone()));
+                TypedStmt::If { cond: cond_typed, then_block: then_typed, else_block: else_typed, span: *span }
+            }
+            Stmt::While { cond, body, else_block, span } => {
+                let cond_typed = self.infer_expr(cond, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
+                if !matches!(cond_typed.clone().into_ty(), Ty::Bool) {
+                    self.error("while condition must be of type bool", cond.span());
+                }
+                let then_typed = self.check_block_inner(body, &mut vars.clone());
+                let else_typed = else_block.as_ref().map(|b| self.check_block_inner(b, &mut vars.clone()));
+                TypedStmt::While { cond: cond_typed, then_block: then_typed, else_block: else_typed, span: *span }
+            }
         })
     }
 
@@ -273,6 +298,27 @@ impl Checker {
             Expr::StructLit { name, args, span } => {
                 let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
                 Ok(TypedExpr::StructLit { name: name.clone(), args: arg_exprs, ty: Ty::Named(name.clone()), span: *span })
+            }
+            Expr::If { cond, then_block, else_block, span } => {
+                let cond_typed = self.infer_expr(cond, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
+                if !matches!(cond_typed.clone().into_ty(), Ty::Bool) {
+                    self.error("if condition must be of type bool", cond.span());
+                }
+                let then_typed = self.check_block_inner(then_block, &mut vars.clone());
+                let else_typed = else_block.as_ref().map(|b| self.check_block_inner(b, &mut vars.clone()));
+                // The result type is the type of the trailing expression statement
+                // in the `then` branch; if there is none (block used for side
+                // effects), the `if` produces no value (`void`).
+                let ty = then_typed.stmts.last()
+                    .and_then(|s| if let TypedStmt::Expr(e) = s { Some(e.clone().into_ty()) } else { None })
+                    .unwrap_or_else(|| Ty::Named("void".into()));
+                Ok(TypedExpr::If {
+                    cond: Box::new(cond_typed),
+                    then_block: then_typed,
+                    else_block: else_typed,
+                    ty,
+                    span: *span,
+                })
             }
         }
     }
@@ -411,6 +457,18 @@ pub enum TypedStmt {
     Assign { target: TypedExpr, op: AssignOp, value: TypedExpr, span: Span },
     Return { value: Option<TypedExpr>, span: Span },
     Expr(TypedExpr),
+    If {
+        cond: TypedExpr,
+        then_block: TypedBlock,
+        else_block: Option<TypedBlock>,
+        span: Span,
+    },
+    While {
+        cond: TypedExpr,
+        then_block: TypedBlock,
+        else_block: Option<TypedBlock>,
+        span: Span,
+    },
 }
 
 /// A type-checked f-string component.
@@ -437,6 +495,13 @@ pub enum TypedExpr {
     Match { scrutinee: Box<TypedExpr>, arms: Vec<TypedMatchArm>, ty: Ty, span: Span },
     StructLit { name: String, args: Vec<TypedExpr>, ty: Ty, span: Span },
     FStr(Vec<TypedFStrExpr>, Ty, Span),
+    If {
+        cond: Box<TypedExpr>,
+        then_block: TypedBlock,
+        else_block: Option<TypedBlock>,
+        ty: Ty,
+        span: Span,
+    },
     Error(Ty),
 }
 
@@ -449,6 +514,7 @@ impl TypedExpr {
             | TypedExpr::FStr(_, ty, _) | TypedExpr::Error(ty) => ty,
             TypedExpr::Ident { ty, .. } => ty,
             TypedExpr::SelfExpr(ty, _) => ty,
+            TypedExpr::If { ty, .. } => ty.clone(),
         }
     }
 }

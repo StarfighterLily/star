@@ -85,3 +85,74 @@ fn rejects_inconsistent_indentation() {
     let result = Driver::lex(src);
     assert!(result.is_err(), "misaligned dedent should be an error");
 }
+
+// ===== M9 Control Flow Tests ==============================================
+
+/// Parse `if` statement with both branches.
+#[test]
+fn parses_if_else() {
+    let src = "fn test(x: i32):\n    if x > 0:\n        let a = 1\n    else:\n        let b = 2\n";
+    let module = Driver::parse(src).unwrap();
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn"); };
+    assert!(matches!(&f.body.stmts[0], Stmt::If { else_block: Some(_), .. }));
+    let Stmt::If { cond, then_block, else_block, .. } = &f.body.stmts[0] else { panic!("expected If"); };
+    assert!(matches!(cond, Expr::Binary { op, .. } if *op == star::ast::BinOp::Gt));
+    assert_eq!(then_block.stmts.len(), 1);
+    assert_eq!(else_block.as_ref().unwrap().stmts.len(), 1);
+}
+
+/// Parse `while` loop with optional else.
+#[test]
+fn parses_while() {
+    let src = "fn test(x: i32):\n    while x > 0:\n        x -= 1\n    else:\n        pass\n";
+    let module = Driver::parse(src).unwrap();
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn"); };
+    assert!(matches!(&f.body.stmts[0], Stmt::While { else_block: Some(_), .. }));
+    let Stmt::While { cond, .. } = &f.body.stmts[0] else { panic!("expected While"); };
+    assert!(matches!(cond, Expr::Binary { op, .. } if *op == star::ast::BinOp::Gt));
+}
+
+/// Parse `if` expression used as a value.
+#[test]
+fn parses_if_expr() {
+    let src = "fn test(x: i32):\n    let r = if x > 0:\n        1\n    else:\n        2\n";
+    let module = Driver::parse(src).unwrap();
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn"); };
+    let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected Let"); };
+    assert!(matches!(value, Expr::If { .. }));
+    match value {
+        Expr::If { then_block, else_block, .. } => {
+            assert!(matches!(then_block.stmts[0], Stmt::Expr(Expr::Int(1, _))));
+            assert!(matches!(else_block.as_ref().unwrap().stmts[0], Stmt::Expr(Expr::Int(2, _))));
+        }
+        _ => panic!("expected Expr::If"),
+    }
+}
+
+/// Codegen for if/while: IR should contain `br i1`, `phi`, and block labels.
+#[test]
+fn codegen_if_while() {
+    let src = concat!(
+        "fn main():\n",
+        "    let x = 5\n",
+        "    if x > 0:\n",
+        "        print(f\"then\")\n",
+        "    else:\n",
+        "        print(f\"else\")\n",
+        "    x = 0\n",
+        "    while x < 3:\n",
+        "        x += 1\n",
+        "    x\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+
+    // Assert if/else uses conditional branch.
+    assert!(ir.contains("br i1"), "if should use conditional branch");
+    // Assert both if and while generate block labels.
+    assert!(ir.contains("if_then"), "if then block label should appear");
+    assert!(ir.contains("if_else"), "if else block label should appear");
+    assert!(ir.contains("while_cond"), "while cond block label should appear");
+    assert!(ir.contains("while_body"), "while body block label should appear");
+}

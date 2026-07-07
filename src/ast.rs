@@ -130,6 +130,20 @@ pub enum Stmt {
     Return { value: Option<Expr>, span: Span },
     /// A bare expression used for its side effects.
     Expr(Expr),
+    /// `if cond: <block> [else: <block>]`.
+    If {
+        cond: Expr,
+        then_block: Block,
+        else_block: Option<Block>,
+        span: Span,
+    },
+    /// `while cond: <block> [else: <block>]`.
+    While {
+        cond: Expr,
+        body: Block,
+        else_block: Option<Block>,
+        span: Span,
+    },
 }
 
 /// Assignment operators, including compound forms.
@@ -192,6 +206,14 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    /// An `if` expression: `if cond: <block> [else: <block>]`.
+    /// Used as a value (e.g. `let x = if cond: ...`), lowering to `phi`.
+    If {
+        cond: Box<Expr>,
+        then_block: Block,
+        else_block: Option<Block>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -210,7 +232,8 @@ impl Expr {
             | Expr::Binary { span: s, .. }
             | Expr::Unary { span: s, .. }
             | Expr::Match { span: s, .. }
-            | Expr::StructLit { span: s, .. } => *s,
+            | Expr::StructLit { span: s, .. }
+            | Expr::If { span: s, .. } => *s,
         }
     }
 }

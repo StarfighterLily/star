@@ -64,6 +64,12 @@ impl Driver {
         Parser::parse_source(source)
     }
 
+    /// Type-check only; used by tests.
+    pub fn check(module: &Module) -> Result<TypedModule, Vec<Diagnostic>> {
+        let mut checker = Checker::new();
+        checker.check(module)
+    }
+
     /// Run the full pipeline: lex, parse, type-check, and codegen.
     pub fn compile(&self) -> std::io::Result<Compilation> {
         let source = self.read_source()?;

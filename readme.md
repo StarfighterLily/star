@@ -51,7 +51,7 @@ star emit llvm examples/player.star
 
 ## Project Status
 
-The compiler front-end (lexer, parser, type checker, LLVM IR emitter) is functional. The canonical `Player`/`Damageable` example from the design doc parses, type-checks, and produces LLVM IR. See [todo.md](todo.md) for the remaining milestones.
+The compiler front-end (lexer, parser, type checker, LLVM IR emitter) is functional. The canonical `Player`/`Damageable` example from the design doc parses, type-checks, produces LLVM IR, and compiles to executable. See [todo.md](todo.md) for the remaining milestones.
 
 ## Development
 

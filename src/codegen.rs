@@ -15,6 +15,8 @@ pub struct Codegen {
     global_defs: Vec<String>,
     tmp: u64,
     globals: u64,
+    /// Counter for unique basic-block labels (if/while codegen).
+    block_id: u64,
     symbols: Vec<(String, String, Ty)>,
     /// Field name lists per struct, populated from the typed module so field
     /// indices can be resolved for any struct (not just a hardcoded set).
@@ -32,6 +34,7 @@ impl Codegen {
             global_defs: Vec::new(),
             tmp: 0,
             globals: 0,
+            block_id: 0,
             symbols: Vec::new(),
             struct_fields: std::collections::HashMap::new(),
             methods: std::collections::HashMap::new(),
@@ -169,6 +172,39 @@ impl Codegen {
     fn write(&mut self, s: &str) { write!(self.ir, "{}", s).unwrap(); }
     fn err(&mut self, msg: &str, span: Span) { self.errors.push(Diagnostic::error(msg, span)); }
 
+    /// Produce a unique, readable basic-block label for control flow.
+    fn block_label(&mut self, prefix: &str) -> String {
+        let id = self.block_id;
+        self.block_id += 1;
+        format!("{}_{}", prefix, id)
+    }
+
+    /// Extract just the register name from an expression emission result such
+    /// as `i1 %r` or `i32 %r`, discarding the leading type tag.
+    fn reg_of(&self, s: &str) -> String {
+        s.split_whitespace().next_back().unwrap_or(s).to_string()
+    }
+
+    /// Emit a block of typed statements. If the block ends with an expression
+    /// statement, returns the value-register (with type tag) of that trailing
+    /// expression; otherwise returns `None` (the block is used for side effects).
+    fn emit_block_value(&mut self, block: &TypedBlock) -> Option<String> {
+        let trailing = block.stmts.last();
+        if let Some(TypedStmt::Expr(e)) = trailing {
+            // Emit every statement except the trailing expression, then emit the
+            // trailing expression exactly once to capture its value.
+            for stmt in &block.stmts[..block.stmts.len() - 1] {
+                self.emit_stmt(stmt);
+            }
+            Some(self.emit_expr(e))
+        } else {
+            for stmt in &block.stmts {
+                self.emit_stmt(stmt);
+            }
+            None
+        }
+    }
+
     fn expr_ty(&self, e: &TypedExpr) -> Ty {
         match e {
             TypedExpr::Int(_, ty, _) | TypedExpr::Float(_, ty, _)
@@ -179,6 +215,7 @@ impl Codegen {
             | TypedExpr::FStr(_, ty, _) | TypedExpr::Error(ty) => ty.clone(),
             TypedExpr::Ident { ty, .. } => ty.clone(),
             TypedExpr::SelfExpr(ty, _) => ty.clone(),
+            TypedExpr::If { ty, .. } => ty.clone(),
         }
     }
 
@@ -251,6 +288,54 @@ impl Codegen {
                 }
             }
             TypedStmt::Expr(e) => { self.emit_expr(e); }
+            TypedStmt::If { cond, then_block, else_block, .. } => {
+                let cond_val = self.emit_expr(cond);
+                let cond_reg = self.reg_of(&cond_val);
+                let then_label = self.block_label("if_then");
+                let else_label = self.block_label("if_else");
+                let end_label = self.block_label("if_end");
+                self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, then_label, else_label));
+                self.line(&format!("{}:", then_label));
+                for stmt in &then_block.stmts {
+                    self.emit_stmt(stmt);
+                }
+                self.line(&format!("  br label %{}", end_label));
+                self.line(&format!("{}:", else_label));
+                if let Some(else_b) = else_block {
+                    for stmt in &else_b.stmts {
+                        self.emit_stmt(stmt);
+                    }
+                }
+                self.line(&format!("  br label %{}", end_label));
+                self.line(&format!("{}:", end_label));
+            }
+            TypedStmt::While { cond, then_block, else_block, .. } => {
+                let cond_label = self.block_label("while_cond");
+                let body_label = self.block_label("while_body");
+                let else_label = self.block_label("while_else");
+                let end_label = self.block_label("while_end");
+                // Loop header: evaluate the condition and branch.
+                self.line(&format!("  br label %{}", cond_label));
+                self.line(&format!("{}:", cond_label));
+                let cond_val = self.emit_expr(cond);
+                let cond_reg = self.reg_of(&cond_val);
+                self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, body_label, end_label));
+                // Loop body: runs, then jumps back to the condition.
+                self.line(&format!("{}:", body_label));
+                for stmt in &then_block.stmts {
+                    self.emit_stmt(stmt);
+                }
+                self.line(&format!("  br label %{}", cond_label));
+                // Optional else clause runs once after the loop exits, then joins end.
+                self.line(&format!("{}:", else_label));
+                if let Some(else_b) = else_block {
+                    for stmt in &else_b.stmts {
+                        self.emit_stmt(stmt);
+                    }
+                }
+                self.line(&format!("  br label %{}", end_label));
+                self.line(&format!("{}:", end_label));
+            }
         }
     }
 
@@ -556,6 +641,50 @@ impl Codegen {
                 let fmt_reg = self.tmp_name();
                 self.line(&format!("  {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0", fmt_reg, fmt_str.len() + 1, fmt_str.len() + 1, g));
                 fmt_reg
+            }
+            TypedExpr::If { cond, then_block, else_block, ty, .. } => {
+                let ty_str = self.llvm_ty(ty);
+                if ty_str == "void" {
+                    // A value-less `if` (used for side effects): run both blocks
+                    // without a phi merge, returning `%undef` as a value.
+                    let cond_val = self.emit_expr(cond);
+                    let cond_reg = self.reg_of(&cond_val);
+                    let then_label = self.block_label("if_then");
+                    let else_label = self.block_label("if_else");
+                    let end_label = self.block_label("if_end");
+                    self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, then_label, else_label));
+                    self.line(&format!("{}:", then_label));
+                    self.emit_block_value(then_block);
+                    self.line(&format!("  br label %{}", end_label));
+                    self.line(&format!("{}:", else_label));
+                    if let Some(else_b) = else_block {
+                        self.emit_block_value(else_b);
+                    }
+                    self.line(&format!("  br label %{}", end_label));
+                    self.line(&format!("{}:", end_label));
+                    "%undef".into()
+                } else {
+                    // A value-producing `if`: each branch computes its trailing
+                    // expression value, then a `phi` merges them at the end.
+                    let cond_val = self.emit_expr(cond);
+                    let cond_reg = self.reg_of(&cond_val);
+                    let then_label = self.block_label("if_then");
+                    let else_label = self.block_label("if_else");
+                    let end_label = self.block_label("if_end");
+                    self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, then_label, else_label));
+                    self.line(&format!("{}:", then_label));
+                    let then_val = self.emit_block_value(then_block);
+                    let then_reg = then_val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "%undef".to_string());
+                    self.line(&format!("  br label %{}", end_label));
+                    self.line(&format!("{}:", else_label));
+                    let else_val = else_block.as_ref().and_then(|b| self.emit_block_value(b));
+                    let else_reg = else_val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "%undef".to_string());
+                    self.line(&format!("  br label %{}", end_label));
+                    self.line(&format!("{}:", end_label));
+                    let phi = self.tmp_name();
+                    self.line(&format!("  {} = phi {} [ {}, %{} ], [ {}, %{} ]", phi, ty_str, then_reg, then_label, else_reg, else_label));
+                    format!("{} {}", ty_str, phi)
+                }
             }
             TypedExpr::Error(_) => "%undef".into(),
         }

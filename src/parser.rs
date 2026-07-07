@@ -255,6 +255,8 @@ impl Parser {
         match self.peek_kind() {
             TokenKind::Let => self.parse_let(),
             TokenKind::Return => self.parse_return(),
+            TokenKind::If => self.parse_if_stmt(),
+            TokenKind::While => self.parse_while_stmt(),
             _ => {
                 // Either an assignment or a bare expression.
                 let expr = self.parse_expr()?;
@@ -312,6 +314,41 @@ impl Parser {
             TokenKind::SlashEq => Some(AssignOp::Div),
             _ => None,
         }
+    }
+
+    /// Parse `if <cond>:` followed by a block and an optional `else:` block,
+    /// producing a statement form of `if`.
+    fn parse_if_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::If)?;
+        let cond = self.parse_expr()?;
+        self.expect(&TokenKind::Colon)?;
+        let then_block = self.parse_block()?;
+        let else_block = self.parse_opt_else();
+        let span = start.to(self.prev_span());
+        Some(Stmt::If { cond, then_block, else_block, span })
+    }
+
+    /// Parse `while <cond>:` followed by a loop body and an optional `else:` block.
+    fn parse_while_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::While)?;
+        let cond = self.parse_expr()?;
+        self.expect(&TokenKind::Colon)?;
+        let body = self.parse_block()?;
+        let else_block = self.parse_opt_else();
+        let span = start.to(self.prev_span());
+        Some(Stmt::While { cond, body, else_block, span })
+    }
+
+    /// If an `else:` token is next (at the current indentation level), consume it
+    /// and parse the following indented block. Otherwise returns `None`.
+    fn parse_opt_else(&mut self) -> Option<Block> {
+        if !self.eat(&TokenKind::Else) {
+            return None;
+        }
+        self.expect(&TokenKind::Colon)?;
+        self.parse_block()
     }
 
     // --- expressions (precedence climbing) ------------------------------
@@ -445,6 +482,7 @@ impl Parser {
                 Some(Expr::SelfExpr(span))
             }
             TokenKind::Match => self.parse_match(),
+            TokenKind::If => self.parse_if_expr(),
             TokenKind::LParen => {
                 self.advance();
                 let inner = self.parse_expr()?;
@@ -472,6 +510,19 @@ impl Parser {
                 None
             }
         }
+    }
+
+    /// Parse `if <cond>:` followed by a block and an optional `else:` block,
+    /// producing an expression form of `if` (used as a value, e.g. in `let`).
+    fn parse_if_expr(&mut self) -> Option<Expr> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::If)?;
+        let cond = Box::new(self.parse_expr()?);
+        self.expect(&TokenKind::Colon)?;
+        let then_block = self.parse_block()?;
+        let else_block = self.parse_opt_else();
+        let span = start.to(self.prev_span());
+        Some(Expr::If { cond, then_block, else_block, span })
     }
 
     /// Re-lex and parse the embedded expressions inside an f-string.
