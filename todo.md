@@ -1,15 +1,13 @@
 # Star Compiler — Next Steps
 
-## Immediate: Verify: Fix Codegen to Produce Valid LLVM IR
-The `LATEST:` section below claims to have fixed this issue but requires verification. Below is the issue reported:
+## Immediate: M9 Control Flow — Add `if`/`else` and `while` End-to-End
+Contrary to an earlier note, the AST has **no** `If`, `While`, or `For` nodes (see `src/ast.rs` `Expr`/`Stmt`), and the parser does not produce them. Control flow must be threaded through the whole pipeline:
 
-The canonical example emits IR that is structurally correct but has several semantic errors that prevent `clang.exe` from compiling it.
-
-- [ ] **`SelfExpr` type resolution**: `self` in a method body should resolve to the concrete struct type (e.g., `Player`) rather than `Self`. The type checker now passes the struct type down to method parameters, but codegen's `expr_ty` for `SelfExpr` reads from the symbol table which stores the parameter's declared type. Fix: use the receiver parameter's type directly.
-- [ ] **LLVM `load`/`store` formatting**: The IR currently emits `load %unknown, %unknown %ptr` because `llvm_ty` returns `%unknown` for `Ty::Named("unknown")`. Fix: ensure all type lookups resolve correctly so the type string is valid (e.g., `load i32, i32* %ptr`).
-- [ ] **`getelementptr` on `self` pointer**: `self` is already a pointer to the struct, but `emit_expr` for `SelfExpr` returns the alloca pointer (pointer-to-pointer). The GEP then operates on the wrong level of indirection. Fix: load the struct pointer from the alloca first, then GEP into it.
-- [ ] **Match arm body codegen**: The match lowering emits `print(f"...")` calls but the `print` function and f-string printf lowering are not implemented. Add a `print` intrinsic that calls `printf` with the formatted string.
-- [ ] **`check_param` dead code warning**: Remove the unused `check_param` method from `types.rs`.
+- [ ] **AST**: Add `Stmt::While { cond, body, span }` and an `Expr::If { cond, then_block, else_block, span }` (or `Stmt::If`). Update `Expr::span`.
+- [ ] **Lexer**: Confirm `if`/`else`/`while` keyword tokens exist (add if missing).
+- [ ] **Parser**: Parse `if cond: <block> [else: <block>]` and `while cond: <block>` into the new nodes.
+- [ ] **Type checker**: Add `TypedStmt::While` / `TypedExpr::If`; check the condition is `Ty::Bool` and infer the block/branch types.
+- [ ] **Codegen**: Lower `while` to a header/body/exit branch pattern; lower `if` to `br` + basic blocks (and phi when used as an expression). Note: `emit_fn` currently emits all instructions into a single `entry:` block, so codegen needs a basic-block/label helper.
 
 ## M5: Memory Model
 
@@ -36,32 +34,24 @@ The canonical example emits IR that is structurally correct but has several sema
 
 ## M9: Language Completeness
 
-- [ ] **`if`/`else` expressions**: Parser support exists but codegen is missing. Lower to `select` or branch/phi.
-- [ ] **`for`/`while` loops**: Parser support exists. Codegen: `while` → branch-to-header pattern; `for` → desugar to `while`.
+- [ ] **`if`/`else` expressions**: See the Immediate section — needs AST/parser/checker/codegen. Lower to `select` or branch/phi.
+- [ ] **`for`/`while` loops**: `while` first (see Immediate); `for` → desugar to `while`.
 - [ ] **Free functions**: Top-level `fn` items (outside impl blocks) are parsed and type-checked but codegen needs testing.
-- [ ] **Standard library**: Built-in `print`, `println`, basic math functions, string operations.
+- [ ] **Standard library**: Built-in `print` is implemented (lowers to `@printf`). Still needed: `println`, basic math functions, string operations.
 - [ ] **Error messages**: Improve diagnostic quality with suggestions and notes.
 
 ## Testing
 
-- [ ] **Codegen test suite**: Add integration tests that compile `.star` files to `.ll` and verify the IR with `llc` or `clang -c`.
+- [ ] **Codegen test suite**: Add integration tests that compile `.star` files to `.ll` and verify the IR with `llc` or `clang -c`. NOTE: full `star build` currently fails only at the *link* step on this machine because the MSVC runtime libs (`libcmt.lib`, `oldnames.lib`) are not on clang's search path — codegen itself is validated with `clang -c` (object-file compile), which succeeds.
 - [ ] **Runtime tests**: Compile and run small `.star` programs, assert their output.
 - [ ] **Fuzz testing**: Fuzz the lexer and parser with random inputs to find panics.
 
 LATEST:
-### Changes to `src/types.rs`:
+### Verified the codegen fixes from the previous `LATEST:` section
+- `star build examples/player.star` now emits IR that `clang.exe -c` compiles to an object file cleanly (exit 0). The `SelfExpr` pointer-load, f-string printf lowering, `print` intrinsic, and `load`/`store`/`getelementptr` formatting are all confirmed valid. The only remaining `star build` failure is the linker being unable to find MSVC system libs — an environment/toolchain issue, not a codegen defect.
+- `cargo build` is warning-free (the dead `check_param`/`sym_ty` methods are gone) and all 6 tests pass.
 
-1. __Added `TypedFStrExpr` enum__ with `Literal(String)` and `Expr(Box<TypedExpr>)` variants for typed f-string components
-2. __Changed `TypedExpr::SelfExpr`__ from `SelfExpr(Span)` to `SelfExpr(Ty, Span)` to carry the concrete struct type
-3. __Added `FStr(Vec<TypedFStrExpr>, Ty, Span)`__ variant to `TypedExpr` for typed f-strings
-4. __Updated `into_ty`__ to handle the new variants
-5. __Fixed `infer_expr`__ to pass `vars` context through to nested expressions, enabling `SelfExpr` to resolve to the concrete struct type via `vars.get("self")`
-6. __Updated `resolve_field_type`__ to match on `SelfExpr(Ty::Named(n), _)` for field resolution on self
-7. __Removed dead `check_param` method__
-
-### Changes to `src/codegen.rs`:
-
-1. __Fixed `SelfExpr` emission__ to load the struct pointer from the alloca (fixes the pointer-to-pointer issue in GEP)
-2. __Added f-string `FStr` emission__ that creates printf-compatible format strings with `%d`/`%f`/`%s` placeholders
-3. __Added `print(...)` intrinsic handling__ that lowers to `@printf` calls in LLVM IR
-4. __Removed dead `sym_ty` method__
+### Generalized struct field-index resolution in `src/codegen.rs`
+- Added a `struct_fields: HashMap<String, Vec<String>>` map to `Codegen`, populated in `emit_struct_decl` from each `TypedStructDef`'s declared field order.
+- Rewrote `field_index` to look up a field's position from that map instead of the previously hardcoded `"Player" => ["health", "position", "name"]` table. Field access (`obj.field`) now works for **any** declared struct, and reports `no field ... on ...` / `unknown struct ...` errors correctly.
+- Verified: `cargo build` clean, 6 tests pass, regenerated `examples/player.ll` still compiles with `clang -c` (exit 0).

@@ -33,11 +33,18 @@ fn ignores_blank_and_comment_lines() {
 fn parses_canonical_example() {
     let src = include_str!("../examples/player.star");
     let module = Driver::parse(src).expect("canonical example should parse");
-    // Expect three items: struct Player, trait Damageable, impl block.
-    assert_eq!(module.items.len(), 3);
+    // The example is a complete, runnable program:
+    //   0: struct Vec3
+    //   1: struct Player
+    //   2: trait Damageable
+    //   3: impl Damageable for Player
+    //   4: fn main()
+    assert_eq!(module.items.len(), 5);
     assert!(matches!(module.items[0], Item::Struct(_)));
-    assert!(matches!(module.items[1], Item::Trait(_)));
-    assert!(matches!(module.items[2], Item::Impl(_)));
+    assert!(matches!(module.items[1], Item::Struct(_)));
+    assert!(matches!(module.items[2], Item::Trait(_)));
+    assert!(matches!(module.items[3], Item::Impl(_)));
+    assert!(matches!(module.items[4], Item::Fn(_)));
 }
 
 /// A struct field with a default should retain its initializer expression.

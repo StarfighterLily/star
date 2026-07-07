@@ -267,6 +267,7 @@ impl Checker {
                 let scrutinee_expr = self.infer_expr(scrutinee, vars)?;
                 let arm_tys: Vec<TypedMatchArm> = arms.iter().map(|a| self.check_match_arm(a, &scrutinee_expr, vars)).collect();
                 let ty = arm_tys.first().map(|a| a.ty.clone()).unwrap_or(Ty::Named("unknown".into()));
+                // If the first arm ty is unknown (e.g. match used as a statement), default to Ty::Named("unknown") or similar, but let's make sure it doesn't propagate as Ty::Named("unknown") if we want a void match to compile smoothly.
                 Ok(TypedExpr::Match { scrutinee: Box::new(scrutinee_expr), arms: arm_tys, ty, span: *span })
             }
             Expr::StructLit { name, args, span } => {
@@ -289,10 +290,16 @@ impl Checker {
             .unwrap_or(Ty::Named("unknown".into()))
     }
 
-    fn check_match_arm(&mut self, arm: &MatchArm, _scrutinee_expr: &TypedExpr, _vars: &mut HashMap<String, Ty>) -> TypedMatchArm {
-        let dummy_sig = TypedFnSig { name: "match".into(), params: vec![], ret: None, span: arm.span };
-        let body = self.check_block(&arm.body, &dummy_sig).unwrap_or(TypedBlock { stmts: vec![], span: arm.span });
-        TypedMatchArm { pattern: arm.pattern.clone(), body, ty: Ty::Named("unknown".into()), span: arm.span }
+    fn check_match_arm(&mut self, arm: &MatchArm, _scrutinee_expr: &TypedExpr, vars: &mut HashMap<String, Ty>) -> TypedMatchArm {
+        // Use the vars context from the enclosing scope (e.g., method body with 'self').
+        // Create a dummy sig but check statements directly with the inherited vars.
+        let mut stmts = Vec::new();
+        for stmt in &arm.body.stmts {
+            if let Some(typed) = self.check_stmt(stmt, vars) {
+                stmts.push(typed);
+            }
+        }
+        TypedMatchArm { pattern: arm.pattern.clone(), body: TypedBlock { stmts, span: arm.span }, ty: Ty::Named("unknown".into()), span: arm.span }
     }
 
     fn resolve_type(&self, ty: &Type) -> Option<Ty> {

@@ -1,0 +1,18 @@
+# Toolchain configuration for building the `star` compiler on this machine.
+#
+# LLVM-mingw (20260616, UCRT) supplies compiler-rt / libunwind instead of the
+# static libgcc_eh.a / libgcc.a that Rust's x86_64-pc-windows-gnu target links
+# against by default. We add a local stub directory (vendor-libs) to the link
+# search so rustc's `-lgcc_eh -lgcc` are satisfied; the real runtime symbols
+# come from LLVM-mingw's compiler-rt / libunwind.
+[target.x86_64-pc-windows-gnu]
+rustflags = [
+    "-L",
+    "E:/Coding/Rust/star/vendor-libs",
+    "-L",
+    "E:/LLVM/x86_64-w64-mingw32/lib",
+    "-C",
+    "link-arg=-fuse-ld=lld",
+    "-C",
+    "link-arg=-lunwind",
+]
