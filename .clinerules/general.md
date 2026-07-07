@@ -1,0 +1,2 @@
+Write industry-standard Rust code in conventional Rust formatting. Everything should be modular, showing clear separation of concerns to allow maintainability.
+Use Windows 10 powershell commands and syntax, nothing *nix flavored.

@@ -1,0 +1,22 @@
+[package]
+name = "star"
+version = "0.1.0"
+edition = "2024"
+description = "The Star game programming language compiler (Pythonic-Rust syntax, LLVM backend)."
+
+[[bin]]
+name = "star"
+path = "src/main.rs"
+
+[lib]
+name = "star"
+path = "src/lib.rs"
+
+[dependencies]
+# CLI argument parsing.
+clap = { version = "4", features = ["derive"] }
+# Ergonomic error propagation in the driver/CLI layer.
+anyhow = "1"
+
+[dev-dependencies]
+# Snapshot-style assertions for integration tests over .star programs.
