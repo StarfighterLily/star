@@ -8,6 +8,11 @@ declare void @free(i8*)
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
 
+%GenRef = type { i32, i32 }
+
+@frame.buf = global [4096 x i8] zeroinitializer
+@frame.off = global i64 0
+
 %Vec3 = type { float, float, float }
 %Player = type { i32, { float, float, float }, i8* }
 define void @take_damage(%Player* %self, i32 %amount) {
@@ -61,7 +66,7 @@ entry:
   store i32 0, i32* %t5
   %t6 = getelementptr inbounds %Vec3, %Vec3* %t3, i32 0, i32 2
   store i32 0, i32* %t6
-  %t7 = load %Vec3, ptr %t3
+  %t7 = load %Vec3, %Vec3* %t3
   %t8 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 1
   store %Vec3 %t7, %Vec3* %t8
   %t10 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.2, i64 0, i64 0
@@ -69,9 +74,9 @@ entry:
   store i8* %t10, i8** %t9
   %t11 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 2
   store i8* %t9, i8** %t11
-  %t12 = load %Player, ptr %t1
+  %t12 = load %Player, %Player* %t1
   store %Player %t12, %Player* %t0
-  call void @take_damage(%Player* %t0, i32 50)
+  call void @take_damage(%Player* %t0, i32 150)
   ret void
 }
 

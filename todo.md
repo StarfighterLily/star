@@ -1,12 +1,6 @@
 # Star Compiler — Next Steps
 
-## Immediate: M5 Memory Model
-
-## M5: Memory Model
-
-- [x] **`frame` keyword**: Implement the frame bump allocator. The `frame` keyword introduces a scope whose allocations are reset at the end of each tick. Implemented: frame bounds checking saves and restores offset.
-- [x] **Spatial `arena`s**: First-class arena types. `arena MyArena: Type` declares a named allocation space. Implemented: Arena declarations with struct type and global state.
-- [x] **`GenRef<T>` type**: GenRef<T> type backed by a slot-map. Implemented: GenRef struct type with index/generation fields.
+## Immediate: M6 SIMD
 
 ## M6: SIMD Math Types
 
@@ -30,20 +24,9 @@
 
 ## Testing
 
-- [x] **Codegen test suite**: Add integration tests that compile `.star` files to `.ll` and verify the IR with `llc` or `clang -c`. NOTE: full `star build` currently fails only at the *link* step on this machine because the MSVC runtime libs (`libcmt.lib`, `oldnames.lib`) are not on clang's search path — codegen itself is validated with `clang -c` (object-file compile), which succeeds.
 - [ ] **Runtime tests**: Compile and run small `.star` programs, assert their output.
 - [ ] **Fuzz testing**: Fuzz the lexer and parser with random inputs to find panics.
 
  LATEST:
 
  ### M5 Memory Model Implementation Complete
- - **Frame allocator**: Added `emit_frame_globals()` to emit frame buffer and offset globals. Frame scope in `emit_stmt` now saves and restores the bump offset for O(1) allocation/deallocation.
- - **Arena declarations**: `emit_arena_decl()` now emits arena struct type and global state (data pointer, count). Added `type_size()` helper for size calculations.
- - **GenRef type**: Added `emit_genref_decl()` to emit the GenRef struct type `{ i32, i32 }` (index, generation). GenRef creation and index dereference now extract proper fields.
- - Added 6 new tests in `tests/frontend.rs`:
-   - `parses_frame_stmt`: Verifies frame statement parsing.
-   - `parses_arena_decl`: Verifies arena declaration parsing.
-   - `parses_genref_create`: Verifies GenRef<T>(value) creation syntax.
-   - `codegen_frame`: Verifies frame allocator IR emission.
-   - `codegen_arena`: Verifies arena struct and globals IR emission.
-   - `codegen_genref_type`: Verifies GenRef type IR emission.

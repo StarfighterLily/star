@@ -21,10 +21,14 @@ pub struct Codegen {
     /// Field name lists per struct, populated from the typed module so field
     /// indices can be resolved for any struct (not just a hardcoded set).
     struct_fields: std::collections::HashMap<String, Vec<String>>,
+    /// Field type lists per struct, used to compute accurate byte sizes for
+    /// the frame bump allocator.
+    struct_field_types: std::collections::HashMap<String, Vec<Ty>>,
     /// Maps `"Struct.method"` -> `@method` so method calls (`obj.method()`) can
     /// be lowered to a direct function call with the receiver as `self`.
     methods: std::collections::HashMap<String, String>,
     errors: Vec<Diagnostic>,
+    in_frame: bool,
 }
 
 impl Codegen {
@@ -37,8 +41,10 @@ impl Codegen {
             block_id: 0,
             symbols: Vec::new(),
             struct_fields: std::collections::HashMap::new(),
+            struct_field_types: std::collections::HashMap::new(),
             methods: std::collections::HashMap::new(),
             errors: Vec::new(),
+            in_frame: false,
         }
     }
 
@@ -51,8 +57,10 @@ impl Codegen {
         self.emit_builtins();
 
         for item in &module.items {
-            if let TypedItem::Struct(s) = item {
-                self.emit_struct_decl(s);
+            match item {
+                TypedItem::Struct(s) => self.emit_struct_decl(s),
+                TypedItem::Arena(a) => self.emit_arena_decl(a),
+                _ => {}
             }
         }
 
@@ -101,15 +109,50 @@ impl Codegen {
         self.line("declare i32 @strlen(i8*)");
         self.line("declare i8* @memcpy(i8*, i8*, i64)");
         self.line("");
+        self.line("%GenRef = type { i32, i32 }");
+        self.line("");
+        self.line("@frame.buf = global [4096 x i8] zeroinitializer");
+        self.line("@frame.off = global i64 0");
+        self.line("");
+    }
+
+    fn emit_arena_decl(&mut self, a: &TypedArenaDecl) {
+        let elem_ty = self.llvm_ty(&a.ty);
+        self.line(&format!("%{} = type {{ {}*, i64 }}", a.name, elem_ty));
+        self.line(&format!("@arena.{}.data = global {}* null", a.name, elem_ty));
+        self.line(&format!("@arena.{}.count = global i64 0", a.name));
+        self.line("");
     }
 
     fn emit_struct_decl(&mut self, s: &TypedStructDef) {
         self.struct_fields
             .insert(s.name.clone(), s.fields.iter().map(|f| f.name.clone()).collect());
+        self.struct_field_types
+            .insert(s.name.clone(), s.fields.iter().map(|f| f.ty.clone()).collect());
         self.write(&format!("%{} = type {{ ", s.name));
         let parts: Vec<String> = s.fields.iter().map(|f| self.llvm_ty(&f.ty)).collect();
         self.write(&parts.join(", "));
         self.line(" }");
+    }
+
+    /// Byte size of a type, used to advance the frame bump allocator's
+    /// offset by the right amount for each allocation.
+    fn type_size(&self, ty: &Ty) -> u32 {
+        match ty {
+            Ty::Int | Ty::Float => 4,
+            Ty::Bool => 1,
+            Ty::Str => 8,
+            Ty::GenRef(_) => 8, // { i32, i32 }
+            Ty::Vec2 => 8,
+            Ty::Vec3 => 12,
+            Ty::Vec4 => 16,
+            Ty::Mat4 => 64,
+            Ty::Named(n) => self
+                .struct_field_types
+                .get(n)
+                .map(|fields| fields.iter().map(|f| self.type_size(f)).sum())
+                .unwrap_or(8),
+        }
     }
 
     fn llvm_ty(&self, ty: &Ty) -> String {
@@ -123,6 +166,7 @@ impl Codegen {
             Ty::Vec4 => "<4 x float>".into(),
             Ty::Mat4 => "[4 x <4 x float>]".into(),
             Ty::Named(n) => format!("%{}", n),
+            Ty::GenRef(_) => "%GenRef".into(),
         }
     }
 
@@ -148,6 +192,36 @@ impl Codegen {
         match base {
             TypedExpr::Ident { name, .. } => name.clone(),
             _ => String::new(),
+        }
+    }
+
+    /// Emit code that yields a *pointer* to the storage of `expr`, for use as
+    /// the base operand of a `getelementptr`. This differs from `emit_expr`,
+    /// which for an `Ident`/`Field` of aggregate type loads and returns the
+    /// value itself; GEP-ing into that loaded value would be an LLVM type
+    /// mismatch (the register's type is the aggregate, not a pointer to it).
+    fn emit_place(&mut self, expr: &TypedExpr) -> String {
+        match expr {
+            TypedExpr::Ident { name, .. } => self.sym_ptr(name).unwrap_or_else(|| "%undef".into()),
+            TypedExpr::SelfExpr(ty, _) => {
+                let ptr = self.sym_ptr("self").unwrap_or_else(|| "%undef".into());
+                let reg = self.tmp_name();
+                let struct_ty = match ty {
+                    Ty::Named(n) => format!("%{}", n),
+                    _ => self.llvm_ty(ty),
+                };
+                self.line(&format!("  {} = load {}*, {}** {}", reg, struct_ty, struct_ty, ptr));
+                reg
+            }
+            TypedExpr::Field { base, field, .. } => {
+                let base_ptr = self.emit_place(base);
+                let gep = self.tmp_name();
+                let bty = self.llvm_ty(&self.expr_ty(base));
+                let idx = self.field_index(&self.expr_ty(base), field);
+                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, bty, bty, base_ptr, idx));
+                gep
+            }
+            _ => self.emit_expr(expr),
         }
     }
 
@@ -186,22 +260,58 @@ impl Codegen {
     }
 
     /// Emit a block of typed statements. If the block ends with an expression
-    /// statement, returns the value-register (with type tag) of that trailing
+    /// statement (or a `frame` block whose own trailing statement produces a
+    /// value), returns the value-register (with type tag) of that trailing
     /// expression; otherwise returns `None` (the block is used for side effects).
     fn emit_block_value(&mut self, block: &TypedBlock) -> Option<String> {
-        let trailing = block.stmts.last();
-        if let Some(TypedStmt::Expr(e)) = trailing {
-            // Emit every statement except the trailing expression, then emit the
-            // trailing expression exactly once to capture its value.
-            for stmt in &block.stmts[..block.stmts.len() - 1] {
-                self.emit_stmt(stmt);
+        self.emit_stmts_value(&block.stmts)
+    }
+
+    /// Shared implementation behind `emit_block_value` and function bodies:
+    /// emit every statement but the last normally, then special-case the last
+    /// statement so a trailing expression's value (possibly nested inside a
+    /// `frame:` scope) propagates out instead of being silently discarded.
+    fn emit_stmts_value(&mut self, stmts: &[TypedStmt]) -> Option<String> {
+        let (init, last) = match stmts.split_last() {
+            Some((last, init)) => (init, last),
+            None => return None,
+        };
+        for stmt in init {
+            self.emit_stmt(stmt);
+        }
+        match last {
+            TypedStmt::Expr(e) => Some(self.emit_expr(e)),
+            TypedStmt::Frame { body, .. } => self.emit_frame_body(body),
+            other => {
+                self.emit_stmt(other);
+                None
             }
-            Some(self.emit_expr(e))
-        } else {
-            for stmt in &block.stmts {
-                self.emit_stmt(stmt);
-            }
-            None
+        }
+    }
+
+    /// Emit a `frame:` scope: save the bump-allocator offset, emit the body
+    /// (allocations inside use the frame buffer instead of the stack), then
+    /// restore the saved offset so the scope's allocations are reclaimed in
+    /// O(1) when it ends. Returns the body's trailing value, if any.
+    fn emit_frame_body(&mut self, body: &TypedBlock) -> Option<String> {
+        let was_in_frame = self.in_frame;
+        self.in_frame = true;
+        let saved_off = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* @frame.off", saved_off));
+        let val = self.emit_stmts_value(&body.stmts);
+        self.line(&format!("  store i64 {}, i64* @frame.off", saved_off));
+        self.in_frame = was_in_frame;
+        val
+    }
+
+    /// True if the last statement of `stmts` unconditionally terminates the
+    /// block with an explicit `return` (looking through trailing `frame`
+    /// scopes), so callers know not to append a synthetic terminator.
+    fn body_ends_in_return(stmts: &[TypedStmt]) -> bool {
+        match stmts.last() {
+            Some(TypedStmt::Return { .. }) => true,
+            Some(TypedStmt::Frame { body, .. }) => Self::body_ends_in_return(&body.stmts),
+            _ => false,
         }
     }
 
@@ -212,8 +322,9 @@ impl Codegen {
             | TypedExpr::Field { ty, .. } | TypedExpr::Call { ty, .. }
             | TypedExpr::Binary { ty, .. } | TypedExpr::Unary { ty, .. }
             | TypedExpr::Match { ty, .. } | TypedExpr::StructLit { ty, .. }
-            | TypedExpr::FStr(_, ty, _) | TypedExpr::Error(ty) => ty.clone(),
+            | TypedExpr::FStr(_, ty, _) | TypedExpr::GenRefIndex { ty, .. } | TypedExpr::Error(ty) => ty.clone(),
             TypedExpr::Ident { ty, .. } => ty.clone(),
+            TypedExpr::GenRefCreate { inner_ty, .. } => Ty::GenRef(Box::new(inner_ty.clone())),
             TypedExpr::SelfExpr(ty, _) => ty.clone(),
             TypedExpr::If { ty, .. } => ty.clone(),
         }
@@ -247,12 +358,26 @@ impl Codegen {
             self.symbols.push((p.name.clone(), alloca, p.ty.clone()));
         }
 
-        for stmt in &f.body.stmts {
-            self.emit_stmt(stmt);
-        }
+        let terminated = Self::body_ends_in_return(&f.body.stmts);
+        let trailing_val = self.emit_stmts_value(&f.body.stmts);
 
-        if matches!(f.sig.ret, None) {
-            self.line("  ret void");
+        if !terminated {
+            match &f.sig.ret {
+                Some(rty) => {
+                    let rty_s = self.llvm_ty(rty);
+                    match trailing_val {
+                        Some(v) => {
+                            let clean = v.strip_prefix(&format!("{} ", rty_s)).unwrap_or(&v).to_string();
+                            self.line(&format!("  ret {} {}", rty_s, clean));
+                        }
+                        None => {
+                            self.err("function must end in a value-producing expression or explicit return", Span::dummy());
+                            self.line(&format!("  ret {} undef", rty_s));
+                        }
+                    }
+                }
+                None => self.line("  ret void"),
+            }
         }
         self.line("}");
         self.line("");
@@ -263,11 +388,34 @@ impl Codegen {
             TypedStmt::Let { name, value, .. } => {
                 let ty = self.llvm_ty(&self.expr_ty(value));
                 let ptr = self.tmp_name();
-                self.line(&format!("  {} = alloca {}", ptr, ty));
-                let reg = self.emit_expr(value);
-                let clean_val = reg.strip_prefix(&format!("{} ", ty)).unwrap_or(&reg);
-                self.line(&format!("  store {} {}, {}* {}", ty, clean_val, ty, ptr));
-                self.symbols.push((name.clone(), ptr, self.expr_ty(value)));
+                if self.in_frame {
+                    // Frame allocation: bump-allocate `size` bytes from the frame
+                    // buffer, advance (and persist) the offset, then bitcast the
+                    // raw `i8*` slot to the value's actual pointer type so the
+                    // subsequent store's operand types agree with the pointer's
+                    // declared type.
+                    self.line(&format!("  {} = load i64, i64* @frame.off", ptr));
+                    let base = self.tmp_name();
+                    self.line(&format!("  {} = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0", base));
+                    let byte_ptr = self.tmp_name();
+                    self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", byte_ptr, base, ptr));
+                    let size = self.type_size(&self.expr_ty(value));
+                    let store_offset = self.tmp_name();
+                    self.line(&format!("  {} = add i64 {}, {}", store_offset, ptr, size));
+                    self.line(&format!("  store i64 {}, i64* @frame.off", store_offset));
+                    let typed_ptr = self.tmp_name();
+                    self.line(&format!("  {} = bitcast i8* {} to {}*", typed_ptr, byte_ptr, ty));
+                    let reg = self.emit_expr(value);
+                    let clean_val = reg.strip_prefix(&format!("{} ", ty)).unwrap_or(&reg);
+                    self.line(&format!("  store {} {}, {}* {}", ty, clean_val, ty, typed_ptr));
+                    self.symbols.push((name.clone(), typed_ptr, self.expr_ty(value)));
+                } else {
+                    self.line(&format!("  {} = alloca {}", ptr, ty));
+                    let reg = self.emit_expr(value);
+                    let clean_val = reg.strip_prefix(&format!("{} ", ty)).unwrap_or(&reg);
+                    self.line(&format!("  store {} {}, {}* {}", ty, clean_val, ty, ptr));
+                    self.symbols.push((name.clone(), ptr, self.expr_ty(value)));
+                }
             }
             TypedStmt::Assign { target, op, value, .. } => {
                 let val_reg = self.emit_expr(value);
@@ -309,6 +457,7 @@ impl Codegen {
                 self.line(&format!("  br label %{}", end_label));
                 self.line(&format!("{}:", end_label));
             }
+            TypedStmt::Frame { body, .. } => { self.emit_frame_body(body); }
             TypedStmt::While { cond, then_block, else_block, .. } => {
                 let cond_label = self.block_label("while_cond");
                 let body_label = self.block_label("while_body");
@@ -349,7 +498,7 @@ impl Codegen {
                 reg
             }
             TypedExpr::Field { base, field, ty, .. } => {
-                let base_ptr = self.emit_expr(base);
+                let base_ptr = self.emit_place(base);
                 let gep = self.tmp_name();
                 let bty = self.llvm_ty(&self.expr_ty(base));
                 let idx = self.field_index(&self.expr_ty(base), field);
@@ -372,7 +521,7 @@ impl Codegen {
                 self.line(&format!("  store {} {}, {}* {}", ts, clean_val, ts, ptr));
             }
             TypedExpr::Field { base, field, ty, .. } => {
-                let base_ptr = self.emit_expr(base);
+                let base_ptr = self.emit_place(base);
                 let gep = self.tmp_name();
                 let bty = self.llvm_ty(&self.expr_ty(base));
                 let idx = self.field_index(&self.expr_ty(base), field);
@@ -419,7 +568,7 @@ impl Codegen {
                 reg
             }
             TypedExpr::Field { base, field, ty, .. } => {
-                let base_ptr = self.emit_expr(base);
+                let base_ptr = self.emit_place(base);
                 let gep = self.tmp_name();
                 let bty = self.llvm_ty(&self.expr_ty(base));
                 let idx = self.field_index(&self.expr_ty(base), field);
@@ -522,13 +671,35 @@ impl Codegen {
                         format!("{} {}", ret_ty, ret)
                     }
                 } else {
-                    let callee_reg = self.emit_expr(callee);
-                    let arg_regs: Vec<String> = args.iter().map(|a| self.emit_expr(a)).collect();
-                    let ret = self.tmp_name();
-                    let arg_list: Vec<String> = args.iter().zip(&arg_regs)
-                        .map(|(a, reg)| format!("{} {}", self.llvm_ty(&self.expr_ty(a)), reg)).collect();
-                    self.line(&format!("  {} = call i32 @{}({})", ret, callee_reg, arg_list.join(", ")));
-                    ret
+                    // A direct call to a named function: emit `call @name(args)`
+                    // straight away. `callee` must not be routed through
+                    // `emit_expr`/`emit_place` here — it names a global
+                    // function, not a local variable, so there is no alloca
+                    // to load from.
+                    let fn_name = match callee.as_ref() {
+                        TypedExpr::Ident { name, .. } => name.clone(),
+                        _ => { self.err("indirect calls are not supported", Span::dummy()); String::new() }
+                    };
+                    let call_args: Vec<String> = args.iter().map(|a| {
+                        let reg = self.emit_expr(a);
+                        let ats = self.llvm_ty(&self.expr_ty(a));
+                        let clean_val = reg.strip_prefix(&format!("{} ", ats)).unwrap_or(&reg).to_string();
+                        format!("{} {}", ats, clean_val)
+                    }).collect();
+                    // Free functions without an explicit return type are typed
+                    // `unknown` by the checker; emit them as `void` calls.
+                    let ret_ty = match &self.expr_ty(expr) {
+                        Ty::Named(n) if n == "unknown" => "void".to_string(),
+                        other => self.llvm_ty(other),
+                    };
+                    if ret_ty == "void" {
+                        self.line(&format!("  call void @{}({})", fn_name, call_args.join(", ")));
+                        "%undef".into()
+                    } else {
+                        let ret = self.tmp_name();
+                        self.line(&format!("  {} = call {} @{}({})", ret, ret_ty, fn_name, call_args.join(", ")));
+                        format!("{} {}", ret_ty, ret)
+                    }
                 }
             }
             TypedExpr::Binary { op, lhs, rhs, .. } => {
@@ -609,7 +780,7 @@ impl Codegen {
                 // Return the struct *value* (loaded from the alloca) so it can be
                 // stored into another aggregate or assigned, not the pointer.
                 let loaded = self.tmp_name();
-                self.line(&format!("  {} = load %{}, ptr {}", loaded, name, ptr));
+                self.line(&format!("  {} = load %{}, %{}* {}", loaded, name, name, ptr));
                 format!("%{} {}", name, loaded)
             }
             TypedExpr::FStr(parts, _, _) => {
@@ -685,6 +856,36 @@ impl Codegen {
                     self.line(&format!("  {} = phi {} [ {}, %{} ], [ {}, %{} ]", phi, ty_str, then_reg, then_label, else_reg, else_label));
                     format!("{} {}", ty_str, phi)
                 }
+            }
+            TypedExpr::GenRefCreate { inner_ty, value, .. } => {
+                let ptr = self.tmp_name();
+                self.line(&format!("  {} = alloca %GenRef", ptr));
+                let val = self.emit_expr(value);
+                let inner_t = match inner_ty {
+                    Ty::Int => "i32",
+                    Ty::Float => "float",
+                    Ty::Bool => "i1",
+                    Ty::Str => "i8*",
+                    _ => "i32",
+                };
+                let clean_val = val.strip_prefix(&format!("{} ", inner_t)).unwrap_or(&val);
+                let field0 = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 0", field0, ptr));
+                self.line(&format!("  store {} {}, {}* {}", inner_t, clean_val, inner_t, field0));
+                let gen_ptr = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 1", gen_ptr, ptr));
+                self.line(&format!("  store i32 0, i32* {}", gen_ptr));
+                let loaded = self.tmp_name();
+                self.line(&format!("  {} = load %GenRef, %GenRef* {}", loaded, ptr));
+                format!("%GenRef {}", loaded)
+            }
+            TypedExpr::GenRefIndex { base, index: _, .. } => {
+                let base_ptr = self.emit_place(base);
+                let idx_ptr = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 0", idx_ptr, base_ptr));
+                let idx_val = self.tmp_name();
+                self.line(&format!("  {} = load i32, i32* {}", idx_val, idx_ptr));
+                format!("i32 {}", idx_val)
             }
             TypedExpr::Error(_) => "%undef".into(),
         }
