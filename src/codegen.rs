@@ -51,9 +51,18 @@ pub struct Codegen {
     /// function's body), so they're collected here and appended to the
     /// module after every ordinary item has been emitted.
     pending_top: Vec<String>,
+    /// Maps an arena's declared element type -> its name, so `GenRef<T>`
+    /// codegen can find the arena backing `T` (the checker has already
+    /// proven exactly one exists). Populated while arena decls are emitted,
+    /// which happens before any function body -- see `emit()`.
+    arena_by_elem: Vec<(Ty, String)>,
 }
 
 impl Codegen {
+    /// Fixed capacity (element count) of every arena's backing array and its
+    /// parallel generation array. See `emit_spawn_stmt`/`emit_arena_decl`.
+    const ARENA_CAPACITY: u64 = 1024;
+
     pub fn new() -> Self {
         Self {
             ir: String::new(),
@@ -68,6 +77,7 @@ impl Codegen {
             errors: Vec::new(),
             in_frame: false,
             pending_top: Vec::new(),
+            arena_by_elem: Vec::new(),
         }
     }
 
@@ -171,7 +181,29 @@ impl Codegen {
         self.line(&format!("%{} = type {{ {}*, i64 }}", a.name, elem_ty));
         self.line(&format!("@arena.{}.data = global {}* null", a.name, elem_ty));
         self.line(&format!("@arena.{}.count = global i64 0", a.name));
+        // Per-slot generation counters backing `GenRef<T>` where `T` is this
+        // arena's element type: 0 means "never spawned", `spawn` sets a
+        // slot's generation to 1 on first write, `despawn` bumps it. A
+        // `GenRef` captures a slot's generation at creation time and a
+        // dereference is only trusted if it still matches this array's live
+        // value -- see `emit_despawn_stmt`/`GenRefCreate`/`GenRefIndex`.
+        self.line(&format!("@arena.{}.gen = global [{} x i32] zeroinitializer", a.name, Self::ARENA_CAPACITY));
         self.line("");
+        self.arena_by_elem.push((a.ty.clone(), a.name.clone()));
+    }
+
+    /// Resolve the arena backing `GenRef<ty>`. The checker has already
+    /// proven exactly one exists (`Checker::require_backing_arena`); this is
+    /// a defensive fallback only, matching the codebase's existing
+    /// defensive-error convention (e.g. `emit_float_op`).
+    fn arena_for_elem_ty(&mut self, ty: &Ty, span: Span) -> String {
+        match self.arena_by_elem.iter().find(|(t, _)| t == ty) {
+            Some((_, name)) => name.clone(),
+            None => {
+                self.err("GenRef<T> has no backing arena", span);
+                String::new()
+            }
+        }
     }
 
     fn emit_struct_decl(&mut self, s: &TypedStructDef) {
@@ -339,7 +371,20 @@ impl Codegen {
                 self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, bty, bty, base_ptr, idx));
                 gep
             }
-            _ => self.emit_expr(expr),
+            // Any other expression (e.g. `gen_ref[idx].field`, chaining a
+            // field access directly onto a struct returned *by value*) has
+            // no existing storage to address -- spill it into a fresh
+            // alloca so the `Field` arm above has a pointer to GEP into.
+            _ => {
+                let val = self.emit_expr(expr);
+                let ty = self.expr_ty(expr);
+                let ty_str = self.llvm_ty(&ty);
+                let bare = self.untag(&val, &ty);
+                let ptr = self.tmp_name();
+                self.line(&format!("  {} = alloca {}", ptr, ty_str));
+                self.line(&format!("  store {} {}, {}* {}", ty_str, bare, ty_str, ptr));
+                ptr
+            }
         }
     }
 
@@ -718,6 +763,9 @@ impl Codegen {
             TypedStmt::Spawn { arena, elem, .. } => {
                 self.emit_spawn_stmt(arena, elem);
             }
+            TypedStmt::Despawn { arena, index, .. } => {
+                self.emit_despawn_stmt(arena, index);
+            }
         }
     }
 
@@ -915,8 +963,6 @@ impl Codegen {
     /// which matters because `par`/`swarm` workers may be reading it
     /// concurrently from other threads.
     fn emit_spawn_stmt(&mut self, arena: &str, elem: &TypedExpr) {
-        const ARENA_CAPACITY: u64 = 1024;
-
         let elem_ty = self.expr_ty(elem);
         let elem_llvm_ty = self.llvm_ty(&elem_ty);
 
@@ -929,7 +975,7 @@ impl Codegen {
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, init_label, ready_label));
 
         self.line(&format!("{}:", init_label));
-        let bytes = self.type_size(&elem_ty) as u64 * ARENA_CAPACITY;
+        let bytes = self.type_size(&elem_ty) as u64 * Self::ARENA_CAPACITY;
         let raw = self.tmp_name();
         self.line(&format!("  {} = call i8* @malloc(i64 {})", raw, bytes));
         let casted = self.tmp_name();
@@ -943,7 +989,7 @@ impl Codegen {
         let count_reg = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @arena.{}.count", count_reg, arena));
         let in_bounds = self.tmp_name();
-        self.line(&format!("  {} = icmp slt i64 {}, {}", in_bounds, count_reg, ARENA_CAPACITY));
+        self.line(&format!("  {} = icmp slt i64 {}, {}", in_bounds, count_reg, Self::ARENA_CAPACITY));
         let store_label = self.block_label("spawn_store");
         let end_label = self.block_label("spawn_end");
         self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, store_label, end_label));
@@ -957,9 +1003,52 @@ impl Codegen {
             slot_ptr, elem_llvm_ty, elem_llvm_ty, data_ready, count_reg
         ));
         self.line(&format!("  store {} {}, {}* {}", elem_llvm_ty, clean_val, elem_llvm_ty, slot_ptr));
+        // First write to this slot: its generation starts live at 1 (0 is
+        // reserved for "never spawned" -- see `emit_arena_decl`).
+        let gen_slot_ptr = self.tmp_name();
+        self.line(&format!(
+            "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
+            gen_slot_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, count_reg
+        ));
+        self.line(&format!("  store i32 1, i32* {}", gen_slot_ptr));
         let next_count = self.tmp_name();
         self.line(&format!("  {} = add i64 {}, 1", next_count, count_reg));
         self.line(&format!("  store i64 {}, i64* @arena.{}.count", next_count, arena));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.line(&format!("{}:", end_label));
+    }
+
+    /// Emit `despawn ArenaName[index]`: bumps the slot's generation counter
+    /// by 1, invalidating any `GenRef` created against its previous value.
+    /// Does not reclaim/reuse the slot's memory or `data`/`count` (no
+    /// free-list yet -- separate future work). An out-of-bounds `index` is a
+    /// silent no-op, mirroring `spawn`'s silent-drop-when-full behavior.
+    fn emit_despawn_stmt(&mut self, arena: &str, index: &TypedExpr) {
+        let idx_val = self.emit_expr(index);
+        let idx_bare = self.untag(&idx_val, &Ty::Int);
+        let idx64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", idx64, idx_bare));
+        // Unsigned compare: a negative index sign-extends/wraps to a huge
+        // unsigned value, so it safely fails this bounds check too instead
+        // of aliasing a valid slot.
+        let in_bounds = self.tmp_name();
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, Self::ARENA_CAPACITY));
+        let do_label = self.block_label("despawn_do");
+        let end_label = self.block_label("despawn_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, do_label, end_label));
+
+        self.line(&format!("{}:", do_label));
+        let gen_ptr = self.tmp_name();
+        self.line(&format!(
+            "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
+            gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
+        ));
+        let gen_val = self.tmp_name();
+        self.line(&format!("  {} = load i32, i32* {}", gen_val, gen_ptr));
+        let next_gen = self.tmp_name();
+        self.line(&format!("  {} = add i32 {}, 1", next_gen, gen_val));
+        self.line(&format!("  store i32 {}, i32* {}", next_gen, gen_ptr));
         self.line(&format!("  br label %{}", end_label));
 
         self.line(&format!("{}:", end_label));
@@ -1625,35 +1714,134 @@ impl Codegen {
                     format!("{} {}", ty_str, phi)
                 }
             }
-            TypedExpr::GenRefCreate { inner_ty, value, .. } => {
+            // `GenRef<T>(idx)`: creates a handle to slot `idx` of the arena
+            // backing `T`, capturing that slot's *live* generation right now
+            // (rather than hardcoding 0) so a later dereference can detect
+            // whether the slot has since been despawned/replaced. Known
+            // limitation: a never-spawned slot's live generation is also 0,
+            // so a GenRef created against one is indistinguishable from a
+            // freshly-valid reference -- orthogonal to the stale-after-
+            // despawn guarantee this implements; closing it is future work.
+            TypedExpr::GenRefCreate { inner_ty, value, span } => {
+                let arena = self.arena_for_elem_ty(inner_ty, *span);
+                let val = self.emit_expr(value);
+                let idx_i32 = self.untag(&val, &Ty::Int);
+                let idx64 = self.tmp_name();
+                self.line(&format!("  {} = sext i32 {} to i64", idx64, idx_i32));
+
+                // Bounds-check before reading the gen array: `idx` is an
+                // arbitrary (possibly bug/attacker-controlled) expression,
+                // not an internally-generated counter, so it can't be
+                // trusted the way `spawn`'s `count` can.
+                let in_bounds = self.tmp_name();
+                self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, Self::ARENA_CAPACITY));
+                let ok_label = self.block_label("genref_create_ok");
+                let oob_label = self.block_label("genref_create_oob");
+                let end_label = self.block_label("genref_create_end");
+                self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, ok_label, oob_label));
+
+                self.line(&format!("{}:", ok_label));
+                let gen_ptr = self.tmp_name();
+                self.line(&format!(
+                    "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
+                    gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
+                ));
+                let gen_ok = self.tmp_name();
+                self.line(&format!("  {} = load i32, i32* {}", gen_ok, gen_ptr));
+                self.line(&format!("  br label %{}", end_label));
+
+                self.line(&format!("{}:", oob_label));
+                self.line(&format!("  br label %{}", end_label));
+
+                self.line(&format!("{}:", end_label));
+                let gen_val = self.tmp_name();
+                self.line(&format!(
+                    "  {} = phi i32 [ {}, %{} ], [ 0, %{} ]",
+                    gen_val, gen_ok, ok_label, oob_label
+                ));
+
                 let ptr = self.tmp_name();
                 self.line(&format!("  {} = alloca %GenRef", ptr));
-                let val = self.emit_expr(value);
-                let inner_t = match inner_ty {
-                    Ty::Int => "i32",
-                    Ty::Float => "float",
-                    Ty::Bool => "i1",
-                    Ty::Str => "i8*",
-                    _ => "i32",
-                };
-                let clean_val = val.strip_prefix(&format!("{} ", inner_t)).unwrap_or(&val);
                 let field0 = self.tmp_name();
                 self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 0", field0, ptr));
-                self.line(&format!("  store {} {}, {}* {}", inner_t, clean_val, inner_t, field0));
-                let gen_ptr = self.tmp_name();
-                self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 1", gen_ptr, ptr));
-                self.line(&format!("  store i32 0, i32* {}", gen_ptr));
+                self.line(&format!("  store i32 {}, i32* {}", idx_i32, field0));
+                let gen_field_ptr = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 1", gen_field_ptr, ptr));
+                self.line(&format!("  store i32 {}, i32* {}", gen_val, gen_field_ptr));
                 let loaded = self.tmp_name();
                 self.line(&format!("  {} = load %GenRef, %GenRef* {}", loaded, ptr));
                 format!("%GenRef {}", loaded)
             }
-            TypedExpr::GenRefIndex { base, index: _, .. } => {
+            // `genref[N]`: `N` is vestigial (kept for backward-compatible
+            // `expr[idx]` deref syntax) -- the real slot index lives in the
+            // GenRef's own stored `index` field from creation time. Validates
+            // bounds and the stored generation against the arena's *live*
+            // generation for that slot; a mismatch (or an out-of-bounds
+            // index) yields the element type's zero value instead of reading
+            // stale/garbage data.
+            TypedExpr::GenRefIndex { base, ty, span, .. } => {
+                let elem_ty = ty.clone();
+                let elem_llvm_ty = self.llvm_ty(&elem_ty);
+                let arena = self.arena_for_elem_ty(&elem_ty, *span);
+
                 let base_ptr = self.emit_place(base);
-                let idx_ptr = self.tmp_name();
-                self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 0", idx_ptr, base_ptr));
-                let idx_val = self.tmp_name();
-                self.line(&format!("  {} = load i32, i32* {}", idx_val, idx_ptr));
-                format!("i32 {}", idx_val)
+                let idx_field_ptr = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 0", idx_field_ptr, base_ptr));
+                let stored_idx = self.tmp_name();
+                self.line(&format!("  {} = load i32, i32* {}", stored_idx, idx_field_ptr));
+                let gen_field_ptr = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 1", gen_field_ptr, base_ptr));
+                let stored_gen = self.tmp_name();
+                self.line(&format!("  {} = load i32, i32* {}", stored_gen, gen_field_ptr));
+                let idx64 = self.tmp_name();
+                self.line(&format!("  {} = sext i32 {} to i64", idx64, stored_idx));
+
+                let in_bounds = self.tmp_name();
+                self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, Self::ARENA_CAPACITY));
+                let check_label = self.block_label("genref_check");
+                let ok_label = self.block_label("genref_ok");
+                let stale_label = self.block_label("genref_stale");
+                let end_label = self.block_label("genref_end");
+                self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, check_label, stale_label));
+
+                self.line(&format!("{}:", check_label));
+                let gen_ptr = self.tmp_name();
+                self.line(&format!(
+                    "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
+                    gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
+                ));
+                let live_gen = self.tmp_name();
+                self.line(&format!("  {} = load i32, i32* {}", live_gen, gen_ptr));
+                let gen_match = self.tmp_name();
+                self.line(&format!("  {} = icmp eq i32 {}, {}", gen_match, stored_gen, live_gen));
+                self.line(&format!("  br i1 {}, label %{}, label %{}", gen_match, ok_label, stale_label));
+
+                self.line(&format!("{}:", ok_label));
+                let data_ptr = self.tmp_name();
+                self.line(&format!("  {} = load {}*, {}** @arena.{}.data", data_ptr, elem_llvm_ty, elem_llvm_ty, arena));
+                let elem_ptr = self.tmp_name();
+                self.line(&format!(
+                    "  {} = getelementptr inbounds {}, {}* {}, i64 {}",
+                    elem_ptr, elem_llvm_ty, elem_llvm_ty, data_ptr, idx64
+                ));
+                let elem_val = self.tmp_name();
+                self.line(&format!("  {} = load {}, {}* {}", elem_val, elem_llvm_ty, elem_llvm_ty, elem_ptr));
+                self.line(&format!("  br label %{}", end_label));
+
+                // Both failure paths (out-of-bounds, stale generation) funnel
+                // through this one block so the `phi` below sees exactly two
+                // incoming edges.
+                self.line(&format!("{}:", stale_label));
+                self.line(&format!("  br label %{}", end_label));
+
+                self.line(&format!("{}:", end_label));
+                let zero = self.zero_value(&elem_ty);
+                let result = self.tmp_name();
+                self.line(&format!(
+                    "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
+                    result, elem_llvm_ty, elem_val, ok_label, zero, stale_label
+                ));
+                format!("{} {}", elem_llvm_ty, result)
             }
             TypedExpr::Error(_) => "%undef".into(),
         }

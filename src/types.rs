@@ -387,6 +387,7 @@ impl Checker {
                 TypedStmt::Expr(TypedExpr::Error(Ty::Named("void".into())))
             }
             Stmt::Spawn { arena, args, span } => self.check_spawn_stmt(arena, args, vars, *span),
+            Stmt::Despawn { arena, index, span } => self.check_despawn_stmt(arena, index, vars, *span),
         })
     }
 
@@ -429,6 +430,47 @@ impl Checker {
         }
         let elem = TypedExpr::StructLit { name: elem_name, args: arg_exprs, ty: elem_ty, span };
         TypedStmt::Spawn { arena: arena.to_string(), elem, span }
+    }
+
+    /// Type-check `despawn ArenaName[index]`: resolves the arena (an error if
+    /// undefined) and requires `index` to be an `i32`. No arity/struct
+    /// checking needed -- unlike `spawn`, `despawn` doesn't construct a
+    /// value, it just bumps a generation counter.
+    fn check_despawn_stmt(&mut self, arena: &str, index: &Expr, vars: &mut HashMap<String, Ty>, span: Span) -> TypedStmt {
+        if !self.arenas.contains_key(arena) {
+            self.error(format!("undefined arena `{}`", arena), span);
+        }
+        let index_typed = self.infer_expr(index, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
+        if !matches!(index_typed.clone().into_ty(), Ty::Int) {
+            self.error("`despawn` index must be `i32`", span);
+        }
+        TypedStmt::Despawn { arena: arena.to_string(), index: index_typed, span }
+    }
+
+    /// Arenas whose declared element type is `ty`. Zero means "no backing
+    /// arena", more than one means "ambiguous" -- both are errors at any
+    /// `GenRef<T>` creation/dereference site (see `require_backing_arena`).
+    fn arenas_of_elem_ty(&self, ty: &Ty) -> Vec<&String> {
+        self.arenas.iter().filter(|(_, t)| *t == ty).map(|(n, _)| n).collect()
+    }
+
+    /// Validate that exactly one arena backs `GenRef<inner_ty>`, emitting a
+    /// diagnostic otherwise. Codegen independently re-resolves the arena
+    /// name from `inner_ty` (see `Codegen::arena_for_elem_ty`); this check
+    /// only exists to turn a missing/ambiguous backing arena into a friendly
+    /// type error instead of a defensive codegen-time failure.
+    fn require_backing_arena(&mut self, inner_ty: &Ty, span: Span) {
+        match self.arenas_of_elem_ty(inner_ty).len() {
+            1 => {}
+            0 => self.error(
+                format!("`GenRef<{:?}>` has no backing arena -- declare `arena Name: {:?}`", inner_ty, inner_ty),
+                span,
+            ),
+            _ => self.error(
+                format!("`GenRef<{:?}>` is ambiguous: multiple arenas hold `{:?}`", inner_ty, inner_ty),
+                span,
+            ),
+        }
     }
 
     // ===== `par`/`swarm` disjoint-access analysis ========================
@@ -516,6 +558,14 @@ impl Checker {
                 // inside a body whose iterations are supposed to be disjoint.
                 self.error(
                     "`spawn` cannot be used inside a par/swarm body (arena population is not disjoint across threads)",
+                    *span,
+                );
+            }
+            TypedStmt::Despawn { span, .. } => {
+                // Same race as `spawn`: every worker thread would contend on
+                // the same arena's `gen` global.
+                self.error(
+                    "`despawn` cannot be used inside a par/swarm body (concurrent generation bumps are not disjoint across threads)",
                     *span,
                 );
             }
@@ -709,15 +759,25 @@ impl Checker {
             }
             Expr::GenRefCreate { inner_ty, value, span } => {
                 let resolved_inner = self.resolve_type(inner_ty).unwrap_or(Ty::Named("unknown".into()));
+                self.require_backing_arena(&resolved_inner, *span);
                 let value_typed = self.infer_expr(value, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
+                if !matches!(value_typed.clone().into_ty(), Ty::Int) {
+                    self.error("`GenRef<T>(..)` index must be `i32`", *span);
+                }
                 Ok(TypedExpr::GenRefCreate { inner_ty: resolved_inner, value: Box::new(value_typed), span: *span })
             }
             Expr::GenRefIndex { base, index, span } => {
                 let base_expr = self.infer_expr(base, vars)?;
                 let index_expr = self.infer_expr(index, vars)?;
-                let inner_ty = match base_expr.clone() {
-                    TypedExpr::Ident { ty: Ty::GenRef(inner), .. } => *inner,
-                    _ => Ty::Named("unknown".into()),
+                let inner_ty = match base_expr.clone().into_ty() {
+                    Ty::GenRef(inner) => {
+                        self.require_backing_arena(&inner, *span);
+                        *inner
+                    }
+                    other => {
+                        self.error(format!("`[..]` dereference requires a `GenRef<T>`, found `{:?}`", other), *span);
+                        Ty::Named("unknown".into())
+                    }
                 };
                 Ok(TypedExpr::GenRefIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: inner_ty, span: *span })
             }
@@ -834,10 +894,8 @@ impl Checker {
         if let Some(arity) = base_ty.vec_arity() {
             return self.resolve_swizzle(arity, field, span);
         }
-        let name = match base {
-            TypedExpr::Ident { ty: Ty::Named(n), .. }
-            | TypedExpr::StructLit { ty: Ty::Named(n), .. }
-            | TypedExpr::SelfExpr(Ty::Named(n), _) => n,
+        let name = match &base_ty {
+            Ty::Named(n) => n,
             _ => return Ty::Named("unknown".into()),
         };
         let Some(sdef) = self.structs.get(name).cloned() else {
@@ -1065,6 +1123,12 @@ pub enum TypedStmt {
     Spawn {
         arena: String,
         elem: TypedExpr,
+        span: Span,
+    },
+    /// `despawn ArenaName[index]` - see [`crate::ast::Stmt::Despawn`].
+    Despawn {
+        arena: String,
+        index: TypedExpr,
         span: Span,
     },
 }

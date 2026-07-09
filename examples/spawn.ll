@@ -7,9 +7,18 @@ declare noalias i8* @malloc(i64)
 declare void @free(i8*)
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
+declare i8* @strcpy(i8*, i8*)
+declare i8* @strcat(i8*, i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
+declare float @llvm.sqrt.f32(float)
+declare float @llvm.pow.f32(float, float)
+declare float @llvm.fabs.f32(float)
+declare float @llvm.floor.f32(float)
+declare float @llvm.ceil.f32(float)
+declare float @llvm.minnum.f32(float, float)
+declare float @llvm.maxnum.f32(float, float)
 
 %GenRef = type { i32, i32 }
 
@@ -20,6 +29,7 @@ declare i32 @CloseHandle(i8*)
 %Enemies = type { %Enemy*, i64 }
 @arena.Enemies.data = global %Enemy* null
 @arena.Enemies.count = global i64 0
+@arena.Enemies.gen = global [1024 x i32] zeroinitializer
 
 define void @main() {
 entry:
@@ -43,198 +53,204 @@ spawn_store_2:
   %t9 = load %Enemy, %Enemy* %t7
   %t10 = getelementptr inbounds %Enemy, %Enemy* %t4, i64 %t5
   store %Enemy %t9, %Enemy* %t10
-  %t11 = add i64 %t5, 1
-  store i64 %t11, i64* @arena.Enemies.count
+  %t11 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Enemies.gen, i64 0, i64 %t5
+  store i32 1, i32* %t11
+  %t12 = add i64 %t5, 1
+  store i64 %t12, i64* @arena.Enemies.count
   br label %spawn_end_3
 spawn_end_3:
-  %t12 = load %Enemy*, %Enemy** @arena.Enemies.data
-  %t13 = icmp eq %Enemy* %t12, null
-  br i1 %t13, label %spawn_init_4, label %spawn_ready_5
+  %t13 = load %Enemy*, %Enemy** @arena.Enemies.data
+  %t14 = icmp eq %Enemy* %t13, null
+  br i1 %t14, label %spawn_init_4, label %spawn_ready_5
 spawn_init_4:
-  %t14 = call i8* @malloc(i64 4096)
-  %t15 = bitcast i8* %t14 to %Enemy*
-  store %Enemy* %t15, %Enemy** @arena.Enemies.data
+  %t15 = call i8* @malloc(i64 4096)
+  %t16 = bitcast i8* %t15 to %Enemy*
+  store %Enemy* %t16, %Enemy** @arena.Enemies.data
   br label %spawn_ready_5
 spawn_ready_5:
-  %t16 = load %Enemy*, %Enemy** @arena.Enemies.data
-  %t17 = load i64, i64* @arena.Enemies.count
-  %t18 = icmp slt i64 %t17, 1024
-  br i1 %t18, label %spawn_store_6, label %spawn_end_7
+  %t17 = load %Enemy*, %Enemy** @arena.Enemies.data
+  %t18 = load i64, i64* @arena.Enemies.count
+  %t19 = icmp slt i64 %t18, 1024
+  br i1 %t19, label %spawn_store_6, label %spawn_end_7
 spawn_store_6:
-  %t19 = alloca %Enemy
-  %t20 = getelementptr inbounds %Enemy, %Enemy* %t19, i32 0, i32 0
-  store i32 20, i32* %t20
-  %t21 = load %Enemy, %Enemy* %t19
-  %t22 = getelementptr inbounds %Enemy, %Enemy* %t16, i64 %t17
-  store %Enemy %t21, %Enemy* %t22
-  %t23 = add i64 %t17, 1
-  store i64 %t23, i64* @arena.Enemies.count
+  %t20 = alloca %Enemy
+  %t21 = getelementptr inbounds %Enemy, %Enemy* %t20, i32 0, i32 0
+  store i32 20, i32* %t21
+  %t22 = load %Enemy, %Enemy* %t20
+  %t23 = getelementptr inbounds %Enemy, %Enemy* %t17, i64 %t18
+  store %Enemy %t22, %Enemy* %t23
+  %t24 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Enemies.gen, i64 0, i64 %t18
+  store i32 1, i32* %t24
+  %t25 = add i64 %t18, 1
+  store i64 %t25, i64* @arena.Enemies.count
   br label %spawn_end_7
 spawn_end_7:
-  %t24 = load %Enemy*, %Enemy** @arena.Enemies.data
-  %t25 = icmp eq %Enemy* %t24, null
-  br i1 %t25, label %spawn_init_8, label %spawn_ready_9
+  %t26 = load %Enemy*, %Enemy** @arena.Enemies.data
+  %t27 = icmp eq %Enemy* %t26, null
+  br i1 %t27, label %spawn_init_8, label %spawn_ready_9
 spawn_init_8:
-  %t26 = call i8* @malloc(i64 4096)
-  %t27 = bitcast i8* %t26 to %Enemy*
-  store %Enemy* %t27, %Enemy** @arena.Enemies.data
+  %t28 = call i8* @malloc(i64 4096)
+  %t29 = bitcast i8* %t28 to %Enemy*
+  store %Enemy* %t29, %Enemy** @arena.Enemies.data
   br label %spawn_ready_9
 spawn_ready_9:
-  %t28 = load %Enemy*, %Enemy** @arena.Enemies.data
-  %t29 = load i64, i64* @arena.Enemies.count
-  %t30 = icmp slt i64 %t29, 1024
-  br i1 %t30, label %spawn_store_10, label %spawn_end_11
+  %t30 = load %Enemy*, %Enemy** @arena.Enemies.data
+  %t31 = load i64, i64* @arena.Enemies.count
+  %t32 = icmp slt i64 %t31, 1024
+  br i1 %t32, label %spawn_store_10, label %spawn_end_11
 spawn_store_10:
-  %t31 = alloca %Enemy
-  %t32 = getelementptr inbounds %Enemy, %Enemy* %t31, i32 0, i32 0
-  store i32 30, i32* %t32
-  %t33 = load %Enemy, %Enemy* %t31
-  %t34 = getelementptr inbounds %Enemy, %Enemy* %t28, i64 %t29
-  store %Enemy %t33, %Enemy* %t34
-  %t35 = add i64 %t29, 1
-  store i64 %t35, i64* @arena.Enemies.count
+  %t33 = alloca %Enemy
+  %t34 = getelementptr inbounds %Enemy, %Enemy* %t33, i32 0, i32 0
+  store i32 30, i32* %t34
+  %t35 = load %Enemy, %Enemy* %t33
+  %t36 = getelementptr inbounds %Enemy, %Enemy* %t30, i64 %t31
+  store %Enemy %t35, %Enemy* %t36
+  %t37 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Enemies.gen, i64 0, i64 %t31
+  store i32 1, i32* %t37
+  %t38 = add i64 %t31, 1
+  store i64 %t38, i64* @arena.Enemies.count
   br label %spawn_end_11
 spawn_end_11:
-  %t51 = load i64, i64* @arena.Enemies.count
-  %t52 = alloca [4 x i8*]
-  %t53 = mul i64 %t51, 0
-  %t54 = sdiv i64 %t53, 4
-  %t55 = mul i64 %t51, 1
-  %t56 = sdiv i64 %t55, 4
-  %t57 = alloca { i64, i64 }
-  %t58 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t57, i32 0, i32 0
-  store i64 %t54, i64* %t58
-  %t59 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t57, i32 0, i32 1
-  store i64 %t56, i64* %t59
-  %t60 = bitcast { i64, i64 }* %t57 to i8*
-  %t61 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_12 to i8*), i8* %t60, i32 0, i32* null)
-  %t62 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t52, i32 0, i32 0
-  store i8* %t61, i8** %t62
-  %t63 = mul i64 %t51, 1
-  %t64 = sdiv i64 %t63, 4
-  %t65 = mul i64 %t51, 2
-  %t66 = sdiv i64 %t65, 4
-  %t67 = alloca { i64, i64 }
-  %t68 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t67, i32 0, i32 0
-  store i64 %t64, i64* %t68
-  %t69 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t67, i32 0, i32 1
-  store i64 %t66, i64* %t69
-  %t70 = bitcast { i64, i64 }* %t67 to i8*
-  %t71 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_12 to i8*), i8* %t70, i32 0, i32* null)
-  %t72 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t52, i32 0, i32 1
-  store i8* %t71, i8** %t72
-  %t73 = mul i64 %t51, 2
-  %t74 = sdiv i64 %t73, 4
-  %t75 = mul i64 %t51, 3
-  %t76 = sdiv i64 %t75, 4
-  %t77 = alloca { i64, i64 }
-  %t78 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t77, i32 0, i32 0
-  store i64 %t74, i64* %t78
-  %t79 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t77, i32 0, i32 1
-  store i64 %t76, i64* %t79
-  %t80 = bitcast { i64, i64 }* %t77 to i8*
-  %t81 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_12 to i8*), i8* %t80, i32 0, i32* null)
-  %t82 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t52, i32 0, i32 2
-  store i8* %t81, i8** %t82
-  %t83 = mul i64 %t51, 3
-  %t84 = sdiv i64 %t83, 4
-  %t85 = mul i64 %t51, 4
-  %t86 = sdiv i64 %t85, 4
-  %t87 = alloca { i64, i64 }
-  %t88 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t87, i32 0, i32 0
-  store i64 %t84, i64* %t88
-  %t89 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t87, i32 0, i32 1
-  store i64 %t86, i64* %t89
-  %t90 = bitcast { i64, i64 }* %t87 to i8*
-  %t91 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_12 to i8*), i8* %t90, i32 0, i32* null)
-  %t92 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t52, i32 0, i32 3
-  store i8* %t91, i8** %t92
-  %t93 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t52, i32 0, i32 0
-  %t94 = load i8*, i8** %t93
-  %t95 = call i32 @WaitForSingleObject(i8* %t94, i32 -1)
-  %t96 = call i32 @CloseHandle(i8* %t94)
-  %t97 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t52, i32 0, i32 1
-  %t98 = load i8*, i8** %t97
-  %t99 = call i32 @WaitForSingleObject(i8* %t98, i32 -1)
-  %t100 = call i32 @CloseHandle(i8* %t98)
-  %t101 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t52, i32 0, i32 2
-  %t102 = load i8*, i8** %t101
-  %t103 = call i32 @WaitForSingleObject(i8* %t102, i32 -1)
-  %t104 = call i32 @CloseHandle(i8* %t102)
-  %t105 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t52, i32 0, i32 3
-  %t106 = load i8*, i8** %t105
-  %t107 = call i32 @WaitForSingleObject(i8* %t106, i32 -1)
-  %t108 = call i32 @CloseHandle(i8* %t106)
-  %t123 = load i64, i64* @arena.Enemies.count
-  %t124 = alloca [4 x i8*]
-  %t125 = mul i64 %t123, 0
-  %t126 = sdiv i64 %t125, 4
-  %t127 = mul i64 %t123, 1
-  %t128 = sdiv i64 %t127, 4
-  %t129 = alloca { i64, i64 }
-  %t130 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t129, i32 0, i32 0
-  store i64 %t126, i64* %t130
-  %t131 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t129, i32 0, i32 1
-  store i64 %t128, i64* %t131
-  %t132 = bitcast { i64, i64 }* %t129 to i8*
-  %t133 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_16 to i8*), i8* %t132, i32 0, i32* null)
-  %t134 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t124, i32 0, i32 0
-  store i8* %t133, i8** %t134
-  %t135 = mul i64 %t123, 1
-  %t136 = sdiv i64 %t135, 4
-  %t137 = mul i64 %t123, 2
-  %t138 = sdiv i64 %t137, 4
-  %t139 = alloca { i64, i64 }
-  %t140 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t139, i32 0, i32 0
-  store i64 %t136, i64* %t140
-  %t141 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t139, i32 0, i32 1
-  store i64 %t138, i64* %t141
-  %t142 = bitcast { i64, i64 }* %t139 to i8*
-  %t143 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_16 to i8*), i8* %t142, i32 0, i32* null)
-  %t144 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t124, i32 0, i32 1
-  store i8* %t143, i8** %t144
-  %t145 = mul i64 %t123, 2
-  %t146 = sdiv i64 %t145, 4
-  %t147 = mul i64 %t123, 3
-  %t148 = sdiv i64 %t147, 4
-  %t149 = alloca { i64, i64 }
-  %t150 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t149, i32 0, i32 0
-  store i64 %t146, i64* %t150
-  %t151 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t149, i32 0, i32 1
-  store i64 %t148, i64* %t151
-  %t152 = bitcast { i64, i64 }* %t149 to i8*
-  %t153 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_16 to i8*), i8* %t152, i32 0, i32* null)
-  %t154 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t124, i32 0, i32 2
-  store i8* %t153, i8** %t154
-  %t155 = mul i64 %t123, 3
-  %t156 = sdiv i64 %t155, 4
-  %t157 = mul i64 %t123, 4
-  %t158 = sdiv i64 %t157, 4
-  %t159 = alloca { i64, i64 }
-  %t160 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t159, i32 0, i32 0
-  store i64 %t156, i64* %t160
-  %t161 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t159, i32 0, i32 1
-  store i64 %t158, i64* %t161
-  %t162 = bitcast { i64, i64 }* %t159 to i8*
-  %t163 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_16 to i8*), i8* %t162, i32 0, i32* null)
-  %t164 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t124, i32 0, i32 3
-  store i8* %t163, i8** %t164
-  %t165 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t124, i32 0, i32 0
-  %t166 = load i8*, i8** %t165
-  %t167 = call i32 @WaitForSingleObject(i8* %t166, i32 -1)
-  %t168 = call i32 @CloseHandle(i8* %t166)
-  %t169 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t124, i32 0, i32 1
-  %t170 = load i8*, i8** %t169
-  %t171 = call i32 @WaitForSingleObject(i8* %t170, i32 -1)
-  %t172 = call i32 @CloseHandle(i8* %t170)
-  %t173 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t124, i32 0, i32 2
-  %t174 = load i8*, i8** %t173
-  %t175 = call i32 @WaitForSingleObject(i8* %t174, i32 -1)
-  %t176 = call i32 @CloseHandle(i8* %t174)
-  %t177 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t124, i32 0, i32 3
-  %t178 = load i8*, i8** %t177
-  %t179 = call i32 @WaitForSingleObject(i8* %t178, i32 -1)
-  %t180 = call i32 @CloseHandle(i8* %t178)
+  %t54 = load i64, i64* @arena.Enemies.count
+  %t55 = alloca [4 x i8*]
+  %t56 = mul i64 %t54, 0
+  %t57 = sdiv i64 %t56, 4
+  %t58 = mul i64 %t54, 1
+  %t59 = sdiv i64 %t58, 4
+  %t60 = alloca { i64, i64 }
+  %t61 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t60, i32 0, i32 0
+  store i64 %t57, i64* %t61
+  %t62 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t60, i32 0, i32 1
+  store i64 %t59, i64* %t62
+  %t63 = bitcast { i64, i64 }* %t60 to i8*
+  %t64 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_12 to i8*), i8* %t63, i32 0, i32* null)
+  %t65 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t55, i32 0, i32 0
+  store i8* %t64, i8** %t65
+  %t66 = mul i64 %t54, 1
+  %t67 = sdiv i64 %t66, 4
+  %t68 = mul i64 %t54, 2
+  %t69 = sdiv i64 %t68, 4
+  %t70 = alloca { i64, i64 }
+  %t71 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t70, i32 0, i32 0
+  store i64 %t67, i64* %t71
+  %t72 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t70, i32 0, i32 1
+  store i64 %t69, i64* %t72
+  %t73 = bitcast { i64, i64 }* %t70 to i8*
+  %t74 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_12 to i8*), i8* %t73, i32 0, i32* null)
+  %t75 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t55, i32 0, i32 1
+  store i8* %t74, i8** %t75
+  %t76 = mul i64 %t54, 2
+  %t77 = sdiv i64 %t76, 4
+  %t78 = mul i64 %t54, 3
+  %t79 = sdiv i64 %t78, 4
+  %t80 = alloca { i64, i64 }
+  %t81 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t80, i32 0, i32 0
+  store i64 %t77, i64* %t81
+  %t82 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t80, i32 0, i32 1
+  store i64 %t79, i64* %t82
+  %t83 = bitcast { i64, i64 }* %t80 to i8*
+  %t84 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_12 to i8*), i8* %t83, i32 0, i32* null)
+  %t85 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t55, i32 0, i32 2
+  store i8* %t84, i8** %t85
+  %t86 = mul i64 %t54, 3
+  %t87 = sdiv i64 %t86, 4
+  %t88 = mul i64 %t54, 4
+  %t89 = sdiv i64 %t88, 4
+  %t90 = alloca { i64, i64 }
+  %t91 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t90, i32 0, i32 0
+  store i64 %t87, i64* %t91
+  %t92 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t90, i32 0, i32 1
+  store i64 %t89, i64* %t92
+  %t93 = bitcast { i64, i64 }* %t90 to i8*
+  %t94 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_12 to i8*), i8* %t93, i32 0, i32* null)
+  %t95 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t55, i32 0, i32 3
+  store i8* %t94, i8** %t95
+  %t96 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t55, i32 0, i32 0
+  %t97 = load i8*, i8** %t96
+  %t98 = call i32 @WaitForSingleObject(i8* %t97, i32 -1)
+  %t99 = call i32 @CloseHandle(i8* %t97)
+  %t100 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t55, i32 0, i32 1
+  %t101 = load i8*, i8** %t100
+  %t102 = call i32 @WaitForSingleObject(i8* %t101, i32 -1)
+  %t103 = call i32 @CloseHandle(i8* %t101)
+  %t104 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t55, i32 0, i32 2
+  %t105 = load i8*, i8** %t104
+  %t106 = call i32 @WaitForSingleObject(i8* %t105, i32 -1)
+  %t107 = call i32 @CloseHandle(i8* %t105)
+  %t108 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t55, i32 0, i32 3
+  %t109 = load i8*, i8** %t108
+  %t110 = call i32 @WaitForSingleObject(i8* %t109, i32 -1)
+  %t111 = call i32 @CloseHandle(i8* %t109)
+  %t126 = load i64, i64* @arena.Enemies.count
+  %t127 = alloca [4 x i8*]
+  %t128 = mul i64 %t126, 0
+  %t129 = sdiv i64 %t128, 4
+  %t130 = mul i64 %t126, 1
+  %t131 = sdiv i64 %t130, 4
+  %t132 = alloca { i64, i64 }
+  %t133 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t132, i32 0, i32 0
+  store i64 %t129, i64* %t133
+  %t134 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t132, i32 0, i32 1
+  store i64 %t131, i64* %t134
+  %t135 = bitcast { i64, i64 }* %t132 to i8*
+  %t136 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_16 to i8*), i8* %t135, i32 0, i32* null)
+  %t137 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t127, i32 0, i32 0
+  store i8* %t136, i8** %t137
+  %t138 = mul i64 %t126, 1
+  %t139 = sdiv i64 %t138, 4
+  %t140 = mul i64 %t126, 2
+  %t141 = sdiv i64 %t140, 4
+  %t142 = alloca { i64, i64 }
+  %t143 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t142, i32 0, i32 0
+  store i64 %t139, i64* %t143
+  %t144 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t142, i32 0, i32 1
+  store i64 %t141, i64* %t144
+  %t145 = bitcast { i64, i64 }* %t142 to i8*
+  %t146 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_16 to i8*), i8* %t145, i32 0, i32* null)
+  %t147 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t127, i32 0, i32 1
+  store i8* %t146, i8** %t147
+  %t148 = mul i64 %t126, 2
+  %t149 = sdiv i64 %t148, 4
+  %t150 = mul i64 %t126, 3
+  %t151 = sdiv i64 %t150, 4
+  %t152 = alloca { i64, i64 }
+  %t153 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t152, i32 0, i32 0
+  store i64 %t149, i64* %t153
+  %t154 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t152, i32 0, i32 1
+  store i64 %t151, i64* %t154
+  %t155 = bitcast { i64, i64 }* %t152 to i8*
+  %t156 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_16 to i8*), i8* %t155, i32 0, i32* null)
+  %t157 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t127, i32 0, i32 2
+  store i8* %t156, i8** %t157
+  %t158 = mul i64 %t126, 3
+  %t159 = sdiv i64 %t158, 4
+  %t160 = mul i64 %t126, 4
+  %t161 = sdiv i64 %t160, 4
+  %t162 = alloca { i64, i64 }
+  %t163 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t162, i32 0, i32 0
+  store i64 %t159, i64* %t163
+  %t164 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t162, i32 0, i32 1
+  store i64 %t161, i64* %t164
+  %t165 = bitcast { i64, i64 }* %t162 to i8*
+  %t166 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par_worker_16 to i8*), i8* %t165, i32 0, i32* null)
+  %t167 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t127, i32 0, i32 3
+  store i8* %t166, i8** %t167
+  %t168 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t127, i32 0, i32 0
+  %t169 = load i8*, i8** %t168
+  %t170 = call i32 @WaitForSingleObject(i8* %t169, i32 -1)
+  %t171 = call i32 @CloseHandle(i8* %t169)
+  %t172 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t127, i32 0, i32 1
+  %t173 = load i8*, i8** %t172
+  %t174 = call i32 @WaitForSingleObject(i8* %t173, i32 -1)
+  %t175 = call i32 @CloseHandle(i8* %t173)
+  %t176 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t127, i32 0, i32 2
+  %t177 = load i8*, i8** %t176
+  %t178 = call i32 @WaitForSingleObject(i8* %t177, i32 -1)
+  %t179 = call i32 @CloseHandle(i8* %t177)
+  %t180 = getelementptr inbounds [4 x i8*], [4 x i8*]* %t127, i32 0, i32 3
+  %t181 = load i8*, i8** %t180
+  %t182 = call i32 @WaitForSingleObject(i8* %t181, i32 -1)
+  %t183 = call i32 @CloseHandle(i8* %t181)
   ret void
 }
 
@@ -242,28 +258,28 @@ spawn_end_11:
 ; par/swarm worker functions
 define i32 @par_worker_12(i8* %argp) {
 entry:
-  %t36 = bitcast i8* %argp to { i64, i64 }*
-  %t37 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t36, i32 0, i32 0
-  %t38 = load i64, i64* %t37
-  %t39 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t36, i32 0, i32 1
-  %t40 = load i64, i64* %t39
-  %t41 = load %Enemy*, %Enemy** @arena.Enemies.data
-  %t42 = alloca i64
-  store i64 %t38, i64* %t42
+  %t39 = bitcast i8* %argp to { i64, i64 }*
+  %t40 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t39, i32 0, i32 0
+  %t41 = load i64, i64* %t40
+  %t42 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t39, i32 0, i32 1
+  %t43 = load i64, i64* %t42
+  %t44 = load %Enemy*, %Enemy** @arena.Enemies.data
+  %t45 = alloca i64
+  store i64 %t41, i64* %t45
   br label %par_cond_13
 par_cond_13:
-  %t43 = load i64, i64* %t42
-  %t44 = icmp slt i64 %t43, %t40
-  br i1 %t44, label %par_body_14, label %par_end_15
+  %t46 = load i64, i64* %t45
+  %t47 = icmp slt i64 %t46, %t43
+  br i1 %t47, label %par_body_14, label %par_end_15
 par_body_14:
-  %t45 = getelementptr inbounds %Enemy, %Enemy* %t41, i64 %t43
-  %t46 = getelementptr inbounds %Enemy, %Enemy* %t45, i32 0, i32 0
-  %t47 = load i32, i32* %t46
-  %t48 = sub i32 %t47, 1
-  %t49 = getelementptr inbounds %Enemy, %Enemy* %t45, i32 0, i32 0
-  store i32 %t48, i32* %t49
-  %t50 = add i64 %t43, 1
-  store i64 %t50, i64* %t42
+  %t48 = getelementptr inbounds %Enemy, %Enemy* %t44, i64 %t46
+  %t49 = getelementptr inbounds %Enemy, %Enemy* %t48, i32 0, i32 0
+  %t50 = load i32, i32* %t49
+  %t51 = sub i32 %t50, 1
+  %t52 = getelementptr inbounds %Enemy, %Enemy* %t48, i32 0, i32 0
+  store i32 %t51, i32* %t52
+  %t53 = add i64 %t46, 1
+  store i64 %t53, i64* %t45
   br label %par_cond_13
 par_end_15:
   ret i32 0
@@ -272,27 +288,27 @@ par_end_15:
 
 define i32 @par_worker_16(i8* %argp) {
 entry:
-  %t109 = bitcast i8* %argp to { i64, i64 }*
-  %t110 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t109, i32 0, i32 0
-  %t111 = load i64, i64* %t110
-  %t112 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t109, i32 0, i32 1
-  %t113 = load i64, i64* %t112
-  %t114 = load %Enemy*, %Enemy** @arena.Enemies.data
-  %t115 = alloca i64
-  store i64 %t111, i64* %t115
+  %t112 = bitcast i8* %argp to { i64, i64 }*
+  %t113 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t112, i32 0, i32 0
+  %t114 = load i64, i64* %t113
+  %t115 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t112, i32 0, i32 1
+  %t116 = load i64, i64* %t115
+  %t117 = load %Enemy*, %Enemy** @arena.Enemies.data
+  %t118 = alloca i64
+  store i64 %t114, i64* %t118
   br label %par_cond_17
 par_cond_17:
-  %t116 = load i64, i64* %t115
-  %t117 = icmp slt i64 %t116, %t113
-  br i1 %t117, label %par_body_18, label %par_end_19
+  %t119 = load i64, i64* %t118
+  %t120 = icmp slt i64 %t119, %t116
+  br i1 %t120, label %par_body_18, label %par_end_19
 par_body_18:
-  %t118 = getelementptr inbounds %Enemy, %Enemy* %t114, i64 %t116
-  %t119 = getelementptr inbounds %Enemy, %Enemy* %t118, i32 0, i32 0
-  %t120 = load i32, i32* %t119
-  %t121 = getelementptr inbounds [8 x i8], [8 x i8]* @.str.0, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t121, i32 %t120)
-  %t122 = add i64 %t116, 1
-  store i64 %t122, i64* %t115
+  %t121 = getelementptr inbounds %Enemy, %Enemy* %t117, i64 %t119
+  %t122 = getelementptr inbounds %Enemy, %Enemy* %t121, i32 0, i32 0
+  %t123 = load i32, i32* %t122
+  %t124 = getelementptr inbounds [8 x i8], [8 x i8]* @.str.0, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t124, i32 %t123)
+  %t125 = add i64 %t119, 1
+  store i64 %t125, i64* %t118
   br label %par_cond_17
 par_end_19:
   ret i32 0

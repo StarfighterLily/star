@@ -270,6 +270,9 @@ fn rewrite_stmt(stmt: &Stmt, hoist: &HashSet<String>) -> Stmt {
             args: args.iter().map(|a| rewrite_expr(a, hoist)).collect(),
             span: *span,
         },
+        Stmt::Despawn { arena, index, span } => {
+            Stmt::Despawn { arena: arena.clone(), index: rewrite_expr(index, hoist), span: *span }
+        }
     }
 }
 

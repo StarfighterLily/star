@@ -206,6 +206,16 @@ pub enum Stmt {
         args: Vec<Expr>,
         span: Span,
     },
+    /// `despawn ArenaName[index]` - invalidates a slot by bumping its
+    /// generation counter. Does not free/reuse the slot's memory (no
+    /// free-list yet); it exists so a `GenRef` into that slot can be
+    /// observed going stale. See
+    /// [`crate::codegen::Codegen::emit_despawn_stmt`].
+    Despawn {
+        arena: String,
+        index: Expr,
+        span: Span,
+    },
 }
 
 /// Assignment operators, including compound forms.

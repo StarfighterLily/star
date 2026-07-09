@@ -302,6 +302,7 @@ impl Parser {
             TokenKind::Yield => self.parse_yield_stmt(),
             TokenKind::Par | TokenKind::Swarm => self.parse_par_stmt(),
             TokenKind::Spawn => self.parse_spawn_stmt(),
+            TokenKind::Despawn => self.parse_despawn_stmt(),
             _ => {
                 // Either an assignment or a bare expression.
                 let expr = self.parse_expr()?;
@@ -360,6 +361,20 @@ impl Parser {
         self.expect_line_end()?;
         let span = start.to(self.prev_span());
         Some(Stmt::Spawn { arena, args, span })
+    }
+
+    /// Parse `despawn ArenaName[index]`: bumps the generation counter of the
+    /// arena slot at `index`, invalidating any `GenRef` pointing at it.
+    fn parse_despawn_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Despawn)?;
+        let arena = self.expect_ident()?;
+        self.expect(&TokenKind::LBracket)?;
+        let index = self.parse_expr()?;
+        self.expect(&TokenKind::RBracket)?;
+        self.expect_line_end()?;
+        let span = start.to(self.prev_span());
+        Some(Stmt::Despawn { arena, index, span })
     }
 
     fn parse_let(&mut self) -> Option<Stmt> {

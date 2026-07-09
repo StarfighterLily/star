@@ -7,6 +7,18 @@ declare noalias i8* @malloc(i64)
 declare void @free(i8*)
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
+declare i8* @strcpy(i8*, i8*)
+declare i8* @strcat(i8*, i8*)
+declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
+declare i32 @WaitForSingleObject(i8*, i32)
+declare i32 @CloseHandle(i8*)
+declare float @llvm.sqrt.f32(float)
+declare float @llvm.pow.f32(float, float)
+declare float @llvm.fabs.f32(float)
+declare float @llvm.floor.f32(float)
+declare float @llvm.ceil.f32(float)
+declare float @llvm.minnum.f32(float, float)
+declare float @llvm.maxnum.f32(float, float)
 
 %GenRef = type { i32, i32 }
 
@@ -18,21 +30,21 @@ entry:
   %t0 = alloca { float, float, float }
   %t1 = alloca { float, float, float }
   %t2 = getelementptr inbounds { float, float, float }, { float, float, float }* %t1, i32 0, i32 0
-  store float 1.0, float* %t2
+  store float 0x3FF0000000000000, float* %t2
   %t3 = getelementptr inbounds { float, float, float }, { float, float, float }* %t1, i32 0, i32 1
-  store float 2.0, float* %t3
+  store float 0x4000000000000000, float* %t3
   %t4 = getelementptr inbounds { float, float, float }, { float, float, float }* %t1, i32 0, i32 2
-  store float 3.0, float* %t4
+  store float 0x4008000000000000, float* %t4
   %t5 = load { float, float, float }, { float, float, float }* %t1
   store { float, float, float } %t5, { float, float, float }* %t0
   %t6 = alloca { float, float, float }
   %t7 = alloca { float, float, float }
   %t8 = getelementptr inbounds { float, float, float }, { float, float, float }* %t7, i32 0, i32 0
-  store float 10.0, float* %t8
+  store float 0x4024000000000000, float* %t8
   %t9 = getelementptr inbounds { float, float, float }, { float, float, float }* %t7, i32 0, i32 1
-  store float 20.0, float* %t9
+  store float 0x4034000000000000, float* %t9
   %t10 = getelementptr inbounds { float, float, float }, { float, float, float }* %t7, i32 0, i32 2
-  store float 30.0, float* %t10
+  store float 0x403E000000000000, float* %t10
   %t11 = load { float, float, float }, { float, float, float }* %t7
   store { float, float, float } %t11, { float, float, float }* %t6
   %t12 = alloca { float, float, float }
@@ -65,13 +77,13 @@ entry:
   %t37 = alloca { float, float, float }
   %t38 = load { float, float, float }, { float, float, float }* %t0
   %t39 = extractvalue { float, float, float } %t38, 0
-  %t40 = fmul float %t39, 2.0
+  %t40 = fmul float %t39, 0x4000000000000000
   %t41 = insertvalue { float, float, float } undef, float %t40, 0
   %t42 = extractvalue { float, float, float } %t38, 1
-  %t43 = fmul float %t42, 2.0
+  %t43 = fmul float %t42, 0x4000000000000000
   %t44 = insertvalue { float, float, float } %t41, float %t43, 1
   %t45 = extractvalue { float, float, float } %t38, 2
-  %t46 = fmul float %t45, 2.0
+  %t46 = fmul float %t45, 0x4000000000000000
   %t47 = insertvalue { float, float, float } %t44, float %t46, 2
   store { float, float, float } %t47, { float, float, float }* %t37
   %t48 = load { float, float, float }, { float, float, float }* %t37
@@ -86,16 +98,16 @@ entry:
   %t57 = fpext float %t53 to double
   call i32 (i8*, ...) @printf(i8* %t54, double %t55, double %t56, double %t57)
   %t58 = alloca <4 x float>
-  %t59 = insertelement <4 x float> undef, float 1.0, i32 0
-  %t60 = insertelement <4 x float> %t59, float 0.0, i32 1
-  %t61 = insertelement <4 x float> %t60, float 0.0, i32 2
-  %t62 = insertelement <4 x float> %t61, float 0.0, i32 3
+  %t59 = insertelement <4 x float> undef, float 0x3FF0000000000000, i32 0
+  %t60 = insertelement <4 x float> %t59, float 0x0000000000000000, i32 1
+  %t61 = insertelement <4 x float> %t60, float 0x0000000000000000, i32 2
+  %t62 = insertelement <4 x float> %t61, float 0x0000000000000000, i32 3
   store <4 x float> %t62, <4 x float>* %t58
   %t63 = alloca <4 x float>
-  %t64 = insertelement <4 x float> undef, float 0.0, i32 0
-  %t65 = insertelement <4 x float> %t64, float 1.0, i32 1
-  %t66 = insertelement <4 x float> %t65, float 0.0, i32 2
-  %t67 = insertelement <4 x float> %t66, float 0.0, i32 3
+  %t64 = insertelement <4 x float> undef, float 0x0000000000000000, i32 0
+  %t65 = insertelement <4 x float> %t64, float 0x3FF0000000000000, i32 1
+  %t66 = insertelement <4 x float> %t65, float 0x0000000000000000, i32 2
+  %t67 = insertelement <4 x float> %t66, float 0x0000000000000000, i32 3
   store <4 x float> %t67, <4 x float>* %t63
   %t68 = alloca <4 x float>
   %t69 = load <4 x float>, <4 x float>* %t58
@@ -137,25 +149,25 @@ entry:
   %t102 = fpext float %t98 to double
   call i32 (i8*, ...) @printf(i8* %t99, double %t100, double %t101, double %t102)
   %t103 = alloca [4 x <4 x float>]
-  %t104 = insertelement <4 x float> undef, float 1.0, i32 0
-  %t105 = insertelement <4 x float> %t104, float 0.0, i32 1
-  %t106 = insertelement <4 x float> %t105, float 0.0, i32 2
-  %t107 = insertelement <4 x float> %t106, float 0.0, i32 3
+  %t104 = insertelement <4 x float> undef, float 0x3FF0000000000000, i32 0
+  %t105 = insertelement <4 x float> %t104, float 0x0000000000000000, i32 1
+  %t106 = insertelement <4 x float> %t105, float 0x0000000000000000, i32 2
+  %t107 = insertelement <4 x float> %t106, float 0x0000000000000000, i32 3
   %t108 = insertvalue [4 x <4 x float>] undef, <4 x float> %t107, 0
-  %t109 = insertelement <4 x float> undef, float 0.0, i32 0
-  %t110 = insertelement <4 x float> %t109, float 1.0, i32 1
-  %t111 = insertelement <4 x float> %t110, float 0.0, i32 2
-  %t112 = insertelement <4 x float> %t111, float 0.0, i32 3
+  %t109 = insertelement <4 x float> undef, float 0x0000000000000000, i32 0
+  %t110 = insertelement <4 x float> %t109, float 0x3FF0000000000000, i32 1
+  %t111 = insertelement <4 x float> %t110, float 0x0000000000000000, i32 2
+  %t112 = insertelement <4 x float> %t111, float 0x0000000000000000, i32 3
   %t113 = insertvalue [4 x <4 x float>] %t108, <4 x float> %t112, 1
-  %t114 = insertelement <4 x float> undef, float 0.0, i32 0
-  %t115 = insertelement <4 x float> %t114, float 0.0, i32 1
-  %t116 = insertelement <4 x float> %t115, float 1.0, i32 2
-  %t117 = insertelement <4 x float> %t116, float 0.0, i32 3
+  %t114 = insertelement <4 x float> undef, float 0x0000000000000000, i32 0
+  %t115 = insertelement <4 x float> %t114, float 0x0000000000000000, i32 1
+  %t116 = insertelement <4 x float> %t115, float 0x3FF0000000000000, i32 2
+  %t117 = insertelement <4 x float> %t116, float 0x0000000000000000, i32 3
   %t118 = insertvalue [4 x <4 x float>] %t113, <4 x float> %t117, 2
-  %t119 = insertelement <4 x float> undef, float 0.0, i32 0
-  %t120 = insertelement <4 x float> %t119, float 0.0, i32 1
-  %t121 = insertelement <4 x float> %t120, float 0.0, i32 2
-  %t122 = insertelement <4 x float> %t121, float 1.0, i32 3
+  %t119 = insertelement <4 x float> undef, float 0x0000000000000000, i32 0
+  %t120 = insertelement <4 x float> %t119, float 0x0000000000000000, i32 1
+  %t121 = insertelement <4 x float> %t120, float 0x0000000000000000, i32 2
+  %t122 = insertelement <4 x float> %t121, float 0x3FF0000000000000, i32 3
   %t123 = insertvalue [4 x <4 x float>] %t118, <4 x float> %t122, 3
   store [4 x <4 x float>] %t123, [4 x <4 x float>]* %t103
   %t124 = alloca <4 x float>
@@ -217,13 +229,13 @@ entry:
   %t179 = fpext float %t174 to double
   call i32 (i8*, ...) @printf(i8* %t175, double %t176, double %t177, double %t178, double %t179)
   %t180 = alloca <4 x float>
-  %t181 = insertelement <4 x float> undef, float 1.0, i32 0
-  %t182 = insertelement <4 x float> %t181, float 1.0, i32 1
-  %t183 = insertelement <4 x float> %t182, float 1.0, i32 2
-  %t184 = insertelement <4 x float> %t183, float 1.0, i32 3
+  %t181 = insertelement <4 x float> undef, float 0x3FF0000000000000, i32 0
+  %t182 = insertelement <4 x float> %t181, float 0x3FF0000000000000, i32 1
+  %t183 = insertelement <4 x float> %t182, float 0x3FF0000000000000, i32 2
+  %t184 = insertelement <4 x float> %t183, float 0x3FF0000000000000, i32 3
   store <4 x float> %t184, <4 x float>* %t180
   %t185 = load <4 x float>, <4 x float>* %t180
-  %t186 = insertelement <4 x float> %t185, float 99.0, i32 0
+  %t186 = insertelement <4 x float> %t185, float 0x4058C00000000000, i32 0
   store <4 x float> %t186, <4 x float>* %t180
   %t187 = load <4 x float>, <4 x float>* %t180
   %t188 = extractelement <4 x float> %t187, i32 0
@@ -236,16 +248,16 @@ entry:
   %t194 = alloca { float, float }
   %t195 = alloca { float, float }
   %t196 = getelementptr inbounds { float, float }, { float, float }* %t195, i32 0, i32 0
-  store float 1.0, float* %t196
+  store float 0x3FF0000000000000, float* %t196
   %t197 = getelementptr inbounds { float, float }, { float, float }* %t195, i32 0, i32 1
-  store float 1.0, float* %t197
+  store float 0x3FF0000000000000, float* %t197
   %t198 = load { float, float }, { float, float }* %t195
   store { float, float } %t198, { float, float }* %t194
   %t199 = alloca { float, float }
   %t200 = getelementptr inbounds { float, float }, { float, float }* %t199, i32 0, i32 0
-  store float 5.0, float* %t200
+  store float 0x4014000000000000, float* %t200
   %t201 = getelementptr inbounds { float, float }, { float, float }* %t199, i32 0, i32 1
-  store float 6.0, float* %t201
+  store float 0x4018000000000000, float* %t201
   %t202 = load { float, float }, { float, float }* %t199
   %t203 = extractvalue { float, float } %t202, 0
   %t204 = getelementptr inbounds { float, float }, { float, float }* %t194, i32 0, i32 0

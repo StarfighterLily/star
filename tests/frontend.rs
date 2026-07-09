@@ -216,17 +216,26 @@ fn codegen_struct_outside_frame_uses_stack() {
     assert!(ir.contains("alloca %Point"), "struct outside frame should use alloca");
 }
 
-/// GenRef dereference extracts index from GenRef struct.
+/// GenRef dereference reads the stored index/generation out of the GenRef
+/// struct, then validates the stored generation against the arena's live
+/// generation for that slot before trusting the data.
 #[test]
 fn codegen_genref_index_extracts_index() {
-    let src = "fn follow(gen_ref: GenRef<i32>) -> i32:\n    gen_ref[0]\n";
+    let src = "struct Point:\n    x: i32\n    y: i32\n\narena Entities: Point\n\nfn follow(gen_ref: GenRef<Point>) -> Point:\n    gen_ref[0]\n";
     let module = Driver::parse(src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
 
-    // GenRefIndex should extract the index field (first field at index 0)
+    // GenRef struct fields (index, generation) should be extracted via GEP.
     assert!(ir.contains("getelementptr inbounds %GenRef, %GenRef*"), "GenRef GEP should be present");
     assert!(ir.contains("i32 0, i32 0"), "index field offset should be 0");
+    assert!(ir.contains("i32 0, i32 1"), "generation field offset should be 1");
+    // A real slot-map lookup into the backing arena's generation array,
+    // bounds-checked, then compared against the stored generation.
+    assert!(ir.contains("@arena.Entities.gen"), "arena generation array should be read: {}", ir);
+    assert!(ir.contains("icmp ult i64"), "bounds check should be emitted: {}", ir);
+    assert!(ir.contains("icmp eq i32"), "generation comparison should be emitted: {}", ir);
+    assert!(ir.contains("phi"), "result should merge live-data and stale-fallback paths: {}", ir);
 }
 
 /// Arena declaration includes malloc declaration for runtime allocation.
@@ -259,32 +268,39 @@ fn runtime_frame_offset_resets_after_call() {
     // MinGW uses exit code 0x1c instead of 0 for normal exit
 }
 
-/// Runtime test: GenRef dereferences to correct value.
+/// GenRef creation/dereference through a struct-typed, arena-backed
+/// `GenRef<Point>` compiles and lowers cleanly end to end (parse -> check ->
+/// codegen) through free functions passing the handle around. The genuine
+/// *runtime* proof that a stale reference is actually handled safely lives
+/// in `runtime_genref_stale_after_despawn_falls_back_to_zero` below, which
+/// runs a real compiled binary; this test only checks compilation.
 #[test]
-fn runtime_genref_derefs_correctly() {
-    // The memory_models.star game_tick function creates a GenRef<i32>(42) and follows it
-    // This is tested indirectly through compile success
+fn checks_genref_create_and_follow_through_arena() {
     let src = r#"struct Point:
     x: i32
     y: i32
 
-fn create_entity_reference(id: i32) -> GenRef<i32>:
-    GenRef<i32>(id)
+arena Entities: Point
 
-fn follow_reference(gen_ref: GenRef<i32>) -> i32:
-    gen_ref[0]
+fn create_entity_reference(idx: i32) -> GenRef<Point>:
+    GenRef<Point>(idx)
+
+fn follow_reference(gen_ref: GenRef<Point>) -> i32:
+    gen_ref[0].x
 
 fn test() -> i32:
     frame:
-        let ref_val = GenRef<i32>(42)
+        spawn Entities(42, 0)
+        let ref_val = GenRef<Point>(0)
         follow_reference(ref_val)
 "#;
     let module = Driver::parse(src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    
-    // Verify GenRef index extraction in IR
+
+    // Verify GenRef index/generation field access in IR.
     assert!(ir.contains("i32 0, i32 0"), "GenRef should access index field");
+    assert!(ir.contains("i32 0, i32 1"), "GenRef should access generation field");
 }
 
 /// Runtime test: nested frame scopes work correctly.
@@ -798,6 +814,67 @@ fn runtime_spawn_populates_arena_end_to_end() {
     assert!(stdout.contains("hp: 9"), "first spawned enemy should read back decremented: {}", stdout);
     assert!(stdout.contains("hp: 19"), "second spawned enemy should read back decremented: {}", stdout);
     assert!(stdout.contains("hp: 29"), "third spawned enemy should read back decremented: {}", stdout);
+}
+
+// --- `despawn` / `GenRef` lifecycle ----------------------------------------
+
+/// Parse `despawn ArenaName[index]`.
+#[test]
+fn parses_despawn_stmt() {
+    let src = "fn t():\n    despawn Enemies[0]\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Despawn { arena, index, .. } = &f.body.stmts[0] else { panic!("expected Despawn") };
+    assert_eq!(arena, "Enemies");
+    assert!(matches!(index, Expr::Int(0, _)));
+}
+
+/// `despawn` on an undefined arena is a type error.
+#[test]
+fn rejects_despawn_undefined_arena() {
+    let module = Driver::parse("fn t():\n    despawn Nope[0]\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "despawn on an undefined arena should be a type error");
+}
+
+/// `despawn` inside a `par`/`swarm` body is rejected: every worker thread
+/// would race on the same arena's `gen` global, just like `spawn` races on
+/// `count`/`data`.
+#[test]
+fn rejects_despawn_inside_par() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        despawn Enemies[0]\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "despawn inside a par/swarm body should be a type error");
+}
+
+/// `GenRef<T>` with no arena declared for `T` is a type error -- there's no
+/// slot-map storage to back the reference.
+#[test]
+fn rejects_genref_without_backing_arena() {
+    let src = "struct Point:\n    x: i32\n    y: i32\n\nfn t():\n    GenRef<Point>(0)\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "GenRef<T> with no backing arena should be a type error");
+}
+
+/// `GenRef<T>` is ambiguous when two arenas both hold element type `T`.
+#[test]
+fn rejects_genref_with_ambiguous_backing_arena() {
+    let src = "struct Point:\n    x: i32\n    y: i32\n\narena A: Point\narena B: Point\n\nfn t():\n    GenRef<Point>(0)\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "GenRef<T> with two backing arenas should be a type error");
+}
+
+/// Runtime test: a `GenRef` dereferenced after its slot is despawned falls
+/// back to the element type's zero value instead of returning stale data or
+/// crashing -- the flagship safety guarantee generational references exist
+/// for, proven end to end through a real compiled binary.
+#[test]
+fn runtime_genref_stale_after_despawn_falls_back_to_zero() {
+    use std::process::Command;
+
+    let output = Command::new("examples/genref_lifecycle.exe").output().expect("failed to execute genref_lifecycle.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("before: 100"), "live reference should read real data: {}", stdout);
+    assert!(stdout.contains("after: 0"), "stale reference should fall back to zero, not crash or read stale data: {}", stdout);
 }
 
 // ===== M8 Reflection ========================================================

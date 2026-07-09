@@ -55,6 +55,7 @@ pub enum TokenKind {
     Sequence,
     Yield,
     Spawn,
+    Despawn,
 
     // Punctuation & operators.
     Colon,
@@ -129,6 +130,7 @@ impl TokenKind {
             TokenKind::Sequence => "'sequence'".into(),
             TokenKind::Yield => "'yield'".into(),
             TokenKind::Spawn => "'spawn'".into(),
+            TokenKind::Despawn => "'despawn'".into(),
             TokenKind::Colon => "':'".into(),
             TokenKind::Comma => "','".into(),
             TokenKind::Dot => "'.'".into(),
@@ -595,6 +597,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "sequence" => TokenKind::Sequence,
         "yield" => TokenKind::Yield,
         "spawn" => TokenKind::Spawn,
+        "despawn" => TokenKind::Despawn,
         "_" => TokenKind::Underscore,
         _ => TokenKind::Ident(text.to_string()),
     }
