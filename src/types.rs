@@ -20,6 +20,8 @@ pub enum Ty {
     Vec4,
     Mat4,
     Named(String),
+    /// A generational reference backed by a slot-map: GenRef<T>.
+    GenRef(Box<Ty>),
 }
 
 /// The error type for type checking.
@@ -33,6 +35,9 @@ pub struct TypeError {
 pub struct Checker {
     structs: HashMap<String, StructDef>,
     traits: HashMap<String, TraitDef>,
+    arenas: HashMap<String, Ty>,
+    /// Function signatures: maps function name -> (param_tys, ret_ty)
+    functions: HashMap<String, (Vec<Ty>, Option<Ty>)>,
     errors: Vec<TypeError>,
 }
 
@@ -41,16 +46,38 @@ impl Checker {
         Self {
             structs: HashMap::new(),
             traits: HashMap::new(),
+            arenas: HashMap::new(),
+            functions: HashMap::new(),
             errors: Vec::new(),
         }
     }
 
     pub fn check(&mut self, module: &Module) -> Result<TypedModule, Vec<Diagnostic>> {
+        // First pass: collect all declarations
         for item in &module.items {
             match item {
                 Item::Struct(s) => { self.structs.insert(s.name.clone(), s.clone()); }
                 Item::Trait(t) => { self.traits.insert(t.name.clone(), t.clone()); }
-                Item::Impl(_) | Item::Fn(_) => {}
+                Item::Arena(a) => {
+                    let ty = self.resolve_type(&a.ty).unwrap_or(Ty::Named("unknown".into()));
+                    self.arenas.insert(a.name.clone(), ty);
+                }
+                Item::Fn(f) => {
+                    let param_tys: Vec<Ty> = f.sig.params.iter().map(|p| {
+                        p.ty.as_ref().and_then(|t| self.resolve_type(t)).unwrap_or(Ty::Named("infer".into()))
+                    }).collect();
+                    let ret_ty = f.sig.ret.as_ref().and_then(|t| self.resolve_type(t));
+                    self.functions.insert(f.sig.name.clone(), (param_tys, ret_ty));
+                }
+                Item::Impl(blk) => {
+                    for m in &blk.methods {
+                        let param_tys: Vec<Ty> = m.sig.params.iter().map(|p| {
+                            p.ty.as_ref().and_then(|t| self.resolve_type(t)).unwrap_or(Ty::Named("infer".into()))
+                        }).collect();
+                        let ret_ty = m.sig.ret.as_ref().and_then(|t| self.resolve_type(t));
+                        self.functions.insert(m.sig.name.clone(), (param_tys, ret_ty));
+                    }
+                }
             }
         }
 
@@ -84,6 +111,21 @@ impl Checker {
             Item::Fn(f) => {
                 let checked = self.check_fn(f)?;
                 Some(TypedItem::Fn(checked))
+            }
+            Item::Arena(a) => {
+                let ty = self.resolve_type(&a.ty).unwrap_or(Ty::Named("unknown".into()));
+                // If arena contains GenRef<T>, extract the inner type
+                let element_ty = match &a.ty {
+                    Type::Generic(name, args) if name == "GenRef" && !args.is_empty() => {
+                        self.resolve_type(&args[0]).unwrap_or(Ty::Int)
+                    }
+                    _ => ty.clone(),
+                };
+                Some(TypedItem::Arena(TypedArenaDecl {
+                    name: a.name.clone(),
+                    ty: element_ty,
+                    span: a.span,
+                }))
             }
         }
     }
@@ -223,6 +265,10 @@ impl Checker {
                 let else_typed = else_block.as_ref().map(|b| self.check_block_inner(b, &mut vars.clone()));
                 TypedStmt::While { cond: cond_typed, then_block: then_typed, else_block: else_typed, span: *span }
             }
+            Stmt::Frame { body, span } => {
+                let body_typed = self.check_block_inner(body, &mut vars.clone());
+                TypedStmt::Frame { body: body_typed, span: *span }
+            }
         })
     }
 
@@ -255,7 +301,6 @@ impl Checker {
                 Ok(TypedExpr::Ident { name: name.clone(), ty, span: *s })
             }
             Expr::SelfExpr(s) => {
-                // SelfExpr gets the concrete self type from the variable table.
                 let ty = vars.get("self").cloned().unwrap_or(Ty::Named("Self".into()));
                 Ok(TypedExpr::SelfExpr(ty, *s))
             }
@@ -267,7 +312,16 @@ impl Checker {
             Expr::Call { callee, args, span } => {
                 let callee_expr = self.infer_expr(callee, vars)?;
                 let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
-                Ok(TypedExpr::Call { callee: Box::new(callee_expr), args: arg_exprs, ty: Ty::Named("unknown".into()), span: *span })
+                // Look up the return type from the function table
+                let ret_ty = match &callee_expr {
+                    TypedExpr::Ident { name, .. } => {
+                        self.functions.get(name)
+                            .and_then(|(_, ret)| ret.clone())
+                            .unwrap_or(Ty::Named("unknown".into()))
+                    }
+                    _ => Ty::Named("unknown".into()),
+                };
+                Ok(TypedExpr::Call { callee: Box::new(callee_expr), args: arg_exprs, ty: ret_ty, span: *span })
             }
             Expr::Binary { op, lhs, rhs, span } => {
                 let lhs_expr = self.infer_expr(lhs, vars)?;
@@ -292,7 +346,6 @@ impl Checker {
                 let scrutinee_expr = self.infer_expr(scrutinee, vars)?;
                 let arm_tys: Vec<TypedMatchArm> = arms.iter().map(|a| self.check_match_arm(a, &scrutinee_expr, vars)).collect();
                 let ty = arm_tys.first().map(|a| a.ty.clone()).unwrap_or(Ty::Named("unknown".into()));
-                // If the first arm ty is unknown (e.g. match used as a statement), default to Ty::Named("unknown") or similar, but let's make sure it doesn't propagate as Ty::Named("unknown") if we want a void match to compile smoothly.
                 Ok(TypedExpr::Match { scrutinee: Box::new(scrutinee_expr), arms: arm_tys, ty, span: *span })
             }
             Expr::StructLit { name, args, span } => {
@@ -306,9 +359,6 @@ impl Checker {
                 }
                 let then_typed = self.check_block_inner(then_block, &mut vars.clone());
                 let else_typed = else_block.as_ref().map(|b| self.check_block_inner(b, &mut vars.clone()));
-                // The result type is the type of the trailing expression statement
-                // in the `then` branch; if there is none (block used for side
-                // effects), the `if` produces no value (`void`).
                 let ty = then_typed.stmts.last()
                     .and_then(|s| if let TypedStmt::Expr(e) = s { Some(e.clone().into_ty()) } else { None })
                     .unwrap_or_else(|| Ty::Named("void".into()));
@@ -319,6 +369,20 @@ impl Checker {
                     ty,
                     span: *span,
                 })
+            }
+            Expr::GenRefCreate { inner_ty, value, span } => {
+                let resolved_inner = self.resolve_type(inner_ty).unwrap_or(Ty::Named("unknown".into()));
+                let value_typed = self.infer_expr(value, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
+                Ok(TypedExpr::GenRefCreate { inner_ty: resolved_inner, value: Box::new(value_typed), span: *span })
+            }
+            Expr::GenRefIndex { base, index, span } => {
+                let base_expr = self.infer_expr(base, vars)?;
+                let index_expr = self.infer_expr(index, vars)?;
+                let inner_ty = match base_expr.clone() {
+                    TypedExpr::Ident { ty: Ty::GenRef(inner), .. } => *inner,
+                    _ => Ty::Named("unknown".into()),
+                };
+                Ok(TypedExpr::GenRefIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: inner_ty, span: *span })
             }
         }
     }
@@ -337,8 +401,6 @@ impl Checker {
     }
 
     fn check_match_arm(&mut self, arm: &MatchArm, _scrutinee_expr: &TypedExpr, vars: &mut HashMap<String, Ty>) -> TypedMatchArm {
-        // Use the vars context from the enclosing scope (e.g., method body with 'self').
-        // Create a dummy sig but check statements directly with the inherited vars.
         let mut stmts = Vec::new();
         for stmt in &arm.body.stmts {
             if let Some(typed) = self.check_stmt(stmt, vars) {
@@ -361,7 +423,14 @@ impl Checker {
                 "Mat4" => Ty::Mat4,
                 _ => Ty::Named(name.clone()),
             }),
-            Type::Generic(_, _) => None,
+            Type::Generic(name, args) => {
+                // Handle GenRef<T>
+                if name == "GenRef" {
+                    let inner = args.first().and_then(|a| self.resolve_type(a)).unwrap_or(Ty::Int);
+                    return Some(Ty::GenRef(Box::new(inner)));
+                }
+                None
+            }
         }
     }
 
@@ -376,6 +445,14 @@ impl Checker {
 
 // ===== HIR types =========================================================
 
+/// A typed arena declaration.
+#[derive(Clone, Debug)]
+pub struct TypedArenaDecl {
+    pub name: String,
+    pub ty: Ty,
+    pub span: Span,
+}
+
 #[derive(Clone, Debug)]
 pub struct TypedModule {
     pub items: Vec<TypedItem>,
@@ -387,6 +464,7 @@ pub enum TypedItem {
     Trait(TypedTraitDef),
     Impl(TypedImplBlock),
     Fn(TypedFnDef),
+    Arena(TypedArenaDecl),
 }
 
 #[derive(Clone, Debug)]
@@ -469,6 +547,10 @@ pub enum TypedStmt {
         else_block: Option<TypedBlock>,
         span: Span,
     },
+    Frame {
+        body: TypedBlock,
+        span: Span,
+    },
 }
 
 /// A type-checked f-string component.
@@ -502,6 +584,8 @@ pub enum TypedExpr {
         ty: Ty,
         span: Span,
     },
+    GenRefCreate { inner_ty: Ty, value: Box<TypedExpr>, span: Span },
+    GenRefIndex { base: Box<TypedExpr>, index: Box<TypedExpr>, ty: Ty, span: Span },
     Error(Ty),
 }
 
@@ -511,10 +595,11 @@ impl TypedExpr {
             TypedExpr::Int(_, ty, _) | TypedExpr::Float(_, ty, _) | TypedExpr::Str(_, ty, _) | TypedExpr::Bool(_, ty, _)
             | TypedExpr::Field { ty, .. } | TypedExpr::Call { ty, .. } | TypedExpr::Binary { ty, .. }
             | TypedExpr::Unary { ty, .. } | TypedExpr::Match { ty, .. } | TypedExpr::StructLit { ty, .. }
-            | TypedExpr::FStr(_, ty, _) | TypedExpr::Error(ty) => ty,
+            | TypedExpr::FStr(_, ty, _) | TypedExpr::GenRefIndex { ty, .. } | TypedExpr::Error(ty) => ty,
             TypedExpr::Ident { ty, .. } => ty,
             TypedExpr::SelfExpr(ty, _) => ty,
             TypedExpr::If { ty, .. } => ty.clone(),
+            TypedExpr::GenRefCreate { inner_ty, .. } => Ty::GenRef(Box::new(inner_ty)),
         }
     }
 }

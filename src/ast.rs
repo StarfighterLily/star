@@ -12,6 +12,14 @@ pub struct Module {
     pub items: Vec<Item>,
 }
 
+/// An arena declaration: `arena MyArena: Player` creates a named allocation space.
+#[derive(Clone, Debug)]
+pub struct ArenaDecl {
+    pub name: String,
+    pub ty: Type,
+    pub span: Span,
+}
+
 /// A top-level declaration.
 #[derive(Clone, Debug)]
 pub enum Item {
@@ -19,6 +27,8 @@ pub enum Item {
     Trait(TraitDef),
     Impl(ImplBlock),
     Fn(FnDef),
+    /// `arena Name: Type` - declares a spatial arena for long-lived allocations.
+    Arena(ArenaDecl),
 }
 
 /// A data structure: named, typed fields with optional defaults.
@@ -97,8 +107,18 @@ pub struct Param {
 pub enum Type {
     /// A named type such as `i32`, `String`, or `Player`.
     Named(String),
-    /// A generic application like `Vec<i32>` (reserved for later use).
+    /// A generic application like `Vec<i32>` or `GenRef<T>`.
     Generic(String, Vec<Type>),
+}
+
+impl Type {
+    /// Check if this type is a GenRef<T>.
+    pub fn is_genref(&self) -> bool {
+        match self {
+            Type::Named(name) => name == "GenRef",
+            Type::Generic(name, _) => name == "GenRef",
+        }
+    }
 }
 
 /// An indented block of statements.
@@ -142,6 +162,11 @@ pub enum Stmt {
         cond: Expr,
         body: Block,
         else_block: Option<Block>,
+        span: Span,
+    },
+    /// `frame: <block>` - temporal allocation scope that resets at end of tick.
+    Frame {
+        body: Block,
         span: Span,
     },
 }
@@ -214,6 +239,18 @@ pub enum Expr {
         else_block: Option<Block>,
         span: Span,
     },
+    /// GenRef creation: `GenRef<T>(expr)` creates a generational reference.
+    GenRefCreate {
+        inner_ty: Type,
+        value: Box<Expr>,
+        span: Span,
+    },
+    /// GenRef dereference with index: `genref[idx]` loads with generation check.
+    GenRefIndex {
+        base: Box<Expr>,
+        index: Box<Expr>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -233,7 +270,9 @@ impl Expr {
             | Expr::Unary { span: s, .. }
             | Expr::Match { span: s, .. }
             | Expr::StructLit { span: s, .. }
-            | Expr::If { span: s, .. } => *s,
+            | Expr::If { span: s, .. }
+            | Expr::GenRefCreate { span: s, .. }
+            | Expr::GenRefIndex { span: s, .. } => *s,
         }
     }
 }

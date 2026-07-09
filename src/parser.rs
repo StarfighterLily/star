@@ -57,19 +57,29 @@ impl Parser {
             TokenKind::Trait => self.parse_trait().map(Item::Trait),
             TokenKind::Impl => self.parse_impl().map(Item::Impl),
             TokenKind::Fn => self.parse_fn().map(Item::Fn),
+            TokenKind::Arena => self.parse_arena().map(Item::Arena),
             TokenKind::At => {
-                // Decorators currently only attach to struct fields; a leading
-                // decorator at item scope is not yet supported.
                 let span = self.peek_span();
                 self.error("decorators are only supported on struct fields", span);
                 None
             }
             _ => {
                 let span = self.peek_span();
-                self.error("expected a top-level item (struct, trait, impl, fn)", span);
+                self.error("expected a top-level item (struct, trait, impl, fn, arena)", span);
                 None
             }
         }
+    }
+
+    fn parse_arena(&mut self) -> Option<ArenaDecl> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Arena)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::Colon)?;
+        let ty = self.parse_type()?;
+        self.expect_line_end()?;
+        let span = start.to(self.prev_span());
+        Some(ArenaDecl { name, ty, span })
     }
 
     fn parse_struct(&mut self) -> Option<StructDef> {
@@ -257,6 +267,7 @@ impl Parser {
             TokenKind::Return => self.parse_return(),
             TokenKind::If => self.parse_if_stmt(),
             TokenKind::While => self.parse_while_stmt(),
+            TokenKind::Frame => self.parse_frame_stmt(),
             _ => {
                 // Either an assignment or a bare expression.
                 let expr = self.parse_expr()?;
@@ -272,6 +283,15 @@ impl Parser {
                 Some(Stmt::Expr(expr))
             }
         }
+    }
+
+    fn parse_frame_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Frame)?;
+        self.expect(&TokenKind::Colon)?;
+        let body = self.parse_block()?;
+        let span = start.to(self.prev_span());
+        Some(Stmt::Frame { body, span })
     }
 
     fn parse_let(&mut self) -> Option<Stmt> {
@@ -373,6 +393,18 @@ impl Parser {
 
     /// Return the binary operator at the cursor with its binding power.
     fn peek_binop(&self) -> Option<(BinOp, u8)> {
+        // Special case: GenRef followed by < is NOT a binary operator
+        if let TokenKind::Ident(name) = self.peek_kind() {
+            if name == "GenRef" {
+                return None; // GenRef<T> is a type construction, not a comparison
+            }
+        }
+        if let TokenKind::Lt = self.peek_kind() {
+            // Check if previous expression was GenRef (we need to look at context)
+            // This is complex, so we'll handle GenRef<T> in parse_postfix instead
+            // For now, just return None at top-level when we're after GenRef
+            return None;
+        }
         let op = match self.peek_kind() {
             TokenKind::Star => (BinOp::Mul, 7),
             TokenKind::Slash => (BinOp::Div, 7),
@@ -409,8 +441,8 @@ impl Parser {
         }
     }
 
-    /// Parse a primary expression followed by any number of `.field` accesses
-    /// and `(...)` calls.
+    /// Parse a primary expression followed by any number of `.field` accesses,
+    /// `(...)` calls (with optional `<T>` for GenRef), and `[...]` index operations.
     fn parse_postfix(&mut self) -> Option<Expr> {
         let mut expr = self.parse_primary()?;
         loop {
@@ -422,12 +454,57 @@ impl Parser {
                     expr = Expr::Field { base: Box::new(expr), field, span };
                 }
                 TokenKind::LParen => {
+                    // Check if this is GenRef followed by < (generic type args)
+                    // If we're at LParen and expr is GenRef, we check if <T> was before
+                    // But in GenRef<T>(value), the <T> comes before (
+                    // So we handle GenRef<i32>(value) in the Lt case above
+                    // This handles GenRef(value) without type args
+                    if let Expr::Ident(name, _) = &expr {
+                        if name == "GenRef" {
+                            let args = self.parse_call_args()?;
+                            let value = args.into_iter().next().unwrap_or(Expr::Int(0, Span::dummy()));
+                            let span = expr.span().to(self.prev_span());
+                            return Some(Expr::GenRefCreate { inner_ty: Type::Named("i32".into()), value: Box::new(value), span });
+                        }
+                    }
                     let args = self.parse_call_args()?;
                     let span = expr.span().to(self.prev_span());
-                    // A call on a bare identifier that names a type is a struct
-                    // literal; the resolver decides. Keep as Call here unless the
-                    // callee is a capitalized identifier used positionally.
                     expr = Expr::Call { callee: Box::new(expr), args, span };
+                }
+                // GenRef<T>(value) - handle generic type args before parens
+                TokenKind::Lt => {
+                    if let Expr::Ident(name, _) = &expr {
+                        if name == "GenRef" {
+                            // Consume the <
+                            self.advance();
+                            // Parse the inner type <T>
+                            let mut type_args = Vec::new();
+                            while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {
+                                type_args.push(self.parse_type()?);
+                                if !self.eat(&TokenKind::Comma) {
+                                    break;
+                                }
+                            }
+                            self.expect(&TokenKind::Gt)?;
+                            let inner_ty = type_args.into_iter().next().unwrap_or(Type::Named("unknown".into()));
+                            // Now parse the call args (value)
+                            let args = self.parse_call_args()?;
+                            let value = args.into_iter().next().unwrap_or(Expr::Int(0, Span::dummy()));
+                            let span = expr.span().to(self.prev_span());
+                            return Some(Expr::GenRefCreate { inner_ty, value: Box::new(value), span });
+                        }
+                    }
+                    // Just a comparison operator in a binary expression context
+                    break;
+                }
+                TokenKind::LBracket => {
+                    // GenRef dereference: expr[idx]
+                    let start = expr.span();
+                    self.advance();
+                    let index = self.parse_expr()?;
+                    self.expect(&TokenKind::RBracket)?;
+                    let span = start.to(self.prev_span());
+                    expr = Expr::GenRefIndex { base: Box::new(expr), index: Box::new(index), span };
                 }
                 _ => break,
             }
