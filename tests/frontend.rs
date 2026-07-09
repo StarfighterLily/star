@@ -511,3 +511,589 @@ fn runtime_vecmath_end_to_end() {
     assert!(stdout.contains("vec4 single write: 99.000000 1.000000"), "vec4 lane write result: {}", stdout);
     assert!(stdout.contains("vec2 multi write: 5.000000 6.000000"), "vec2 multi-swizzle write result: {}", stdout);
 }
+
+// ===== M7 Concurrency & Coroutines Tests ==================================
+
+// --- `sequence` / `yield` (coroutines) ------------------------------------
+
+/// Parse a `sequence` item with params and multiple `yield`s.
+#[test]
+fn parses_sequence_def() {
+    let src = "sequence Countdown(start: i32):\n    let mut n: i32 = start\n    yield\n    n -= 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Sequence(seq) = &module.items[0] else { panic!("expected a sequence item") };
+    assert_eq!(seq.name, "Countdown");
+    assert_eq!(seq.params.len(), 1);
+    assert!(matches!(seq.body.stmts[1], Stmt::Yield { .. }));
+}
+
+/// A bare `yield` statement parses on its own (e.g. inside any block).
+#[test]
+fn parses_yield_stmt() {
+    let src = "sequence S():\n    yield\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Sequence(seq) = &module.items[0] else { panic!("expected a sequence item") };
+    assert!(matches!(seq.body.stmts[0], Stmt::Yield { .. }));
+}
+
+/// Desugaring turns one `sequence` into a `struct` + `impl` pair: fields are
+/// params + hoisted locals + a trailing `state`, and there's a single
+/// `resume` method.
+#[test]
+fn desugars_sequence_to_struct_and_impl() {
+    let src = "sequence Countdown(start: i32):\n    let mut n: i32 = start\n    yield\n    n -= 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    assert_eq!(typed.items.len(), 2, "sequence should desugar to exactly struct + impl");
+
+    let TypedItem::Struct(s) = &typed.items[0] else { panic!("expected a struct") };
+    assert_eq!(s.name, "Countdown");
+    let field_names: Vec<&str> = s.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(field_names, vec!["start", "n", "state"]);
+
+    let TypedItem::Impl(i) = &typed.items[1] else { panic!("expected an impl") };
+    assert_eq!(i.type_name, "Countdown");
+    assert_eq!(i.methods.len(), 1);
+    assert_eq!(i.methods[0].sig.name, "resume");
+    assert_eq!(i.methods[0].sig.ret, Some(Ty::Bool));
+}
+
+/// `yield` outside any `sequence` body is a type error.
+#[test]
+fn rejects_yield_outside_sequence() {
+    let module = Driver::parse("fn t():\n    yield\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "bare yield should be a type error");
+}
+
+/// `yield` nested inside `if`/`while`/`frame` inside a sequence is rejected
+/// (only top-level yield is supported by this desugaring).
+#[test]
+fn rejects_nested_yield_in_sequence() {
+    let module = Driver::parse("sequence S(x: i32):\n    if x > 0:\n        yield\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "nested yield should be a type error");
+}
+
+/// A hoisted sequence local without an explicit type annotation is rejected
+/// (its type can't be inferred at desugar time, before type checking runs).
+#[test]
+fn rejects_untyped_sequence_local() {
+    let module = Driver::parse("sequence S(x: i32):\n    let n = x\n    yield\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "untyped hoisted local should be a type error");
+}
+
+/// Codegen for the desugared `resume` uses a nested `if`/`else` chain that
+/// compares against `state` and returns a bool per segment.
+#[test]
+fn codegen_sequence_uses_state_machine() {
+    let src = "sequence Countdown(start: i32):\n    let mut n: i32 = start\n    yield\n    n -= 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("%Countdown = type"), "{}", ir);
+    assert!(ir.contains("define i1 @resume(%Countdown* %self)"), "{}", ir);
+    assert!(ir.contains("icmp eq i32"), "state comparison should appear: {}", ir);
+    assert!(ir.matches("ret i1").count() >= 2, "each segment should be able to return a bool: {}", ir);
+}
+
+/// Runtime test: the compiled `sequence.exe` ticks through a 3-step
+/// coroutine (two `yield`s) via repeated `resume()` calls until it reports
+/// done, end to end through a real clang-compiled executable.
+#[test]
+fn runtime_sequence_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/sequence.exe").output().expect("failed to execute sequence.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Windows text-mode stdout translates the `\n` in each `print` to `\r\n`,
+    // so check ordering by byte offset rather than matching a literal
+    // multi-line substring.
+    let pos = |needle: &str| stdout.find(needle).unwrap_or_else(|| panic!("missing {:?} in: {}", needle, stdout));
+    let (p3, p2, p1, lift, done) =
+        (pos("tick: 3"), pos("tick: 2"), pos("tick: 1"), pos("liftoff"), pos("sequence done"));
+    assert!(p3 < p2 && p2 < p1 && p1 < lift && lift < done, "coroutine should tick in order: {}", stdout);
+}
+
+// --- `par` / `swarm` (parallel arena iteration) ---------------------------
+
+/// Parse a `par item in Arena:` loop.
+#[test]
+fn parses_par_stmt() {
+    let src = "fn t():\n    par e in Enemies:\n        e.hp -= 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Par { var, arena, .. } = &f.body.stmts[0] else { panic!("expected Par") };
+    assert_eq!(var, "e");
+    assert_eq!(arena, "Enemies");
+}
+
+/// `swarm` is accepted as a spelling of the same statement as `par`.
+#[test]
+fn parses_swarm_stmt_as_par() {
+    let src = "fn t():\n    swarm e in Enemies:\n        e.hp -= 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    assert!(matches!(f.body.stmts[0], Stmt::Par { .. }));
+}
+
+const PAR_SRC_PREFIX: &str = "struct Enemy:\n    mut hp: i32\n\narena Enemies: Enemy\n\n";
+
+/// A `par` body that only mutates the loop variable's own field type-checks.
+#[test]
+fn accepts_par_mutating_loop_var() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "mutating the loop variable's own field should be allowed");
+}
+
+/// A `par` body that declares and mutates its own local is fine (it's
+/// per-iteration state, not shared across threads).
+#[test]
+fn accepts_par_mutating_body_local() {
+    let src = format!(
+        "{}fn t():\n    par e in Enemies:\n        let mut tmp: i32 = e.hp\n        tmp -= 1\n        e.hp = tmp\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "mutating a body-local should be allowed");
+}
+
+/// A `par` body that mutates a captured outer variable is rejected: that
+/// write can't be proven disjoint across worker threads.
+#[test]
+fn rejects_par_mutating_captured_var() {
+    let src = format!(
+        "{}fn t():\n    let mut total: i32 = 0\n    par e in Enemies:\n        total += e.hp\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "mutating a captured outer variable should be a type error");
+}
+
+/// A `par` body that calls a method on something other than the loop
+/// variable is rejected (the call might mutate shared state internally).
+#[test]
+fn rejects_par_method_call_on_captured_receiver() {
+    let src = format!(
+        "{}impl Enemy:\n    fn reset(mut self):\n        self.hp = 0\n\nfn t():\n    let mut other = Enemy(1)\n    par e in Enemies:\n        other.reset()\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "calling a method on a captured receiver should be a type error");
+}
+
+/// `par` over an undefined arena is a type error.
+#[test]
+fn rejects_par_undefined_arena() {
+    let module = Driver::parse("fn t():\n    par e in Nope:\n        e.hp -= 1\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "par over an undefined arena should be a type error");
+}
+
+/// Codegen for `par` dispatches across real OS threads: `CreateThread` is
+/// called from a loop-chunking worker function, and the caller joins every
+/// handle via `WaitForSingleObject`/`CloseHandle` before continuing.
+#[test]
+fn codegen_par_dispatches_threads() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("declare i8* @CreateThread"), "{}", ir);
+    assert!(ir.contains("call i8* @CreateThread("), "{}", ir);
+    assert!(ir.contains("call i32 @WaitForSingleObject("), "{}", ir);
+    assert!(ir.contains("call i32 @CloseHandle("), "{}", ir);
+    assert!(ir.contains("define i32 @par_worker_"), "a worker function should be emitted: {}", ir);
+    // Exactly 4 threads are spawned per `par`/`swarm` statement.
+    assert_eq!(ir.matches("call i8* @CreateThread(").count(), 4, "{}", ir);
+}
+
+/// Runtime test: the compiled `swarm.exe` spawns and joins real worker
+/// threads (both `par` and `swarm` spellings) without crashing, end to end
+/// through a real clang-compiled executable.
+#[test]
+fn runtime_swarm_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/swarm.exe").output().expect("failed to execute swarm.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("swarm done"), "worker threads should run to completion: {}", stdout);
+}
+
+// --- `spawn` (arena population) -------------------------------------------
+
+/// Parse `spawn ArenaName(args...)`.
+#[test]
+fn parses_spawn_stmt() {
+    let src = "fn t():\n    spawn Enemies(10)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Spawn { arena, args, .. } = &f.body.stmts[0] else { panic!("expected Spawn") };
+    assert_eq!(arena, "Enemies");
+    assert!(matches!(args[0], Expr::Int(10, _)));
+}
+
+/// `spawn` into a struct-typed arena with the right argument count type-checks.
+#[test]
+fn accepts_spawn_valid() {
+    let src = format!("{}fn t():\n    spawn Enemies(10)\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "valid spawn should type-check: {:?}", Driver::check(&module).err());
+}
+
+/// `spawn` into an undefined arena is a type error.
+#[test]
+fn rejects_spawn_undefined_arena() {
+    let module = Driver::parse("fn t():\n    spawn Nope(10)\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "spawn into an undefined arena should be a type error");
+}
+
+/// `spawn` with the wrong number of constructor arguments is a type error.
+#[test]
+fn rejects_spawn_wrong_arity() {
+    let src = format!("{}fn t():\n    spawn Enemies(1, 2)\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "wrong spawn arity should be a type error");
+}
+
+/// `spawn` inside a `par`/`swarm` body is rejected: every worker thread
+/// would race on the same arena's `count`/`data` globals, so population
+/// can't be proven disjoint the way loop-variable field writes can.
+#[test]
+fn rejects_spawn_inside_par() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        spawn Enemies(5)\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "spawn inside a par/swarm body should be a type error");
+}
+
+/// Codegen for `spawn`: lazily `malloc`s the arena's backing array on first
+/// use, appends the constructed element at `data[count]`, and bumps `count`.
+#[test]
+fn codegen_spawn_allocates_and_appends() {
+    let src = format!("{}fn t():\n    spawn Enemies(10)\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+
+    assert!(ir.contains("icmp eq %Enemy* "), "should check for a null backing array: {}", ir);
+    assert!(ir.contains("call i8* @malloc("), "should lazily malloc the backing array: {}", ir);
+    assert!(ir.contains("load i64, i64* @arena.Enemies.count"), "should read the live count: {}", ir);
+    assert!(
+        ir.contains("getelementptr inbounds %Enemy, %Enemy*") && ir.contains("store %Enemy "),
+        "should store the constructed element into the backing array: {}",
+        ir
+    );
+    assert!(ir.contains("add i64"), "count should be incremented: {}", ir);
+    assert!(ir.contains("store i64"), "incremented count should be stored back: {}", ir);
+}
+
+/// Runtime test: the compiled `spawn.exe` populates an arena via `spawn`,
+/// mutates every live element in parallel via `par`, then reads the results
+/// back via `swarm` -- proving arena population actually feeds real data to
+/// `par`/`swarm` iteration, end to end through a real clang-compiled binary.
+#[test]
+fn runtime_spawn_populates_arena_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/spawn.exe").output().expect("failed to execute spawn.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("hp: 9"), "first spawned enemy should read back decremented: {}", stdout);
+    assert!(stdout.contains("hp: 19"), "second spawned enemy should read back decremented: {}", stdout);
+    assert!(stdout.contains("hp: 29"), "third spawned enemy should read back decremented: {}", stdout);
+}
+
+// ===== M8 Reflection ========================================================
+
+/// Decorators must be parsed on the same line as the field they annotate,
+/// in declaration order, and attach to that field's `decorators` list.
+#[test]
+fn parses_field_decorators() {
+    let src = "struct Player:\n    @export mut health: i32 = 100\n    @tweakable speed: float = 5.0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Struct(def) = &module.items[0] else { panic!("expected a struct") };
+    assert_eq!(def.fields[0].decorators, vec!["export".to_string()]);
+    assert_eq!(def.fields[1].decorators, vec!["tweakable".to_string()]);
+}
+
+/// Multiple decorators may stack on a single field.
+#[test]
+fn parses_stacked_field_decorators() {
+    let src = "struct Player:\n    @export @tweakable health: i32 = 100\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Struct(def) = &module.items[0] else { panic!("expected a struct") };
+    assert_eq!(def.fields[0].decorators, vec!["export".to_string(), "tweakable".to_string()]);
+}
+
+/// Codegen emits one `@__star_reflect_<Struct>` global per struct that has
+/// at least one decorated field, encoding `name:byte_offset:type:decorators`
+/// per decorated field. Byte offsets must reflect the *actual* memory layout
+/// (walking every field, not just decorated ones), and undecorated fields
+/// must not appear in the metadata at all.
+#[test]
+fn codegen_reflect_metadata_emits_offsets_and_types() {
+    let src = "struct Player:\n    @export mut health: i32 = 100\n    @tweakable speed: float = 5.0\n    name: str = \"Hero\"\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("@__star_reflect_Player"), "reflect metadata global should appear: {}", ir);
+    assert!(ir.contains("health:0:i32:export"), "health should be at offset 0: {}", ir);
+    assert!(ir.contains("speed:4:float:tweakable"), "speed should follow health's 4-byte i32: {}", ir);
+    assert!(!ir.contains("name:8"), "undecorated `name` field should not appear in reflect metadata: {}", ir);
+}
+
+/// A struct with no decorated fields should not emit any reflect metadata
+/// global at all.
+#[test]
+fn codegen_omits_reflect_metadata_when_undecorated() {
+    let src = "struct Point:\n    x: i32\n    y: i32\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(!ir.contains("__star_reflect"), "no reflect metadata expected: {}", ir);
+}
+
+// ===== M8 Free functions ====================================================
+
+/// A free function (outside any `impl` block) that calls another free
+/// function by name lowers to a direct `call @callee(...)` -- the same path
+/// `main` itself already exercises, but proven in isolation here since the
+/// todo item singled out free-function codegen for dedicated testing.
+#[test]
+fn codegen_free_function_calls_free_function() {
+    let src = "fn add(a: i32, b: i32) -> i32:\n    a + b\n\nfn compute() -> i32:\n    add(2, 3)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("define i32 @add("), "{}", ir);
+    assert!(ir.contains("define i32 @compute("), "{}", ir);
+    assert!(ir.contains("call i32 @add("), "compute should call add directly: {}", ir);
+}
+
+// ===== M8 Standard library ==================================================
+
+/// `print`/`println` calls, and the math/string builtins, resolve to proper
+/// (non-`unknown`) types through the checker even though none of them are
+/// declared by any `fn` item.
+#[test]
+fn checks_builtin_return_types() {
+    let src = "fn t():\n    let a: i32 = abs(-5)\n    let b: float = sqrt(4.0)\n    let c: i32 = len(\"hi\")\n    let d: str = concat(\"a\", \"b\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let TypedItem::Fn(f) = &typed.items[0] else { panic!("expected fn") };
+    let get_value_ty = |i: usize| match &f.body.stmts[i] {
+        TypedStmt::Let { value, .. } => value.clone().into_ty(),
+        other => panic!("expected let, got {:?}", other),
+    };
+    assert_eq!(get_value_ty(0), Ty::Int);
+    assert_eq!(get_value_ty(1), Ty::Float);
+    assert_eq!(get_value_ty(2), Ty::Int);
+    assert_eq!(get_value_ty(3), Ty::Str);
+}
+
+/// `abs`/`min`/`max` preserve the numeric type of their arguments (Int stays
+/// Int) rather than always widening to Float.
+#[test]
+fn checks_abs_min_max_preserve_int_type() {
+    let src = "fn t():\n    let a: i32 = abs(-5)\n    let b: i32 = min(1, 2)\n    let c: i32 = max(1, 2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "int-typed abs/min/max should type-check as i32");
+}
+
+/// `println` guarantees a trailing newline even for a plain (non-f-string)
+/// argument, unlike `print`, which passes such an argument straight through
+/// to `printf` with no newline appended.
+#[test]
+fn codegen_println_appends_newline_for_plain_string() {
+    let src = "fn t():\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    // One `printf` call for the literal itself, and a second for the
+    // guaranteed trailing newline byte.
+    let printf_calls = ir.matches("call i32 (i8*, ...) @printf(").count();
+    assert_eq!(printf_calls, 2, "println should emit the string then a newline: {}", ir);
+}
+
+/// `print` with a plain (non-f-string) argument does *not* append a newline
+/// -- only one `printf` call is emitted.
+#[test]
+fn codegen_print_does_not_append_newline_for_plain_string() {
+    let src = "fn t():\n    print(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let printf_calls = ir.matches("call i32 (i8*, ...) @printf(").count();
+    assert_eq!(printf_calls, 1, "print should not append a newline: {}", ir);
+}
+
+/// Runtime test: `examples/stdlib.exe` exercises `println`, every math
+/// builtin, `len`/`concat`, and a non-`main` free function calling another
+/// free function, end to end through a real compiled binary.
+#[test]
+fn runtime_stdlib_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/stdlib.exe").output().expect("failed to execute stdlib.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("sum: 5"), "free function call result: {}", stdout);
+    assert!(stdout.contains("sqrt: 4.000000"), "{}", stdout);
+    assert!(stdout.contains("pow: 1024.000000"), "{}", stdout);
+    assert!(stdout.contains("abs int: 5"), "{}", stdout);
+    assert!(stdout.contains("abs float: 5.500000"), "{}", stdout);
+    assert!(stdout.contains("floor: 3.000000"), "{}", stdout);
+    assert!(stdout.contains("ceil: 4.000000"), "{}", stdout);
+    assert!(stdout.contains("clamped: 100"), "min/max clamp result: {}", stdout);
+    assert!(stdout.contains("name len: 4"), "{}", stdout);
+    assert!(stdout.contains("greeting: hello, Hero"), "concat result: {}", stdout);
+}
+
+// ===== M8 Error messages ====================================================
+
+/// An unknown field access on a known struct is now caught at type-check
+/// time (with the access's own span, not a codegen-time dummy span), and
+/// carries a "did you mean" note when a field name is a close typo.
+#[test]
+fn rejects_unknown_field_with_suggestion() {
+    let src = "struct Player:\n    health: i32\n\nfn t(p: Player):\n    p.helth\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("unknown field should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("no field `helth`")), "{:?}", diags);
+    assert!(
+        diags.iter().any(|d| d.note.as_deref().unwrap_or("").contains("health")),
+        "expected a `did you mean health?` note: {:?}",
+        diags
+    );
+}
+
+/// An `impl` for an undefined type gets a "did you mean" note when a struct
+/// name is a close typo.
+#[test]
+fn rejects_undefined_impl_type_with_suggestion() {
+    let src = "struct Player:\n    health: i32\n\nimpl Playr:\n    fn reset(mut self):\n        self.health = 100\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("undefined impl type should be a type error") };
+    assert!(
+        diags.iter().any(|d| d.note.as_deref().unwrap_or("").contains("Player")),
+        "expected a `did you mean Player?` note: {:?}",
+        diags
+    );
+}
+
+/// A parser error for a missing token now names the token in friendly
+/// syntax (`':'`) rather than the raw Rust enum spelling (`Colon`).
+#[test]
+fn parser_error_uses_friendly_token_names() {
+    let src = "struct Player\n    health: i32\n";
+    let Err(diags) = Driver::parse(src) else { panic!("missing ':' should be a parse error") };
+    assert!(diags.iter().any(|d| d.message.contains("':'")), "{:?}", diags);
+}
+
+// ===== Fuzz testing ==========================================================
+//
+// No fuzzing crate is available (no external dependency was added for it), so
+// this is a small self-contained fuzzer: a xorshift PRNG mutates a handful of
+// known-good seed programs (byte insert/delete/replace), and each mutated
+// input is fed through the lexer and parser on a worker thread with a bounded
+// timeout. The lexer/parser must never panic, and must always terminate --
+// `parser_error_uses_friendly_token_names`'s sibling test class is exactly
+// how the module-scope stray-`Dedent` infinite loop fixed alongside this test
+// suite was first found by hand; this harness exists to catch the next one
+// automatically instead of by hand-crafted example.
+
+/// A minimal xorshift64* PRNG so the fuzzer has no external dependency.
+struct Rng(u64);
+
+impl Rng {
+    fn next_u64(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn next_usize(&mut self, bound: usize) -> usize {
+        (self.next_u64() as usize) % bound.max(1)
+    }
+}
+
+/// Apply a handful of random byte-level mutations (insert/delete/replace) to
+/// `seed`, capped at a small size so a single input can't blow up runtime.
+fn mutate(seed: &str, rng: &mut Rng) -> String {
+    let mut bytes: Vec<u8> = seed.as_bytes().to_vec();
+    let mutations = 1 + rng.next_usize(6);
+    // Bytes plausible in Star source: identifiers, punctuation, whitespace,
+    // and indentation -- pure random bytes would almost always just fail
+    // lexing immediately without ever reaching interesting parser states.
+    let alphabet: &[u8] = b"abcXYZ012 \t\n:=+-*/(){}[]<>!.,_@\"";
+    for _ in 0..mutations {
+        if bytes.is_empty() {
+            bytes.push(alphabet[rng.next_usize(alphabet.len())]);
+            continue;
+        }
+        match rng.next_usize(3) {
+            0 => {
+                let i = rng.next_usize(bytes.len());
+                bytes[i] = alphabet[rng.next_usize(alphabet.len())];
+            }
+            1 => {
+                let i = rng.next_usize(bytes.len());
+                bytes.remove(i);
+            }
+            _ => {
+                let i = rng.next_usize(bytes.len() + 1);
+                bytes.insert(i, alphabet[rng.next_usize(alphabet.len())]);
+            }
+        }
+        if bytes.len() > 400 {
+            bytes.truncate(400);
+        }
+    }
+    // Mutation can land mid-codepoint; a fuzz input isn't required to stay
+    // valid UTF-8-adjacent-safe, but the driver API takes `&str`, so repair
+    // it by dropping any invalid tail bytes rather than skipping the case.
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Run `f` on a worker thread and fail the test if it panics or fails to
+/// return within `timeout` (the latter is how the module-scope stray-`Dedent`
+/// infinite loop this suite fixed would have shown up here).
+fn run_bounded(label: &str, input: &str, timeout: std::time::Duration, f: impl FnOnce(&str) + Send + 'static) {
+    let owned = input.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&owned)));
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(())) => {}
+        Ok(Err(payload)) => std::panic::resume_unwind(payload),
+        Err(_) => panic!("{} timed out (possible infinite loop) on input: {:?}", label, input),
+    }
+}
+
+/// Fuzz the lexer and parser with mutated inputs derived from known-good
+/// programs, asserting every run either succeeds or returns a clean `Err` --
+/// never panics, never hangs.
+#[test]
+fn fuzz_lexer_and_parser_do_not_panic() {
+    let seeds = [
+        include_str!("../examples/player.star"),
+        include_str!("../examples/vecmath.star"),
+        include_str!("../examples/stdlib.star"),
+        "struct P:\n    @export mut x: i32 = 0\n",
+        "fn f(a: i32) -> i32:\n    a + 1\n",
+        "sequence S(x: i32):\n    yield\n",
+        "par e in Enemies:\n    e.hp -= 1\n",
+    ];
+
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    let timeout = std::time::Duration::from_secs(2);
+    for i in 0..300 {
+        let seed = seeds[rng.next_usize(seeds.len())];
+        let input = mutate(seed, &mut rng);
+        let label = format!("iteration {}", i);
+        run_bounded(&label, &input, timeout, |src| {
+            if let Ok(tokens) = Driver::lex(src) {
+                let _ = star::parser::Parser::new(tokens).parse_module();
+            }
+        });
+    }
+}

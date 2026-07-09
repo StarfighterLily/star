@@ -9,6 +9,21 @@ use crate::ast::*;
 use crate::diagnostics::{Diagnostic, Span};
 use crate::types::*;
 
+/// Render an `f64` as an LLVM IR literal for a 32-bit `float` constant.
+///
+/// LLVM's textual IR only accepts a plain decimal literal (`3.5`) for a
+/// `float`-typed constant when that decimal is *exactly* representable as
+/// the target's 32-bit value; almost any literal with a non-power-of-two
+/// fraction (`3.7`, `0.1`, ...) fails to parse ("floating point constant
+/// invalid for type"). The hexadecimal form sidesteps this: round to the
+/// nearest `f32`, widen that back to `f64` bit-for-bit, and print the
+/// resulting 16-hex-digit double bit pattern — which is always exactly
+/// representable by construction, per the LLVM language reference.
+fn format_f32_literal(v: f64) -> String {
+    let rounded = (v as f32) as f64;
+    format!("0x{:016X}", rounded.to_bits())
+}
+
 /// A codegen context that accumulates LLVM IR and tracks symbols.
 pub struct Codegen {
     ir: String,
@@ -29,6 +44,13 @@ pub struct Codegen {
     methods: std::collections::HashMap<String, String>,
     errors: Vec<Diagnostic>,
     in_frame: bool,
+    /// Top-level LLVM text (worker functions and their argument-struct type
+    /// declarations) generated mid-function by `par`/`swarm` statements.
+    /// These can't be written directly into `self.ir` at the point they're
+    /// discovered (that would nest a `define` inside the enclosing
+    /// function's body), so they're collected here and appended to the
+    /// module after every ordinary item has been emitted.
+    pending_top: Vec<String>,
 }
 
 impl Codegen {
@@ -45,6 +67,7 @@ impl Codegen {
             methods: std::collections::HashMap::new(),
             errors: Vec::new(),
             in_frame: false,
+            pending_top: Vec::new(),
         }
     }
 
@@ -84,6 +107,18 @@ impl Codegen {
             }
         }
 
+        // Worker functions (and their argument-struct types) spawned by
+        // `par`/`swarm` statements, deferred until now since they must sit
+        // at module scope, not nested inside the function that triggered them.
+        if !self.pending_top.is_empty() {
+            self.line("");
+            self.line("; par/swarm worker functions");
+            let defs = self.pending_top.clone();
+            for d in &defs {
+                self.line(d);
+            }
+        }
+
         // Append global constant definitions at module-level (outside function bodies).
         if !self.global_defs.is_empty() {
             self.line("");
@@ -108,6 +143,21 @@ impl Codegen {
         self.line("declare void @free(i8*)");
         self.line("declare i32 @strlen(i8*)");
         self.line("declare i8* @memcpy(i8*, i8*, i64)");
+        self.line("declare i8* @strcpy(i8*, i8*)");
+        self.line("declare i8* @strcat(i8*, i8*)");
+        self.line("declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)");
+        self.line("declare i32 @WaitForSingleObject(i8*, i32)");
+        self.line("declare i32 @CloseHandle(i8*)");
+        // `math` builtins: lowered to LLVM's target-independent float
+        // intrinsics rather than libm symbols, so no extra linker flags are
+        // needed to resolve them.
+        self.line("declare float @llvm.sqrt.f32(float)");
+        self.line("declare float @llvm.pow.f32(float, float)");
+        self.line("declare float @llvm.fabs.f32(float)");
+        self.line("declare float @llvm.floor.f32(float)");
+        self.line("declare float @llvm.ceil.f32(float)");
+        self.line("declare float @llvm.minnum.f32(float, float)");
+        self.line("declare float @llvm.maxnum.f32(float, float)");
         self.line("");
         self.line("%GenRef = type { i32, i32 }");
         self.line("");
@@ -133,6 +183,62 @@ impl Codegen {
         let parts: Vec<String> = s.fields.iter().map(|f| self.llvm_ty(&f.ty)).collect();
         self.write(&parts.join(", "));
         self.line(" }");
+        self.emit_reflect_metadata(s);
+    }
+
+    /// A human-readable spelling of `ty` for reflection metadata (distinct
+    /// from `llvm_ty`, which an external tool reading the `.ll` wouldn't
+    /// want to parse LLVM IR syntax to understand).
+    fn reflect_type_name(&self, ty: &Ty) -> String {
+        match ty {
+            Ty::Int => "i32".into(),
+            Ty::Float => "float".into(),
+            Ty::Bool => "bool".into(),
+            Ty::Str => "str".into(),
+            Ty::Vec2 => "Vec2".into(),
+            Ty::Vec3 => "Vec3".into(),
+            Ty::Vec4 => "Vec4".into(),
+            Ty::Mat4 => "Mat4".into(),
+            Ty::Named(n) => n.clone(),
+            Ty::GenRef(inner) => format!("GenRef<{}>", self.reflect_type_name(inner)),
+        }
+    }
+
+    /// `@export`/`@tweakable` reflection metadata: for every field carrying
+    /// at least one decorator, emit `name:byte_offset:type:decorators` into a
+    /// single semicolon-separated global string constant per struct. An
+    /// external editor can read this string out of the compiled `.ll` (or a
+    /// loaded module's data section) to discover which fields it's allowed
+    /// to inspect/mutate live, without needing a separate reflection format.
+    /// Byte offsets run over *every* field in declaration order (not just
+    /// decorated ones), matching the struct's actual memory layout.
+    fn emit_reflect_metadata(&mut self, s: &TypedStructDef) {
+        if !s.fields.iter().any(|f| !f.decorators.is_empty()) {
+            return;
+        }
+        let mut entries = Vec::new();
+        let mut offset: u32 = 0;
+        for f in &s.fields {
+            if !f.decorators.is_empty() {
+                entries.push(format!(
+                    "{}:{}:{}:{}",
+                    f.name,
+                    offset,
+                    self.reflect_type_name(&f.ty),
+                    f.decorators.join(",")
+                ));
+            }
+            offset += self.type_size(&f.ty);
+        }
+        let blob = format!("{};", entries.join(";"));
+        let escaped = blob.replace("\\", "\\\\").replace("\"", "\\22");
+        let name = format!("@__star_reflect_{}", s.name);
+        self.global_defs.push(format!(
+            "{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"",
+            name,
+            blob.len() + 1,
+            escaped
+        ));
     }
 
     /// Byte size of a type, used to advance the frame bump allocator's
@@ -167,6 +273,18 @@ impl Codegen {
             Ty::Mat4 => "[4 x <4 x float>]".into(),
             Ty::Named(n) => format!("%{}", n),
             Ty::GenRef(_) => "%GenRef".into(),
+        }
+    }
+
+    /// A constant zero value of the given type, for zero-initializing struct
+    /// fields the constructor call site didn't supply an argument for.
+    fn zero_value(&self, ty: &Ty) -> String {
+        match ty {
+            Ty::Int => "0".into(),
+            Ty::Float => "0.0".into(),
+            Ty::Bool => "false".into(),
+            Ty::Str => "null".into(),
+            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat4 | Ty::Named(_) | Ty::GenRef(_) => "zeroinitializer".into(),
         }
     }
 
@@ -390,6 +508,12 @@ impl Codegen {
         match stmts.last() {
             Some(TypedStmt::Return { .. }) => true,
             Some(TypedStmt::Frame { body, .. }) => Self::body_ends_in_return(&body.stmts),
+            // An `if` only terminates the enclosing block if *both* arms do
+            // (an `if` with no `else`, or with a non-terminating branch,
+            // falls through and still needs the synthetic join point).
+            Some(TypedStmt::If { then_block, else_block: Some(else_block), .. }) => {
+                Self::body_ends_in_return(&then_block.stmts) && Self::body_ends_in_return(&else_block.stmts)
+            }
             _ => false,
         }
     }
@@ -511,13 +635,29 @@ impl Codegen {
             TypedStmt::Return { value, .. } => {
                 if let Some(v) = value {
                     let reg = self.emit_expr(v);
-                    self.line(&format!("  ret {} {}", self.llvm_ty(&self.expr_ty(v)), reg));
+                    let ty = self.expr_ty(v);
+                    // `emit_expr` returns some values already tagged with
+                    // their LLVM type (literals) and others bare (loads,
+                    // calls); strip any existing tag so it's never doubled.
+                    let clean = self.untag(&reg, &ty);
+                    self.line(&format!("  ret {} {}", self.llvm_ty(&ty), clean));
                 } else {
                     self.line("  ret void");
                 }
             }
             TypedStmt::Expr(e) => { self.emit_expr(e); }
             TypedStmt::If { cond, then_block, else_block, .. } => {
+                // Each arm may itself end in an unconditional `return` (e.g.
+                // the state-machine chain a `sequence` desugars to); a `ret`
+                // is a terminator, so the synthetic `br %end` below must be
+                // skipped for any arm that already terminated -- LLVM
+                // rejects instructions following a terminator in the same
+                // block. The `end` block itself is only emitted if at least
+                // one arm can still reach it.
+                let then_terminates = Self::body_ends_in_return(&then_block.stmts);
+                let else_terminates = else_block.as_ref().map(|b| Self::body_ends_in_return(&b.stmts)).unwrap_or(false);
+                let both_terminate = then_terminates && else_terminates;
+
                 let cond_val = self.emit_expr(cond);
                 let cond_reg = self.reg_of(&cond_val);
                 let then_label = self.block_label("if_then");
@@ -528,15 +668,21 @@ impl Codegen {
                 for stmt in &then_block.stmts {
                     self.emit_stmt(stmt);
                 }
-                self.line(&format!("  br label %{}", end_label));
+                if !then_terminates {
+                    self.line(&format!("  br label %{}", end_label));
+                }
                 self.line(&format!("{}:", else_label));
                 if let Some(else_b) = else_block {
                     for stmt in &else_b.stmts {
                         self.emit_stmt(stmt);
                     }
                 }
-                self.line(&format!("  br label %{}", end_label));
-                self.line(&format!("{}:", end_label));
+                if !else_terminates {
+                    self.line(&format!("  br label %{}", end_label));
+                }
+                if !both_terminate {
+                    self.line(&format!("{}:", end_label));
+                }
             }
             TypedStmt::Frame { body, .. } => { self.emit_frame_body(body); }
             TypedStmt::While { cond, then_block, else_block, .. } => {
@@ -566,7 +712,257 @@ impl Codegen {
                 self.line(&format!("  br label %{}", end_label));
                 self.line(&format!("{}:", end_label));
             }
+            TypedStmt::Par { var, elem_ty, arena, body, .. } => {
+                self.emit_par_stmt(var, elem_ty, arena, body);
+            }
+            TypedStmt::Spawn { arena, elem, .. } => {
+                self.emit_spawn_stmt(arena, elem);
+            }
         }
+    }
+
+    /// The LLVM type of the pointer used to reach a symbol's storage. `self`
+    /// receivers are spilled into a local alloca-of-pointer (see `emit_fn`),
+    /// so reaching them takes one extra level of indirection versus a plain
+    /// value local.
+    fn sym_ptr_llvm_ty(&self, name: &str, ty: &Ty) -> String {
+        if name == "self" {
+            format!("{}**", self.llvm_ty(ty))
+        } else {
+            format!("{}*", self.llvm_ty(ty))
+        }
+    }
+
+    /// Emit a `par`/`swarm item in ArenaName: <body>` statement: a fixed
+    /// pool of worker threads, each processing a contiguous chunk of the
+    /// arena's live elements. The checker has already proven the body only
+    /// mutates `item` (or its own locals), so handing each thread a disjoint
+    /// `[start, end)` range is safe.
+    ///
+    /// Everything currently in scope (locals, `self`) is captured by
+    /// pointer into a small per-call argument struct and handed to
+    /// `CreateThread`; the parent thread blocks on all of them via
+    /// `WaitForSingleObject` before continuing, so the outer stack frame
+    /// backing those captured pointers is guaranteed to outlive the threads
+    /// that reference it.
+    fn emit_par_stmt(&mut self, var: &str, elem_ty: &Ty, arena: &str, body: &TypedBlock) {
+        const NUM_THREADS: u32 = 4;
+
+        let id = self.block_id;
+        self.block_id += 1;
+        let worker_name = format!("par_worker_{}", id);
+
+        let captured: Vec<(String, String, Ty)> = self.symbols.clone();
+
+        // The argument struct `{ i64, i64, T1*, T2*, ... }` (chunk
+        // `[start, end)` followed by one pointer field per captured outer
+        // variable) is spelled out as an *anonymous* struct type rather than
+        // a named `%ParArgsN`. LLVM resolves named types only after seeing
+        // their declaration textually, but the worker function's `define`
+        // must be deferred past the end of the enclosing function (see
+        // `pending_top` below) while the call site's `alloca` needs the type
+        // right here -- an anonymous type is structural, so both spellings
+        // resolve to the same type without needing a forward declaration.
+        let mut field_tys = vec!["i64".to_string(), "i64".to_string()];
+        for (name, _, ty) in &captured {
+            field_tys.push(self.sym_ptr_llvm_ty(name, ty));
+        }
+        let args_ty = format!("{{ {} }}", field_tys.join(", "));
+
+        // --- worker function: walks [start, end) over the arena's backing array ---
+        let saved_ir = std::mem::take(&mut self.ir);
+        let saved_symbols = std::mem::take(&mut self.symbols);
+        let saved_in_frame = self.in_frame;
+        self.in_frame = false; // the frame bump allocator's offset is a single shared global, not thread-safe
+
+        self.line(&format!("define i32 @{}(i8* %argp) {{", worker_name));
+        self.line("entry:");
+        let typed_arg = self.tmp_name();
+        self.line(&format!("  {} = bitcast i8* %argp to {}*", typed_arg, args_ty));
+        let start_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0", start_ptr, args_ty, args_ty, typed_arg));
+        let start_reg = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", start_reg, start_ptr));
+        let end_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 1", end_ptr, args_ty, args_ty, typed_arg));
+        let end_reg = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", end_reg, end_ptr));
+
+        for (i, (name, _, ty)) in captured.iter().enumerate() {
+            let field_ptr = self.tmp_name();
+            self.line(&format!(
+                "  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}",
+                field_ptr, args_ty, args_ty, typed_arg, i + 2
+            ));
+            let ptr_ty = self.sym_ptr_llvm_ty(name, ty);
+            let loaded = self.tmp_name();
+            self.line(&format!("  {} = load {}, {}* {}", loaded, ptr_ty, ptr_ty, field_ptr));
+            self.symbols.push((name.clone(), loaded, ty.clone()));
+        }
+
+        let elem_llvm_ty = self.llvm_ty(elem_ty);
+        let data_reg = self.tmp_name();
+        self.line(&format!("  {} = load {}*, {}** @arena.{}.data", data_reg, elem_llvm_ty, elem_llvm_ty, arena));
+
+        let i_ptr = self.tmp_name();
+        self.line(&format!("  {} = alloca i64", i_ptr));
+        self.line(&format!("  store i64 {}, i64* {}", start_reg, i_ptr));
+        let cond_label = self.block_label("par_cond");
+        let body_label = self.block_label("par_body");
+        let end_label = self.block_label("par_end");
+        self.line(&format!("  br label %{}", cond_label));
+        self.line(&format!("{}:", cond_label));
+        let i_reg = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", i_reg, i_ptr));
+        let cmp = self.tmp_name();
+        self.line(&format!("  {} = icmp slt i64 {}, {}", cmp, i_reg, end_reg));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, body_label, end_label));
+        self.line(&format!("{}:", body_label));
+        let elem_ptr = self.tmp_name();
+        self.line(&format!(
+            "  {} = getelementptr inbounds {}, {}* {}, i64 {}",
+            elem_ptr, elem_llvm_ty, elem_llvm_ty, data_reg, i_reg
+        ));
+        self.symbols.push((var.to_string(), elem_ptr, elem_ty.clone()));
+        for stmt in &body.stmts {
+            self.emit_stmt(stmt);
+        }
+        self.symbols.pop();
+        let i_next = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", i_next, i_reg));
+        self.line(&format!("  store i64 {}, i64* {}", i_next, i_ptr));
+        self.line(&format!("  br label %{}", cond_label));
+        self.line(&format!("{}:", end_label));
+        self.line("  ret i32 0");
+        self.line("}");
+        self.line("");
+
+        let worker_ir = std::mem::replace(&mut self.ir, saved_ir);
+        self.pending_top.push(worker_ir);
+        self.symbols = saved_symbols;
+        self.in_frame = saved_in_frame;
+
+        // --- back in the caller: divide the arena's live count into NUM_THREADS chunks ---
+        let count_reg = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* @arena.{}.count", count_reg, arena));
+        let handles = self.tmp_name();
+        self.line(&format!("  {} = alloca [{} x i8*]", handles, NUM_THREADS));
+        for t in 0..NUM_THREADS {
+            let start_mul = self.tmp_name();
+            self.line(&format!("  {} = mul i64 {}, {}", start_mul, count_reg, t));
+            let start_div = self.tmp_name();
+            self.line(&format!("  {} = sdiv i64 {}, {}", start_div, start_mul, NUM_THREADS));
+            let end_mul = self.tmp_name();
+            self.line(&format!("  {} = mul i64 {}, {}", end_mul, count_reg, t + 1));
+            let end_div = self.tmp_name();
+            self.line(&format!("  {} = sdiv i64 {}, {}", end_div, end_mul, NUM_THREADS));
+
+            let args_ptr = self.tmp_name();
+            self.line(&format!("  {} = alloca {}", args_ptr, args_ty));
+            let sfield = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0", sfield, args_ty, args_ty, args_ptr));
+            self.line(&format!("  store i64 {}, i64* {}", start_div, sfield));
+            let efield = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 1", efield, args_ty, args_ty, args_ptr));
+            self.line(&format!("  store i64 {}, i64* {}", end_div, efield));
+            for (i, (name, _, ty)) in captured.iter().enumerate() {
+                let cfield = self.tmp_name();
+                self.line(&format!(
+                    "  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}",
+                    cfield, args_ty, args_ty, args_ptr, i + 2
+                ));
+                let ptr_ty = self.sym_ptr_llvm_ty(name, ty);
+                let src_ptr = self.sym_ptr(name).unwrap_or_else(|| "%undef".into());
+                self.line(&format!("  store {} {}, {}* {}", ptr_ty, src_ptr, ptr_ty, cfield));
+            }
+            let args_i8 = self.tmp_name();
+            self.line(&format!("  {} = bitcast {}* {} to i8*", args_i8, args_ty, args_ptr));
+            let handle = self.tmp_name();
+            self.line(&format!(
+                "  {} = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @{} to i8*), i8* {}, i32 0, i32* null)",
+                handle, worker_name, args_i8
+            ));
+            let hslot = self.tmp_name();
+            self.line(&format!(
+                "  {} = getelementptr inbounds [{} x i8*], [{} x i8*]* {}, i32 0, i32 {}",
+                hslot, NUM_THREADS, NUM_THREADS, handles, t
+            ));
+            self.line(&format!("  store i8* {}, i8** {}", handle, hslot));
+        }
+        for t in 0..NUM_THREADS {
+            let hslot = self.tmp_name();
+            self.line(&format!(
+                "  {} = getelementptr inbounds [{} x i8*], [{} x i8*]* {}, i32 0, i32 {}",
+                hslot, NUM_THREADS, NUM_THREADS, handles, t
+            ));
+            let handle = self.tmp_name();
+            self.line(&format!("  {} = load i8*, i8** {}", handle, hslot));
+            let wait = self.tmp_name();
+            self.line(&format!("  {} = call i32 @WaitForSingleObject(i8* {}, i32 -1)", wait, handle));
+            let close = self.tmp_name();
+            self.line(&format!("  {} = call i32 @CloseHandle(i8* {})", close, handle));
+        }
+    }
+
+    /// Emit `spawn ArenaName(args...)`. Arenas start out empty (`data` is
+    /// `null`, `count` is `0` -- see `emit_arena_decl`), so the first spawn
+    /// into a given arena lazily `malloc`s a fixed-capacity backing array;
+    /// every spawn after that reuses it. The element is constructed (via the
+    /// same codegen path as any other struct literal) directly into the slot
+    /// at `data[count]`, then `count` is bumped by one. A spawn past
+    /// `ARENA_CAPACITY` live elements is silently dropped rather than
+    /// writing out of bounds -- a fixed backing store never reallocs/moves,
+    /// which matters because `par`/`swarm` workers may be reading it
+    /// concurrently from other threads.
+    fn emit_spawn_stmt(&mut self, arena: &str, elem: &TypedExpr) {
+        const ARENA_CAPACITY: u64 = 1024;
+
+        let elem_ty = self.expr_ty(elem);
+        let elem_llvm_ty = self.llvm_ty(&elem_ty);
+
+        let data_reg = self.tmp_name();
+        self.line(&format!("  {} = load {}*, {}** @arena.{}.data", data_reg, elem_llvm_ty, elem_llvm_ty, arena));
+        let is_null = self.tmp_name();
+        self.line(&format!("  {} = icmp eq {}* {}, null", is_null, elem_llvm_ty, data_reg));
+        let init_label = self.block_label("spawn_init");
+        let ready_label = self.block_label("spawn_ready");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, init_label, ready_label));
+
+        self.line(&format!("{}:", init_label));
+        let bytes = self.type_size(&elem_ty) as u64 * ARENA_CAPACITY;
+        let raw = self.tmp_name();
+        self.line(&format!("  {} = call i8* @malloc(i64 {})", raw, bytes));
+        let casted = self.tmp_name();
+        self.line(&format!("  {} = bitcast i8* {} to {}*", casted, raw, elem_llvm_ty));
+        self.line(&format!("  store {}* {}, {}** @arena.{}.data", elem_llvm_ty, casted, elem_llvm_ty, arena));
+        self.line(&format!("  br label %{}", ready_label));
+
+        self.line(&format!("{}:", ready_label));
+        let data_ready = self.tmp_name();
+        self.line(&format!("  {} = load {}*, {}** @arena.{}.data", data_ready, elem_llvm_ty, elem_llvm_ty, arena));
+        let count_reg = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* @arena.{}.count", count_reg, arena));
+        let in_bounds = self.tmp_name();
+        self.line(&format!("  {} = icmp slt i64 {}, {}", in_bounds, count_reg, ARENA_CAPACITY));
+        let store_label = self.block_label("spawn_store");
+        let end_label = self.block_label("spawn_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, store_label, end_label));
+
+        self.line(&format!("{}:", store_label));
+        let val = self.emit_expr(elem);
+        let clean_val = self.untag(&val, &elem_ty);
+        let slot_ptr = self.tmp_name();
+        self.line(&format!(
+            "  {} = getelementptr inbounds {}, {}* {}, i64 {}",
+            slot_ptr, elem_llvm_ty, elem_llvm_ty, data_ready, count_reg
+        ));
+        self.line(&format!("  store {} {}, {}* {}", elem_llvm_ty, clean_val, elem_llvm_ty, slot_ptr));
+        let next_count = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", next_count, count_reg));
+        self.line(&format!("  store i64 {}, i64* @arena.{}.count", next_count, arena));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.line(&format!("{}:", end_label));
     }
 
     fn load_target(&mut self, target: &TypedExpr) -> String {
@@ -623,13 +1019,316 @@ impl Codegen {
         }
     }
 
+    /// Shared lowering for the `print`/`println` builtins: an f-string
+    /// argument is flattened into a single `printf` format string
+    /// (interpolations become `%d`/`%f`/`%s` holes); any other argument is
+    /// passed straight through as a format-string pointer. `println` differs
+    /// from `print` only in that it guarantees a trailing newline even when
+    /// the argument isn't an f-string (an f-string argument already gets one
+    /// baked into its format string either way).
+    fn emit_print_like(&mut self, args: &[TypedExpr], println: bool) {
+        let Some(arg) = args.first() else { return };
+        if let TypedExpr::FStr(parts, _, _) = arg {
+            let mut fmt_str = String::new();
+            let mut arg_vals: Vec<(String, Ty)> = Vec::new();
+            for part in parts {
+                match part {
+                    TypedFStrExpr::Literal(lit) => {
+                        fmt_str.push_str(&lit.replace("%", "%%"));
+                    }
+                    TypedFStrExpr::Expr(e) => {
+                        let val = self.emit_expr(e);
+                        let ty = self.expr_ty(e);
+                        match ty {
+                            Ty::Int => { fmt_str.push_str("%d"); }
+                            Ty::Float => { fmt_str.push_str("%f"); }
+                            Ty::Str => { fmt_str.push_str("%s"); }
+                            _ => { fmt_str.push_str("%p"); }
+                        }
+                        // `emit_expr` may return either a bare register
+                        // or one already tagged with its LLVM type
+                        // (e.g. swizzle reads) — strip any existing tag
+                        // so it isn't double-tagged below.
+                        let bare_val = self.untag(&val, &ty);
+                        // For string arguments, `bare_val` is the alloca
+                        // holding the `i8*`; load it to get the pointer
+                        // that `%s` expects.
+                        let arg_val = if matches!(ty, Ty::Str) {
+                            let loaded = self.tmp_name();
+                            self.line(&format!("  {} = load i8*, i8** {}", loaded, bare_val));
+                            loaded
+                        } else {
+                            bare_val
+                        };
+                        arg_vals.push((arg_val, ty));
+                    }
+                }
+            }
+            fmt_str.push('\n');
+            let g = self.global_name();
+            let escaped = fmt_str.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
+            self.global_defs.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", g, fmt_str.len() + 1, escaped));
+
+            let fmt_reg = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0", fmt_reg, fmt_str.len() + 1, fmt_str.len() + 1, g));
+
+            let mut call_args = vec![format!("i8* {}", fmt_reg)];
+            for (val, ty) in &arg_vals {
+                if matches!(ty, Ty::Float) {
+                    // C's variadic calling convention always
+                    // promotes `float` to `double`; printf's
+                    // `%f` reads a `double` off the varargs.
+                    let widened = self.tmp_name();
+                    self.line(&format!("  {} = fpext float {} to double", widened, val));
+                    call_args.push(format!("double {}", widened));
+                } else {
+                    call_args.push(format!("{} {}", self.llvm_ty(ty), val));
+                }
+            }
+            self.line(&format!("  call i32 (i8*, ...) @printf({})", call_args.join(", ")));
+        } else {
+            let fmt_ptr = self.emit_expr(arg);
+            let loaded = self.tmp_name();
+            self.line(&format!("  {} = load i8*, i8** {}", loaded, fmt_ptr));
+            self.line(&format!("  call i32 (i8*, ...) @printf(i8* {})", loaded));
+            if println {
+                let g = self.global_name();
+                self.global_defs.push(format!("{} = private unnamed_addr constant [2 x i8] c\"\\0A\\00\"", g));
+                let nl_ptr = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds [2 x i8], [2 x i8]* {}, i64 0, i64 0", nl_ptr, g));
+                self.line(&format!("  call i32 (i8*, ...) @printf(i8* {})", nl_ptr));
+            }
+        }
+    }
+
+    /// Call a unary LLVM float intrinsic (`sqrt`, `floor`, `ceil`),
+    /// promoting an `i32` argument to `float` first if needed.
+    fn emit_math_unary(&mut self, args: &[TypedExpr], intrinsic: &str) -> String {
+        let Some(arg) = args.first() else {
+            self.err(&format!("{}(..) expects 1 argument", intrinsic), Span::dummy());
+            return "float 0.0".into();
+        };
+        let ty = self.expr_ty(arg);
+        let val = self.emit_expr(arg);
+        let bare = self.promote_to_float(&val, &ty);
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = call float @{}(float {})", reg, intrinsic, bare));
+        format!("float {}", reg)
+    }
+
+    /// Call a binary LLVM float intrinsic (`pow`), promoting `i32` arguments
+    /// to `float` first if needed.
+    fn emit_math_binary_f32(&mut self, args: &[TypedExpr], intrinsic: &str) -> String {
+        if args.len() < 2 {
+            self.err(&format!("{}(..) expects 2 arguments", intrinsic), Span::dummy());
+            return "float 0.0".into();
+        }
+        let lty = self.expr_ty(&args[0]);
+        let rty = self.expr_ty(&args[1]);
+        let lval = self.emit_expr(&args[0]);
+        let rval = self.emit_expr(&args[1]);
+        let lbare = self.promote_to_float(&lval, &lty);
+        let rbare = self.promote_to_float(&rval, &rty);
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = call float @{}(float {}, float {})", reg, intrinsic, lbare, rbare));
+        format!("float {}", reg)
+    }
+
+    /// `abs(x)`: dispatches on the argument's resolved type, preserving
+    /// Int-vs-Float rather than always widening to float.
+    fn emit_abs(&mut self, args: &[TypedExpr]) -> String {
+        let Some(arg) = args.first() else {
+            self.err("abs(..) expects 1 argument", Span::dummy());
+            return "i32 0".into();
+        };
+        let ty = self.expr_ty(arg);
+        let val = self.emit_expr(arg);
+        let bare = self.untag(&val, &ty);
+        if matches!(ty, Ty::Float) {
+            let reg = self.tmp_name();
+            self.line(&format!("  {} = call float @llvm.fabs.f32(float {})", reg, bare));
+            format!("float {}", reg)
+        } else {
+            let neg = self.tmp_name();
+            self.line(&format!("  {} = sub i32 0, {}", neg, bare));
+            let is_neg = self.tmp_name();
+            self.line(&format!("  {} = icmp slt i32 {}, 0", is_neg, bare));
+            let reg = self.tmp_name();
+            self.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", reg, is_neg, neg, bare));
+            format!("i32 {}", reg)
+        }
+    }
+
+    /// `min(a, b)`/`max(a, b)`: dispatches on the arguments' resolved type
+    /// (Int uses `icmp`+`select`, Float uses the `minnum`/`maxnum`
+    /// intrinsics), preserving Int-vs-Float rather than always widening.
+    fn emit_minmax(&mut self, args: &[TypedExpr], is_min: bool) -> String {
+        if args.len() < 2 {
+            self.err("min/max(..) expects 2 arguments", Span::dummy());
+            return "i32 0".into();
+        }
+        let lty = self.expr_ty(&args[0]);
+        let rty = self.expr_ty(&args[1]);
+        let lval = self.emit_expr(&args[0]);
+        let rval = self.emit_expr(&args[1]);
+        if matches!(lty, Ty::Float) || matches!(rty, Ty::Float) {
+            let l = self.promote_to_float(&lval, &lty);
+            let r = self.promote_to_float(&rval, &rty);
+            let reg = self.tmp_name();
+            let intrinsic = if is_min { "llvm.minnum.f32" } else { "llvm.maxnum.f32" };
+            self.line(&format!("  {} = call float @{}(float {}, float {})", reg, intrinsic, l, r));
+            format!("float {}", reg)
+        } else {
+            let l = self.untag(&lval, &lty);
+            let r = self.untag(&rval, &rty);
+            let cmp = self.tmp_name();
+            let pred = if is_min { "slt" } else { "sgt" };
+            self.line(&format!("  {} = icmp {} i32 {}, {}", cmp, pred, l, r));
+            let reg = self.tmp_name();
+            self.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", reg, cmp, l, r));
+            format!("i32 {}", reg)
+        }
+    }
+
+    /// Load the real `i8*` out of a `Str`-typed expression. Every `Str`-typed
+    /// value in this codegen is represented as a pointer to a slot holding
+    /// the actual string pointer (see `TypedExpr::Str`'s own codegen below),
+    /// so getting the real bytes always takes one more `load` than the
+    /// expression's own emitted register.
+    fn emit_raw_str_ptr(&mut self, e: &TypedExpr) -> String {
+        let val = self.emit_expr(e);
+        let bare = self.untag(&val, &Ty::Str);
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** {}", reg, bare));
+        reg
+    }
+
+    /// Box a raw `i8*` into the same "pointer to a slot holding the string
+    /// pointer" representation `TypedExpr::Str` produces, so a builtin's
+    /// `Str`-typed result composes with the rest of the codegen (`let`,
+    /// further `print`/`concat` calls, ...) exactly like a literal would.
+    fn box_str_ptr(&mut self, raw_ptr: &str) -> String {
+        let slot = self.tmp_name();
+        self.line(&format!("  {} = alloca i8*", slot));
+        self.line(&format!("  store i8* {}, i8** {}", raw_ptr, slot));
+        slot
+    }
+
+    /// `len(s) -> i32`.
+    fn emit_str_len(&mut self, args: &[TypedExpr]) -> String {
+        let Some(arg) = args.first() else {
+            self.err("len(..) expects 1 argument", Span::dummy());
+            return "i32 0".into();
+        };
+        let raw = self.emit_raw_str_ptr(arg);
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", reg, raw));
+        format!("i32 {}", reg)
+    }
+
+    /// `concat(a, b) -> str`: allocates a new buffer sized for both strings
+    /// plus a null terminator, then copies `a` followed by `b` into it.
+    fn emit_str_concat(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 2 {
+            self.err("concat(..) expects 2 arguments", Span::dummy());
+            return "i8* null".into();
+        }
+        let a = self.emit_raw_str_ptr(&args[0]);
+        let b = self.emit_raw_str_ptr(&args[1]);
+        let len_a = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", len_a, a));
+        let len_b = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", len_b, b));
+        let total = self.tmp_name();
+        self.line(&format!("  {} = add i32 {}, {}", total, len_a, len_b));
+        let total_plus_nul = self.tmp_name();
+        self.line(&format!("  {} = add i32 {}, 1", total_plus_nul, total));
+        let total64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", total64, total_plus_nul));
+        let buf = self.tmp_name();
+        self.line(&format!("  {} = call i8* @malloc(i64 {})", buf, total64));
+        self.line(&format!("  call i8* @strcpy(i8* {}, i8* {})", buf, a));
+        self.line(&format!("  call i8* @strcat(i8* {}, i8* {})", buf, b));
+        self.box_str_ptr(&buf)
+    }
+
+    /// A method call (`obj.method(args)`) or a direct free-function call
+    /// (`name(args)`), lowered to `call @method(%Struct* obj, args...)` or
+    /// `call @name(args...)` respectively.
+    fn emit_call_expr(&mut self, callee: &TypedExpr, args: &[TypedExpr], expr: &TypedExpr) -> String {
+        if let TypedExpr::Field { base, field, .. } = callee {
+            // Method call: `obj.method(args)` -> `@method(%Struct* obj, args...)`.
+            let base_ty = self.expr_ty(base);
+            let struct_name = match &base_ty {
+                Ty::Named(n) => n.clone(),
+                _ => { self.err("method call on non-struct receiver", Span::dummy()); String::new() }
+            };
+            let key = format!("{}#{}", struct_name, field);
+            let fn_name = match self.methods.get(&key) {
+                Some(m) => m.clone(),
+                None => { self.err(&format!("no method `{}` on `{}`", field, struct_name), Span::dummy()); field.clone() }
+            };
+            // The receiver is passed by pointer: use the alloca of the base value.
+            let recv_ptr = self.sym_ptr(&self.receiver_name(base));
+            let recv_ty = self.llvm_ty(&base_ty);
+            let mut call_args = vec![format!("{}* {}", recv_ty, recv_ptr.unwrap_or_else(|| "%undef".into()))];
+            for a in args {
+                let reg = self.emit_expr(a);
+                let ats = self.llvm_ty(&self.expr_ty(a));
+                let clean_val = reg.strip_prefix(&format!("{} ", ats)).unwrap_or(&reg);
+                call_args.push(format!("{} {}", ats, clean_val));
+            }
+            let ret = self.tmp_name();
+            // Methods without an explicit return type are typed `unknown`
+            // by the checker; emit them as `void` calls.
+            let ret_ty = match &self.expr_ty(expr) {
+                Ty::Named(n) if n == "unknown" => "void".to_string(),
+                other => self.llvm_ty(other),
+            };
+            if ret_ty == "void" {
+                self.line(&format!("  call void @{}({})", fn_name, call_args.join(", ")));
+                "%undef".into()
+            } else {
+                self.line(&format!("  {} = call {} @{}({})", ret, ret_ty, fn_name, call_args.join(", ")));
+                format!("{} {}", ret_ty, ret)
+            }
+        } else {
+            // A direct call to a named function: emit `call @name(args)`
+            // straight away. `callee` must not be routed through
+            // `emit_expr`/`emit_place` here — it names a global
+            // function, not a local variable, so there is no alloca
+            // to load from.
+            let fn_name = match callee {
+                TypedExpr::Ident { name, .. } => name.clone(),
+                _ => { self.err("indirect calls are not supported", Span::dummy()); String::new() }
+            };
+            let call_args: Vec<String> = args.iter().map(|a| {
+                let reg = self.emit_expr(a);
+                let ats = self.llvm_ty(&self.expr_ty(a));
+                let clean_val = reg.strip_prefix(&format!("{} ", ats)).unwrap_or(&reg).to_string();
+                format!("{} {}", ats, clean_val)
+            }).collect();
+            // Free functions without an explicit return type are typed
+            // `unknown` by the checker; emit them as `void` calls.
+            let ret_ty = match &self.expr_ty(expr) {
+                Ty::Named(n) if n == "unknown" => "void".to_string(),
+                other => self.llvm_ty(other),
+            };
+            if ret_ty == "void" {
+                self.line(&format!("  call void @{}({})", fn_name, call_args.join(", ")));
+                "%undef".into()
+            } else {
+                let ret = self.tmp_name();
+                self.line(&format!("  {} = call {} @{}({})", ret, ret_ty, fn_name, call_args.join(", ")));
+                format!("{} {}", ret_ty, ret)
+            }
+        }
+    }
+
     fn emit_expr(&mut self, expr: &TypedExpr) -> String {
         match expr {
             TypedExpr::Int(v, _, _) => format!("i32 {}", v),
-            // `{:?}` (unlike `{}`) always renders a decimal point for whole
-            // numbers (`1.0` not `1`), which LLVM's textual IR requires for
-            // float constants.
-            TypedExpr::Float(v, _, _) => format!("float {:?}", v),
+            TypedExpr::Float(v, _, _) => format!("float {}", format_f32_literal(*v)),
             TypedExpr::Str(s, _, _) => {
                 let var = self.tmp_name();
                 let escaped = s.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
@@ -674,141 +1373,27 @@ impl Codegen {
                 reg
             }
             TypedExpr::Call { callee, args, .. } => {
-                let is_print = matches!(callee.as_ref(), TypedExpr::Ident { name, .. } if name == "print");
-                if is_print {
-                    if let Some(arg) = args.first() {
-                        if let TypedExpr::FStr(parts, _, _) = arg {
-                            let mut fmt_str = String::new();
-                            let mut arg_vals: Vec<(String, Ty)> = Vec::new();
-                            for part in parts {
-                                match part {
-                                    TypedFStrExpr::Literal(lit) => {
-                                        fmt_str.push_str(&lit.replace("%", "%%"));
-                                    }
-                                    TypedFStrExpr::Expr(e) => {
-                                        let val = self.emit_expr(e);
-                                        let ty = self.expr_ty(e);
-                                        match ty {
-                                            Ty::Int => { fmt_str.push_str("%d"); }
-                                            Ty::Float => { fmt_str.push_str("%f"); }
-                                            Ty::Str => { fmt_str.push_str("%s"); }
-                                            _ => { fmt_str.push_str("%p"); }
-                                        }
-                                        // `emit_expr` may return either a bare register
-                                        // or one already tagged with its LLVM type
-                                        // (e.g. swizzle reads) — strip any existing tag
-                                        // so it isn't double-tagged below.
-                                        let bare_val = self.untag(&val, &ty);
-                                        // For string arguments, `bare_val` is the alloca
-                                        // holding the `i8*`; load it to get the pointer
-                                        // that `%s` expects.
-                                        let arg_val = if matches!(ty, Ty::Str) {
-                                            let loaded = self.tmp_name();
-                                            self.line(&format!("  {} = load i8*, i8** {}", loaded, bare_val));
-                                            loaded
-                                        } else {
-                                            bare_val
-                                        };
-                                        arg_vals.push((arg_val, ty));
-                                    }
-                                }
-                            }
-                            fmt_str.push('\n');
-                            let g = self.global_name();
-                            let escaped = fmt_str.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
-                            self.global_defs.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", g, fmt_str.len() + 1, escaped));
-                            
-                            let fmt_reg = self.tmp_name();
-                            self.line(&format!("  {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0", fmt_reg, fmt_str.len() + 1, fmt_str.len() + 1, g));
-                            
-                            let mut call_args = vec![format!("i8* {}", fmt_reg)];
-                            for (val, ty) in &arg_vals {
-                                if matches!(ty, Ty::Float) {
-                                    // C's variadic calling convention always
-                                    // promotes `float` to `double`; printf's
-                                    // `%f` reads a `double` off the varargs.
-                                    let widened = self.tmp_name();
-                                    self.line(&format!("  {} = fpext float {} to double", widened, val));
-                                    call_args.push(format!("double {}", widened));
-                                } else {
-                                    call_args.push(format!("{} {}", self.llvm_ty(ty), val));
-                                }
-                            }
-                            self.line(&format!("  call i32 (i8*, ...) @printf({})", call_args.join(", ")));
-                        } else {
-                            let fmt_ptr = self.emit_expr(arg);
-                            let loaded = self.tmp_name();
-                            self.line(&format!("  {} = load i8*, i8** {}", loaded, fmt_ptr));
-                            self.line(&format!("  call i32 (i8*, ...) @printf(i8* {})", loaded));
-                        }
-                    }
-                    "%undef".into()
-                } else if let TypedExpr::Field { base, field, .. } = callee.as_ref() {
-                    // Method call: `obj.method(args)` -> `@method(%Struct* obj, args...)`.
-                    let base_ty = self.expr_ty(base);
-                    let struct_name = match &base_ty {
-                        Ty::Named(n) => n.clone(),
-                        _ => { self.err("method call on non-struct receiver", Span::dummy()); String::new() }
-                    };
-                    let key = format!("{}#{}", struct_name, field);
-                    let fn_name = match self.methods.get(&key) {
-                        Some(m) => m.clone(),
-                        None => { self.err(&format!("no method `{}` on `{}`", field, struct_name), Span::dummy()); field.clone() }
-                    };
-                    // The receiver is passed by pointer: use the alloca of the base value.
-                    let recv_ptr = self.sym_ptr(&self.receiver_name(base));
-                    let recv_ty = self.llvm_ty(&base_ty);
-                    let mut call_args = vec![format!("{}* {}", recv_ty, recv_ptr.unwrap_or_else(|| "%undef".into()))];
-                    for a in args {
-                        let reg = self.emit_expr(a);
-                        let ats = self.llvm_ty(&self.expr_ty(a));
-                        let clean_val = reg.strip_prefix(&format!("{} ", ats)).unwrap_or(&reg);
-                        call_args.push(format!("{} {}", ats, clean_val));
-                    }
-                    let ret = self.tmp_name();
-                    // Methods without an explicit return type are typed `unknown`
-                    // by the checker; emit them as `void` calls.
-                    let ret_ty = match &self.expr_ty(expr) {
-                        Ty::Named(n) if n == "unknown" => "void".to_string(),
-                        other => self.llvm_ty(other),
-                    };
-                    if ret_ty == "void" {
-                        self.line(&format!("  call void @{}({})", fn_name, call_args.join(", ")));
-                        "%undef".into()
-                    } else {
-                        self.line(&format!("  {} = call {} @{}({})", ret, ret_ty, fn_name, call_args.join(", ")));
-                        format!("{} {}", ret_ty, ret)
-                    }
-                } else {
-                    // A direct call to a named function: emit `call @name(args)`
-                    // straight away. `callee` must not be routed through
-                    // `emit_expr`/`emit_place` here — it names a global
-                    // function, not a local variable, so there is no alloca
-                    // to load from.
-                    let fn_name = match callee.as_ref() {
-                        TypedExpr::Ident { name, .. } => name.clone(),
-                        _ => { self.err("indirect calls are not supported", Span::dummy()); String::new() }
-                    };
-                    let call_args: Vec<String> = args.iter().map(|a| {
-                        let reg = self.emit_expr(a);
-                        let ats = self.llvm_ty(&self.expr_ty(a));
-                        let clean_val = reg.strip_prefix(&format!("{} ", ats)).unwrap_or(&reg).to_string();
-                        format!("{} {}", ats, clean_val)
-                    }).collect();
-                    // Free functions without an explicit return type are typed
-                    // `unknown` by the checker; emit them as `void` calls.
-                    let ret_ty = match &self.expr_ty(expr) {
-                        Ty::Named(n) if n == "unknown" => "void".to_string(),
-                        other => self.llvm_ty(other),
-                    };
-                    if ret_ty == "void" {
-                        self.line(&format!("  call void @{}({})", fn_name, call_args.join(", ")));
-                        "%undef".into()
-                    } else {
-                        let ret = self.tmp_name();
-                        self.line(&format!("  {} = call {} @{}({})", ret, ret_ty, fn_name, call_args.join(", ")));
-                        format!("{} {}", ret_ty, ret)
-                    }
+                // Standard-library builtins are recognized by name and
+                // lowered directly, ahead of the generic free-function/method
+                // call paths below (so a same-named user `fn` can never be
+                // called instead — matches the pre-existing `print` behavior).
+                let builtin_name = match callee.as_ref() {
+                    TypedExpr::Ident { name, .. } => Some(name.as_str()),
+                    _ => None,
+                };
+                match builtin_name {
+                    Some("print") => { self.emit_print_like(args, false); "%undef".into() }
+                    Some("println") => { self.emit_print_like(args, true); "%undef".into() }
+                    Some("sqrt") => self.emit_math_unary(args, "llvm.sqrt.f32"),
+                    Some("floor") => self.emit_math_unary(args, "llvm.floor.f32"),
+                    Some("ceil") => self.emit_math_unary(args, "llvm.ceil.f32"),
+                    Some("pow") => self.emit_math_binary_f32(args, "llvm.pow.f32"),
+                    Some("abs") => self.emit_abs(args),
+                    Some("min") => self.emit_minmax(args, true),
+                    Some("max") => self.emit_minmax(args, false),
+                    Some("len") => self.emit_str_len(args),
+                    Some("concat") => self.emit_str_concat(args),
+                    _ => self.emit_call_expr(callee, args, expr),
                 }
             }
             TypedExpr::Binary { op, lhs, rhs, .. } => {
@@ -819,12 +1404,22 @@ impl Codegen {
                 self.emit_binop(&l, &lty, &r, &rty, *op)
             }
             TypedExpr::Unary { op, operand, .. } => {
+                let operand_ty = self.expr_ty(operand);
                 let o = self.emit_expr(operand);
+                // `emit_expr` returns literals already tagged with their
+                // LLVM type (e.g. `i32 5`) but loads/calls bare; strip any
+                // existing tag so the opcode below never double-tags it.
+                let bare = self.untag(&o, &operand_ty);
                 let reg = self.tmp_name();
-                let ty = self.expr_ty(expr);
                 match op {
-                    UnOp::Neg => self.line(&format!("  {} = sub {} 0, {}", reg, self.llvm_ty(&ty), o)),
-                    UnOp::Not => self.line(&format!("  {} = xor i1 true, {}", reg, o)),
+                    UnOp::Neg => {
+                        if matches!(operand_ty, Ty::Float) {
+                            self.line(&format!("  {} = fsub float 0.0, {}", reg, bare));
+                        } else {
+                            self.line(&format!("  {} = sub i32 0, {}", reg, bare));
+                        }
+                    }
+                    UnOp::Not => self.line(&format!("  {} = xor i1 true, {}", reg, bare)),
                 }
                 reg
             }
@@ -933,6 +1528,20 @@ impl Codegen {
                             let clean_val = val.strip_prefix(&format!("{} ", ats)).unwrap_or(&val);
                             self.line(&format!("  {} = getelementptr inbounds %{}, %{}* {}, i32 0, i32 {}", gep, name, name, ptr, i as u32));
                             self.line(&format!("  store {} {}, {}* {}", ats, clean_val, ats, gep));
+                        }
+                        // Trailing fields the call site didn't supply are
+                        // zero-initialized. This is what lets a `sequence`
+                        // desugar to a struct whose `resume()` state and
+                        // hoisted-local fields trail the constructor's own
+                        // params: `Name(p1, p2)` only ever supplies `p1`/`p2`.
+                        if let Some(field_tys) = self.struct_field_types.get(name).cloned() {
+                            for (i, fty) in field_tys.iter().enumerate().skip(args.len()) {
+                                let zero = self.zero_value(fty);
+                                let fts = self.llvm_ty(fty);
+                                let gep = self.tmp_name();
+                                self.line(&format!("  {} = getelementptr inbounds %{}, %{}* {}, i32 0, i32 {}", gep, name, name, ptr, i as u32));
+                                self.line(&format!("  store {} {}, {}* {}", fts, zero, fts, gep));
+                            }
                         }
                         // Return the struct *value* (loaded from the alloca) so it can be
                         // stored into another aggregate or assigned, not the pointer.

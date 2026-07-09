@@ -54,6 +54,7 @@ pub enum TokenKind {
     Par,
     Sequence,
     Yield,
+    Spawn,
 
     // Punctuation & operators.
     Colon,
@@ -89,6 +90,78 @@ pub enum TokenKind {
 
     /// End of input.
     Eof,
+}
+
+impl TokenKind {
+    /// A human-readable name for this token kind, used in parser diagnostics
+    /// so messages read as `expected ':', found end of line` rather than
+    /// `expected Colon, found Newline`.
+    pub fn describe(&self) -> String {
+        match self {
+            TokenKind::Newline => "end of line".into(),
+            TokenKind::Indent => "an indented block".into(),
+            TokenKind::Dedent => "end of block".into(),
+            TokenKind::Int(_) => "an integer literal".into(),
+            TokenKind::Float(_) => "a float literal".into(),
+            TokenKind::Str(_) => "a string literal".into(),
+            TokenKind::FStr(_) => "an f-string literal".into(),
+            TokenKind::Ident(name) => format!("identifier `{}`", name),
+            TokenKind::Struct => "'struct'".into(),
+            TokenKind::Trait => "'trait'".into(),
+            TokenKind::Impl => "'impl'".into(),
+            TokenKind::Fn => "'fn'".into(),
+            TokenKind::Let => "'let'".into(),
+            TokenKind::Mut => "'mut'".into(),
+            TokenKind::Match => "'match'".into(),
+            TokenKind::Return => "'return'".into(),
+            TokenKind::If => "'if'".into(),
+            TokenKind::Else => "'else'".into(),
+            TokenKind::For => "'for'".into(),
+            TokenKind::In => "'in'".into(),
+            TokenKind::While => "'while'".into(),
+            TokenKind::True => "'true'".into(),
+            TokenKind::False => "'false'".into(),
+            TokenKind::SelfKw => "'self'".into(),
+            TokenKind::Frame => "'frame'".into(),
+            TokenKind::Arena => "'arena'".into(),
+            TokenKind::Swarm => "'swarm'".into(),
+            TokenKind::Par => "'par'".into(),
+            TokenKind::Sequence => "'sequence'".into(),
+            TokenKind::Yield => "'yield'".into(),
+            TokenKind::Spawn => "'spawn'".into(),
+            TokenKind::Colon => "':'".into(),
+            TokenKind::Comma => "','".into(),
+            TokenKind::Dot => "'.'".into(),
+            TokenKind::Arrow => "'->'".into(),
+            TokenKind::FatArrow => "'=>'".into(),
+            TokenKind::LParen => "'('".into(),
+            TokenKind::RParen => "')'".into(),
+            TokenKind::LBracket => "'['".into(),
+            TokenKind::RBracket => "']'".into(),
+            TokenKind::LBrace => "'{'".into(),
+            TokenKind::RBrace => "'}'".into(),
+            TokenKind::Plus => "'+'".into(),
+            TokenKind::Minus => "'-'".into(),
+            TokenKind::Star => "'*'".into(),
+            TokenKind::Slash => "'/'".into(),
+            TokenKind::Percent => "'%'".into(),
+            TokenKind::Assign => "'='".into(),
+            TokenKind::PlusEq => "'+='".into(),
+            TokenKind::MinusEq => "'-='".into(),
+            TokenKind::StarEq => "'*='".into(),
+            TokenKind::SlashEq => "'/='".into(),
+            TokenKind::EqEq => "'=='".into(),
+            TokenKind::NotEq => "'!='".into(),
+            TokenKind::Lt => "'<'".into(),
+            TokenKind::Gt => "'>'".into(),
+            TokenKind::LtEq => "'<='".into(),
+            TokenKind::GtEq => "'>='".into(),
+            TokenKind::Not => "'!'".into(),
+            TokenKind::At => "'@'".into(),
+            TokenKind::Underscore => "'_'".into(),
+            TokenKind::Eof => "end of file".into(),
+        }
+    }
 }
 
 /// One segment of an f-string: either raw text or an embedded expression.
@@ -521,6 +594,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "par" => TokenKind::Par,
         "sequence" => TokenKind::Sequence,
         "yield" => TokenKind::Yield,
+        "spawn" => TokenKind::Spawn,
         "_" => TokenKind::Underscore,
         _ => TokenKind::Ident(text.to_string()),
     }

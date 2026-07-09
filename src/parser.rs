@@ -38,6 +38,17 @@ impl Parser {
                 None => {
                     // Error recovery: skip to the next line and continue.
                     self.recover_to_newline();
+                    // `recover_to_newline` deliberately stops at (without
+                    // consuming) a `Dedent`, so nested block parsers can see
+                    // their own terminator. At module scope there's no
+                    // enclosing block to preserve it for -- e.g. a struct
+                    // missing its `:` leaves its indented body's Indent/Dedent
+                    // pair never claimed by `parse_struct`, so recovery skips
+                    // the body but stalls forever re-parsing the same stray
+                    // Dedent (this token is never `Eof`, so the loop
+                    // condition above never sees it and stops). Discard it so
+                    // recovery always makes forward progress.
+                    self.eat(&TokenKind::Dedent);
                 }
             }
             self.skip_newlines();
@@ -58,6 +69,7 @@ impl Parser {
             TokenKind::Impl => self.parse_impl().map(Item::Impl),
             TokenKind::Fn => self.parse_fn().map(Item::Fn),
             TokenKind::Arena => self.parse_arena().map(Item::Arena),
+            TokenKind::Sequence => self.parse_sequence().map(Item::Sequence),
             TokenKind::At => {
                 let span = self.peek_span();
                 self.error("decorators are only supported on struct fields", span);
@@ -80,6 +92,25 @@ impl Parser {
         self.expect_line_end()?;
         let span = start.to(self.prev_span());
         Some(ArenaDecl { name, ty, span })
+    }
+
+    fn parse_sequence(&mut self) -> Option<SequenceDef> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Sequence)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LParen)?;
+        let mut params = Vec::new();
+        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+            params.push(self.parse_param()?);
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RParen)?;
+        self.expect(&TokenKind::Colon)?;
+        let body = self.parse_block()?;
+        let span = start.to(self.prev_span());
+        Some(SequenceDef { name, params, body, span })
     }
 
     fn parse_struct(&mut self) -> Option<StructDef> {
@@ -268,6 +299,9 @@ impl Parser {
             TokenKind::If => self.parse_if_stmt(),
             TokenKind::While => self.parse_while_stmt(),
             TokenKind::Frame => self.parse_frame_stmt(),
+            TokenKind::Yield => self.parse_yield_stmt(),
+            TokenKind::Par | TokenKind::Swarm => self.parse_par_stmt(),
+            TokenKind::Spawn => self.parse_spawn_stmt(),
             _ => {
                 // Either an assignment or a bare expression.
                 let expr = self.parse_expr()?;
@@ -292,6 +326,40 @@ impl Parser {
         let body = self.parse_block()?;
         let span = start.to(self.prev_span());
         Some(Stmt::Frame { body, span })
+    }
+
+    fn parse_yield_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Yield)?;
+        self.expect_line_end()?;
+        let span = start.to(self.prev_span());
+        Some(Stmt::Yield { span })
+    }
+
+    /// Parse `par item in ArenaName:` (or the `swarm` spelling) followed by a
+    /// loop body dispatched across worker threads.
+    fn parse_par_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek_span();
+        self.advance(); // `par` or `swarm`
+        let var = self.expect_ident()?;
+        self.expect(&TokenKind::In)?;
+        let arena = self.expect_ident()?;
+        self.expect(&TokenKind::Colon)?;
+        let body = self.parse_block()?;
+        let span = start.to(self.prev_span());
+        Some(Stmt::Par { var, arena, body, span })
+    }
+
+    /// Parse `spawn ArenaName(args...)`: constructs a new element of the
+    /// arena's declared type and appends it to the arena's live set.
+    fn parse_spawn_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Spawn)?;
+        let arena = self.expect_ident()?;
+        let args = self.parse_call_args()?;
+        self.expect_line_end()?;
+        let span = start.to(self.prev_span());
+        Some(Stmt::Spawn { arena, args, span })
     }
 
     fn parse_let(&mut self) -> Option<Stmt> {
@@ -751,7 +819,7 @@ impl Parser {
         } else {
             let span = self.peek_span();
             self.error(
-                format!("expected {:?}, found {:?}", kind, self.peek_kind()),
+                format!("expected {}, found {}", kind.describe(), self.peek_kind().describe()),
                 span,
             );
             None
@@ -764,7 +832,7 @@ impl Parser {
             Some(name)
         } else {
             let span = self.peek_span();
-            self.error(format!("expected identifier, found {:?}", self.peek_kind()), span);
+            self.error(format!("expected an identifier, found {}", self.peek_kind().describe()), span);
             None
         }
     }
@@ -778,7 +846,7 @@ impl Parser {
             Some(())
         } else {
             let span = self.peek_span();
-            self.error(format!("expected end of line, found {:?}", self.peek_kind()), span);
+            self.error(format!("expected end of line, found {}", self.peek_kind().describe()), span);
             None
         }
     }

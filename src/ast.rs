@@ -29,6 +29,19 @@ pub enum Item {
     Fn(FnDef),
     /// `arena Name: Type` - declares a spatial arena for long-lived allocations.
     Arena(ArenaDecl),
+    /// `sequence Name(params): <body with `yield`s>` - a tick-aware coroutine.
+    /// Desugared (see [`crate::sequence`]) into a state-holding struct plus a
+    /// `resume(mut self) -> bool` method before type checking ever sees it.
+    Sequence(SequenceDef),
+}
+
+/// `sequence Name(params): <body>` - see [`Item::Sequence`].
+#[derive(Clone, Debug)]
+pub struct SequenceDef {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub body: Block,
+    pub span: Span,
 }
 
 /// A data structure: named, typed fields with optional defaults.
@@ -167,6 +180,30 @@ pub enum Stmt {
     /// `frame: <block>` - temporal allocation scope that resets at end of tick.
     Frame {
         body: Block,
+        span: Span,
+    },
+    /// `par item in ArenaName: <body>` (also spelled `swarm`) - parallel
+    /// iteration over an arena's live elements, dispatched across worker
+    /// threads. The checker proves iterations are disjoint by requiring the
+    /// body to only mutate `item`'s own fields (or locals declared inside
+    /// the loop body itself).
+    Par {
+        var: String,
+        arena: String,
+        body: Block,
+        span: Span,
+    },
+    /// `yield` - suspends a `sequence` coroutine until the next `resume()`
+    /// tick. Only valid at the top level of a `sequence` body (see
+    /// [`crate::sequence`]); rejected elsewhere by the desugaring pass.
+    Yield { span: Span },
+    /// `spawn ArenaName(args...)` - constructs a new element of the arena's
+    /// declared struct type and appends it to the arena's backing array,
+    /// growing its live `count` by one. See
+    /// [`crate::codegen::Codegen::emit_spawn_stmt`].
+    Spawn {
+        arena: String,
+        args: Vec<Expr>,
         span: Span,
     },
 }

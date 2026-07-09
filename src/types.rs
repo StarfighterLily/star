@@ -5,7 +5,7 @@
 //! expression is given an inferred [`Ty`] after resolution.
 
 use crate::ast::*;
-use crate::diagnostics::{Diagnostic, Span};
+use crate::diagnostics::{suggest, Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
 
 /// A resolved type.
@@ -57,11 +57,35 @@ impl Ty {
     }
 }
 
+/// Names and return-type rules for the compiler's built-in standard library
+/// (see `crate::codegen` for their lowering). These aren't declared by any
+/// `fn` item, so the checker special-cases them instead of consulting the
+/// user-defined function table. Returns `None` for anything that isn't a
+/// recognized builtin name, so ordinary user functions/methods fall through
+/// to the normal lookup unaffected.
+fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
+    match name {
+        // No return value; `Ty::Named("unknown")` is the established
+        // convention codegen already treats as a `void` call (see
+        // `crate::codegen::Codegen::emit_expr`'s `TypedExpr::Call` arm).
+        "print" | "println" => Some(Ty::Named("unknown".into())),
+        "sqrt" | "pow" | "floor" | "ceil" => Some(Ty::Float),
+        // `abs`/`min`/`max` preserve the numeric type (Int or Float) of
+        // their first argument rather than always widening to Float.
+        "abs" | "min" | "max" => Some(args.first().map(|a| a.clone().into_ty()).unwrap_or(Ty::Float)),
+        "len" => Some(Ty::Int),
+        "concat" => Some(Ty::Str),
+        _ => None,
+    }
+}
+
 /// The error type for type checking.
 #[derive(Clone, Debug)]
 pub struct TypeError {
     pub message: String,
     pub span: Span,
+    /// An optional "did you mean `x`?" style hint.
+    pub note: Option<String>,
 }
 
 /// The checker holds symbol tables and the current error list.
@@ -86,6 +110,14 @@ impl Checker {
     }
 
     pub fn check(&mut self, module: &Module) -> Result<TypedModule, Vec<Diagnostic>> {
+        // `sequence` items are pure syntax sugar over struct+impl (see
+        // `crate::sequence`); desugar them before any of the checks below
+        // ever see an `Item::Sequence`.
+        let (module, desugar_errors) = crate::sequence::desugar_module(module);
+        if !desugar_errors.is_empty() {
+            return Err(desugar_errors);
+        }
+
         // First pass: collect all declarations
         for item in &module.items {
             match item {
@@ -111,6 +143,8 @@ impl Checker {
                         self.functions.insert(m.sig.name.clone(), (param_tys, ret_ty));
                     }
                 }
+                // Desugared away above; never present past this point.
+                Item::Sequence(_) => {}
             }
         }
 
@@ -160,6 +194,8 @@ impl Checker {
                     span: a.span,
                 }))
             }
+            // Desugared away in `check` before this point is ever reached.
+            Item::Sequence(_) => None,
         }
     }
 
@@ -184,12 +220,28 @@ impl Checker {
     fn check_impl(&mut self, impl_blk: &ImplBlock) -> Option<TypedImplBlock> {
         if let Some(trait_name) = &impl_blk.trait_name {
             if !self.traits.contains_key(trait_name) {
-                self.error(format!("undefined trait `{}`", trait_name), impl_blk.span);
+                let candidates: Vec<&str> = self.traits.keys().map(String::as_str).collect();
+                match suggest(trait_name, candidates) {
+                    Some(close) => self.error_note(
+                        format!("undefined trait `{}`", trait_name),
+                        impl_blk.span,
+                        format!("did you mean `{}`?", close),
+                    ),
+                    None => self.error(format!("undefined trait `{}`", trait_name), impl_blk.span),
+                }
                 return None;
             }
         }
         if !self.structs.contains_key(&impl_blk.type_name) {
-            self.error(format!("undefined type `{}`", impl_blk.type_name), impl_blk.span);
+            let candidates: Vec<&str> = self.structs.keys().map(String::as_str).collect();
+            match suggest(&impl_blk.type_name, candidates) {
+                Some(close) => self.error_note(
+                    format!("undefined type `{}`", impl_blk.type_name),
+                    impl_blk.span,
+                    format!("did you mean `{}`?", close),
+                ),
+                None => self.error(format!("undefined type `{}`", impl_blk.type_name), impl_blk.span),
+            }
             return None;
         }
         let struct_ty = Ty::Named(impl_blk.type_name.clone());
@@ -313,7 +365,228 @@ impl Checker {
                 let body_typed = self.check_block_inner(body, &mut vars.clone());
                 TypedStmt::Frame { body: body_typed, span: *span }
             }
+            Stmt::Par { var, arena, body, span } => {
+                let elem_ty = match self.arenas.get(arena) {
+                    Some(t) => t.clone(),
+                    None => {
+                        self.error(format!("undefined arena `{}`", arena), *span);
+                        Ty::Named("unknown".into())
+                    }
+                };
+                let mut inner_vars = vars.clone();
+                inner_vars.insert(var.clone(), elem_ty.clone());
+                let body_typed = self.check_block_inner(body, &mut inner_vars);
+                self.check_par_disjoint(var, &body_typed);
+                TypedStmt::Par { var: var.clone(), elem_ty, arena: arena.clone(), body: body_typed, span: *span }
+            }
+            // Every `yield` inside a `sequence` body is consumed by the
+            // desugaring pass in `check()` before this point; one reaching
+            // here means it was written outside a `sequence`.
+            Stmt::Yield { span } => {
+                self.error("`yield` is only valid at the top level of a `sequence` body", *span);
+                TypedStmt::Expr(TypedExpr::Error(Ty::Named("void".into())))
+            }
+            Stmt::Spawn { arena, args, span } => self.check_spawn_stmt(arena, args, vars, *span),
         })
+    }
+
+    /// Type-check `spawn ArenaName(args...)`: resolves the arena's declared
+    /// element type, checks it's a struct (the only kind of value an arena
+    /// can hold), validates the argument count against the struct's field
+    /// list, and packages the constructed element as a `StructLit` so
+    /// codegen only has to append it to the arena's backing array.
+    fn check_spawn_stmt(&mut self, arena: &str, args: &[Expr], vars: &mut HashMap<String, Ty>, span: Span) -> TypedStmt {
+        let elem_ty = match self.arenas.get(arena) {
+            Some(t) => t.clone(),
+            None => {
+                self.error(format!("undefined arena `{}`", arena), span);
+                Ty::Named("unknown".into())
+            }
+        };
+        let elem_name = match &elem_ty {
+            Ty::Named(n) => n.clone(),
+            other => {
+                self.error(format!("`spawn` requires an arena of a struct type, but `{}` holds `{:?}`", arena, other), span);
+                "unknown".into()
+            }
+        };
+        let arg_exprs: Vec<TypedExpr> = args
+            .iter()
+            .map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into()))))
+            .collect();
+        if let Some(sdef) = self.structs.get(&elem_name).cloned() {
+            if arg_exprs.len() != sdef.fields.len() {
+                self.error(
+                    format!(
+                        "`spawn {}(..)` expects {} argument(s) for `{}`, found {}",
+                        arena, sdef.fields.len(), elem_name, arg_exprs.len()
+                    ),
+                    span,
+                );
+            }
+        } else if elem_name != "unknown" {
+            self.error(format!("arena `{}` element type `{}` is not a struct", arena, elem_name), span);
+        }
+        let elem = TypedExpr::StructLit { name: elem_name, args: arg_exprs, ty: elem_ty, span };
+        TypedStmt::Spawn { arena: arena.to_string(), elem, span }
+    }
+
+    // ===== `par`/`swarm` disjoint-access analysis ========================
+    //
+    // Proves (conservatively) that a `par` body's iterations don't race: the
+    // only things a body may *mutate* are the loop variable's own fields and
+    // locals it declares itself (both are per-iteration/per-thread, so safe
+    // by construction). Any write to a name captured from the enclosing
+    // scope — including `self` — is rejected, since concurrent writes to
+    // shared state from multiple worker threads would race. Method calls are
+    // held to the same standard, since a call `x.foo()` might mutate `x`
+    // internally: only calls on the loop variable (or a body-local) are
+    // allowed.
+
+    fn check_par_disjoint(&mut self, var: &str, block: &TypedBlock) {
+        let mut locals: HashSet<String> = HashSet::new();
+        locals.insert(var.to_string());
+        self.walk_par_stmts(&block.stmts, &mut locals);
+    }
+
+    fn walk_par_stmts(&mut self, stmts: &[TypedStmt], locals: &mut HashSet<String>) {
+        for stmt in stmts {
+            self.walk_par_stmt(stmt, locals);
+        }
+    }
+
+    fn walk_par_stmt(&mut self, stmt: &TypedStmt, locals: &mut HashSet<String>) {
+        match stmt {
+            TypedStmt::Let { name, value, .. } => {
+                self.walk_par_expr(value, locals);
+                locals.insert(name.clone());
+            }
+            TypedStmt::Assign { target, value, span, .. } => {
+                self.walk_par_expr(value, locals);
+                match root_ident(target) {
+                    Some(root) if locals.contains(&root) => {}
+                    Some(root) => self.error(
+                        format!(
+                            "par/swarm body may only mutate the loop variable or locals it declares; \
+                             write to `{}` cannot be proven disjoint across threads",
+                            root
+                        ),
+                        *span,
+                    ),
+                    None => self.error("unsupported mutation target in par/swarm body", *span),
+                }
+            }
+            TypedStmt::Return { value, .. } => {
+                if let Some(v) = value {
+                    self.walk_par_expr(v, locals);
+                }
+            }
+            TypedStmt::Expr(e) => self.walk_par_expr(e, locals),
+            TypedStmt::If { cond, then_block, else_block, .. } => {
+                self.walk_par_expr(cond, locals);
+                let mut l = locals.clone();
+                self.walk_par_stmts(&then_block.stmts, &mut l);
+                if let Some(e) = else_block {
+                    let mut l = locals.clone();
+                    self.walk_par_stmts(&e.stmts, &mut l);
+                }
+            }
+            TypedStmt::While { cond, then_block, else_block, .. } => {
+                self.walk_par_expr(cond, locals);
+                let mut l = locals.clone();
+                self.walk_par_stmts(&then_block.stmts, &mut l);
+                if let Some(e) = else_block {
+                    let mut l = locals.clone();
+                    self.walk_par_stmts(&e.stmts, &mut l);
+                }
+            }
+            TypedStmt::Frame { body, .. } => {
+                let mut l = locals.clone();
+                self.walk_par_stmts(&body.stmts, &mut l);
+            }
+            TypedStmt::Par { body, .. } => {
+                // A nested par loop gets its own fresh disjointness proof;
+                // just recurse for any captures it makes of the outer scope.
+                let mut l = locals.clone();
+                self.walk_par_stmts(&body.stmts, &mut l);
+            }
+            TypedStmt::Spawn { span, .. } => {
+                // Every worker thread would race on the same arena's
+                // `count`/`data` globals, so population can't happen from
+                // inside a body whose iterations are supposed to be disjoint.
+                self.error(
+                    "`spawn` cannot be used inside a par/swarm body (arena population is not disjoint across threads)",
+                    *span,
+                );
+            }
+        }
+    }
+
+    fn walk_par_expr(&mut self, expr: &TypedExpr, locals: &HashSet<String>) {
+        match expr {
+            TypedExpr::Call { callee, args, span, .. } => {
+                if let TypedExpr::Field { base, .. } = callee.as_ref() {
+                    match root_ident(base) {
+                        Some(root) if locals.contains(&root) => {}
+                        _ => self.error(
+                            "cannot call a method on a captured value inside a par/swarm body \
+                             (only the loop variable's own methods may be called)",
+                            *span,
+                        ),
+                    }
+                }
+                self.walk_par_expr(callee, locals);
+                for a in args {
+                    self.walk_par_expr(a, locals);
+                }
+            }
+            TypedExpr::Field { base, .. } => self.walk_par_expr(base, locals),
+            TypedExpr::Binary { lhs, rhs, .. } => {
+                self.walk_par_expr(lhs, locals);
+                self.walk_par_expr(rhs, locals);
+            }
+            TypedExpr::Unary { operand, .. } => self.walk_par_expr(operand, locals),
+            TypedExpr::Match { scrutinee, arms, .. } => {
+                self.walk_par_expr(scrutinee, locals);
+                for arm in arms {
+                    let mut l = locals.clone();
+                    self.walk_par_stmts(&arm.body.stmts, &mut l);
+                }
+            }
+            TypedExpr::StructLit { args, .. } => {
+                for a in args {
+                    self.walk_par_expr(a, locals);
+                }
+            }
+            TypedExpr::FStr(parts, ..) => {
+                for p in parts {
+                    if let TypedFStrExpr::Expr(e) = p {
+                        self.walk_par_expr(e, locals);
+                    }
+                }
+            }
+            TypedExpr::If { cond, then_block, else_block, .. } => {
+                self.walk_par_expr(cond, locals);
+                let mut l = locals.clone();
+                self.walk_par_stmts(&then_block.stmts, &mut l);
+                if let Some(e) = else_block {
+                    let mut l = locals.clone();
+                    self.walk_par_stmts(&e.stmts, &mut l);
+                }
+            }
+            TypedExpr::GenRefCreate { value, .. } => self.walk_par_expr(value, locals),
+            TypedExpr::GenRefIndex { base, index, .. } => {
+                self.walk_par_expr(base, locals);
+                self.walk_par_expr(index, locals);
+            }
+            TypedExpr::Int(..)
+            | TypedExpr::Float(..)
+            | TypedExpr::Str(..)
+            | TypedExpr::Bool(..)
+            | TypedExpr::Ident { .. }
+            | TypedExpr::SelfExpr(..)
+            | TypedExpr::Error(_) => {}
+        }
     }
 
     fn check_expr_infer(&mut self, expr: &Expr) -> TypedExpr {
@@ -356,10 +629,29 @@ impl Checker {
             Expr::Call { callee, args, span } => {
                 let callee_expr = self.infer_expr(callee, vars)?;
                 let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
-                // Look up the return type from the function table
+                // Standard-library builtins (`print`/`println`, math, string
+                // ops) aren't declared by any `fn` item, so they never show
+                // up in `self.functions`; special-case their return types
+                // here before falling back to the function table.
+                if let TypedExpr::Ident { name, .. } = &callee_expr {
+                    if let Some(ty) = builtin_return_ty(name, &arg_exprs) {
+                        return Ok(TypedExpr::Call { callee: Box::new(callee_expr), args: arg_exprs, ty, span: *span });
+                    }
+                }
+                // Look up the return type from the function table. Impl
+                // methods share the same flat table as free functions
+                // (keyed by name only), so a method call `obj.method()`
+                // resolves exactly like a free-function call: through the
+                // callee's name, whether that name came from an `Ident` or
+                // (for methods) the field of a `Field` access.
                 let ret_ty = match &callee_expr {
                     TypedExpr::Ident { name, .. } => {
                         self.functions.get(name)
+                            .and_then(|(_, ret)| ret.clone())
+                            .unwrap_or(Ty::Named("unknown".into()))
+                    }
+                    TypedExpr::Field { field, .. } => {
+                        self.functions.get(field)
                             .and_then(|(_, ret)| ret.clone())
                             .unwrap_or(Ty::Named("unknown".into()))
                     }
@@ -377,7 +669,12 @@ impl Checker {
             }
             Expr::Unary { op, operand, span } => {
                 let operand_expr = self.infer_expr(operand, vars)?;
-                let ty = match op { UnOp::Neg => Ty::Int, UnOp::Not => Ty::Bool };
+                // `-x` preserves the operand's own numeric type (Int stays
+                // Int, Float stays Float) rather than always widening to Int.
+                let ty = match op {
+                    UnOp::Neg => operand_expr.clone().into_ty(),
+                    UnOp::Not => Ty::Bool,
+                };
                 Ok(TypedExpr::Unary { op: *op, operand: Box::new(operand_expr), ty, span: *span })
             }
             Expr::Match { scrutinee, arms, span } => {
@@ -543,10 +840,26 @@ impl Checker {
             | TypedExpr::SelfExpr(Ty::Named(n), _) => n,
             _ => return Ty::Named("unknown".into()),
         };
-        self.structs.get(name)
-            .and_then(|s| s.fields.iter().find(|f| f.name == field))
-            .and_then(|f| self.resolve_type(&f.ty))
-            .unwrap_or(Ty::Named("unknown".into()))
+        let Some(sdef) = self.structs.get(name).cloned() else {
+            // Unknown struct name: already reported elsewhere (or is a
+            // synthesized/inferred placeholder type), so stay silent here.
+            return Ty::Named("unknown".into());
+        };
+        match sdef.fields.iter().find(|f| f.name == field) {
+            Some(f) => self.resolve_type(&f.ty).unwrap_or(Ty::Named("unknown".into())),
+            None => {
+                let candidates: Vec<&str> = sdef.fields.iter().map(|f| f.name.as_str()).collect();
+                match suggest(field, candidates) {
+                    Some(close) => self.error_note(
+                        format!("no field `{}` on `{}`", field, name),
+                        span,
+                        format!("did you mean `{}`?", close),
+                    ),
+                    None => self.error(format!("no field `{}` on `{}`", field, name), span),
+                }
+                Ty::Named("unknown".into())
+            }
+        }
     }
 
     /// Validate and resolve a GLSL-style swizzle string (`.x`, `.xyz`, `.zyx`,
@@ -610,11 +923,23 @@ impl Checker {
     }
 
     fn error(&mut self, msg: impl Into<String>, span: Span) {
-        self.errors.push(TypeError { message: msg.into(), span });
+        self.errors.push(TypeError { message: msg.into(), span, note: None });
+    }
+
+    /// Like [`Checker::error`], but attaches a secondary "did you mean `x`?"
+    /// style hint rendered as a trailing note.
+    fn error_note(&mut self, msg: impl Into<String>, span: Span, note: impl Into<String>) {
+        self.errors.push(TypeError { message: msg.into(), span, note: Some(note.into()) });
     }
 
     fn errors_to_diagnostics(&self) -> Vec<Diagnostic> {
-        self.errors.iter().map(|e| Diagnostic::error(&e.message, e.span)).collect()
+        self.errors
+            .iter()
+            .map(|e| match &e.note {
+                Some(note) => Diagnostic::error_with_note(&e.message, e.span, note.clone()),
+                None => Diagnostic::error(&e.message, e.span),
+            })
+            .collect()
     }
 }
 
@@ -726,6 +1051,22 @@ pub enum TypedStmt {
         body: TypedBlock,
         span: Span,
     },
+    /// `par`/`swarm item in ArenaName: <body>` - see [`crate::ast::Stmt::Par`].
+    Par {
+        var: String,
+        elem_ty: Ty,
+        arena: String,
+        body: TypedBlock,
+        span: Span,
+    },
+    /// `spawn ArenaName(args...)` - see [`crate::ast::Stmt::Spawn`]. `elem`
+    /// is the constructed element (a `StructLit`); codegen only has to
+    /// append it to the arena's backing array and bump `count`.
+    Spawn {
+        arena: String,
+        elem: TypedExpr,
+        span: Span,
+    },
 }
 
 /// A type-checked f-string component.
@@ -776,6 +1117,17 @@ impl TypedExpr {
             TypedExpr::If { ty, .. } => ty.clone(),
             TypedExpr::GenRefCreate { inner_ty, .. } => Ty::GenRef(Box::new(inner_ty)),
         }
+    }
+}
+
+/// The root identifier a place expression (`x`, `x.a.b`, `self.a`) writes
+/// through, or `None` if it isn't a simple identifier/field chain.
+fn root_ident(expr: &TypedExpr) -> Option<String> {
+    match expr {
+        TypedExpr::Ident { name, .. } => Some(name.clone()),
+        TypedExpr::SelfExpr(..) => Some("self".to_string()),
+        TypedExpr::Field { base, .. } => root_ident(base),
+        _ => None,
     }
 }
 
