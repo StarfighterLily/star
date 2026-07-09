@@ -6,7 +6,7 @@
 
 use crate::ast::*;
 use crate::diagnostics::{Diagnostic, Span};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A resolved type.
 #[derive(Clone, Debug, PartialEq)]
@@ -22,6 +22,39 @@ pub enum Ty {
     Named(String),
     /// A generational reference backed by a slot-map: GenRef<T>.
     GenRef(Box<Ty>),
+}
+
+impl Ty {
+    /// True for the builtin SIMD vector types (Vec2/Vec3/Vec4).
+    pub fn is_vec(&self) -> bool {
+        matches!(self, Ty::Vec2 | Ty::Vec3 | Ty::Vec4)
+    }
+
+    /// True for the builtin SIMD matrix type (Mat4).
+    pub fn is_mat(&self) -> bool {
+        matches!(self, Ty::Mat4)
+    }
+
+    /// The component count of a builtin vector type, or `None` for anything else.
+    pub fn vec_arity(&self) -> Option<u8> {
+        match self {
+            Ty::Vec2 => Some(2),
+            Ty::Vec3 => Some(3),
+            Ty::Vec4 => Some(4),
+            _ => None,
+        }
+    }
+
+    /// The vector type with the given component count (1 -> scalar Float).
+    pub fn vec_of_arity(n: u8) -> Option<Ty> {
+        match n {
+            1 => Some(Ty::Float),
+            2 => Some(Ty::Vec2),
+            3 => Some(Ty::Vec3),
+            4 => Some(Ty::Vec4),
+            _ => None,
+        }
+    }
 }
 
 /// The error type for type checking.
@@ -240,6 +273,17 @@ impl Checker {
             Stmt::Assign { target, op, value, span } => {
                 let target_typed = self.infer_expr(target, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
                 let value_typed = self.infer_expr(value, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
+                if let TypedExpr::Field { base, field, .. } = &target_typed {
+                    if base.clone().into_ty().is_vec() {
+                        let mut seen = HashSet::new();
+                        for c in field.chars() {
+                            if !seen.insert(c) {
+                                self.error(format!("duplicate swizzle component `{}` in write target `.{}`", c, field), *span);
+                                break;
+                            }
+                        }
+                    }
+                }
                 TypedStmt::Assign { target: target_typed, op: *op, value: value_typed, span: *span }
             }
             Stmt::Return { value, span } => {
@@ -306,7 +350,7 @@ impl Checker {
             }
             Expr::Field { base, field, span } => {
                 let base_expr = self.infer_expr(base, vars)?;
-                let field_ty = self.resolve_field_type(&base_expr, field);
+                let field_ty = self.resolve_field_type(&base_expr, field, *span);
                 Ok(TypedExpr::Field { base: Box::new(base_expr), field: field.clone(), ty: field_ty, span: *span })
             }
             Expr::Call { callee, args, span } => {
@@ -326,15 +370,9 @@ impl Checker {
             Expr::Binary { op, lhs, rhs, span } => {
                 let lhs_expr = self.infer_expr(lhs, vars)?;
                 let rhs_expr = self.infer_expr(rhs, vars)?;
-                let ty = match op {
-                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
-                        match (&lhs_expr, &rhs_expr) {
-                            (TypedExpr::Float(..), _) | (_, TypedExpr::Float(..)) => Ty::Float,
-                            _ => Ty::Int,
-                        }
-                    }
-                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => Ty::Bool,
-                };
+                let lhs_ty = lhs_expr.clone().into_ty();
+                let rhs_ty = rhs_expr.clone().into_ty();
+                let ty = self.infer_binop_ty(op, &lhs_ty, &rhs_ty, *span);
                 Ok(TypedExpr::Binary { op: *op, lhs: Box::new(lhs_expr), rhs: Box::new(rhs_expr), ty, span: *span })
             }
             Expr::Unary { op, operand, span } => {
@@ -350,7 +388,9 @@ impl Checker {
             }
             Expr::StructLit { name, args, span } => {
                 let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
-                Ok(TypedExpr::StructLit { name: name.clone(), args: arg_exprs, ty: Ty::Named(name.clone()), span: *span })
+                let resolved_ty = self.resolve_type(&Type::Named(name.clone())).unwrap_or_else(|| Ty::Named(name.clone()));
+                self.check_builtin_ctor_arity(&resolved_ty, name, &arg_exprs, *span);
+                Ok(TypedExpr::StructLit { name: name.clone(), args: arg_exprs, ty: resolved_ty, span: *span })
             }
             Expr::If { cond, then_block, else_block, span } => {
                 let cond_typed = self.infer_expr(cond, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
@@ -387,7 +427,116 @@ impl Checker {
         }
     }
 
-    fn resolve_field_type(&self, base: &TypedExpr, field: &str) -> Ty {
+    /// Validate constructor arity/argument types for the builtin vec/mat
+    /// literal forms (`Vec2(x,y)`, `Vec3(x,y,z)`, `Vec4(x,y,z,w)`,
+    /// `Mat4(row0,row1,row2,row3)`). No-op for user-defined structs (`Ty::Named`),
+    /// which are not validated today either.
+    fn check_builtin_ctor_arity(&mut self, ty: &Ty, name: &str, args: &[TypedExpr], span: Span) {
+        let is_numeric = |t: &Ty| matches!(t, Ty::Int | Ty::Float);
+        match ty {
+            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 => {
+                let expected = ty.vec_arity().unwrap() as usize;
+                if args.len() != expected
+                    || !args.iter().all(|a| is_numeric(&a.clone().into_ty()))
+                {
+                    self.error(format!("{}(..) expects {} float arguments", name, expected), span);
+                }
+            }
+            Ty::Mat4 => {
+                if args.len() != 4 || !args.iter().all(|a| matches!(a.clone().into_ty(), Ty::Vec4)) {
+                    self.error(format!("{}(..) expects 4 Vec4 row arguments", name), span);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Infer the result type of a binary operator, dispatching on whether
+    /// either operand is a builtin vector/matrix type. Falls through to the
+    /// original Int/Float/Bool behavior when both operands are scalar.
+    fn infer_binop_ty(&mut self, op: &BinOp, lhs_ty: &Ty, rhs_ty: &Ty, span: Span) -> Ty {
+        let is_cmp = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge);
+        if !lhs_ty.is_vec() && !lhs_ty.is_mat() && !rhs_ty.is_vec() && !rhs_ty.is_mat() {
+            // Original scalar behavior, preserved exactly.
+            return if is_cmp {
+                Ty::Bool
+            } else {
+                match (lhs_ty, rhs_ty) {
+                    (Ty::Float, _) | (_, Ty::Float) => Ty::Float,
+                    _ => Ty::Int,
+                }
+            };
+        }
+
+        if is_cmp {
+            self.error("comparison operators are not supported on vector/matrix types", span);
+            return Ty::Bool;
+        }
+        if matches!(op, BinOp::Rem) {
+            self.error("`%` is not supported on vector/matrix types", span);
+            return lhs_ty.clone();
+        }
+
+        let is_scalar = |t: &Ty| matches!(t, Ty::Int | Ty::Float);
+
+        match op {
+            BinOp::Add | BinOp::Sub => {
+                if lhs_ty.is_mat() && rhs_ty.is_mat() {
+                    if lhs_ty == rhs_ty { Ty::Mat4 } else {
+                        self.error("mismatched matrix arity in `+`/`-`", span);
+                        lhs_ty.clone()
+                    }
+                } else if lhs_ty.is_vec() && rhs_ty.is_vec() {
+                    if lhs_ty == rhs_ty {
+                        lhs_ty.clone()
+                    } else {
+                        self.error("mismatched vector arity in `+`/`-`", span);
+                        lhs_ty.clone()
+                    }
+                } else {
+                    self.error("`+`/`-` between a vector/matrix and a scalar is not supported", span);
+                    if lhs_ty.is_vec() || lhs_ty.is_mat() { lhs_ty.clone() } else { rhs_ty.clone() }
+                }
+            }
+            BinOp::Mul | BinOp::Div => {
+                if lhs_ty.is_mat() && rhs_ty.is_mat() {
+                    if *op == BinOp::Div {
+                        self.error("matrix division is not supported", span);
+                    }
+                    Ty::Mat4
+                } else if lhs_ty.is_mat() && *rhs_ty == Ty::Vec4 {
+                    if *op == BinOp::Div {
+                        self.error("matrix division is not supported", span);
+                    }
+                    Ty::Vec4
+                } else if *lhs_ty == Ty::Vec4 && rhs_ty.is_mat() {
+                    self.error("vector * matrix is not supported (use matrix * vector)", span);
+                    Ty::Vec4
+                } else if lhs_ty.is_vec() && rhs_ty.is_vec() {
+                    if lhs_ty == rhs_ty {
+                        lhs_ty.clone()
+                    } else {
+                        self.error("mismatched vector arity in `*`/`/`", span);
+                        lhs_ty.clone()
+                    }
+                } else if lhs_ty.is_vec() && is_scalar(rhs_ty) {
+                    lhs_ty.clone()
+                } else if is_scalar(lhs_ty) && rhs_ty.is_vec() {
+                    rhs_ty.clone()
+                } else {
+                    self.error("unsupported operand types for `*`/`/`", span);
+                    if lhs_ty.is_vec() || lhs_ty.is_mat() { lhs_ty.clone() } else { rhs_ty.clone() }
+                }
+            }
+            _ => unreachable!("Rem and comparisons handled above"),
+        }
+    }
+
+    fn resolve_field_type(&mut self, base: &TypedExpr, field: &str, span: Span) -> Ty {
+        let base_ty = base.clone().into_ty();
+        if let Some(arity) = base_ty.vec_arity() {
+            return self.resolve_swizzle(arity, field, span);
+        }
         let name = match base {
             TypedExpr::Ident { ty: Ty::Named(n), .. }
             | TypedExpr::StructLit { ty: Ty::Named(n), .. }
@@ -398,6 +547,32 @@ impl Checker {
             .and_then(|s| s.fields.iter().find(|f| f.name == field))
             .and_then(|f| self.resolve_type(&f.ty))
             .unwrap_or(Ty::Named("unknown".into()))
+    }
+
+    /// Validate and resolve a GLSL-style swizzle string (`.x`, `.xyz`, `.zyx`,
+    /// ...) against a vector base of the given component count.
+    fn resolve_swizzle(&mut self, arity: u8, field: &str, span: Span) -> Ty {
+        if field.is_empty() || field.len() > 4 {
+            self.error("invalid swizzle: expected 1-4 components", span);
+            return Ty::Named("unknown".into());
+        }
+        for c in field.chars() {
+            let idx = match c {
+                'x' => 0,
+                'y' => 1,
+                'z' => 2,
+                'w' => 3,
+                _ => {
+                    self.error(format!("invalid swizzle component `{}`", c), span);
+                    return Ty::Named("unknown".into());
+                }
+            };
+            if idx >= arity {
+                self.error(format!("swizzle component `{}` out of range for Vec{}", c, arity), span);
+                return Ty::Named("unknown".into());
+            }
+        }
+        Ty::vec_of_arity(field.len() as u8).unwrap_or(Ty::Named("unknown".into()))
     }
 
     fn check_match_arm(&mut self, arm: &MatchArm, _scrutinee_expr: &TypedExpr, vars: &mut HashMap<String, Ty>) -> TypedMatchArm {

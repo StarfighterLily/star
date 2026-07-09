@@ -1,14 +1,6 @@
 # Star Compiler — Next Steps
 
-## Immediate: M6 SIMD
-
-## M6: SIMD Math Types
-
-- [ ] **`vec2`/`vec3`/`vec4`/`mat4`**: These types are already in the `Ty` enum and parser. Implement:
-  - Struct layouts in LLVM IR (already partially done)
-  - GLSL-style swizzling (`.xyz`, `.xy`, etc.) in the parser and type checker
-  - Operator overloading for vector/matrix arithmetic
-  - Codegen using LLVM's `<4 x float>` vector type and appropriate shuffle/insert/extract instructions
+## Immediate: M7
 
 ## M7: Concurrency & Coroutines
 
@@ -29,4 +21,8 @@
 
  LATEST:
 
- ### M5 Memory Model Implementation Complete
+ ### M6 SIMD Math Types Implementation Complete
+
+ - Vec2/Vec3/Vec4/Mat4 arithmetic (`+`, `-`, `*`, `/`, matrix multiply), GLSL swizzle read/write (including full multi-component write masking), and constructors all implemented and tested.
+ - Fixed two pre-existing latent bugs uncovered along the way: `emit_binop` was hardcoded to always emit `i32` opcodes (float arithmetic silently produced invalid IR), and float literals/printf varargs were mishandled (`1.0` formatted as `"1"`, and `float` args to `printf` need `fpext` to `double` per the C variadic calling convention).
+ - New `examples/vecmath.star` + committed `.ll`/`.exe` exercise the whole feature end-to-end via a real compiled binary (`runtime_vecmath_end_to_end` test).

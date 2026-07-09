@@ -59,23 +59,26 @@ entry:
   %t1 = alloca %Player
   %t2 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 0
   store i32 100, i32* %t2
-  %t3 = alloca %Vec3
-  %t4 = getelementptr inbounds %Vec3, %Vec3* %t3, i32 0, i32 0
-  store i32 0, i32* %t4
-  %t5 = getelementptr inbounds %Vec3, %Vec3* %t3, i32 0, i32 1
-  store i32 0, i32* %t5
-  %t6 = getelementptr inbounds %Vec3, %Vec3* %t3, i32 0, i32 2
-  store i32 0, i32* %t6
-  %t7 = load %Vec3, %Vec3* %t3
-  %t8 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 1
-  store %Vec3 %t7, %Vec3* %t8
-  %t10 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.2, i64 0, i64 0
-  %t9 = alloca i8*
-  store i8* %t10, i8** %t9
-  %t11 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 2
-  store i8* %t9, i8** %t11
-  %t12 = load %Player, %Player* %t1
-  store %Player %t12, %Player* %t0
+  %t3 = alloca { float, float, float }
+  %t4 = sitofp i32 0 to float
+  %t5 = getelementptr inbounds { float, float, float }, { float, float, float }* %t3, i32 0, i32 0
+  store float %t4, float* %t5
+  %t6 = sitofp i32 0 to float
+  %t7 = getelementptr inbounds { float, float, float }, { float, float, float }* %t3, i32 0, i32 1
+  store float %t6, float* %t7
+  %t8 = sitofp i32 0 to float
+  %t9 = getelementptr inbounds { float, float, float }, { float, float, float }* %t3, i32 0, i32 2
+  store float %t8, float* %t9
+  %t10 = load { float, float, float }, { float, float, float }* %t3
+  %t11 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 1
+  store { float, float, float } %t10, { float, float, float }* %t11
+  %t13 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.2, i64 0, i64 0
+  %t12 = alloca i8*
+  store i8* %t13, i8** %t12
+  %t14 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 2
+  store i8* %t12, i8** %t14
+  %t15 = load %Player, %Player* %t1
+  store %Player %t15, %Player* %t0
   call void @take_damage(%Player* %t0, i32 150)
   ret void
 }

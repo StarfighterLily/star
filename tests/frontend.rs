@@ -7,6 +7,7 @@
 use star::ast::{Expr, Item, Stmt};
 use star::driver::Driver;
 use star::lexer::TokenKind;
+use star::types::{Ty, TypedItem, TypedStmt};
 
 /// Lexing a struct should emit INDENT/DEDENT around the field block.
 #[test]
@@ -308,4 +309,205 @@ fn test_nested() -> i32:
     // Should have multiple load/store operations for nested frames
     let offset_loads = ir.matches("load i64, i64* @frame.off").count();
     assert!(offset_loads >= 2, "nested frames should save/restore offset multiple times");
+}
+
+// ===== M6 SIMD Math Type Tests ============================================
+
+/// Type-check a single-function source and return the trailing expression's
+/// resolved type.
+fn typed_fn_result_ty(src: &str) -> Ty {
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let TypedItem::Fn(f) = &typed.items[0] else { panic!("expected fn") };
+    match f.body.stmts.last().expect("body should have a statement") {
+        TypedStmt::Expr(e) => e.clone().into_ty(),
+        other => panic!("expected trailing expr statement, got {:?}", other),
+    }
+}
+
+#[test]
+fn checks_vec_add_same_type() {
+    let ty = typed_fn_result_ty("fn t(a: Vec3, b: Vec3) -> Vec3:\n    a + b\n");
+    assert_eq!(ty, Ty::Vec3);
+}
+
+#[test]
+fn checks_vec_scalar_mul_both_orders() {
+    assert_eq!(typed_fn_result_ty("fn t(a: Vec3) -> Vec3:\n    a * 2.0\n"), Ty::Vec3);
+    assert_eq!(typed_fn_result_ty("fn t(a: Vec3) -> Vec3:\n    2.0 * a\n"), Ty::Vec3);
+}
+
+#[test]
+fn checks_mat4_vec4_mul() {
+    let ty = typed_fn_result_ty("fn t(m: Mat4, v: Vec4) -> Vec4:\n    m * v\n");
+    assert_eq!(ty, Ty::Vec4);
+}
+
+#[test]
+fn checks_mat4_mat4_mul() {
+    let ty = typed_fn_result_ty("fn t(a: Mat4, b: Mat4) -> Mat4:\n    a * b\n");
+    assert_eq!(ty, Ty::Mat4);
+}
+
+#[test]
+fn checks_swizzle_read_types() {
+    assert_eq!(typed_fn_result_ty("fn t(v: Vec3) -> Vec3:\n    v.xyz\n"), Ty::Vec3);
+    assert_eq!(typed_fn_result_ty("fn t(v: Vec3) -> Vec2:\n    v.xy\n"), Ty::Vec2);
+    assert_eq!(typed_fn_result_ty("fn t(v: Vec3) -> f32:\n    v.x\n"), Ty::Float);
+    assert_eq!(typed_fn_result_ty("fn t(v: Vec3) -> Vec3:\n    v.zyx\n"), Ty::Vec3);
+    assert_eq!(typed_fn_result_ty("fn t(v: Vec3) -> Vec2:\n    v.xx\n"), Ty::Vec2);
+}
+
+#[test]
+fn rejects_mismatched_vec_arity() {
+    let module = Driver::parse("fn t(a: Vec2, b: Vec3):\n    a + b\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "mismatched vector arity should be a type error");
+}
+
+#[test]
+fn rejects_invalid_swizzle_component() {
+    let module = Driver::parse("fn t(v: Vec3):\n    v.q\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "invalid swizzle component should be a type error");
+}
+
+#[test]
+fn rejects_swizzle_out_of_range() {
+    let module = Driver::parse("fn t(v: Vec2):\n    v.z\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "swizzle component out of range should be a type error");
+}
+
+#[test]
+fn rejects_vec_comparison() {
+    let module = Driver::parse("fn t(a: Vec3, b: Vec3):\n    a == b\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "comparing vectors should be a type error");
+}
+
+#[test]
+fn rejects_duplicate_swizzle_write_target() {
+    let module = Driver::parse("fn t(mut v: Vec3):\n    v.xx = v.xy\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "duplicate swizzle write target should be a type error");
+}
+
+#[test]
+fn rejects_wrong_ctor_arity() {
+    let module = Driver::parse("fn t():\n    Vec3(1.0, 2.0)\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "wrong constructor arity should be a type error");
+}
+
+#[test]
+fn codegen_float_binop_uses_fadd() {
+    let module = Driver::parse("fn t(a: f32, b: f32) -> f32:\n    a + b\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("fadd float"), "float addition should emit fadd, not add i32: {}", ir);
+}
+
+#[test]
+fn codegen_vec3_add_uses_extractvalue_insertvalue() {
+    let module = Driver::parse("fn t(a: Vec3, b: Vec3) -> Vec3:\n    a + b\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("extractvalue { float, float, float }"), "{}", ir);
+    assert!(ir.contains("insertvalue { float, float, float }"), "{}", ir);
+    assert!(ir.contains("fadd float"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec4_add_uses_vector_fadd() {
+    let module = Driver::parse("fn t(a: Vec4, b: Vec4) -> Vec4:\n    a + b\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("fadd <4 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec4_multi_swizzle_read_uses_shufflevector() {
+    let module = Driver::parse("fn t(v: Vec4) -> Vec3:\n    v.xyz\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("shufflevector <4 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec4_single_swizzle_uses_extractelement() {
+    let module = Driver::parse("fn t(v: Vec4) -> f32:\n    v.x\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("extractelement <4 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec2_swizzle_write_uses_gep_store() {
+    let module = Driver::parse("fn t(mut v: Vec2):\n    v.x = 1.0\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("getelementptr"), "{}", ir);
+    assert!(ir.contains("store float"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec4_swizzle_write_uses_insertelement_store() {
+    let module = Driver::parse("fn t(mut v: Vec4):\n    v.x = 1.0\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("insertelement <4 x float>"), "{}", ir);
+    assert!(ir.contains("store <4 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_mat4_vec4_mul_uses_dot_pattern() {
+    let module = Driver::parse("fn t(m: Mat4, v: Vec4) -> Vec4:\n    m * v\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("fmul <4 x float>"), "{}", ir);
+    assert!(ir.contains("extractelement"), "{}", ir);
+    let row_extracts = ir.matches("extractvalue [4 x <4 x float>]").count();
+    assert_eq!(row_extracts, 4, "should extract exactly the 4 matrix rows: {}", ir);
+}
+
+#[test]
+fn codegen_vec2_ctor_uses_anonymous_struct() {
+    let module = Driver::parse("fn t() -> Vec2:\n    Vec2(1.0, 2.0)\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("alloca { float, float }"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec4_ctor_uses_insertelement_no_alloca() {
+    let module = Driver::parse("fn t() -> Vec4:\n    Vec4(1.0, 2.0, 3.0, 4.0)\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("insertelement <4 x float> undef"), "{}", ir);
+    assert!(!ir.contains("alloca <4 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_compound_assign_vec_uses_fadd() {
+    let module = Driver::parse("fn t(mut v: Vec3, o: Vec3):\n    v += o\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("fadd float"), "{}", ir);
+}
+
+/// Runtime test: compiled `vecmath.exe` exercises vec3/vec4 arithmetic,
+/// scalar multiply, swizzle reads (including reordering), Mat4*Vec4, and
+/// both single- and multi-component swizzle writes, end to end through a
+/// real clang-compiled executable.
+#[test]
+fn runtime_vecmath_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/vecmath.exe")
+        .output()
+        .expect("failed to execute vecmath.exe");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("sum: 11.000000 22.000000 33.000000"), "vec3 add result: {}", stdout);
+    assert!(stdout.contains("scaled: 2.000000 4.000000 6.000000"), "vec3 scalar mul result: {}", stdout);
+    assert!(stdout.contains("vec4 sum: 1.000000 1.000000 0.000000 0.000000"), "vec4 add result: {}", stdout);
+    assert!(stdout.contains("swizzled: 33.000000 22.000000 11.000000"), "swizzle reorder result: {}", stdout);
+    assert!(stdout.contains("mat4*vec4 identity: 1.000000 0.000000 0.000000 0.000000"), "identity matrix result: {}", stdout);
+    assert!(stdout.contains("vec4 single write: 99.000000 1.000000"), "vec4 lane write result: {}", stdout);
+    assert!(stdout.contains("vec2 multi write: 5.000000 6.000000"), "vec2 multi-swizzle write result: {}", stdout);
 }
