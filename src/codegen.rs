@@ -182,12 +182,22 @@ impl Codegen {
         self.line(&format!("@arena.{}.data = global {}* null", a.name, elem_ty));
         self.line(&format!("@arena.{}.count = global i64 0", a.name));
         // Per-slot generation counters backing `GenRef<T>` where `T` is this
-        // arena's element type: 0 means "never spawned", `spawn` sets a
-        // slot's generation to 1 on first write, `despawn` bumps it. A
-        // `GenRef` captures a slot's generation at creation time and a
-        // dereference is only trusted if it still matches this array's live
-        // value -- see `emit_despawn_stmt`/`GenRefCreate`/`GenRefIndex`.
+        // arena's element type: 0 means "never spawned". Every `spawn` and
+        // `despawn` of a slot bumps its generation by exactly 1 (never resets
+        // it to a fixed value), so parity encodes liveness -- odd is live,
+        // even is dead/never-spawned -- and no two spawns of the same slot
+        // ever share a generation. That's what prevents the ABA problem once
+        // slots are reused via the free-list below. A `GenRef` captures a
+        // slot's generation at creation time and a dereference is only
+        // trusted if it still matches this array's live value -- see
+        // `emit_despawn_stmt`/`GenRefCreate`/`GenRefIndex`.
         self.line(&format!("@arena.{}.gen = global [{} x i32] zeroinitializer", a.name, Self::ARENA_CAPACITY));
+        // Free-list stack of despawned slot indices, so `spawn` can reclaim a
+        // slot's memory instead of only ever growing `count` -- this is the
+        // "internal free-list to manage fragmentation" design.md promises.
+        // See `emit_despawn_stmt` (push) and `emit_spawn_stmt` (pop).
+        self.line(&format!("@arena.{}.free = global [{} x i64] zeroinitializer", a.name, Self::ARENA_CAPACITY));
+        self.line(&format!("@arena.{}.free_top = global i64 0", a.name));
         self.line("");
         self.arena_by_elem.push((a.ty.clone(), a.name.clone()));
     }
@@ -955,13 +965,18 @@ impl Codegen {
     /// Emit `spawn ArenaName(args...)`. Arenas start out empty (`data` is
     /// `null`, `count` is `0` -- see `emit_arena_decl`), so the first spawn
     /// into a given arena lazily `malloc`s a fixed-capacity backing array;
-    /// every spawn after that reuses it. The element is constructed (via the
-    /// same codegen path as any other struct literal) directly into the slot
-    /// at `data[count]`, then `count` is bumped by one. A spawn past
-    /// `ARENA_CAPACITY` live elements is silently dropped rather than
-    /// writing out of bounds -- a fixed backing store never reallocs/moves,
-    /// which matters because `par`/`swarm` workers may be reading it
-    /// concurrently from other threads.
+    /// every spawn after that reuses it. A slot is claimed by first popping
+    /// the arena's free-list (slots reclaimed by `despawn`); only when it's
+    /// empty does spawn fall back to growing `count`, so spawn/despawn churn
+    /// doesn't monotonically grow the arena -- the "logical leak" design.md
+    /// calls out. The element is constructed (via the same codegen path as
+    /// any other struct literal) directly into the claimed slot, and that
+    /// slot's generation is bumped by one either way (never reset to a fixed
+    /// value -- see `emit_arena_decl` on why that matters for reused slots).
+    /// A spawn past `ARENA_CAPACITY` live elements is silently dropped rather
+    /// than writing out of bounds -- a fixed backing store never
+    /// reallocs/moves, which matters because `par`/`swarm` workers may be
+    /// reading it concurrently from other threads.
     fn emit_spawn_stmt(&mut self, arena: &str, elem: &TypedExpr) {
         let elem_ty = self.expr_ty(elem);
         let elem_llvm_ty = self.llvm_ty(&elem_ty);
@@ -986,44 +1001,89 @@ impl Codegen {
         self.line(&format!("{}:", ready_label));
         let data_ready = self.tmp_name();
         self.line(&format!("  {} = load {}*, {}** @arena.{}.data", data_ready, elem_llvm_ty, elem_llvm_ty, arena));
+
+        // Prefer reclaiming a despawned slot off the free-list over growing
+        // `count`.
+        let free_top_reg = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* @arena.{}.free_top", free_top_reg, arena));
+        let has_free = self.tmp_name();
+        self.line(&format!("  {} = icmp sgt i64 {}, 0", has_free, free_top_reg));
+        let reuse_label = self.block_label("spawn_reuse");
+        let grow_label = self.block_label("spawn_grow");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", has_free, reuse_label, grow_label));
+
+        self.line(&format!("{}:", reuse_label));
+        let new_free_top = self.tmp_name();
+        self.line(&format!("  {} = sub i64 {}, 1", new_free_top, free_top_reg));
+        self.line(&format!("  store i64 {}, i64* @arena.{}.free_top", new_free_top, arena));
+        let free_slot_ptr = self.tmp_name();
+        self.line(&format!(
+            "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.free, i64 0, i64 {}",
+            free_slot_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, new_free_top
+        ));
+        let reused_idx = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", reused_idx, free_slot_ptr));
+        let store_label = self.block_label("spawn_store");
+        let end_label = self.block_label("spawn_end");
+        self.line(&format!("  br label %{}", store_label));
+
+        self.line(&format!("{}:", grow_label));
         let count_reg = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @arena.{}.count", count_reg, arena));
         let in_bounds = self.tmp_name();
         self.line(&format!("  {} = icmp slt i64 {}, {}", in_bounds, count_reg, Self::ARENA_CAPACITY));
-        let store_label = self.block_label("spawn_store");
-        let end_label = self.block_label("spawn_end");
-        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, store_label, end_label));
+        let grow_ok_label = self.block_label("spawn_grow_ok");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, grow_ok_label, end_label));
+
+        self.line(&format!("{}:", grow_ok_label));
+        let next_count = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", next_count, count_reg));
+        self.line(&format!("  store i64 {}, i64* @arena.{}.count", next_count, arena));
+        self.line(&format!("  br label %{}", store_label));
 
         self.line(&format!("{}:", store_label));
+        let slot_idx = self.tmp_name();
+        self.line(&format!(
+            "  {} = phi i64 [ {}, %{} ], [ {}, %{} ]",
+            slot_idx, reused_idx, reuse_label, count_reg, grow_ok_label
+        ));
         let val = self.emit_expr(elem);
         let clean_val = self.untag(&val, &elem_ty);
         let slot_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds {}, {}* {}, i64 {}",
-            slot_ptr, elem_llvm_ty, elem_llvm_ty, data_ready, count_reg
+            slot_ptr, elem_llvm_ty, elem_llvm_ty, data_ready, slot_idx
         ));
         self.line(&format!("  store {} {}, {}* {}", elem_llvm_ty, clean_val, elem_llvm_ty, slot_ptr));
-        // First write to this slot: its generation starts live at 1 (0 is
-        // reserved for "never spawned" -- see `emit_arena_decl`).
+        // Bump this slot's generation by one rather than resetting it to a
+        // fixed value: a reused slot's generation was already advanced by
+        // `emit_despawn_stmt`, and re-stamping a constant here would let a
+        // stale `GenRef` captured before that despawn incorrectly match
+        // again (the ABA problem design.md calls out).
         let gen_slot_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
-            gen_slot_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, count_reg
+            gen_slot_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, slot_idx
         ));
-        self.line(&format!("  store i32 1, i32* {}", gen_slot_ptr));
-        let next_count = self.tmp_name();
-        self.line(&format!("  {} = add i64 {}, 1", next_count, count_reg));
-        self.line(&format!("  store i64 {}, i64* @arena.{}.count", next_count, arena));
+        let cur_gen = self.tmp_name();
+        self.line(&format!("  {} = load i32, i32* {}", cur_gen, gen_slot_ptr));
+        let next_gen = self.tmp_name();
+        self.line(&format!("  {} = add i32 {}, 1", next_gen, cur_gen));
+        self.line(&format!("  store i32 {}, i32* {}", next_gen, gen_slot_ptr));
         self.line(&format!("  br label %{}", end_label));
 
         self.line(&format!("{}:", end_label));
     }
 
-    /// Emit `despawn ArenaName[index]`: bumps the slot's generation counter
-    /// by 1, invalidating any `GenRef` created against its previous value.
-    /// Does not reclaim/reuse the slot's memory or `data`/`count` (no
-    /// free-list yet -- separate future work). An out-of-bounds `index` is a
-    /// silent no-op, mirroring `spawn`'s silent-drop-when-full behavior.
+    /// Emit `despawn ArenaName[index]`: if the slot is currently live (odd
+    /// generation -- see `emit_arena_decl`), bumps its generation by 1
+    /// (invalidating any `GenRef` created against the old value) and pushes
+    /// the slot onto the arena's free-list so a later `spawn` can reclaim
+    /// its memory instead of only ever growing `count`. An out-of-bounds
+    /// `index`, or one that's already dead (never spawned, or already
+    /// despawned), is a silent no-op -- this also guards against a
+    /// double-despawn pushing the same slot onto the free-list twice, which
+    /// would otherwise let two later spawns alias the same memory.
     fn emit_despawn_stmt(&mut self, arena: &str, index: &TypedExpr) {
         let idx_val = self.emit_expr(index);
         let idx_bare = self.untag(&idx_val, &Ty::Int);
@@ -1046,9 +1106,28 @@ impl Codegen {
         ));
         let gen_val = self.tmp_name();
         self.line(&format!("  {} = load i32, i32* {}", gen_val, gen_ptr));
+        let parity = self.tmp_name();
+        self.line(&format!("  {} = and i32 {}, 1", parity, gen_val));
+        let is_live = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, 1", is_live, parity));
+        let live_label = self.block_label("despawn_live");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_live, live_label, end_label));
+
+        self.line(&format!("{}:", live_label));
         let next_gen = self.tmp_name();
         self.line(&format!("  {} = add i32 {}, 1", next_gen, gen_val));
         self.line(&format!("  store i32 {}, i32* {}", next_gen, gen_ptr));
+        let free_top_reg = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* @arena.{}.free_top", free_top_reg, arena));
+        let free_slot_ptr = self.tmp_name();
+        self.line(&format!(
+            "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.free, i64 0, i64 {}",
+            free_slot_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, free_top_reg
+        ));
+        self.line(&format!("  store i64 {}, i64* {}", idx64, free_slot_ptr));
+        let next_free_top = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", next_free_top, free_top_reg));
+        self.line(&format!("  store i64 {}, i64* @arena.{}.free_top", next_free_top, arena));
         self.line(&format!("  br label %{}", end_label));
 
         self.line(&format!("{}:", end_label));

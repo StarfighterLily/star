@@ -30,6 +30,8 @@ declare float @llvm.maxnum.f32(float, float)
 @arena.Enemies.data = global %Enemy* null
 @arena.Enemies.count = global i64 0
 @arena.Enemies.gen = global [1024 x i32] zeroinitializer
+@arena.Enemies.free = global [1024 x i64] zeroinitializer
+@arena.Enemies.free_top = global i64 0
 
 define void @main() {
 entry:

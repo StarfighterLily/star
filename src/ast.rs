@@ -198,8 +198,9 @@ pub enum Stmt {
     /// [`crate::sequence`]); rejected elsewhere by the desugaring pass.
     Yield { span: Span },
     /// `spawn ArenaName(args...)` - constructs a new element of the arena's
-    /// declared struct type and appends it to the arena's backing array,
-    /// growing its live `count` by one. See
+    /// declared struct type. Reclaims a slot off the arena's free-list
+    /// (populated by `despawn`) if one is available, otherwise appends to
+    /// the backing array and grows its live `count` by one. See
     /// [`crate::codegen::Codegen::emit_spawn_stmt`].
     Spawn {
         arena: String,
@@ -207,9 +208,9 @@ pub enum Stmt {
         span: Span,
     },
     /// `despawn ArenaName[index]` - invalidates a slot by bumping its
-    /// generation counter. Does not free/reuse the slot's memory (no
-    /// free-list yet); it exists so a `GenRef` into that slot can be
-    /// observed going stale. See
+    /// generation counter and pushes it onto the arena's free-list so a
+    /// later `spawn` can reclaim its memory; it exists so a `GenRef` into
+    /// that slot can be observed going stale. See
     /// [`crate::codegen::Codegen::emit_despawn_stmt`].
     Despawn {
         arena: String,

@@ -327,6 +327,142 @@ fn test_nested() -> i32:
     assert!(offset_loads >= 2, "nested frames should save/restore offset multiple times");
 }
 
+// ===== Frame escape analysis ===============================================
+//
+// design.md's safety pitch for `frame` is that "frame pointers can never be
+// assigned to lifetimes exceeding the current tick": a `frame:` block is a
+// scoped bump allocator whose offset is rewound the instant the block ends,
+// so a struct value declared inside one must never survive past it. Only
+// struct (`Ty::Named`) identity is tracked -- scalars, Vec/Mat SIMD values,
+// and `GenRef`s are plain data copied by value everywhere in this compiler
+// and can never dangle, so deriving a scalar from a frame-local struct (or
+// passing the struct itself into a synchronous function call) is fine; only
+// returning/assigning/spawning the struct's own identity past its scope is
+// rejected. See `Checker::check_frame_escapes` in `types.rs`.
+
+const FRAME_ESCAPE_SRC_PREFIX: &str = "struct Point:\n    x: i32\n    y: i32\n\n";
+
+/// Deriving a scalar (via field access/arithmetic) from a frame-local struct
+/// and returning it explicitly is safe: the scalar is a plain value copied
+/// out of frame memory, not the struct's identity.
+#[test]
+fn accepts_frame_local_scalar_derived_via_explicit_return() {
+    let src = format!(
+        "{}fn t() -> i32:\n    frame:\n        let p = Point(1, 2)\n        return p.x + p.y\n",
+        FRAME_ESCAPE_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "returning a scalar derived from a frame-local struct should be allowed");
+}
+
+/// Passing a frame-local struct into a function call is safe: the callee
+/// only borrows it for the duration of that synchronous call (and is itself
+/// independently checked against leaking its own frame-locals back out), so
+/// using the call's result in the enclosing function's tail position is fine.
+#[test]
+fn accepts_frame_local_struct_passed_to_call_in_tail_position() {
+    let src = format!(
+        "{}fn magnitude(p: Point) -> i32:\n    p.x + p.y\n\nfn t() -> i32:\n    frame:\n        let p = Point(3, 4)\n        magnitude(p)\n",
+        FRAME_ESCAPE_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "passing a frame-local struct to a function call should be allowed");
+}
+
+/// Assigning a frame-local struct into another binding declared in the same
+/// (or an enclosing) `frame:` scope doesn't escape -- both die with the
+/// block together.
+#[test]
+fn accepts_frame_local_struct_assigned_to_frame_local_target() {
+    let src = format!(
+        "{}fn t() -> i32:\n    frame:\n        let a = Point(1, 2)\n        let mut b = Point(0, 0)\n        b = a\n        return b.x\n",
+        FRAME_ESCAPE_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "assigning a frame-local struct to another frame-local should be allowed");
+}
+
+/// Explicitly `return`-ing a frame-local struct's own identity out of the
+/// enclosing function is the classic escape design.md warns about: the
+/// struct's memory is reclaimed the instant the `frame:` block ends, which
+/// happens before the caller could ever observe it.
+#[test]
+fn rejects_returning_frame_local_struct() {
+    let src = format!(
+        "{}fn t() -> Point:\n    frame:\n        let p = Point(1, 2)\n        return p\n",
+        FRAME_ESCAPE_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("returning a frame-local struct should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("frame")), "error should mention the frame escape: {:?}", errs);
+}
+
+/// The same escape can happen implicitly: a `frame:` block in tail position
+/// whose own trailing expression is the frame-local struct becomes the
+/// function's return value with no explicit `return` at all.
+#[test]
+fn rejects_frame_local_struct_as_implicit_trailing_return() {
+    let src = format!(
+        "{}fn t() -> Point:\n    frame:\n        let p = Point(1, 2)\n        p\n",
+        FRAME_ESCAPE_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("an implicit trailing frame-local struct should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("frame")), "error should mention the frame escape: {:?}", errs);
+}
+
+/// Assigning a frame-local struct into a field of a struct that outlives the
+/// `frame:` scope (here, a `mut` parameter passed in by the caller) is
+/// exactly the "stored into a struct field" escape todo.md calls out.
+#[test]
+fn rejects_frame_local_struct_assigned_into_outer_struct_field() {
+    let src = format!(
+        "{}struct Holder:\n    mut p: Point\n\nfn t(mut h: Holder):\n    frame:\n        let temp = Point(9, 9)\n        h.p = temp\n",
+        FRAME_ESCAPE_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("assigning a frame-local struct into an outer struct field should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("frame")), "error should mention the frame escape: {:?}", errs);
+}
+
+/// Reassigning a frame-local struct into a variable declared *outside* the
+/// `frame:` block (not just a struct field) is the same escape.
+#[test]
+fn rejects_frame_local_struct_assigned_to_outer_variable() {
+    let src = format!(
+        "{}fn t() -> i32:\n    let mut result = Point(0, 0)\n    frame:\n        let temp = Point(5, 6)\n        result = temp\n    return result.x\n",
+        FRAME_ESCAPE_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("assigning a frame-local struct to an outer variable should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("frame")), "error should mention the frame escape: {:?}", errs);
+}
+
+/// `spawn`-ing a frame-local struct into an arena is a third escape vector:
+/// arenas are long-lived by design, definitely outliving the current tick.
+#[test]
+fn rejects_spawn_using_frame_local_struct() {
+    let src = format!(
+        "{}struct Enemy:\n    pos: Point\n\narena Enemies: Enemy\n\nfn t():\n    frame:\n        let temp = Point(1, 1)\n        spawn Enemies(temp)\n",
+        FRAME_ESCAPE_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("spawning with a frame-local struct argument should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("frame")), "error should mention the frame escape: {:?}", errs);
+}
+
+/// A struct declared *outside* any `frame:` block is never subject to escape
+/// analysis, even when it's later mutated or returned from inside one.
+#[test]
+fn accepts_non_frame_struct_returned_from_inside_frame_block() {
+    let src = format!(
+        "{}fn t() -> Point:\n    let p = Point(7, 8)\n    frame:\n        let temp = Point(0, 0)\n    return p\n",
+        FRAME_ESCAPE_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "returning a struct declared outside the frame block should be allowed");
+}
+
 // ===== M6 SIMD Math Type Tests ============================================
 
 /// Type-check a single-function source and return the trailing expression's
@@ -875,6 +1011,73 @@ fn runtime_genref_stale_after_despawn_falls_back_to_zero() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("before: 100"), "live reference should read real data: {}", stdout);
     assert!(stdout.contains("after: 0"), "stale reference should fall back to zero, not crash or read stale data: {}", stdout);
+}
+
+// --- arena free-list (slot reclamation) ------------------------------------
+
+/// Codegen for `despawn`: pushes the freed slot onto the arena's free-list
+/// (guarded by a generation-parity liveness check) instead of only bumping
+/// the generation counter, so a later `spawn` can reclaim the slot's memory.
+#[test]
+fn codegen_despawn_pushes_freed_slot_onto_freelist() {
+    let src = format!("{}fn t():\n    despawn Enemies[0]\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+
+    assert!(ir.contains("@arena.Enemies.free ="), "arena should declare a free-list global: {}", ir);
+    assert!(ir.contains("@arena.Enemies.free_top ="), "arena should declare a free-list top-of-stack counter: {}", ir);
+    assert!(ir.contains("and i32"), "despawn should check generation parity before freeing: {}", ir);
+    assert!(
+        ir.contains("getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.Enemies.free"),
+        "despawn should write the freed index into the free-list: {}",
+        ir
+    );
+}
+
+/// Codegen for `spawn`: pops a slot off the arena's free-list when one is
+/// available instead of unconditionally growing `count`.
+#[test]
+fn codegen_spawn_reuses_freed_slot_before_growing() {
+    let src = format!("{}fn t():\n    spawn Enemies(10)\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+
+    assert!(ir.contains("load i64, i64* @arena.Enemies.free_top"), "spawn should check the free-list before growing: {}", ir);
+    assert!(ir.contains("icmp sgt i64"), "spawn should branch on whether the free-list is non-empty: {}", ir);
+    assert!(ir.contains("spawn_reuse"), "spawn should have a slot-reuse path: {}", ir);
+    assert!(ir.contains("spawn_grow"), "spawn should have a count-growing fallback path: {}", ir);
+}
+
+/// Runtime test: `despawn` pushes a slot onto the arena's free-list and the
+/// next `spawn` reclaims that same slot rather than growing the arena, while
+/// the generation bump still keeps a `GenRef` taken before the despawn from
+/// aliasing the slot's new occupant (no ABA bug on reuse).
+#[test]
+fn runtime_spawn_reuses_despawned_slot_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/arena_freelist.exe").output().expect("failed to execute arena_freelist.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("via_old: 0"), "GenRef captured before despawn must not alias the slot's new occupant: {}", stdout);
+    assert!(stdout.contains("via_new: 200"), "GenRef captured after the slot is reused should read the new occupant: {}", stdout);
+}
+
+/// Runtime test: despawning an already-despawned slot must not push it onto
+/// the free-list twice -- otherwise two later spawns would both reclaim the
+/// same slot, aliasing each other's memory, instead of one reusing the freed
+/// slot and the other growing the arena.
+#[test]
+fn runtime_double_despawn_does_not_double_free_slot() {
+    use std::process::Command;
+
+    let output = Command::new("examples/arena_freelist_double_despawn.exe")
+        .output()
+        .expect("failed to execute arena_freelist_double_despawn.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("slot0: 200"), "reused slot should hold the second spawn's value: {}", stdout);
+    assert!(stdout.contains("slot1: 300"), "third spawn should grow into a fresh slot, not alias slot 0: {}", stdout);
 }
 
 // ===== M8 Reflection ========================================================
