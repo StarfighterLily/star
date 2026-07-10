@@ -113,14 +113,48 @@ impl Checker {
     fn walk_par_expr(&mut self, expr: &TypedExpr, locals: &HashSet<String>) {
         match expr {
             TypedExpr::Call { callee, args, span, .. } => {
-                if let TypedExpr::Field { base, .. } = callee.as_ref() {
-                    match root_ident(base) {
-                        Some(root) if locals.contains(&root) => {}
-                        _ => self.error(
-                            "cannot call a method on a captured value inside a par/swarm body \
-                             (only the loop variable's own methods may be called)",
+                // The callable name, whichever syntactic shape the call took
+                // (`name(..)` or `obj.method(..)`), used below to check
+                // whether it (transitively) performs an operation the
+                // disjointness proof can't see through -- see
+                // `Checker::unsafe_par_fns`.
+                let called_name: Option<&str> = match callee.as_ref() {
+                    TypedExpr::Field { base, field, .. } => {
+                        match root_ident(base) {
+                            Some(root) if locals.contains(&root) => {}
+                            _ => self.error(
+                                "cannot call a method on a captured value inside a par/swarm body \
+                                 (only the loop variable's own methods may be called)",
+                                *span,
+                            ),
+                        }
+                        Some(field.as_str())
+                    }
+                    TypedExpr::Ident { name, .. } => Some(name.as_str()),
+                    _ => None,
+                };
+                // A plain function call was previously entirely unchecked
+                // here: the disjointness proof only ever looked at *this*
+                // body's statements, so moving a `spawn`/`despawn`/`frame:`
+                // one level into a helper function (or nesting it further,
+                // through a chain of calls) bypassed the ban completely --
+                // even though it produces the exact same unsynchronized
+                // 4-thread race on the arena's globals `spawn`/`despawn`
+                // are directly banned to prevent. `unsafe_par_fns` is
+                // precomputed (transitively, through the whole call graph)
+                // before any body is checked, so this catches the hazard
+                // regardless of declaration order or how many calls deep it is.
+                if let Some(name) = called_name {
+                    if self.unsafe_par_fns.contains(name) {
+                        self.error(
+                            format!(
+                                "cannot call `{}` inside a par/swarm body: it spawns/despawns entities or opens a \
+                                 `frame:` block (directly or through another call), which cannot be proven disjoint \
+                                 across worker threads",
+                                name
+                            ),
                             *span,
-                        ),
+                        );
                     }
                 }
                 self.walk_par_expr(callee, locals);

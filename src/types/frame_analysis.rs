@@ -53,7 +53,7 @@ impl Checker {
                     if escapes {
                         self.error(
                             format!(
-                                "`{}` is a struct allocated inside a `frame:` scope; its memory is reclaimed when that scope ends, so it cannot be assigned outside it",
+                                "`{}` is a struct allocated inside a `frame:` scope (or a closure that captured it as `self` by pointer); its memory is reclaimed when that scope ends, so it cannot be assigned outside it",
                                 name
                             ),
                             *span,
@@ -66,7 +66,7 @@ impl Checker {
                     if let Some(name) = frame_escape_source(v, frame_locals) {
                         self.error(
                             format!(
-                                "cannot return `{}`: it is a struct allocated inside a `frame:` scope and does not outlive the current tick",
+                                "cannot return `{}`: it is a struct allocated inside a `frame:` scope (or a closure that captured it as `self` by pointer) and does not outlive the current tick",
                                 name
                             ),
                             *span,
@@ -79,7 +79,7 @@ impl Checker {
                     if let Some(name) = frame_escape_source(e, frame_locals) {
                         self.error(
                             format!(
-                                "cannot use `{}` as this function's value: it is a struct allocated inside a `frame:` scope and does not outlive the current tick",
+                                "cannot use `{}` as this function's value: it is a struct allocated inside a `frame:` scope (or a closure that captured it as `self` by pointer) and does not outlive the current tick",
                                 name
                             ),
                             e.span(),
@@ -169,7 +169,26 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>) -> Opti
         }
         // A call only borrows its arguments for the duration of that
         // synchronous invocation (and the callee's own body is checked
-        // independently against leaking its own frame-locals back out);
+        // independently against leaking its own frame-locals back out) --
+        // *except* when the call is a method call on a frame-local receiver
+        // and returns a closure: `Codegen::captured_value_llvm_ty` documents
+        // that a closure captures its `self` receiver *by pointer*, not by
+        // value (every other capture is a genuine value copy, safe by the
+        // same reasoning as the closure-literal case below). If `self` is
+        // frame-local, that pointer is smuggled straight past this analysis
+        // and out through the call's return value -- undetected, since a
+        // plain `Call` was previously never inspected at all. Conservatively
+        // (and soundly) treat any such call as carrying the receiver's frame
+        // identity onward; see `rejects_closure_capturing_frame_local_self`
+        // in `tests/frontend.rs` for the concrete repro this closes.
+        TypedExpr::Call { callee, ty, .. } => {
+            if matches!(ty, Ty::Closure(..)) {
+                if let TypedExpr::Field { base, .. } = callee.as_ref() {
+                    return frame_escape_source(base, frame_locals);
+                }
+            }
+            None
+        }
         // `GenRef` creation/dereference is plain index+generation data
         // backed by the arena's own (non-frame) storage; everything else is
         // a scalar. None of these can carry frame identity onward.
@@ -177,15 +196,20 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>) -> Opti
         // snapshot copied into its own heap-allocated environment, not a
         // reference into this stack frame -- see
         // `Codegen::emit_closure_lit`), so it can never carry a frame-local
-        // struct's identity onward regardless of what it captured.
+        // struct's identity onward regardless of what it captured -- *this*
+        // function's own `self` is never itself a frame-local (only a `let`
+        // inside a `frame:` block is tracked, and `self` is always a
+        // parameter), so a closure literal appearing directly in this body
+        // is not a risk on its own; the risk is specifically a *call*
+        // reaching into another function's body where `self` gets captured,
+        // handled by the `TypedExpr::Call` arm above.
         //
         // A `List<T>` (`ListNew`/`ListLit`/`ListIndex`/`ListMethod`) stores
         // its elements by value into its own independently `malloc`'d
         // buffer (see `crate::codegen::list`), not by reference into this
         // stack frame -- pushing a frame-local struct into a list copies it,
         // the same reasoning that makes a closure's captures safe above.
-        TypedExpr::Call { .. }
-        | TypedExpr::GenRefCreate { .. }
+        TypedExpr::GenRefCreate { .. }
         | TypedExpr::GenRefIndex { .. }
         | TypedExpr::Binary { .. }
         | TypedExpr::Unary { .. }

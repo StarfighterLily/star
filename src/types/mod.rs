@@ -21,7 +21,7 @@ pub use hir::*;
 
 use crate::ast::*;
 use crate::diagnostics::{suggest, Diagnostic, Span};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A resolved type.
 #[derive(Clone, Debug, PartialEq)]
@@ -102,6 +102,19 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "abs" | "min" | "max" => Some(args.first().map(|a| a.clone().into_ty()).unwrap_or(Ty::Float)),
         "len" => Some(Ty::Int),
         "concat" => Some(Ty::Str),
+        // `dot`/`length`: Vec2/Vec3/Vec4 math the codegen already had the
+        // primitives for (`emit_dot4` existed internally to implement
+        // `Mat4 * Vec4`) but exposed to no user-callable builtin.
+        "dot" | "length" => Some(Ty::Float),
+        // `lerp`/`clamp` preserve their first argument's type (Float or a
+        // Vec2/Vec3/Vec4 for `lerp`; Int or Float for `clamp`).
+        "lerp" | "clamp" => Some(args.first().map(|a| a.clone().into_ty()).unwrap_or(Ty::Float)),
+        // Deterministic, seeded PRNG (xorshift32) -- matters specifically
+        // for a tick-based engine where determinism/replay is often a
+        // design goal (see `@rng.state`'s own doc comment).
+        "rand" => Some(Ty::Float),
+        "rand_range" => Some(Ty::Int),
+        "rand_seed" => Some(Ty::Named("unknown".into())),
         _ => None,
     }
 }
@@ -151,6 +164,31 @@ pub struct Checker {
     /// since a worker-thread dispatch has no well-defined `break`/`continue`
     /// target even when nested inside an outer loop.
     loop_depth: u32,
+    /// Names of every free function/method whose body -- directly, or
+    /// transitively through any call it makes -- contains a `spawn`,
+    /// `despawn`, or `frame:` statement. Computed once, up front, from the
+    /// raw (untyped) AST before any item is checked (see
+    /// `compute_unsafe_par_fns`), so `par`/`swarm` disjointness checking
+    /// (`par_analysis::walk_par_expr`) can reject a call to one of these
+    /// regardless of declaration order or how many calls deep the hazard is
+    /// nested -- closing the "move the `spawn` one level into a helper
+    /// function" hole in the textual-ban approach.
+    unsafe_par_fns: HashSet<String>,
+    /// The enclosing function/method's declared return type, used to
+    /// type-check `return` statements (§1.3's hole: previously `return`'s
+    /// value was never compared against the function's declared return
+    /// type at all, and codegen emitted `ret <ty-of-the-returned-expr>`
+    /// rather than `ret <declared-ty>`, so a mismatch reached codegen as a
+    /// function whose declared LLVM signature and actual terminator
+    /// disagree). Three states:
+    /// - `None`: not currently checking a `return`-checkable body (e.g.
+    ///   inside a closure literal, whose own return type is inferred *from*
+    ///   its body -- checking `return` against it would be circular, so
+    ///   it's simplest and safest to just suspend checking there).
+    /// - `Some(None)`: inside a function with no declared return type (a
+    ///   bare `return` is fine; `return <value>` is not).
+    /// - `Some(Some(ty))`: inside a function declared to return `ty`.
+    current_ret_ty: Option<Option<Ty>>,
 }
 
 impl Checker {
@@ -169,6 +207,8 @@ impl Checker {
             mono_items: Vec::new(),
             errors: Vec::new(),
             loop_depth: 0,
+            unsafe_par_fns: HashSet::new(),
+            current_ret_ty: None,
         }
     }
 
@@ -180,6 +220,14 @@ impl Checker {
         if !desugar_errors.is_empty() {
             return Err(desugar_errors);
         }
+
+        // Precompute, from the raw AST, every function/method that
+        // (transitively) performs an operation `par`/`swarm`'s disjointness
+        // proof can't see through -- see `compute_unsafe_par_fns` and
+        // `unsafe_par_fns`'s own doc comment. Must happen before any item is
+        // checked so a `par` body can reject a call to a not-yet-checked
+        // function declared later in the file.
+        self.unsafe_par_fns = compute_unsafe_par_fns(&module);
 
         // First pass (0): register every struct/enum/fn *name* -- generic
         // templates into `generic_structs`/`generic_enums`/`generic_fns`,
@@ -387,7 +435,60 @@ impl Checker {
         // function's loop nesting can never leak into the next.
         self.loop_depth = 0;
         let sig = self.check_fn_sig_with_self_ty(&f.sig, self_ty)?;
+        // `main` is always lowered to `i32 @main(...)` regardless of its
+        // declared return type (see `Codegen::emit_fn`), since a hosted C
+        // entry point's signature is an OS/CRT ABI requirement, not a
+        // stylistic choice -- so a declared type other than `i32` (or no
+        // declared type at all, which is fine: it becomes an implicit `ret
+        // i32 0`) can never actually be honored and must be rejected here
+        // rather than silently producing a `ret <declared-ty>` that
+        // disagrees with `main`'s forced `i32` signature.
+        if sig.name == "main" {
+            if let Some(ret_ty) = &sig.ret {
+                if *ret_ty != Ty::Int {
+                    self.error(
+                        format!("`main` must return `i32` (or have no declared return type), found `{:?}`", ret_ty),
+                        sig.span,
+                    );
+                }
+            }
+        }
+        let saved_ret_ty = std::mem::replace(&mut self.current_ret_ty, Some(sig.ret.clone()));
         let body = self.check_block(&f.body, &sig)?;
+        self.current_ret_ty = saved_ret_ty;
+        // §1.3's other half: `return`-statement checking above only catches
+        // an *explicit* `return <expr>`. Star also allows an *implicit*
+        // trailing-expression return (`fn get_val() -> i32:\n    "not an
+        // int"`, no `return` keyword at all) -- codegen's `emit_fn` lowers
+        // that trailing value straight to `ret <ty-of-the-expr>` with no
+        // comparison against the declared return type either, so this needs
+        // its own check, mirroring exactly which statement shapes
+        // `Codegen::body_terminates`/`emit_stmts_value` treat as
+        // "terminated" / "produces a trailing value".
+        if let Some(ret_ty) = &sig.ret {
+            if !Self::stmts_terminate(&body.stmts) {
+                match Self::trailing_value_ty(&body.stmts) {
+                    Some(actual) => {
+                        if !Self::types_compatible(ret_ty, &actual) {
+                            self.error(
+                                format!(
+                                    "function `{}` is declared to return `{:?}`, but its trailing expression has type `{:?}`",
+                                    sig.name, ret_ty, actual
+                                ),
+                                sig.span,
+                            );
+                        }
+                    }
+                    None => self.error(
+                        format!(
+                            "function `{}` is declared to return `{:?}` but does not end in a value-producing expression or explicit `return`",
+                            sig.name, ret_ty
+                        ),
+                        sig.span,
+                    ),
+                }
+            }
+        }
         self.check_frame_escapes(&body);
         Some(TypedFnDef { sig, body, span: f.span })
     }
@@ -690,6 +791,54 @@ impl Checker {
         }
     }
 
+    /// True if `declared` and `actual` should be treated as the same type
+    /// for assignability purposes (`let`/`return`/`Assign`/call-argument
+    /// checking). Exact equality, with one carve-out: either side being a
+    /// placeholder (`unknown`/`infer_error`/`infer`/`Self`) means an error
+    /// was already reported for that sub-expression elsewhere (an undefined
+    /// name, an unresolved field, ...), so staying silent here avoids
+    /// cascading a second, less useful diagnostic on top of the real one.
+    fn types_compatible(declared: &Ty, actual: &Ty) -> bool {
+        fn is_placeholder(t: &Ty) -> bool {
+            matches!(t, Ty::Named(n) if matches!(n.as_str(), "unknown" | "infer_error" | "infer" | "Self"))
+        }
+        declared == actual || is_placeholder(declared) || is_placeholder(actual)
+    }
+
+    /// True if the last statement of `stmts` unconditionally terminates the
+    /// block with an explicit `return`/`break`/`continue` (looking through
+    /// trailing `frame` scopes and fully-covering `if`/`match`), mirroring
+    /// `crate::codegen::Codegen::body_terminates` exactly -- kept in sync
+    /// with it so `check_fn_with_self_ty`'s implicit-trailing-return check
+    /// agrees with what codegen will actually do with the same body.
+    fn stmts_terminate(stmts: &[TypedStmt]) -> bool {
+        match stmts.last() {
+            Some(TypedStmt::Return { .. } | TypedStmt::Break { .. } | TypedStmt::Continue { .. }) => true,
+            Some(TypedStmt::Frame { body, .. }) => Self::stmts_terminate(&body.stmts),
+            Some(TypedStmt::If { then_block, else_block: Some(else_block), .. }) => {
+                Self::stmts_terminate(&then_block.stmts) && Self::stmts_terminate(&else_block.stmts)
+            }
+            Some(TypedStmt::Expr(TypedExpr::Match { arms, .. })) => {
+                !arms.is_empty() && arms.iter().all(|arm| Self::stmts_terminate(&arm.body.stmts))
+            }
+            _ => false,
+        }
+    }
+
+    /// The type of `stmts`' implicit trailing value, if any -- mirrors
+    /// `crate::codegen::Codegen::emit_stmts_value`'s notion of which
+    /// statement shapes contribute a value (a trailing bare expression, or a
+    /// `frame:` scope whose own trailing statement does) versus which don't
+    /// (every other statement kind, including a statement-form `if`/`match`
+    /// used only for side effects).
+    fn trailing_value_ty(stmts: &[TypedStmt]) -> Option<Ty> {
+        match stmts.last() {
+            Some(TypedStmt::Expr(e)) => Some(e.clone().into_ty()),
+            Some(TypedStmt::Frame { body, .. }) => Self::trailing_value_ty(&body.stmts),
+            _ => None,
+        }
+    }
+
     fn error(&mut self, msg: impl Into<String>, span: Span) {
         self.errors.push(TypeError { message: msg.into(), span, note: None });
     }
@@ -930,6 +1079,203 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             span: *span,
         },
         Expr::ListLit(elems, span) => Expr::ListLit(elems.iter().map(|e| subst_expr(e, subst)).collect(), *span),
+    }
+}
+
+// ===== `par`/`swarm` transitive hazard detection ============================
+
+/// Compute the set of free-function/method names whose body -- directly, or
+/// transitively through any named function/method it calls -- contains a
+/// `spawn`, `despawn`, or `frame:` statement. Operates on the raw (untyped)
+/// AST so it can run once, up front, before any item is type-checked (see
+/// `Checker::check`); keyed by name only (methods share the free-function
+/// namespace here, mirroring `Checker::functions`' own pre-existing flat
+/// keying -- see §1.7's note on that design elsewhere in this codebase).
+///
+/// This is a sound over-approximation, not a precise one: an indirect call
+/// through a closure/function value can't be resolved to a name here, so it
+/// contributes no edge to the call graph (the closure literal itself is
+/// separately banned outright inside a `par`/`swarm` body, see
+/// `par_analysis::walk_par_expr`'s `TypedExpr::Closure` arm) -- so it can
+/// occasionally reject a call to a function name that happens to share a
+/// name with a hazardous one on an unrelated struct, but it never misses a
+/// real hazard reachable through an ordinary named call chain.
+fn compute_unsafe_par_fns(module: &Module) -> HashSet<String> {
+    let mut bodies: HashMap<String, &Block> = HashMap::new();
+    for item in &module.items {
+        match item {
+            Item::Fn(f) => { bodies.insert(f.sig.name.clone(), &f.body); }
+            Item::Impl(blk) => {
+                for m in &blk.methods {
+                    bodies.insert(m.sig.name.clone(), &m.body);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut unsafe_set: HashSet<String> = HashSet::new();
+    let mut call_graph: HashMap<String, HashSet<String>> = HashMap::new();
+    for (name, body) in &bodies {
+        let mut direct_hazard = false;
+        let mut called = HashSet::new();
+        scan_block_for_par_hazards(body, &mut direct_hazard, &mut called);
+        if direct_hazard {
+            unsafe_set.insert(name.clone());
+        }
+        call_graph.insert(name.clone(), called);
+    }
+
+    // Fixed-point propagation: a function that calls an unsafe function is
+    // itself unsafe, however many calls deep the original hazard is nested.
+    loop {
+        let mut changed = false;
+        for (name, callees) in &call_graph {
+            if !unsafe_set.contains(name) && callees.iter().any(|c| unsafe_set.contains(c)) {
+                unsafe_set.insert(name.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    unsafe_set
+}
+
+/// Scan a block for `spawn`/`despawn`/`frame:` (setting `hazard` if found)
+/// and collect the names of every function/method it calls (by bare `Ident`
+/// callee or `Field`-based method callee) into `called`, recursing into every
+/// nested block (`if`/`while`/`for`/`frame`/`par`/`match` arms) so a hazard
+/// nested arbitrarily deep in ordinary control flow is still found. Does not
+/// recurse into a lambda literal's body: whether that body ever executes
+/// depends on whether/when the closure value it produces is later called,
+/// which this purely-syntactic, per-function scan can't determine.
+fn scan_block_for_par_hazards(block: &Block, hazard: &mut bool, called: &mut HashSet<String>) {
+    for stmt in &block.stmts {
+        scan_stmt_for_par_hazards(stmt, hazard, called);
+    }
+}
+
+fn scan_stmt_for_par_hazards(stmt: &Stmt, hazard: &mut bool, called: &mut HashSet<String>) {
+    match stmt {
+        Stmt::Let { value, .. } => scan_expr_for_par_hazards(value, hazard, called),
+        Stmt::Assign { target, value, .. } => {
+            scan_expr_for_par_hazards(target, hazard, called);
+            scan_expr_for_par_hazards(value, hazard, called);
+        }
+        Stmt::Return { value, .. } => {
+            if let Some(v) = value {
+                scan_expr_for_par_hazards(v, hazard, called);
+            }
+        }
+        Stmt::Expr(e) => scan_expr_for_par_hazards(e, hazard, called),
+        Stmt::If { cond, then_block, else_block, .. } => {
+            scan_expr_for_par_hazards(cond, hazard, called);
+            scan_block_for_par_hazards(then_block, hazard, called);
+            if let Some(b) = else_block {
+                scan_block_for_par_hazards(b, hazard, called);
+            }
+        }
+        Stmt::While { cond, body, else_block, .. } => {
+            scan_expr_for_par_hazards(cond, hazard, called);
+            scan_block_for_par_hazards(body, hazard, called);
+            if let Some(b) = else_block {
+                scan_block_for_par_hazards(b, hazard, called);
+            }
+        }
+        Stmt::For { start, end, body, .. } => {
+            scan_expr_for_par_hazards(start, hazard, called);
+            scan_expr_for_par_hazards(end, hazard, called);
+            scan_block_for_par_hazards(body, hazard, called);
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } | Stmt::Yield { .. } => {}
+        // Opening a `frame:` block is itself a hazard: `@frame.off`/
+        // `@frame.buf` are single shared globals, so a callee that opens one
+        // races the same way a callee that `spawn`s/`despawn`s does -- see
+        // `Codegen::emit_par_stmt`'s doc comment on why `in_frame` being a
+        // codegen-time-only flag doesn't protect a nested `frame:` inside a
+        // called function.
+        Stmt::Frame { body, .. } => {
+            *hazard = true;
+            scan_block_for_par_hazards(body, hazard, called);
+        }
+        Stmt::Par { body, .. } => scan_block_for_par_hazards(body, hazard, called),
+        Stmt::Spawn { args, .. } => {
+            *hazard = true;
+            for a in args {
+                scan_expr_for_par_hazards(a, hazard, called);
+            }
+        }
+        Stmt::Despawn { index, .. } => {
+            *hazard = true;
+            scan_expr_for_par_hazards(index, hazard, called);
+        }
+    }
+}
+
+fn scan_expr_for_par_hazards(expr: &Expr, hazard: &mut bool, called: &mut HashSet<String>) {
+    match expr {
+        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Ident(..) | Expr::SelfExpr(..) => {}
+        Expr::FStr(parts, _) => {
+            for p in parts {
+                if let FStrExpr::Expr(e) = p {
+                    scan_expr_for_par_hazards(e, hazard, called);
+                }
+            }
+        }
+        Expr::Field { base, .. } => scan_expr_for_par_hazards(base, hazard, called),
+        Expr::Call { callee, args, .. } => {
+            match callee.as_ref() {
+                Expr::Ident(name, _) => { called.insert(name.clone()); }
+                Expr::Field { field, .. } => { called.insert(field.clone()); }
+                _ => {}
+            }
+            scan_expr_for_par_hazards(callee, hazard, called);
+            for a in args {
+                scan_expr_for_par_hazards(a, hazard, called);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            scan_expr_for_par_hazards(lhs, hazard, called);
+            scan_expr_for_par_hazards(rhs, hazard, called);
+        }
+        Expr::Unary { operand, .. } => scan_expr_for_par_hazards(operand, hazard, called),
+        Expr::Match { scrutinee, arms, .. } => {
+            scan_expr_for_par_hazards(scrutinee, hazard, called);
+            for arm in arms {
+                scan_block_for_par_hazards(&arm.body, hazard, called);
+            }
+        }
+        Expr::StructLit { args, .. } => {
+            for a in args {
+                scan_expr_for_par_hazards(a, hazard, called);
+            }
+        }
+        Expr::If { cond, then_block, else_block, .. } => {
+            scan_expr_for_par_hazards(cond, hazard, called);
+            scan_block_for_par_hazards(then_block, hazard, called);
+            if let Some(b) = else_block {
+                scan_block_for_par_hazards(b, hazard, called);
+            }
+        }
+        Expr::GenRefCreate { value, .. } => scan_expr_for_par_hazards(value, hazard, called),
+        Expr::GenRefIndex { base, index, .. } => {
+            scan_expr_for_par_hazards(base, hazard, called);
+            scan_expr_for_par_hazards(index, hazard, called);
+        }
+        Expr::EnumVariant { args, .. } => {
+            for a in args {
+                scan_expr_for_par_hazards(a, hazard, called);
+            }
+        }
+        // Not recursed into -- see `scan_block_for_par_hazards`'s doc comment.
+        Expr::Lambda { .. } => {}
+        Expr::ListLit(elems, _) => {
+            for e in elems {
+                scan_expr_for_par_hazards(e, hazard, called);
+            }
+        }
     }
 }
 

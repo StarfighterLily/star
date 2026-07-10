@@ -5,6 +5,7 @@ declare i32 @printf(i8*, ...)
 declare i32 @puts(i8*)
 declare noalias i8* @malloc(i64)
 declare void @free(i8*)
+declare void @exit(i32) noreturn
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
@@ -24,6 +25,8 @@ declare float @llvm.maxnum.f32(float, float)
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
+
+@rng.state = global i32 123456789
 
 define void @print_dir(i32 %d) {
 entry:
@@ -204,7 +207,7 @@ while_end_24:
   ret i32 %t5
 }
 
-define void @main() {
+define i32 @main() {
 entry:
   %t0 = call i32 @sum_with_skip_and_stop()
   %t1 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.8, i64 0, i64 0
@@ -217,7 +220,7 @@ entry:
   call i32 (i8*, ...) @printf(i8* %t5, i32 %t4)
   call void @print_dir(i32 0)
   call void @print_dir(i32 3)
-  ret void
+  ret i32 0
 }
 
 

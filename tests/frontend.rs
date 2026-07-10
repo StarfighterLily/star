@@ -4,7 +4,7 @@
 //! the canonical example, guarding against regressions in tokenization,
 //! indentation handling, and parsing.
 
-use star::ast::{BinOp, Expr, Item, Stmt, Type};
+use star::ast::{BinOp, Expr, Item, Stmt, Type, UnOp};
 use star::driver::Driver;
 use star::lexer::TokenKind;
 use star::types::{Ty, TypedExpr, TypedItem, TypedStmt};
@@ -3004,4 +3004,553 @@ fn runtime_lists_end_to_end() {
     assert!(stdout.contains("words len = 3"), "List<String>: {}", stdout);
     assert!(stdout.contains("words[1] = beta"), "{}", stdout);
     assert!(stdout.contains("points[1] = (3, 4)"), "List<Point> (struct element type): {}", stdout);
+}
+
+// ===== LANGUAGE_ANALYSIS.md fixes =========================================
+//
+// Regression tests for the bugs identified in `LANGUAGE_ANALYSIS.md` and
+// tracked in `todo.md`'s "Immediate" list, in the same priority order.
+
+// --- §0: `main`'s exit code -------------------------------------------------
+
+/// Every compiled program's exit code must be deterministic (`0` on normal
+/// completion), not whatever garbage happened to be left in `eax` by the
+/// last instruction before a `ret void` in a `void @main()` -- the flagship
+/// bug reproduced on every single example in `examples/`.
+#[test]
+fn runtime_main_exit_code_is_zero_not_garbage() {
+    use std::process::Command;
+
+    let output = Command::new("examples/player.exe").output().expect("failed to execute player.exe");
+    assert_eq!(output.status.code(), Some(0), "main with no declared return type must exit 0, not garbage");
+}
+
+/// `main` declared with an explicit, non-`i32` return type is rejected: it
+/// can never actually be honored, since `main` is always forced to lower to
+/// `i32 @main(...)` (a hosted C entry point's signature is an OS/CRT ABI
+/// requirement).
+#[test]
+fn rejects_main_with_non_i32_return_type() {
+    let module = Driver::parse("fn main() -> str:\n    return \"hi\"\n").expect("should parse");
+    let errs = Driver::check(&module).expect_err("main declared to return str should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("main") && d.message.contains("i32")), "{:?}", errs);
+}
+
+/// `main` with no declared return type at all still type-checks fine (the
+/// ordinary, common case) and lowers to `i32 @main(...)` with an implicit
+/// `ret i32 0`.
+#[test]
+fn codegen_main_lowers_to_i32_with_implicit_ret_zero() {
+    let module = Driver::parse("fn main():\n    print(\"hi\")\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("define i32 @main("), "main should always lower to i32: {}", ir);
+    assert!(ir.contains("ret i32 0"), "implicit fallthrough should return 0: {}", ir);
+}
+
+/// A bare `return` (no value) inside `main` must still produce an
+/// `i32`-typed terminator (`ret i32 0`), not the ordinary `ret void` a
+/// no-return-type function gets elsewhere -- otherwise the function body
+/// would contain a terminator disagreeing with `main`'s own forced `i32`
+/// signature (invalid IR).
+#[test]
+fn codegen_bare_return_inside_main_returns_i32_zero() {
+    let module = Driver::parse("fn main():\n    if true:\n        return\n    print(\"after\")\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(!ir.contains("ret void"), "main must never emit `ret void`: {}", ir);
+    assert_eq!(ir.matches("ret i32 0").count(), 2, "both the early bare return and the implicit fallthrough should return i32 0: {}", ir);
+}
+
+// --- §3.1: frame bump-allocator capacity bounds check -----------------------
+
+/// A `frame:` block allocating more than the 4096-byte backing buffer's
+/// capacity must abort the process loudly with a diagnostic message rather
+/// than segfaulting or silently corrupting whatever global data happens to
+/// sit right after `@frame.buf`.
+#[test]
+fn runtime_frame_overflow_aborts_loudly_instead_of_segfaulting() {
+    use std::process::Command;
+
+    let output = Command::new("examples/frame_overflow.exe").output().expect("failed to execute frame_overflow.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("frame:` block exceeded its 4096-byte capacity"), "should print a diagnostic: {}", stdout);
+    assert!(!stdout.contains("should not reach here"), "the frame allocation must abort before its value is used: {}", stdout);
+    assert_eq!(output.status.code(), Some(1), "should exit cleanly with code 1, not crash/segfault: {:?}", output.status);
+}
+
+/// Codegen for a frame `let` includes a capacity check against
+/// `FRAME_BUF_SIZE` before advancing `@frame.off`, with a call to `@exit` on
+/// the overflow path.
+#[test]
+fn codegen_frame_alloc_includes_capacity_check() {
+    let src = "struct Point:\n    x: i32\n    y: i32\n\nfn test():\n    frame:\n        let p = Point(1, 2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("icmp ugt i64"), "should compare the new offset against the buffer capacity: {}", ir);
+    assert!(ir.contains("call void @exit(i32 1)"), "should abort on overflow: {}", ir);
+}
+
+// --- §3.1: closure capturing a frame-local `self` by pointer ---------------
+
+/// A method returning a closure that captures `self` by pointer, called on
+/// a frame-local receiver and then returned out of the enclosing function,
+/// smuggles a dangling frame pointer past the escape check -- this is the
+/// exact bug class the escape analysis exists to prevent.
+#[test]
+fn rejects_closure_capturing_frame_local_self_escaping_via_return() {
+    let src = r#"struct Holder:
+    val: i32
+
+impl Holder:
+    fn get_closure(self) -> Fn() -> i32:
+        fn(): self.val
+
+fn make() -> Fn() -> i32:
+    frame:
+        let h = Holder(777)
+        return h.get_closure()
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("a closure escaping with a frame-local self pointer should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("frame") && d.message.contains("h")), "{:?}", errs);
+}
+
+/// The same closure, called and used *before* the `frame:` block ends
+/// (never escaping it), is safe: the receiver's memory is still valid for
+/// every use.
+#[test]
+fn accepts_closure_capturing_frame_local_self_used_within_frame_scope() {
+    let src = r#"struct Holder:
+    val: i32
+
+impl Holder:
+    fn get_closure(self) -> Fn() -> i32:
+        fn(): self.val
+
+fn t() -> i32:
+    frame:
+        let h = Holder(777)
+        let c = h.get_closure()
+        return c()
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "using the closure entirely within the frame scope should be allowed");
+}
+
+// --- §3.2: arena-capacity overflow is loud, not silent ----------------------
+
+/// Spawning past `ARENA_CAPACITY` (1024) live elements still drops the
+/// spawn (a fixed backing store never reallocs/moves, since `par`/`swarm`
+/// workers may read it concurrently), but now prints a runtime warning
+/// identifying the offending arena instead of failing completely silently.
+#[test]
+fn runtime_arena_overflow_warns_instead_of_silently_dropping() {
+    use std::process::Command;
+
+    let output = Command::new("examples/arena_capacity.exe").output().expect("failed to execute arena_capacity.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("arena `Enemies` is full"), "should warn about the specific arena: {}", stdout);
+    assert!(stdout.contains("done spawning"), "the program should still run to completion: {}", stdout);
+    assert_eq!(output.status.code(), Some(0));
+}
+
+// --- §3.3: GenRef dereference of a never-spawned slot -----------------------
+
+/// Dereferencing a `GenRef` against a slot that was never spawned into --
+/// either before any spawn into the arena at all (backing storage still
+/// null) or a distinct slot in an otherwise-populated arena (uninitialized
+/// heap garbage) -- must fall back to the zero value, never segfault or
+/// read garbage. This directly falsifies the "never a segfault" guarantee
+/// `docs/design.md` documents if it regresses.
+#[test]
+fn runtime_genref_never_spawned_falls_back_to_zero_not_segfault() {
+    use std::process::Command;
+
+    let output = Command::new("examples/genref_never_spawned.exe").output().expect("failed to execute genref_never_spawned.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("before any spawn: x=0 y=0"), "deref before any spawn into the arena: {}", stdout);
+    assert!(stdout.contains("other slot live, this slot never spawned: x=0 y=0"), "deref of an unspawned slot in a live arena: {}", stdout);
+    assert_eq!(output.status.code(), Some(0), "must not crash: {:?}", output.status);
+}
+
+/// Codegen for a `GenRef` dereference requires the live generation to be
+/// *odd* (the parity that encodes liveness), not just equal to the stored
+/// generation -- closing the hole where a never-spawned slot's generation
+/// (`0`) is indistinguishable from a freshly-created `GenRef`'s own
+/// captured generation for that same slot.
+#[test]
+fn codegen_genref_index_checks_liveness_parity_not_just_generation_equality() {
+    let src = "struct Point:\n    x: i32\n    y: i32\n\narena Entities: Point\n\nfn follow(r: GenRef<Point>) -> Point:\n    r[0]\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("and i32"), "should mask the live generation to check odd/even parity: {}", ir);
+    assert!(ir.contains("icmp eq i32") && ir.matches("icmp eq i32").count() >= 2, "should check both generation equality and liveness parity: {}", ir);
+    assert!(ir.contains("and i1"), "the ok path should require both conditions together: {}", ir);
+}
+
+// --- §3.5: `par`/`swarm` ban transitive through function calls -------------
+
+/// Moving a `spawn` one level into a helper function, then calling that
+/// helper from inside a `par`/`swarm` body, must still be rejected -- the
+/// same unsynchronized data race the direct-`spawn` ban exists to prevent.
+#[test]
+fn rejects_spawn_hidden_behind_helper_function_call_inside_par() {
+    let src = format!(
+        "{}fn sneaky_spawn():\n    spawn Enemies(5)\n\nfn t():\n    par e in Enemies:\n        sneaky_spawn()\n        e.hp -= 1\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("spawn hidden behind a helper function call should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("sneaky_spawn")), "{:?}", errs);
+}
+
+/// The same hazard nested two calls deep (not just one level) is still
+/// caught, via the transitive fixed-point propagation over the call graph.
+#[test]
+fn rejects_spawn_hidden_two_calls_deep_inside_par() {
+    let src = format!(
+        "{}fn innermost():\n    spawn Enemies(5)\n\nfn middle():\n    innermost()\n\nfn t():\n    par e in Enemies:\n        middle()\n        e.hp -= 1\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("spawn hidden two calls deep should still be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("middle")), "{:?}", errs);
+}
+
+/// A `frame:` block hidden behind a helper function call is the same
+/// hazard: `@frame.off`/`@frame.buf` are single shared globals racing
+/// across every worker thread, and `in_frame` being a codegen-time-only
+/// flag doesn't scope to the callee.
+#[test]
+fn rejects_frame_hidden_behind_helper_function_call_inside_par() {
+    let src = format!(
+        "{}fn sneaky_frame():\n    frame:\n        let x = 1\n\nfn t():\n    par e in Enemies:\n        sneaky_frame()\n        e.hp -= 1\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("frame hidden behind a helper function call should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("sneaky_frame")), "{:?}", errs);
+}
+
+/// An ordinary helper function that doesn't spawn/despawn/open a `frame:`
+/// block anywhere in its call graph is still perfectly callable from inside
+/// a `par`/`swarm` body -- the transitive ban must not become a blanket ban
+/// on all function calls.
+#[test]
+fn accepts_harmless_helper_function_call_inside_par() {
+    let src = format!(
+        "{}fn double(n: i32) -> i32:\n    n * 2\n\nfn t():\n    par e in Enemies:\n        e.hp = double(e.hp)\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "a harmless helper call should still be allowed: {:?}", Driver::check(&module).err());
+}
+
+// --- §1.1-1.4: type-checking holes ------------------------------------------
+
+/// A `let` annotation that disagrees with the value's actual inferred type
+/// is now a type error, instead of the annotation being resolved and used
+/// as the tracked type with no comparison against the value at all (which
+/// previously reached codegen as a `load %Foo, %Foo* %t0` where `%t0` was
+/// really an `alloca i32`).
+#[test]
+fn rejects_let_annotation_mismatched_with_value_type() {
+    let src = "struct Foo:\n    x: i32\n\nfn t():\n    let a: Foo = 42\n";
+    let module = Driver::parse(src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("let annotation mismatched with the value's type should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("Foo") && d.message.contains("Int")), "{:?}", errs);
+}
+
+/// A `let` with a correctly-matching annotation still type-checks fine.
+#[test]
+fn accepts_let_annotation_matching_value_type() {
+    let module = Driver::parse("fn t():\n    let a: i32 = 42\n").expect("should parse");
+    assert!(Driver::check(&module).is_ok());
+}
+
+/// An ordinary assignment whose value's type doesn't match the target's is
+/// now a type error -- previously `Stmt::Assign` only ever checked for
+/// duplicate swizzle write-target components, with no general "is `value`
+/// assignable to `target`" check at all.
+#[test]
+fn rejects_assign_value_type_mismatched_with_target() {
+    let module = Driver::parse("fn t():\n    let mut x: i32 = 1\n    x = \"not an int\"\n").expect("should parse");
+    let errs = Driver::check(&module).expect_err("assigning a mismatched type should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("Str") && d.message.contains("Int")), "{:?}", errs);
+}
+
+/// An explicit `return <expr>` whose type disagrees with the function's
+/// declared return type is now a type error. Previously codegen emitted
+/// `ret <ty-of-the-returned-expr>` rather than `ret <declared-ty>`, so a
+/// mismatch reached codegen as a function whose declared LLVM signature and
+/// actual terminator disagreed.
+#[test]
+fn rejects_explicit_return_type_mismatch() {
+    let module = Driver::parse("fn get_val() -> i32:\n    if true:\n        return \"nope\"\n    return 0\n").expect("should parse");
+    let errs = Driver::check(&module).expect_err("returning a mismatched type should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("Int") && d.message.contains("Str")), "{:?}", errs);
+}
+
+/// The *implicit* trailing-expression return form (no `return` keyword at
+/// all) is checked too -- the exact repro from LANGUAGE_ANALYSIS.md §1.3:
+/// `star check` previously passed this cleanly.
+#[test]
+fn rejects_implicit_trailing_return_type_mismatch() {
+    let module = Driver::parse("fn get_val() -> i32:\n    \"not an int\"\n").expect("should parse");
+    let errs = Driver::check(&module).expect_err("an implicit trailing return of the wrong type should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("get_val") && d.message.contains("Int") && d.message.contains("Str")), "{:?}", errs);
+}
+
+/// A bare `return` (no value) inside a function declared to return a value
+/// is a type error -- the other direction of the same hole, and the one
+/// that used to reach codegen as a `ret void` inside a non-`void`-declared
+/// function (invalid IR).
+#[test]
+fn rejects_bare_return_in_function_with_declared_return_type() {
+    let module = Driver::parse("fn t() -> i32:\n    if true:\n        return\n    return 0\n").expect("should parse");
+    let errs = Driver::check(&module).expect_err("a bare return where a value is expected should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("expected a return value")), "{:?}", errs);
+}
+
+/// A function whose every `return` (explicit and implicit) matches its
+/// declared return type still checks cleanly.
+#[test]
+fn accepts_return_type_matching_declaration() {
+    let module = Driver::parse("fn get_val() -> i32:\n    if true:\n        return 1\n    2\n").expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "{:?}", Driver::check(&module).err());
+}
+
+/// `return` inside a closure body is not checked against the *enclosing*
+/// function's return type (a closure's own return type is inferred from
+/// its body, independent of whatever function it's lexically defined in).
+/// The outer function here returns a `Fn() -> str` (a closure), while the
+/// inner `return` produces a bare `str` -- if closure bodies weren't
+/// exempted from the enclosing function's `current_ret_ty`, this would be
+/// flagged as a mismatch even though it's perfectly valid.
+#[test]
+fn accepts_return_inside_closure_regardless_of_enclosing_fn_return_type() {
+    let module = Driver::parse("fn t() -> Fn() -> str:\n    fn() -> str:\n        return \"hi\"\n").expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "{:?}", Driver::check(&module).err());
+}
+
+/// An ordinary function call with mismatched argument types is now a type
+/// error -- previously a plain call to a plain function skipped argument
+/// count/type validation entirely (only generic calls, struct literals,
+/// enum-variant construction, `List` methods, and `spawn` were checked).
+#[test]
+fn rejects_call_with_mismatched_argument_types() {
+    let module = Driver::parse("fn add(a: i32, b: i32) -> i32:\n    a + b\n\nfn t():\n    let x = add(\"foo\", \"bar\")\n").expect("should parse");
+    let errs = Driver::check(&module).expect_err("mismatched call argument types should be a type error");
+    assert!(errs.iter().filter(|d| d.message.contains("argument") && d.message.contains("Str")).count() == 2, "{:?}", errs);
+}
+
+/// An ordinary function call with the wrong argument count is a type error.
+#[test]
+fn rejects_call_with_wrong_argument_count() {
+    let module = Driver::parse("fn add(a: i32, b: i32) -> i32:\n    a + b\n\nfn t():\n    let x = add(1)\n").expect("should parse");
+    let errs = Driver::check(&module).expect_err("wrong call argument count should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("expects 2 argument")), "{:?}", errs);
+}
+
+/// A method call (`obj.method(args)`) with mismatched argument types is
+/// caught the same way as a free-function call -- the `self` receiver
+/// (present in the stored signature but never in the call-site argument
+/// list) is correctly excluded from the comparison.
+#[test]
+fn rejects_method_call_with_mismatched_argument_types() {
+    let src = r#"struct Counter:
+    mut n: i32
+
+impl Counter:
+    fn add(mut self, amount: i32):
+        self.n += amount
+
+fn t(mut c: Counter):
+    c.add("not an int")
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("mismatched method call argument type should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("argument") && d.message.contains("Str")), "{:?}", errs);
+}
+
+/// An ordinary call with matching argument count/types still checks
+/// cleanly (both free functions and methods).
+#[test]
+fn accepts_call_with_matching_argument_types() {
+    let src = r#"struct Counter:
+    mut n: i32
+
+impl Counter:
+    fn add(mut self, amount: i32):
+        self.n += amount
+
+fn add_free(a: i32, b: i32) -> i32:
+    a + b
+
+fn t(mut c: Counter):
+    c.add(5)
+    let x = add_free(1, 2)
+    print(f"{x}")
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "{:?}", Driver::check(&module).err());
+}
+
+// --- §4.1: `-O2` by default, `--release`/`-O` toggle ------------------------
+//
+// `opt_flag`'s own precedence/clamping logic is covered directly by unit
+// tests in `src/main.rs` (`opt_flag_defaults_to_o2`,
+// `opt_flag_honors_explicit_o0`, `opt_flag_release_overrides_opt_level`,
+// `opt_flag_clamps_out_of_range_level`), since it's a `main.rs`-private
+// binary concern with no library-level surface to exercise here.
+
+// --- §2.1: `&&`/`||`/`and`/`or`/`not` ---------------------------------------
+
+/// Both symbolic (`&&`/`||`) and word (`and`/`or`) spellings parse to the
+/// same `BinOp::And`/`BinOp::Or`, and `and` binds tighter than `or`
+/// (mirroring Python's own logical-operator precedence).
+#[test]
+fn parses_and_or_both_spellings_with_correct_precedence() {
+    let src = "fn t(a: bool, b: bool, c: bool):\n    a and b or c\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Expr(Expr::Binary { op, lhs, .. }) = &f.body.stmts[0] else { panic!("expected a binary expr") };
+    assert_eq!(*op, BinOp::Or, "or should be the outermost (lowest-precedence) operator");
+    assert!(matches!(lhs.as_ref(), Expr::Binary { op: BinOp::And, .. }), "and should bind tighter, forming the left operand");
+
+    let src2 = "fn t(a: bool, b: bool):\n    a && b\n";
+    let module2 = Driver::parse(src2).expect("should parse");
+    let Item::Fn(f2) = &module2.items[0] else { panic!("expected fn") };
+    assert!(matches!(&f2.body.stmts[0], Stmt::Expr(Expr::Binary { op: BinOp::And, .. })), "&& should parse to the same BinOp::And as `and`");
+}
+
+/// `not`/`!` both parse to the same `UnOp::Not`.
+#[test]
+fn parses_not_keyword_same_as_bang() {
+    let module = Driver::parse("fn t(a: bool):\n    not a\n").expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    assert!(matches!(&f.body.stmts[0], Stmt::Expr(Expr::Unary { op: UnOp::Not, .. })));
+}
+
+/// `&&`/`||` require both operands to be `bool`.
+#[test]
+fn rejects_logical_and_with_non_bool_operand() {
+    let module = Driver::parse("fn t(a: i32):\n    a and true\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "a non-bool operand to `and` should be a type error");
+}
+
+/// Codegen for `&&`/`||` short-circuits via branches (skipping the
+/// right-hand side entirely when the left already determines the result)
+/// rather than always evaluating both operands eagerly.
+#[test]
+fn codegen_logical_and_short_circuits_via_branch() {
+    let module = Driver::parse("fn t(a: bool, b: bool) -> bool:\n    a and b\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("br i1"), "should branch on the left operand rather than unconditionally evaluating both: {}", ir);
+    assert!(ir.contains("phi i1"), "should merge the short-circuit and evaluated-rhs paths: {}", ir);
+}
+
+/// Runtime test: both operator spellings, `not`, and short-circuit
+/// evaluation (the right-hand side's side effect must never run when the
+/// left-hand side already determines the result), end to end through a
+/// real compiled binary.
+#[test]
+fn runtime_logic_ops_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/logic_ops.exe").output().expect("failed to execute logic_ops.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("not both positive"), "{}", stdout);
+    assert!(stdout.contains("at least one positive"), "{}", stdout);
+    assert!(stdout.contains("negated and works"), "{}", stdout);
+    assert!(stdout.contains("symbolic && works"), "{}", stdout);
+    assert!(stdout.contains("symbolic || works"), "{}", stdout);
+    assert!(stdout.contains("false-and short-circuited"), "{}", stdout);
+    assert!(stdout.contains("true-or short-circuited"), "{}", stdout);
+    assert!(!stdout.contains("called: and-rhs"), "short-circuited `and` must never evaluate its rhs: {}", stdout);
+    assert!(!stdout.contains("called: or-rhs"), "short-circuited `or` must never evaluate its rhs: {}", stdout);
+    assert_eq!(output.status.code(), Some(0));
+}
+
+// --- §4.6, §5: `dot`/`length`/`lerp`/`clamp`/RNG builtins ------------------
+
+/// `dot`/`length` type as `f32`; `lerp`/`clamp` preserve their first
+/// argument's type.
+#[test]
+fn checks_math_builtin_return_types() {
+    assert_eq!(typed_fn_result_ty("fn t(a: Vec3, b: Vec3) -> f32:\n    dot(a, b)\n"), Ty::Float);
+    assert_eq!(typed_fn_result_ty("fn t(a: Vec3) -> f32:\n    length(a)\n"), Ty::Float);
+    assert_eq!(typed_fn_result_ty("fn t(a: f32, b: f32, t: f32) -> f32:\n    lerp(a, b, t)\n"), Ty::Float);
+    assert_eq!(typed_fn_result_ty("fn t(a: Vec3, b: Vec3, k: f32) -> Vec3:\n    lerp(a, b, k)\n"), Ty::Vec3);
+    assert_eq!(typed_fn_result_ty("fn t(x: i32) -> i32:\n    clamp(x, 0, 10)\n"), Ty::Int);
+    assert_eq!(typed_fn_result_ty("fn t() -> f32:\n    rand()\n"), Ty::Float);
+    assert_eq!(typed_fn_result_ty("fn t() -> i32:\n    rand_range(0, 10)\n"), Ty::Int);
+}
+
+/// Runtime test: `dot`, `length`, `lerp` (both float and `Vec3` forms),
+/// `clamp` (both `i32` and `f32` forms), and a seeded, reproducible
+/// `rand`/`rand_range`, end to end through a real compiled binary.
+#[test]
+fn runtime_math_builtins_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/math_builtins.exe").output().expect("failed to execute math_builtins.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("dot: 0.000000"), "perpendicular unit vectors: {}", stdout);
+    assert!(stdout.contains("length: 5.000000"), "3-4-5 triangle: {}", stdout);
+    assert!(stdout.contains("lerp float: 5.000000"), "{}", stdout);
+    assert!(stdout.contains("lerp vec: 2.000000 2.000000 0.000000"), "{}", stdout);
+    assert!(stdout.contains("clamp int: 10"), "clamp above the range: {}", stdout);
+    assert!(stdout.contains("clamp float: 0.000000"), "clamp below the range: {}", stdout);
+    assert!(stdout.contains("rand in [0,1): true true"), "{}", stdout);
+    assert!(stdout.contains("rand_range in bounds: true"), "{}", stdout);
+    assert!(stdout.contains("reseeding reproduces the same sequence: true"), "rand_seed should be deterministic: {}", stdout);
+    assert_eq!(output.status.code(), Some(0));
+}
+
+// --- §3.7: early `return` inside `sequence` bodies --------------------------
+
+/// A `sequence` containing an early `return` before its next `yield` now
+/// compiles (previously produced invalid LLVM IR -- `ret void` inside the
+/// synthesized `bool`-returning `resume` -- caught only by the backend with
+/// no Star diagnostic).
+#[test]
+fn checks_sequence_with_early_return_compiles() {
+    let src = "sequence S(n: i32):\n    if n < 0:\n        return\n    yield\n    n -= 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "{:?}", Driver::check(&module).err());
+}
+
+/// Codegen for a bare `return` inside a `sequence` body rewrites it to
+/// `return false` (the same "fully done" value the sequence's own final
+/// segment already returns on normal completion), producing a valid `ret
+/// i1 false` rather than an invalid `ret void`.
+#[test]
+fn codegen_sequence_early_return_becomes_ret_false() {
+    let src = "sequence S(n: i32):\n    if n < 0:\n        return\n    yield\n    n -= 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("ret i1 false"), "early return should lower to ret i1 false: {}", ir);
+    assert!(!ir.contains("ret void"), "resume() must never contain a ret void: {}", ir);
+}
+
+/// Runtime test: a `sequence` that ticks normally to completion, and a
+/// second instance that aborts immediately via an early `return` before its
+/// first `yield` (reporting `resume() == false`, matching normal
+/// completion's own "done" signal), end to end through a real compiled
+/// binary.
+#[test]
+fn runtime_sequence_early_return_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/sequence_early_return.exe").output().expect("failed to execute sequence_early_return.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("ticks: 3"), "normal countdown should tick 3 times: {}", stdout);
+    assert!(stdout.contains("early return reports done: false"), "an aborted sequence should report done: {}", stdout);
+    assert_eq!(output.status.code(), Some(0));
 }

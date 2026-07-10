@@ -5,6 +5,7 @@ declare i32 @printf(i8*, ...)
 declare i32 @puts(i8*)
 declare noalias i8* @malloc(i64)
 declare void @free(i8*)
+declare void @exit(i32) noreturn
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
@@ -25,6 +26,8 @@ declare float @llvm.maxnum.f32(float, float)
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
 
+@rng.state = global i32 123456789
+
 %Enemy = type { i32 }
 %Enemies = type { %Enemy*, i64 }
 @arena.Enemies.data = global %Enemy* null
@@ -33,7 +36,7 @@ declare float @llvm.maxnum.f32(float, float)
 @arena.Enemies.free = global [1024 x i64] zeroinitializer
 @arena.Enemies.free_top = global i64 0
 
-define void @main() {
+define i32 @main() {
 entry:
   %t15 = load i64, i64* @arena.Enemies.count
   %t16 = alloca [4 x i8*]
@@ -177,7 +180,7 @@ entry:
   %t142 = call i32 @CloseHandle(i8* %t140)
   %t143 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.0, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t143)
-  ret void
+  ret i32 0
 }
 
 

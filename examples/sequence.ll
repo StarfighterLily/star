@@ -5,6 +5,7 @@ declare i32 @printf(i8*, ...)
 declare i32 @puts(i8*)
 declare noalias i8* @malloc(i64)
 declare void @free(i8*)
+declare void @exit(i32) noreturn
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
@@ -24,6 +25,8 @@ declare float @llvm.maxnum.f32(float, float)
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
+
+@rng.state = global i32 123456789
 
 %Countdown = type { i32, i32, i32 }
 define i1 @resume(%Countdown* %self) {
@@ -110,7 +113,7 @@ if_else_7:
   ret i1 false
 }
 
-define void @main() {
+define i32 @main() {
 entry:
   %t0 = alloca %Countdown
   %t1 = alloca %Countdown
@@ -137,7 +140,7 @@ while_else_11:
 while_end_12:
   %t9 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.4, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t9)
-  ret void
+  ret i32 0
 }
 
 

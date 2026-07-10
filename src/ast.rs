@@ -502,6 +502,12 @@ pub enum BinOp {
     Gt,
     Le,
     Ge,
+    /// `&&` / `and` - short-circuiting logical AND (see
+    /// `crate::codegen::Codegen::emit_expr`'s `TypedExpr::Binary` arm for the
+    /// branch-based short-circuit lowering).
+    And,
+    /// `||` / `or` - short-circuiting logical OR.
+    Or,
 }
 
 /// Unary operators.

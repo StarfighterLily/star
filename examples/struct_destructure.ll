@@ -5,6 +5,7 @@ declare i32 @printf(i8*, ...)
 declare i32 @puts(i8*)
 declare noalias i8* @malloc(i64)
 declare void @free(i8*)
+declare void @exit(i32) noreturn
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
@@ -24,6 +25,8 @@ declare float @llvm.maxnum.f32(float, float)
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
+
+@rng.state = global i32 123456789
 
 %Point = type { i32, i32 }
 %Line = type { %Point, %Point }
@@ -77,7 +80,7 @@ match_end_1:
   unreachable
 }
 
-define void @main() {
+define i32 @main() {
 entry:
   %t0 = alloca %Point
   %t1 = getelementptr inbounds %Point, %Point* %t0, i32 0, i32 0
@@ -109,7 +112,7 @@ entry:
   %t18 = call i32 @length_sq(%Line %t17)
   %t19 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.1, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t19, i32 %t18)
-  ret void
+  ret i32 0
 }
 
 

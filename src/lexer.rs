@@ -93,7 +93,9 @@ pub enum TokenKind {
     Gt,         // >
     LtEq,       // <=
     GtEq,       // >=
-    Not,        // !
+    Not,        // ! (also `not`)
+    AndAnd,     // && (also `and`)
+    OrOr,       // || (also `or`)
     At,         // @ (decorators)
     Underscore, // _ (wildcard pattern)
 
@@ -174,6 +176,8 @@ impl TokenKind {
             TokenKind::LtEq => "'<='".into(),
             TokenKind::GtEq => "'>='".into(),
             TokenKind::Not => "'!'".into(),
+            TokenKind::AndAnd => "'&&'".into(),
+            TokenKind::OrOr => "'||'".into(),
             TokenKind::At => "'@'".into(),
             TokenKind::Underscore => "'_'".into(),
             TokenKind::Eof => "end of file".into(),
@@ -508,6 +512,8 @@ impl<'src> Lexer<'src> {
             (b'-', Some(b'=')) => two_char!(TokenKind::MinusEq),
             (b'*', Some(b'=')) => two_char!(TokenKind::StarEq),
             (b'/', Some(b'=')) => two_char!(TokenKind::SlashEq),
+            (b'&', Some(b'&')) => two_char!(TokenKind::AndAnd),
+            (b'|', Some(b'|')) => two_char!(TokenKind::OrOr),
             _ => {}
         }
         let kind = match c {
@@ -620,6 +626,9 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "yield" => TokenKind::Yield,
         "spawn" => TokenKind::Spawn,
         "despawn" => TokenKind::Despawn,
+        "and" => TokenKind::AndAnd,
+        "or" => TokenKind::OrOr,
+        "not" => TokenKind::Not,
         "_" => TokenKind::Underscore,
         _ => TokenKind::Ident(text.to_string()),
     }

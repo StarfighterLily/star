@@ -90,6 +90,8 @@ impl Codegen {
         let saved_symbols = std::mem::take(&mut self.symbols);
         let saved_in_frame = self.in_frame;
         self.in_frame = false; // the frame bump allocator's offset is a single shared global, not thread-safe
+        let saved_in_main = self.in_main;
+        self.in_main = false; // the worker function is its own `i32`-returning function, not `main` itself
 
         self.line(&format!("define i32 @{}(i8* %argp) {{", worker_name));
         self.line("entry:");
@@ -157,6 +159,7 @@ impl Codegen {
         self.pending_top.push(worker_ir);
         self.symbols = saved_symbols;
         self.in_frame = saved_in_frame;
+        self.in_main = saved_in_main;
 
         // --- back in the caller: divide the arena's live count into NUM_THREADS chunks ---
         let count_reg = self.tmp_name();
@@ -291,7 +294,25 @@ impl Codegen {
         let in_bounds = self.tmp_name();
         self.line(&format!("  {} = icmp slt i64 {}, {}", in_bounds, count_reg, Self::ARENA_CAPACITY));
         let grow_ok_label = self.block_label("spawn_grow_ok");
-        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, grow_ok_label, end_label));
+        let capacity_warn_label = self.block_label("spawn_capacity_warn");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, grow_ok_label, capacity_warn_label));
+
+        // Past-capacity spawns are still silently dropped (a fixed backing
+        // store never reallocs/moves, which matters since `par`/`swarm`
+        // workers may be reading it concurrently from other threads -- see
+        // this function's own doc comment) but that silent data loss is now
+        // at least loud: a warning identifying the offending arena is
+        // printed every time it happens, rather than the caller having no
+        // signal at all that a `spawn` it believes succeeded never happened.
+        self.line(&format!("{}:", capacity_warn_label));
+        let msg = format!("star runtime warning: arena `{}` is full ({} live elements) -- spawn dropped\n", arena, Self::ARENA_CAPACITY);
+        let g = self.global_name();
+        let escaped = msg.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
+        self.global_defs.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", g, msg.len() + 1, escaped));
+        let msg_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0", msg_ptr, msg.len() + 1, msg.len() + 1, g));
+        self.line(&format!("  call i32 @puts(i8* {})", msg_ptr));
+        self.line(&format!("  br label %{}", end_label));
 
         self.line(&format!("{}:", grow_ok_label));
         let next_count = self.tmp_name();
@@ -492,7 +513,24 @@ impl Codegen {
         self.line(&format!("  {} = load i32, i32* {}", live_gen, gen_ptr));
         let gen_match = self.tmp_name();
         self.line(&format!("  {} = icmp eq i32 {}, {}", gen_match, stored_gen, live_gen));
-        self.line(&format!("  br i1 {}, label %{}, label %{}", gen_match, ok_label, stale_label));
+        // A never-spawned slot's generation is `0` (see `emit_arena_decl`),
+        // which is indistinguishable from a freshly-created `GenRef`'s own
+        // captured generation for that same slot -- `gen_match` alone would
+        // pass for both. Odd/even parity is what actually encodes liveness
+        // (every `spawn`/`despawn` bumps by exactly 1), and a live slot is
+        // only ever odd *after* `spawn` has both allocated the arena's
+        // backing storage and written the element into it -- so requiring
+        // the live generation to be odd here also guarantees `data` below is
+        // non-null and the slot holds real, initialized data, closing the
+        // segfault/uninitialized-read hole for a `GenRef` dereferenced
+        // before anything was ever spawned into this arena.
+        let parity = self.tmp_name();
+        self.line(&format!("  {} = and i32 {}, 1", parity, live_gen));
+        let is_live = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, 1", is_live, parity));
+        let ok = self.tmp_name();
+        self.line(&format!("  {} = and i1 {}, {}", ok, gen_match, is_live));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", ok, ok_label, stale_label));
 
         self.line(&format!("{}:", ok_label));
         let data_ptr = self.tmp_name();

@@ -159,6 +159,41 @@ impl Codegen {
         }
     }
 
+    /// Short-circuit lowering for `&&`/`and` and `||`/`or`: `rhs` is only
+    /// evaluated when its value could actually change the result (mirrors
+    /// every mainstream language's logical-operator semantics, and matters
+    /// for real code -- e.g. `ref != null && ref.field` -- not just
+    /// performance).
+    fn emit_logical_binop(&mut self, op: BinOp, lhs: &TypedExpr, rhs: &TypedExpr) -> String {
+        let l = self.emit_expr(lhs);
+        let l_reg = self.reg_of(&l);
+        let rhs_label = self.block_label("logic_rhs");
+        let short_label = self.block_label("logic_short");
+        let end_label = self.block_label("logic_end");
+        // AND: short-circuit (skip rhs) when lhs is false. OR: short-circuit
+        // when lhs is true. `br i1 cond, label %trueDest, label %falseDest`.
+        let (true_dest, false_dest) = match op {
+            BinOp::And => (rhs_label.clone(), short_label.clone()),
+            BinOp::Or => (short_label.clone(), rhs_label.clone()),
+            _ => unreachable!("emit_logical_binop is only called for And/Or"),
+        };
+        self.line(&format!("  br i1 {}, label %{}, label %{}", l_reg, true_dest, false_dest));
+
+        self.line(&format!("{}:", rhs_label));
+        let r = self.emit_expr(rhs);
+        let r_reg = self.reg_of(&r);
+        self.line(&format!("  br label %{}", end_label));
+
+        self.line(&format!("{}:", short_label));
+        let short_val = if op == BinOp::And { "false" } else { "true" };
+        self.line(&format!("  br label %{}", end_label));
+
+        self.line(&format!("{}:", end_label));
+        let phi = self.tmp_name();
+        self.line(&format!("  {} = phi i1 [ {}, %{} ], [ {}, %{} ]", phi, r_reg, rhs_label, short_val, short_label));
+        format!("i1 {}", phi)
+    }
+
     pub(super) fn emit_expr(&mut self, expr: &TypedExpr) -> String {
         match expr {
             TypedExpr::Int(v, _, _) => format!("i32 {}", v),
@@ -235,8 +270,18 @@ impl Codegen {
                     Some("max") => self.emit_minmax(args, false),
                     Some("len") => self.emit_str_len(args),
                     Some("concat") => self.emit_str_concat(args),
+                    Some("dot") => self.emit_dot(args),
+                    Some("length") => self.emit_length(args),
+                    Some("lerp") => self.emit_lerp(args),
+                    Some("clamp") => self.emit_clamp(args),
+                    Some("rand") => self.emit_rand(),
+                    Some("rand_range") => self.emit_rand_range(args),
+                    Some("rand_seed") => { self.emit_rand_seed(args); "%undef".into() }
                     _ => self.emit_call_expr(callee, args, expr),
                 }
+            }
+            TypedExpr::Binary { op, lhs, rhs, .. } if matches!(op, BinOp::And | BinOp::Or) => {
+                self.emit_logical_binop(*op, lhs, rhs)
             }
             TypedExpr::Binary { op, lhs, rhs, .. } => {
                 let lty = self.expr_ty(lhs);

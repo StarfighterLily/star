@@ -4,7 +4,7 @@ use crate::ast::*;
 use crate::diagnostics::Span;
 use crate::types::*;
 
-use super::Codegen;
+use super::{format_f32_literal, Codegen};
 
 impl Codegen {
     /// Apply a scalar float arithmetic op to two bare `float` registers,
@@ -38,6 +38,11 @@ impl Codegen {
                 BinOp::Eq => "icmp eq i32", BinOp::Ne => "icmp ne i32",
                 BinOp::Lt => "icmp slt i32", BinOp::Gt => "icmp sgt i32",
                 BinOp::Le => "icmp sle i32", BinOp::Ge => "icmp sge i32",
+                // `&&`/`||` are intercepted in `Codegen::emit_expr`'s
+                // `TypedExpr::Binary` arm (they need short-circuit,
+                // branch-based lowering, not a plain opcode) and never
+                // reach this generic scalar path.
+                BinOp::And | BinOp::Or => { self.err("internal error: `&&`/`||` should be short-circuit lowered, not reach emit_scalar_binop", Span::dummy()); "add i32" }
             };
             self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
             return format!("{} {}", if is_cmp { "i1" } else { "i32" }, reg);
@@ -51,6 +56,7 @@ impl Codegen {
             BinOp::Eq => "fcmp oeq float", BinOp::Ne => "fcmp one float",
             BinOp::Lt => "fcmp olt float", BinOp::Gt => "fcmp ogt float",
             BinOp::Le => "fcmp ole float", BinOp::Ge => "fcmp oge float",
+            BinOp::And | BinOp::Or => { self.err("internal error: `&&`/`||` should be short-circuit lowered, not reach emit_scalar_binop", Span::dummy()); "fadd float" }
         };
         self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
         format!("{} {}", if is_cmp { "i1" } else { "float" }, reg)
@@ -247,6 +253,233 @@ impl Codegen {
                 "%undef".into()
             }
         }
+    }
+
+    /// Dot product of two already-untagged Vec2/Vec3/Vec4 registers of the
+    /// same type, returning a bare `float` register. Shared by the `dot`
+    /// builtin and `length` (`length(v) == sqrt(dot(v, v))`).
+    fn emit_dot_bare(&mut self, a_bare: &str, b_bare: &str, ty: &Ty) -> String {
+        match ty {
+            Ty::Vec4 => self.emit_dot4(a_bare, b_bare),
+            Ty::Vec2 | Ty::Vec3 => {
+                let arity = ty.vec_arity().unwrap();
+                let mut sum: Option<String> = None;
+                for i in 0..arity as u32 {
+                    let ac = self.extract_component(a_bare, ty, i);
+                    let bc = self.extract_component(b_bare, ty, i);
+                    let p = self.tmp_name();
+                    self.line(&format!("  {} = fmul float {}, {}", p, ac, bc));
+                    sum = Some(match sum {
+                        None => p,
+                        Some(s) => {
+                            let r = self.tmp_name();
+                            self.line(&format!("  {} = fadd float {}, {}", r, s, p));
+                            r
+                        }
+                    });
+                }
+                sum.unwrap_or_else(|| "0.0".to_string())
+            }
+            _ => {
+                self.err("dot(..)/length(..) expect a Vec2/Vec3/Vec4 argument", Span::dummy());
+                "0.0".to_string()
+            }
+        }
+    }
+
+    /// `dot(a, b) -> f32`.
+    pub(super) fn emit_dot(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 2 {
+            self.err("dot(..) expects 2 arguments", Span::dummy());
+            return "float 0.0".into();
+        }
+        let ty = self.expr_ty(&args[0]);
+        let a = self.emit_expr(&args[0]);
+        let b = self.emit_expr(&args[1]);
+        let a_bare = self.untag(&a, &ty);
+        let b_bare = self.untag(&b, &ty);
+        let result = self.emit_dot_bare(&a_bare, &b_bare, &ty);
+        format!("float {}", result)
+    }
+
+    /// `length(v) -> f32`.
+    pub(super) fn emit_length(&mut self, args: &[TypedExpr]) -> String {
+        let Some(arg) = args.first() else {
+            self.err("length(..) expects 1 argument", Span::dummy());
+            return "float 0.0".into();
+        };
+        let ty = self.expr_ty(arg);
+        let v = self.emit_expr(arg);
+        let bare = self.untag(&v, &ty);
+        let dot_bare = self.emit_dot_bare(&bare, &bare, &ty);
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = call float @llvm.sqrt.f32(float {})", reg, dot_bare));
+        format!("float {}", reg)
+    }
+
+    /// `lerp(a, b, t) -> same type as a`: `a + (b - a) * t`, generic over
+    /// `f32`/`Vec2`/`Vec3`/`Vec4`.
+    pub(super) fn emit_lerp(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 3 {
+            self.err("lerp(..) expects 3 arguments", Span::dummy());
+            return "float 0.0".into();
+        }
+        let ty = self.expr_ty(&args[0]);
+        let a = self.emit_expr(&args[0]);
+        let b = self.emit_expr(&args[1]);
+        let t_val = self.emit_expr(&args[2]);
+        let t_ty = self.expr_ty(&args[2]);
+        let t = self.promote_to_float(&t_val, &t_ty);
+        match ty {
+            Ty::Float => {
+                let a_bare = self.untag(&a, &Ty::Float);
+                let b_bare = self.untag(&b, &Ty::Float);
+                let diff = self.tmp_name();
+                self.line(&format!("  {} = fsub float {}, {}", diff, b_bare, a_bare));
+                let scaled = self.tmp_name();
+                self.line(&format!("  {} = fmul float {}, {}", scaled, diff, t));
+                let result = self.tmp_name();
+                self.line(&format!("  {} = fadd float {}, {}", result, a_bare, scaled));
+                format!("float {}", result)
+            }
+            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 => {
+                let a_bare = self.untag(&a, &ty);
+                let b_bare = self.untag(&b, &ty);
+                let arity = ty.vec_arity().unwrap();
+                let mut acc = "undef".to_string();
+                for i in 0..arity as u32 {
+                    let ac = self.extract_component(&a_bare, &ty, i);
+                    let bc = self.extract_component(&b_bare, &ty, i);
+                    let diff = self.tmp_name();
+                    self.line(&format!("  {} = fsub float {}, {}", diff, bc, ac));
+                    let scaled = self.tmp_name();
+                    self.line(&format!("  {} = fmul float {}, {}", scaled, diff, t));
+                    let comp = self.tmp_name();
+                    self.line(&format!("  {} = fadd float {}, {}", comp, ac, scaled));
+                    acc = self.insert_component(&acc, &ty, i, &comp);
+                }
+                format!("{} {}", self.llvm_ty(&ty), acc)
+            }
+            _ => {
+                self.err("lerp(..) expects f32/Vec2/Vec3/Vec4 arguments", Span::dummy());
+                "float 0.0".into()
+            }
+        }
+    }
+
+    /// `clamp(x, lo, hi) -> same type as x`, for `i32`/`f32`.
+    pub(super) fn emit_clamp(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 3 {
+            self.err("clamp(..) expects 3 arguments", Span::dummy());
+            return "i32 0".into();
+        }
+        let ty = self.expr_ty(&args[0]);
+        let x = self.emit_expr(&args[0]);
+        let lo = self.emit_expr(&args[1]);
+        let hi = self.emit_expr(&args[2]);
+        if matches!(ty, Ty::Float) {
+            let x_b = self.untag(&x, &Ty::Float);
+            let lo_b = self.untag(&lo, &Ty::Float);
+            let hi_b = self.untag(&hi, &Ty::Float);
+            let m1 = self.tmp_name();
+            self.line(&format!("  {} = call float @llvm.maxnum.f32(float {}, float {})", m1, x_b, lo_b));
+            let m2 = self.tmp_name();
+            self.line(&format!("  {} = call float @llvm.minnum.f32(float {}, float {})", m2, m1, hi_b));
+            format!("float {}", m2)
+        } else {
+            let x_b = self.untag(&x, &Ty::Int);
+            let lo_b = self.untag(&lo, &Ty::Int);
+            let hi_b = self.untag(&hi, &Ty::Int);
+            let c1 = self.tmp_name();
+            self.line(&format!("  {} = icmp sgt i32 {}, {}", c1, lo_b, x_b));
+            let m1 = self.tmp_name();
+            self.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", m1, c1, lo_b, x_b));
+            let c2 = self.tmp_name();
+            self.line(&format!("  {} = icmp slt i32 {}, {}", c2, hi_b, m1));
+            let m2 = self.tmp_name();
+            self.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", m2, c2, hi_b, m1));
+            format!("i32 {}", m2)
+        }
+    }
+
+    /// Advance the `rand`/`rand_range` xorshift32 generator by one step,
+    /// persisting the new state back to `@rng.state` and returning a bare
+    /// `i32` register holding it.
+    fn emit_rand_next(&mut self) -> String {
+        let x0 = self.tmp_name();
+        self.line(&format!("  {} = load i32, i32* @rng.state", x0));
+        let s1 = self.tmp_name();
+        self.line(&format!("  {} = shl i32 {}, 13", s1, x0));
+        let x1 = self.tmp_name();
+        self.line(&format!("  {} = xor i32 {}, {}", x1, x0, s1));
+        let s2 = self.tmp_name();
+        self.line(&format!("  {} = lshr i32 {}, 17", s2, x1));
+        let x2 = self.tmp_name();
+        self.line(&format!("  {} = xor i32 {}, {}", x2, x1, s2));
+        let s3 = self.tmp_name();
+        self.line(&format!("  {} = shl i32 {}, 5", s3, x2));
+        let x3 = self.tmp_name();
+        self.line(&format!("  {} = xor i32 {}, {}", x3, x2, s3));
+        self.line(&format!("  store i32 {}, i32* @rng.state", x3));
+        x3
+    }
+
+    /// `rand() -> f32` in `[0, 1)`.
+    pub(super) fn emit_rand(&mut self) -> String {
+        let x = self.emit_rand_next();
+        // Mask to the low 24 bits (a full `f32` mantissa's worth of
+        // precision) and scale to `[0, 1)`.
+        let masked = self.tmp_name();
+        self.line(&format!("  {} = and i32 {}, 16777215", masked, x));
+        let as_f = self.tmp_name();
+        self.line(&format!("  {} = uitofp i32 {} to float", as_f, masked));
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = fdiv float {}, {}", reg, as_f, format_f32_literal(16777216.0)));
+        format!("float {}", reg)
+    }
+
+    /// `rand_range(lo, hi) -> i32` in `[lo, hi)`.
+    pub(super) fn emit_rand_range(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 2 {
+            self.err("rand_range(..) expects 2 arguments", Span::dummy());
+            return "i32 0".into();
+        }
+        let lo_v = self.emit_expr(&args[0]);
+        let hi_v = self.emit_expr(&args[1]);
+        let lo = self.untag(&lo_v, &Ty::Int);
+        let hi = self.untag(&hi_v, &Ty::Int);
+        let range = self.tmp_name();
+        self.line(&format!("  {} = sub i32 {}, {}", range, hi, lo));
+        // Guard against a non-positive range (misuse, e.g. `hi <= lo`)
+        // rather than dividing by zero/a negative modulus.
+        let is_le0 = self.tmp_name();
+        self.line(&format!("  {} = icmp sle i32 {}, 0", is_le0, range));
+        let safe_range = self.tmp_name();
+        self.line(&format!("  {} = select i1 {}, i32 1, i32 {}", safe_range, is_le0, range));
+        let x = self.emit_rand_next();
+        let unsigned = self.tmp_name();
+        self.line(&format!("  {} = and i32 {}, 2147483647", unsigned, x));
+        let m = self.tmp_name();
+        self.line(&format!("  {} = urem i32 {}, {}", m, unsigned, safe_range));
+        let result = self.tmp_name();
+        self.line(&format!("  {} = add i32 {}, {}", result, lo, m));
+        format!("i32 {}", result)
+    }
+
+    /// `rand_seed(seed)`: reseed the generator (guarding against a `0` seed,
+    /// which would make xorshift32 output `0` forever).
+    pub(super) fn emit_rand_seed(&mut self, args: &[TypedExpr]) {
+        let Some(arg) = args.first() else {
+            self.err("rand_seed(..) expects 1 argument", Span::dummy());
+            return;
+        };
+        let v = self.emit_expr(arg);
+        let bare = self.untag(&v, &Ty::Int);
+        let is_zero = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, 0", is_zero, bare));
+        let safe = self.tmp_name();
+        self.line(&format!("  {} = select i1 {}, i32 1, i32 {}", safe, is_zero, bare));
+        self.line(&format!("  store i32 {}, i32* @rng.state", safe));
     }
 
     pub(super) fn emit_assign_binop(&mut self, lhs: &str, lty: &Ty, rhs: &str, rty: &Ty, op: AssignOp) -> String {

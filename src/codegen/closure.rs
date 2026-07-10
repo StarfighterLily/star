@@ -79,6 +79,13 @@ impl Codegen {
         let saved_symbols = std::mem::take(&mut self.symbols);
         let saved_in_frame = self.in_frame;
         self.in_frame = false; // the frame bump allocator's offset is a single shared global, scoped to the defining call, not a detached closure body
+        // A closure literal is its own independent LLVM function with its
+        // own (possibly non-`i32`, possibly void) return type -- a bare
+        // `return` inside its body must lower to that function's own
+        // convention, never `main`'s forced `ret i32 0`, even when the
+        // closure is defined lexically inside `main`'s body.
+        let saved_in_main = self.in_main;
+        self.in_main = false;
 
         self.write(&format!("define {} @{}(i8* %envp", ret_llvm, fn_name));
         for p in params {
@@ -139,6 +146,7 @@ impl Codegen {
         self.pending_top.push(fn_ir);
         self.symbols = saved_symbols;
         self.in_frame = saved_in_frame;
+        self.in_main = saved_in_main;
 
         // --- back at the definition site: snapshot captures by value into a
         // heap-allocated environment, then pack `{ fn_ptr, env_ptr }`. ---
@@ -216,6 +224,8 @@ impl Codegen {
             let saved_symbols = std::mem::take(&mut self.symbols);
             let saved_in_frame = self.in_frame;
             self.in_frame = false;
+            let saved_in_main = self.in_main;
+            self.in_main = false;
 
             self.write(&format!("define {} @{}(i8* %envp", ret_llvm, thunk_name));
             for (i, ty) in param_llvm.iter().enumerate() {
@@ -239,6 +249,7 @@ impl Codegen {
             self.pending_top.push(fn_ir);
             self.symbols = saved_symbols;
             self.in_frame = saved_in_frame;
+            self.in_main = saved_in_main;
 
             self.fn_value_thunks.insert(name.to_string(), thunk_name.clone());
             thunk_name

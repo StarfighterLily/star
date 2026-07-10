@@ -5,6 +5,7 @@ declare i32 @printf(i8*, ...)
 declare i32 @puts(i8*)
 declare noalias i8* @malloc(i64)
 declare void @free(i8*)
+declare void @exit(i32) noreturn
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
@@ -24,6 +25,8 @@ declare float @llvm.maxnum.f32(float, float)
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
+
+@rng.state = global i32 123456789
 
 %IntOption = type { i32, [1 x i64] }
 %DivResult = type { i32, [1 x i64] }
@@ -310,7 +313,7 @@ match_end_1:
   unreachable
 }
 
-define void @main() {
+define i32 @main() {
 entry:
   %t0 = call %DivResult @safe_div(i32 10, i32 2)
   call void @print_div(%DivResult %t0)
@@ -371,7 +374,7 @@ entry:
   %t40 = sub i32 0, 3
   call void @describe_sign(i32 %t40)
   call void @describe_sign(i32 4)
-  ret void
+  ret i32 0
 }
 
 

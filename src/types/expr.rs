@@ -91,6 +91,9 @@ impl Checker {
                             let arg_exprs: Vec<TypedExpr> = args.iter()
                                 .map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into()))))
                                 .collect();
+                            if let Some((param_tys, _)) = self.functions.get(field).cloned() {
+                                self.check_call_args(&param_tys, true, &arg_exprs, *span);
+                            }
                             let ret_ty = self.functions.get(field).and_then(|(_, ret)| ret.clone()).unwrap_or(Ty::Named("unknown".into()));
                             return Ok(TypedExpr::Call { callee: Box::new(callee_expr), args: arg_exprs, ty: ret_ty, span: *span });
                         }
@@ -129,24 +132,30 @@ impl Checker {
                 let ret_ty = if let Ty::Closure(_, ret) = callee_expr.clone().into_ty() {
                     *ret
                 } else {
-                    // Look up the return type from the function table. Impl
+                    // Look up the signature from the function table. Impl
                     // methods share the same flat table as free functions
                     // (keyed by name only), so a method call `obj.method()`
                     // resolves exactly like a free-function call: through the
                     // callee's name, whether that name came from an `Ident` or
-                    // (for methods) the field of a `Field` access.
-                    match &callee_expr {
-                        TypedExpr::Ident { name, .. } => {
-                            self.functions.get(name)
-                                .and_then(|(_, ret)| ret.clone())
-                                .unwrap_or(Ty::Named("unknown".into()))
+                    // (for methods) the field of a `Field` access. §1.4: this
+                    // is also where argument count/type validation happens
+                    // for an ordinary call -- previously entirely absent, so
+                    // `add("foo", "bar")` against `fn add(a: i32, b: i32)`
+                    // type-checked cleanly and only misbehaved (undefined
+                    // behavior from treating two string pointers as `i32`s)
+                    // once actually run.
+                    let sig = match &callee_expr {
+                        TypedExpr::Ident { name, .. } => self.functions.get(name).cloned(),
+                        TypedExpr::Field { field, .. } => self.functions.get(field).cloned(),
+                        _ => None,
+                    };
+                    match sig {
+                        Some((param_tys, ret)) => {
+                            let skip_self = matches!(&callee_expr, TypedExpr::Field { .. });
+                            self.check_call_args(&param_tys, skip_self, &arg_exprs, *span);
+                            ret.unwrap_or(Ty::Named("unknown".into()))
                         }
-                        TypedExpr::Field { field, .. } => {
-                            self.functions.get(field)
-                                .and_then(|(_, ret)| ret.clone())
-                                .unwrap_or(Ty::Named("unknown".into()))
-                        }
-                        _ => Ty::Named("unknown".into()),
+                        None => Ty::Named("unknown".into()),
                     }
                 };
                 Ok(TypedExpr::Call { callee: Box::new(callee_expr), args: arg_exprs, ty: ret_ty, span: *span })
@@ -291,7 +300,14 @@ impl Checker {
                 for p in &typed_params {
                     inner_vars.insert(p.name.clone(), p.ty.clone());
                 }
+                // A closure's return type is inferred *from* its body below
+                // (its trailing expression, unless explicitly declared) --
+                // checking `return` statements against it here would be
+                // circular, so return-type checking is suspended for the
+                // duration of this body (see `current_ret_ty`'s doc comment).
+                let saved_ret_ty = std::mem::replace(&mut self.current_ret_ty, None);
                 let body_typed = self.check_block_inner(body, &mut inner_vars);
+                self.current_ret_ty = saved_ret_ty;
                 // A declared `-> Ret` is used as-is; otherwise (mirroring the
                 // `if`-expression's own type inference) the closure's return
                 // type is whatever its trailing expression evaluates to, or
@@ -549,10 +565,47 @@ impl Checker {
         }
     }
 
+    /// Validate an ordinary call's argument count and per-argument types
+    /// against a declared signature's parameter types (§1.4). `skip_self` is
+    /// true for a method call, whose stored signature includes the `self`
+    /// receiver as `param_tys[0]` (registered as the placeholder type
+    /// `Ty::Named("infer")` -- see `Checker::check`'s impl-block signature
+    /// pass -- since `self`'s real type isn't resolved at that point) but
+    /// whose call-site `arg_exprs` never includes an explicit receiver
+    /// argument (the receiver is threaded separately at codegen).
+    fn check_call_args(&mut self, param_tys: &[Ty], skip_self: bool, arg_exprs: &[TypedExpr], span: Span) {
+        let expected: &[Ty] = if skip_self && !param_tys.is_empty() { &param_tys[1..] } else { param_tys };
+        if expected.len() != arg_exprs.len() {
+            self.error(
+                format!("this call expects {} argument(s), found {}", expected.len(), arg_exprs.len()),
+                span,
+            );
+            return;
+        }
+        for (i, (p, a)) in expected.iter().zip(arg_exprs.iter()).enumerate() {
+            let actual = a.clone().into_ty();
+            if !Self::types_compatible(p, &actual) {
+                self.error(
+                    format!("argument {} expected type `{:?}`, found `{:?}`", i + 1, p, actual),
+                    span,
+                );
+            }
+        }
+    }
+
     /// Infer the result type of a binary operator, dispatching on whether
     /// either operand is a builtin vector/matrix type. Falls through to the
     /// original Int/Float/Bool behavior when both operands are scalar.
     fn infer_binop_ty(&mut self, op: &BinOp, lhs_ty: &Ty, rhs_ty: &Ty, span: Span) -> Ty {
+        if matches!(op, BinOp::And | BinOp::Or) {
+            if *lhs_ty != Ty::Bool || *rhs_ty != Ty::Bool {
+                self.error(
+                    format!("`&&`/`||` (`and`/`or`) operands must both be `bool`, found `{:?}` and `{:?}`", lhs_ty, rhs_ty),
+                    span,
+                );
+            }
+            return Ty::Bool;
+        }
         let is_cmp = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge);
         if !lhs_ty.is_vec() && !lhs_ty.is_mat() && !rhs_ty.is_vec() && !rhs_ty.is_mat() {
             // Original scalar behavior, preserved exactly.

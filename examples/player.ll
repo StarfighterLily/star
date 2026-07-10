@@ -5,6 +5,7 @@ declare i32 @printf(i8*, ...)
 declare i32 @puts(i8*)
 declare noalias i8* @malloc(i64)
 declare void @free(i8*)
+declare void @exit(i32) noreturn
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
@@ -24,6 +25,8 @@ declare float @llvm.maxnum.f32(float, float)
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
+
+@rng.state = global i32 123456789
 
 %Vec3 = type { float, float, float }
 %Player = type { i32, { float, float, float }, i8* }
@@ -77,7 +80,7 @@ entry:
   ret i32 %t3
 }
 
-define void @main() {
+define i32 @main() {
 entry:
   %t0 = alloca %Player
   %t1 = alloca %Player
@@ -107,7 +110,7 @@ entry:
   %t17 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.3, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t17, i32 %t16)
   call void @take_damage(%Player* %t0, i32 150)
-  ret void
+  ret i32 0
 }
 
 

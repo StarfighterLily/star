@@ -5,6 +5,7 @@ declare i32 @printf(i8*, ...)
 declare i32 @puts(i8*)
 declare noalias i8* @malloc(i64)
 declare void @free(i8*)
+declare void @exit(i32) noreturn
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
@@ -24,6 +25,8 @@ declare float @llvm.maxnum.f32(float, float)
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
+
+@rng.state = global i32 123456789
 
 %Result__i32__str = type { i32, [1 x i64] }
 %Box__i32 = type { i32 }
@@ -67,7 +70,7 @@ match_end_1:
   ret void
 }
 
-define void @main() {
+define i32 @main() {
 entry:
   %t0 = alloca %Box__i32
   %t1 = alloca %Box__i32
@@ -153,7 +156,7 @@ entry:
   %t57 = getelementptr inbounds [20 x i8], [20 x i8]* @.str.8, i64 0, i64 0
   %t58 = fpext float %t56 to double
   call i32 (i8*, ...) @printf(i8* %t57, double %t58)
-  ret void
+  ret i32 0
 }
 
 define i32 @unwrap_or__i32(%Option__i32 %o, i32 %default) {

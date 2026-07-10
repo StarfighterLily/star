@@ -5,6 +5,7 @@ declare i32 @printf(i8*, ...)
 declare i32 @puts(i8*)
 declare noalias i8* @malloc(i64)
 declare void @free(i8*)
+declare void @exit(i32) noreturn
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
@@ -24,6 +25,8 @@ declare float @llvm.maxnum.f32(float, float)
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
+
+@rng.state = global i32 123456789
 
 define i32 @apply_twice({ i8*, i8* } %f, i32 %x) {
 entry:
@@ -71,7 +74,7 @@ entry:
   ret { i8*, i8* } %t17
 }
 
-define void @main() {
+define i32 @main() {
 entry:
   %t0 = alloca { i8*, i8* }
   %t4 = bitcast i32 (i8*, i32)* @closure_1 to i8*
@@ -198,7 +201,7 @@ entry:
   %t150 = extractvalue { i8*, i8* } %t148, 1
   %t151 = bitcast i8* %t149 to void (i8*)*
   call void %t151(i8* %t150)
-  ret void
+  ret i32 0
 }
 
 

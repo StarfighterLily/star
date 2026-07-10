@@ -48,6 +48,12 @@ impl Parser {
             TokenKind::GtEq => (BinOp::Ge, 4),
             TokenKind::EqEq => (BinOp::Eq, 3),
             TokenKind::NotEq => (BinOp::Ne, 3),
+            // Lower precedence than comparisons (so `a > 0 and b > 0` parses
+            // as `(a > 0) and (b > 0)`, not `a > (0 and b) > 0`), and `and`
+            // binds tighter than `or` (`a and b or c` == `(a and b) or c`),
+            // mirroring Python's own logical-operator precedence.
+            TokenKind::AndAnd => (BinOp::And, 2),
+            TokenKind::OrOr => (BinOp::Or, 1),
             _ => return None,
         };
         Some(op)

@@ -252,7 +252,24 @@ fn rewrite_stmt(stmt: &Stmt, hoist: &HashSet<String>) -> Stmt {
         Stmt::Assign { target, op, value, span } => {
             Stmt::Assign { target: rewrite_expr(target, hoist), op: *op, value: rewrite_expr(value, hoist), span: *span }
         }
-        Stmt::Return { value, span } => Stmt::Return { value: value.as_ref().map(|v| rewrite_expr(v, hoist)), span: *span },
+        // A bare early `return` (aborting the sequence before it reaches its
+        // next `yield`, e.g. "if target.dead: return") is passed through by
+        // the old code entirely unchanged -- but the surrounding function
+        // has been rewritten to a `resume(mut self) -> bool`, so a `ret
+        // void` reaching a function declared to return `bool` is invalid
+        // LLVM IR, caught only by the backend with no Star diagnostic
+        // pointing at the offending line. An early exit has no value of its
+        // own to return; `resume`'s real channel is the `bool` "not done
+        // yet" signal, and aborting early is naturally "no more work to
+        // do" -- the same `false` value the final segment's own implicit
+        // fallthrough already returns (see `build_state_if`).
+        Stmt::Return { value, span } => Stmt::Return {
+            value: Some(match value {
+                Some(v) => rewrite_expr(v, hoist),
+                None => Expr::Bool(false, *span),
+            }),
+            span: *span,
+        },
         Stmt::Expr(e) => Stmt::Expr(rewrite_expr(e, hoist)),
         Stmt::If { cond, then_block, else_block, span } => Stmt::If {
             cond: rewrite_expr(cond, hoist),

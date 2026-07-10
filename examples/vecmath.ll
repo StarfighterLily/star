@@ -5,6 +5,7 @@ declare i32 @printf(i8*, ...)
 declare i32 @puts(i8*)
 declare noalias i8* @malloc(i64)
 declare void @free(i8*)
+declare void @exit(i32) noreturn
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
@@ -25,7 +26,9 @@ declare float @llvm.maxnum.f32(float, float)
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
 
-define void @main() {
+@rng.state = global i32 123456789
+
+define i32 @main() {
 entry:
   %t0 = alloca { float, float, float }
   %t1 = alloca { float, float, float }
@@ -273,7 +276,7 @@ entry:
   %t212 = fpext float %t208 to double
   %t213 = fpext float %t210 to double
   call i32 (i8*, ...) @printf(i8* %t211, double %t212, double %t213)
-  ret void
+  ret i32 0
 }
 
 

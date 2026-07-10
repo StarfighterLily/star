@@ -38,6 +38,44 @@ impl Codegen {
         }
     }
 
+    /// Bump-allocate `size` bytes from the `frame:` scope's backing buffer
+    /// (`@frame.buf`), returning an `i8*` to the claimed region. This is the
+    /// bounds check a bump allocator needs and previously had none of: if
+    /// the allocation would advance `@frame.off` past `FRAME_BUF_SIZE`, the
+    /// process aborts with a diagnostic message instead of silently
+    /// producing an out-of-bounds `getelementptr` that segfaults or
+    /// corrupts whatever global data happens to sit right after the buffer.
+    fn emit_frame_alloc(&mut self, size: u32) -> String {
+        let off = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* @frame.off", off));
+        let new_off = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, {}", new_off, off, size));
+        let overflow = self.tmp_name();
+        self.line(&format!("  {} = icmp ugt i64 {}, {}", overflow, new_off, Self::FRAME_BUF_SIZE));
+        let fail_label = self.block_label("frame_alloc_fail");
+        let ok_label = self.block_label("frame_alloc_ok");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", overflow, fail_label, ok_label));
+
+        self.line(&format!("{}:", fail_label));
+        let msg = "star runtime error: a `frame:` block exceeded its 4096-byte capacity\n";
+        let g = self.global_name();
+        let escaped = msg.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
+        self.global_defs.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", g, msg.len() + 1, escaped));
+        let msg_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0", msg_ptr, msg.len() + 1, msg.len() + 1, g));
+        self.line(&format!("  call i32 @puts(i8* {})", msg_ptr));
+        self.line("  call void @exit(i32 1)");
+        self.line("  unreachable");
+
+        self.line(&format!("{}:", ok_label));
+        self.line(&format!("  store i64 {}, i64* @frame.off", new_off));
+        let base = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0", base));
+        let byte_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", byte_ptr, base, off));
+        byte_ptr
+    }
+
     /// Emit a `frame:` scope: save the bump-allocator offset, emit the body
     /// (allocations inside use the frame buffer instead of the stack), then
     /// restore the saved offset so the scope's allocations are reclaimed in
@@ -84,7 +122,25 @@ impl Codegen {
         self.symbols.clear();
         self.tmp = 0;
 
-        let ret_ty = match &f.sig.ret { Some(t) => self.llvm_ty(t), None => "void".into() };
+        // `main` is the process's real C entry point once linked by clang: a
+        // hosted `int main(void)` is a hard ABI requirement, since the OS/CRT
+        // startup thunk always reads a return value out of `eax`/`al` after
+        // calling it. Lowering a bare `fn main():` to `define void @main()`
+        // (the ordinary no-return-type rule below) leaves that register
+        // holding whatever garbage the last instruction before `ret void`
+        // happened to write -- typically the last `printf`'s return value --
+        // so every compiled program's exit code becomes non-deterministic
+        // garbage despite otherwise-correct output. `main` is therefore
+        // special-cased to always lower to `i32 @main(...)`, with an
+        // implicit `ret i32 0` appended when the user's body doesn't already
+        // return a value, mirroring what `rustc`/`clang` do for a bare `fn
+        // main()`/`void main()`.
+        let is_main = f.sig.name == "main";
+        let ret_ty = if is_main {
+            "i32".to_string()
+        } else {
+            match &f.sig.ret { Some(t) => self.llvm_ty(t), None => "void".into() }
+        };
         let func_name = &f.sig.name;
 
         self.write(&format!("define {} @{}(", ret_ty, func_name));
@@ -108,8 +164,11 @@ impl Codegen {
             self.symbols.push((p.name.clone(), alloca, p.ty.clone()));
         }
 
+        let was_in_main = self.in_main;
+        self.in_main = is_main;
         let terminated = Self::body_terminates(&f.body.stmts);
         let trailing_val = self.emit_stmts_value(&f.body.stmts);
+        self.in_main = was_in_main;
 
         if !terminated {
             match &f.sig.ret {
@@ -126,7 +185,13 @@ impl Codegen {
                         }
                     }
                 }
-                None => self.line("  ret void"),
+                None => {
+                    if is_main {
+                        self.line("  ret i32 0");
+                    } else {
+                        self.line("  ret void");
+                    }
+                }
             }
         }
         self.line("}");
@@ -137,22 +202,14 @@ impl Codegen {
         match stmt {
             TypedStmt::Let { name, value, .. } => {
                 let ty = self.llvm_ty(&self.expr_ty(value));
-                let ptr = self.tmp_name();
                 if self.in_frame {
-                    // Frame allocation: bump-allocate `size` bytes from the frame
-                    // buffer, advance (and persist) the offset, then bitcast the
-                    // raw `i8*` slot to the value's actual pointer type so the
-                    // subsequent store's operand types agree with the pointer's
-                    // declared type.
-                    self.line(&format!("  {} = load i64, i64* @frame.off", ptr));
-                    let base = self.tmp_name();
-                    self.line(&format!("  {} = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0", base));
-                    let byte_ptr = self.tmp_name();
-                    self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", byte_ptr, base, ptr));
+                    // Frame allocation: bump-allocate `size` bytes from the
+                    // frame buffer (bounds-checked -- see `emit_frame_alloc`),
+                    // then bitcast the raw `i8*` slot to the value's actual
+                    // pointer type so the subsequent store's operand types
+                    // agree with the pointer's declared type.
                     let size = self.type_size(&self.expr_ty(value));
-                    let store_offset = self.tmp_name();
-                    self.line(&format!("  {} = add i64 {}, {}", store_offset, ptr, size));
-                    self.line(&format!("  store i64 {}, i64* @frame.off", store_offset));
+                    let byte_ptr = self.emit_frame_alloc(size);
                     let typed_ptr = self.tmp_name();
                     self.line(&format!("  {} = bitcast i8* {} to {}*", typed_ptr, byte_ptr, ty));
                     let reg = self.emit_expr(value);
@@ -160,6 +217,7 @@ impl Codegen {
                     self.line(&format!("  store {} {}, {}* {}", ty, clean_val, ty, typed_ptr));
                     self.symbols.push((name.clone(), typed_ptr, self.expr_ty(value)));
                 } else {
+                    let ptr = self.tmp_name();
                     self.line(&format!("  {} = alloca {}", ptr, ty));
                     let reg = self.emit_expr(value);
                     let clean_val = reg.strip_prefix(&format!("{} ", ty)).unwrap_or(&reg);
@@ -188,6 +246,14 @@ impl Codegen {
                     // calls); strip any existing tag so it's never doubled.
                     let clean = self.untag(&reg, &ty);
                     self.line(&format!("  ret {} {}", self.llvm_ty(&ty), clean));
+                } else if self.in_main {
+                    // `main` is always forced to `i32 @main(...)` (see
+                    // `emit_fn`'s `is_main` special case) regardless of its
+                    // declared return type, so a bare `return` here must
+                    // still produce an `i32`-typed terminator -- `ret void`
+                    // would disagree with the function's own declared
+                    // signature and be rejected as invalid IR.
+                    self.line("  ret i32 0");
                 } else {
                     self.line("  ret void");
                 }

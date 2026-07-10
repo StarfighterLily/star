@@ -33,6 +33,19 @@ enum Command {
         /// Output executable path (default: <file>.exe).
         #[arg(short, long)]
         output: Option<String>,
+        /// Optimization level passed to clang (0-3). Defaults to 2: Star's
+        /// own emitter never runs LLVM's `opt` pipeline or does any
+        /// simplification of its own (every local is spilled to an
+        /// `alloca`+`load`/`store`), so building at the previous default of
+        /// `-O0` shipped every binary, including every example, fully
+        /// unoptimized -- `-O2` alone lets `mem2reg`/SROA clean that up for
+        /// free.
+        #[arg(short = 'O', long = "opt-level", default_value_t = 2)]
+        opt_level: u8,
+        /// Shorthand for `-O 3` (maximum optimization); overrides `-O`/
+        /// `--opt-level` if both are given.
+        #[arg(long)]
+        release: bool,
     },
     /// Emit an intermediate representation for debugging.
     Emit {
@@ -58,7 +71,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Check { file } => cmd_check(&file),
-        Command::Build { file, output } => cmd_build(&file, output.as_deref()),
+        Command::Build { file, output, opt_level, release } => cmd_build(&file, output.as_deref(), opt_level, release),
         Command::Emit { what, file } => cmd_emit(what, &file),
     }
 }
@@ -83,8 +96,18 @@ fn cmd_check(file: &str) -> ExitCode {
     }
 }
 
+/// The `-O<N>` flag clang should be invoked with, given the `--opt-level`/
+/// `-O` value and whether `--release` was passed (which always wins, since
+/// it's an explicit, unambiguous request for maximum optimization). Split
+/// out from `cmd_build` so the clamping/precedence logic can be exercised
+/// directly without shelling out to clang -- see the `tests` module below.
+fn opt_flag(opt_level: u8, release: bool) -> String {
+    let level = if release { 3 } else { opt_level.min(3) };
+    format!("-O{}", level)
+}
+
 /// Full pipeline: parse, type-check, emit LLVM IR, compile with clang.
-fn cmd_build(file: &str, output: Option<&str>) -> ExitCode {
+fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, release: bool) -> ExitCode {
     let driver = Driver::new(file);
     let compilation = match driver.compile() {
         Ok(c) => c,
@@ -129,6 +152,7 @@ fn cmd_build(file: &str, output: Option<&str>) -> ExitCode {
         .arg("-o")
         .arg(&exe_path)
         .arg(&ll_path)
+        .arg(opt_flag(opt_level, release))
         .arg("-Wno-override-module")
         .status()
     {
@@ -172,7 +196,36 @@ fn find_clang_on(path_var: Option<&std::ffi::OsStr>) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::find_clang_on;
+    use super::{find_clang_on, opt_flag};
+
+    /// `star build` with no flags at all defaults to `-O2` -- previously
+    /// every build (including every shipped example) was fully unoptimized.
+    #[test]
+    fn opt_flag_defaults_to_o2() {
+        assert_eq!(opt_flag(2, false), "-O2");
+    }
+
+    /// An explicit `-O0`/`--opt-level 0` is honored (e.g. for faster
+    /// iterative debug builds), not silently overridden.
+    #[test]
+    fn opt_flag_honors_explicit_o0() {
+        assert_eq!(opt_flag(0, false), "-O0");
+    }
+
+    /// `--release` always wins over `--opt-level`, even if a lower level was
+    /// also (redundantly) specified.
+    #[test]
+    fn opt_flag_release_overrides_opt_level() {
+        assert_eq!(opt_flag(0, true), "-O3");
+        assert_eq!(opt_flag(2, true), "-O3");
+    }
+
+    /// An out-of-range `--opt-level` clamps to clang's max (`-O3`) rather
+    /// than passing a flag clang would reject outright.
+    #[test]
+    fn opt_flag_clamps_out_of_range_level() {
+        assert_eq!(opt_flag(9, false), "-O3");
+    }
 
     /// A `clang`/`clang.exe` on `PATH` is preferred over the hardcoded
     /// `E:\LLVM\bin\clang.exe` fallback -- the bug this guards against: the

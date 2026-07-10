@@ -5,6 +5,7 @@ declare i32 @printf(i8*, ...)
 declare i32 @puts(i8*)
 declare noalias i8* @malloc(i64)
 declare void @free(i8*)
+declare void @exit(i32) noreturn
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
@@ -24,6 +25,8 @@ declare float @llvm.maxnum.f32(float, float)
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
+
+@rng.state = global i32 123456789
 
 %Point = type { i32, i32 }
 define i32 @sum_list({ i32*, i64, i64 } %nums) {
@@ -77,7 +80,7 @@ while_end_3:
   ret i32 %t26
 }
 
-define void @main() {
+define i32 @main() {
 entry:
   %t0 = alloca { i32*, i64, i64 }
   %t1 = call i8* @malloc(i64 12)
@@ -544,7 +547,7 @@ list_idx_end_55:
   %t291 = load i32, i32* %t290
   %t292 = getelementptr inbounds [22 x i8], [22 x i8]* @.str.18, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t292, i32 %t289, i32 %t291)
-  ret void
+  ret i32 0
 }
 
 

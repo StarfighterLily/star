@@ -12,8 +12,24 @@ impl Checker {
         Some(match stmt {
             Stmt::Let { is_mut, name, ty, value, span } => {
                 let value_typed = self.infer_expr(value, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
-                let actual_ty: Ty = ty.as_ref().and_then(|t| self.resolve_type(t))
-                    .unwrap_or_else(|| value_typed.clone().into_ty());
+                let annotated_ty = ty.as_ref().and_then(|t| self.resolve_type(t));
+                // §1.1: the annotation, if present, was previously resolved
+                // and used as the variable's tracked type with *no*
+                // comparison against the value's actual inferred type at
+                // all -- a mistyped `let a: Foo = 42` type-checked cleanly
+                // and only surfaced as a broken `load %Foo, %Foo* %t0`
+                // (really an `i32` alloca) at codegen, or as a runtime
+                // segfault if it reached a compiled binary at all.
+                if let Some(declared) = &annotated_ty {
+                    let actual = value_typed.clone().into_ty();
+                    if !Self::types_compatible(declared, &actual) {
+                        self.error(
+                            format!("`let {}: {:?}` but the value has type `{:?}`", name, declared, actual),
+                            *span,
+                        );
+                    }
+                }
+                let actual_ty: Ty = annotated_ty.unwrap_or_else(|| value_typed.clone().into_ty());
                 vars.insert(name.clone(), actual_ty.clone());
                 TypedStmt::Let { is_mut: *is_mut, name: name.clone(), ty: actual_ty, value: value_typed, span: *span }
             }
@@ -31,10 +47,52 @@ impl Checker {
                         }
                     }
                 }
+                // §1.2: assignments were never type-checked at all -- only
+                // the swizzle-specific duplicate-component check above
+                // existed in this arm. `x += y`/`x -= y`/etc. are held to
+                // the same standard as plain `=`: this compiler has no
+                // numeric-widening assignment coercions (e.g. assigning an
+                // `i32` into an `f32` binding), matching `infer_binop_ty`'s
+                // own strictness for vector arithmetic.
+                let target_ty = target_typed.clone().into_ty();
+                let value_ty = value_typed.clone().into_ty();
+                if !Self::types_compatible(&target_ty, &value_ty) {
+                    self.error(
+                        format!("cannot assign a value of type `{:?}` to a target of type `{:?}`", value_ty, target_ty),
+                        *span,
+                    );
+                }
                 TypedStmt::Assign { target: target_typed, op: *op, value: value_typed, span: *span }
             }
             Stmt::Return { value, span } => {
                 let value_typed = value.as_ref().map(|v| self.infer_expr(v, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into()))));
+                if let Some(expected) = self.current_ret_ty.clone() {
+                    match (&value_typed, &expected) {
+                        (Some(v), Some(expected_ty)) => {
+                            let actual = v.clone().into_ty();
+                            if !Self::types_compatible(expected_ty, &actual) {
+                                self.error(
+                                    format!("expected return type `{:?}`, found `{:?}`", expected_ty, actual),
+                                    *span,
+                                );
+                            }
+                        }
+                        (Some(v), None) => {
+                            let actual = v.clone().into_ty();
+                            self.error(
+                                format!("this function has no declared return type, but `return` provides a value of type `{:?}`", actual),
+                                *span,
+                            );
+                        }
+                        (None, Some(expected_ty)) => {
+                            self.error(
+                                format!("expected a return value of type `{:?}`, found bare `return`", expected_ty),
+                                *span,
+                            );
+                        }
+                        (None, None) => {}
+                    }
+                }
                 TypedStmt::Return { value: value_typed, span: *span }
             }
             Stmt::Expr(expr) => TypedStmt::Expr(self.infer_expr(expr, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))),

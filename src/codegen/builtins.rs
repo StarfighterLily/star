@@ -30,7 +30,7 @@ impl Codegen {
                         match ty {
                             Ty::Int => { fmt_str.push_str("%d"); }
                             Ty::Float => { fmt_str.push_str("%f"); }
-                            Ty::Str => { fmt_str.push_str("%s"); }
+                            Ty::Str | Ty::Bool => { fmt_str.push_str("%s"); }
                             _ => { fmt_str.push_str("%p"); }
                         }
                         // `emit_expr` may return either a bare register
@@ -40,11 +40,18 @@ impl Codegen {
                         let bare_val = self.untag(&val, &ty);
                         // For string arguments, `bare_val` is the alloca
                         // holding the `i8*`; load it to get the pointer
-                        // that `%s` expects.
+                        // that `%s` expects. A `bool` isn't a pointer at
+                        // all -- printing it via `%p` on a bare `i1` is
+                        // undefined behavior (varargs promotion reads a
+                        // pointer-sized value off the stack/register that
+                        // was never written); select between "true"/"false"
+                        // string constants instead, same as any other `%s`.
                         let arg_val = if matches!(ty, Ty::Str) {
                             let loaded = self.tmp_name();
                             self.line(&format!("  {} = load i8*, i8** {}", loaded, bare_val));
                             loaded
+                        } else if matches!(ty, Ty::Bool) {
+                            self.emit_bool_str(&bare_val)
                         } else {
                             bare_val
                         };
@@ -69,6 +76,11 @@ impl Codegen {
                     let widened = self.tmp_name();
                     self.line(&format!("  {} = fpext float {} to double", widened, val));
                     call_args.push(format!("double {}", widened));
+                } else if matches!(ty, Ty::Bool) {
+                    // `emit_bool_str` already turned this into an `i8*`
+                    // (a "true"/"false" string pointer), not the bare
+                    // `i1` `llvm_ty(Ty::Bool)` would tag it as.
+                    call_args.push(format!("i8* {}", val));
                 } else {
                     call_args.push(format!("{} {}", self.llvm_ty(ty), val));
                 }
@@ -87,6 +99,22 @@ impl Codegen {
                 self.line(&format!("  call i32 (i8*, ...) @printf(i8* {})", nl_ptr));
             }
         }
+    }
+
+    /// Select between `"true"`/`"false"` string constants based on a bare
+    /// `i1` register, returning an `i8*` suitable for a `%s` format hole.
+    fn emit_bool_str(&mut self, bare_bool: &str) -> String {
+        let true_g = self.global_name();
+        self.global_defs.push(format!("{} = private unnamed_addr constant [5 x i8] c\"true\\00\"", true_g));
+        let false_g = self.global_name();
+        self.global_defs.push(format!("{} = private unnamed_addr constant [6 x i8] c\"false\\00\"", false_g));
+        let true_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds [5 x i8], [5 x i8]* {}, i64 0, i64 0", true_ptr, true_g));
+        let false_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds [6 x i8], [6 x i8]* {}, i64 0, i64 0", false_ptr, false_g));
+        let sel = self.tmp_name();
+        self.line(&format!("  {} = select i1 {}, i8* {}, i8* {}", sel, bare_bool, true_ptr, false_ptr));
+        sel
     }
 
     /// Call a unary LLVM float intrinsic (`sqrt`, `floor`, `ceil`),

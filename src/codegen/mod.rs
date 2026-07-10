@@ -60,6 +60,13 @@ pub struct Codegen {
     methods: std::collections::HashMap<String, String>,
     errors: Vec<Diagnostic>,
     in_frame: bool,
+    /// True while emitting `main`'s body. `main` is always forced to lower
+    /// to `i32 @main(...)` regardless of its declared return type (see
+    /// `emit_fn`'s `is_main` special case) -- a bare `return` (no value)
+    /// inside it must therefore emit `ret i32 0`, not the ordinary `ret
+    /// void`, or the function body would contain a terminator whose type
+    /// disagrees with the function's own declared signature (invalid IR).
+    in_main: bool,
     /// Top-level LLVM text (worker functions and their argument-struct type
     /// declarations) generated mid-function by `par`/`swarm` statements.
     /// These can't be written directly into `self.ir` at the point they're
@@ -99,6 +106,10 @@ impl Codegen {
     /// parallel generation array. See `emit_spawn_stmt`/`emit_arena_decl`.
     const ARENA_CAPACITY: u64 = 1024;
 
+    /// Fixed byte capacity of the `frame:` bump allocator's backing buffer
+    /// (`@frame.buf`). See `emit_frame_alloc_bytes`.
+    const FRAME_BUF_SIZE: u64 = 4096;
+
     pub fn new() -> Self {
         Self {
             ir: String::new(),
@@ -112,6 +123,7 @@ impl Codegen {
             methods: std::collections::HashMap::new(),
             errors: Vec::new(),
             in_frame: false,
+            in_main: false,
             pending_top: Vec::new(),
             arena_by_elem: Vec::new(),
             enum_variants: std::collections::HashMap::new(),
@@ -192,6 +204,11 @@ impl Codegen {
         self.line("declare i32 @puts(i8*)");
         self.line("declare noalias i8* @malloc(i64)");
         self.line("declare void @free(i8*)");
+        // Used to abort loudly (rather than segfault or silently corrupt
+        // adjacent global state) when a `frame:` block's bump allocator
+        // would overflow its fixed backing buffer -- see
+        // `Codegen::emit_frame_alloc`.
+        self.line("declare void @exit(i32) noreturn");
         self.line("declare i32 @strlen(i8*)");
         self.line("declare i8* @memcpy(i8*, i8*, i64)");
         self.line("declare i8* @strcpy(i8*, i8*)");
@@ -214,6 +231,12 @@ impl Codegen {
         self.line("");
         self.line("@frame.buf = global [4096 x i8] zeroinitializer");
         self.line("@frame.off = global i64 0");
+        self.line("");
+        // Seed state for the `rand`/`rand_range` builtins' xorshift32
+        // generator -- a fixed nonzero default so runs are deterministic
+        // (matters for a tick-based engine's replay/debugging story) unless
+        // explicitly reseeded via `rand_seed(..)`.
+        self.line("@rng.state = global i32 123456789");
         self.line("");
     }
 
