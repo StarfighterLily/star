@@ -1,0 +1,428 @@
+//! LLVM IR codegen: walks the typed AST and emits textual `.ll` IR.
+//!
+//! The emitted IR is written to a file and compiled with the installed
+//! `clang.exe` to produce a native executable.
+//!
+//! The `Codegen` struct and its core helpers (type lowering, symbol table,
+//! register/label allocation, "place" addressing) live here; each area of
+//! the emitter has its own `impl Codegen` block in a sibling submodule:
+//! `reflect` (struct decls + reflection metadata), `arena` (arena decls,
+//! `spawn`/`despawn`/`par`, `GenRef`), `stmt` (statement/function
+//! emission), `expr` (expression emission), `vector_math` (vector/matrix
+//! arithmetic), and `builtins` (the `print`/math/string standard library).
+
+mod arena;
+mod builtins;
+mod expr;
+mod reflect;
+mod stmt;
+mod vector_math;
+
+use std::fmt::Write;
+
+use crate::diagnostics::{Diagnostic, Span};
+use crate::types::*;
+
+/// Render an `f64` as an LLVM IR literal for a 32-bit `float` constant.
+///
+/// LLVM's textual IR only accepts a plain decimal literal (`3.5`) for a
+/// `float`-typed constant when that decimal is *exactly* representable as
+/// the target's 32-bit value; almost any literal with a non-power-of-two
+/// fraction (`3.7`, `0.1`, ...) fails to parse ("floating point constant
+/// invalid for type"). The hexadecimal form sidesteps this: round to the
+/// nearest `f32`, widen that back to `f64` bit-for-bit, and print the
+/// resulting 16-hex-digit double bit pattern — which is always exactly
+/// representable by construction, per the LLVM language reference.
+fn format_f32_literal(v: f64) -> String {
+    let rounded = (v as f32) as f64;
+    format!("0x{:016X}", rounded.to_bits())
+}
+
+/// A codegen context that accumulates LLVM IR and tracks symbols.
+pub struct Codegen {
+    ir: String,
+    global_defs: Vec<String>,
+    tmp: u64,
+    globals: u64,
+    /// Counter for unique basic-block labels (if/while codegen).
+    block_id: u64,
+    symbols: Vec<(String, String, Ty)>,
+    /// Field name lists per struct, populated from the typed module so field
+    /// indices can be resolved for any struct (not just a hardcoded set).
+    struct_fields: std::collections::HashMap<String, Vec<String>>,
+    /// Field type lists per struct, used to compute accurate byte sizes for
+    /// the frame bump allocator.
+    struct_field_types: std::collections::HashMap<String, Vec<Ty>>,
+    /// Maps `"Struct.method"` -> `@method` so method calls (`obj.method()`) can
+    /// be lowered to a direct function call with the receiver as `self`.
+    methods: std::collections::HashMap<String, String>,
+    errors: Vec<Diagnostic>,
+    in_frame: bool,
+    /// Top-level LLVM text (worker functions and their argument-struct type
+    /// declarations) generated mid-function by `par`/`swarm` statements.
+    /// These can't be written directly into `self.ir` at the point they're
+    /// discovered (that would nest a `define` inside the enclosing
+    /// function's body), so they're collected here and appended to the
+    /// module after every ordinary item has been emitted.
+    pending_top: Vec<String>,
+    /// Maps an arena's declared element type -> its name, so `GenRef<T>`
+    /// codegen can find the arena backing `T` (the checker has already
+    /// proven exactly one exists). Populated while arena decls are emitted,
+    /// which happens before any function body -- see `emit()`.
+    arena_by_elem: Vec<(Ty, String)>,
+}
+
+impl Codegen {
+    /// Fixed capacity (element count) of every arena's backing array and its
+    /// parallel generation array. See `emit_spawn_stmt`/`emit_arena_decl`.
+    const ARENA_CAPACITY: u64 = 1024;
+
+    pub fn new() -> Self {
+        Self {
+            ir: String::new(),
+            global_defs: Vec::new(),
+            tmp: 0,
+            globals: 0,
+            block_id: 0,
+            symbols: Vec::new(),
+            struct_fields: std::collections::HashMap::new(),
+            struct_field_types: std::collections::HashMap::new(),
+            methods: std::collections::HashMap::new(),
+            errors: Vec::new(),
+            in_frame: false,
+            pending_top: Vec::new(),
+            arena_by_elem: Vec::new(),
+        }
+    }
+
+    /// Generate LLVM IR from a checked module, returning the `.ll` source.
+    pub fn emit(&mut self, module: &TypedModule) -> Result<String, Vec<Diagnostic>> {
+        self.line("; Star compiler -- LLVM IR");
+        self.line("target triple = \"x86_64-w64-windows-gnu\"");
+        self.line("");
+
+        self.emit_builtins();
+
+        for item in &module.items {
+            match item {
+                TypedItem::Struct(s) => self.emit_struct_decl(s),
+                TypedItem::Arena(a) => self.emit_arena_decl(a),
+                _ => {}
+            }
+        }
+
+        // Register method names so `obj.method()` can be resolved in codegen.
+        for item in &module.items {
+            if let TypedItem::Impl(blk) = item {
+                for m in &blk.methods {
+                    self.methods
+                        .insert(format!("{}#{}", blk.type_name, m.sig.name), m.sig.name.clone());
+                }
+            }
+        }
+
+        for item in &module.items {
+            match item {
+                TypedItem::Impl(blk) => {
+                    for m in &blk.methods { self.emit_fn(m); }
+                }
+                TypedItem::Fn(f) => self.emit_fn(f),
+                _ => {}
+            }
+        }
+
+        // Worker functions (and their argument-struct types) spawned by
+        // `par`/`swarm` statements, deferred until now since they must sit
+        // at module scope, not nested inside the function that triggered them.
+        if !self.pending_top.is_empty() {
+            self.line("");
+            self.line("; par/swarm worker functions");
+            let defs = self.pending_top.clone();
+            for d in &defs {
+                self.line(d);
+            }
+        }
+
+        // Append global constant definitions at module-level (outside function bodies).
+        if !self.global_defs.is_empty() {
+            self.line("");
+            self.line("; Global Constants");
+            let defs = self.global_defs.clone();
+            for g in &defs {
+                self.line(g);
+            }
+        }
+
+        if self.errors.is_empty() {
+            Ok(std::mem::take(&mut self.ir))
+        } else {
+            Err(std::mem::take(&mut self.errors))
+        }
+    }
+
+    fn emit_builtins(&mut self) {
+        self.line("declare i32 @printf(i8*, ...)");
+        self.line("declare i32 @puts(i8*)");
+        self.line("declare noalias i8* @malloc(i64)");
+        self.line("declare void @free(i8*)");
+        self.line("declare i32 @strlen(i8*)");
+        self.line("declare i8* @memcpy(i8*, i8*, i64)");
+        self.line("declare i8* @strcpy(i8*, i8*)");
+        self.line("declare i8* @strcat(i8*, i8*)");
+        self.line("declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)");
+        self.line("declare i32 @WaitForSingleObject(i8*, i32)");
+        self.line("declare i32 @CloseHandle(i8*)");
+        // `math` builtins: lowered to LLVM's target-independent float
+        // intrinsics rather than libm symbols, so no extra linker flags are
+        // needed to resolve them.
+        self.line("declare float @llvm.sqrt.f32(float)");
+        self.line("declare float @llvm.pow.f32(float, float)");
+        self.line("declare float @llvm.fabs.f32(float)");
+        self.line("declare float @llvm.floor.f32(float)");
+        self.line("declare float @llvm.ceil.f32(float)");
+        self.line("declare float @llvm.minnum.f32(float, float)");
+        self.line("declare float @llvm.maxnum.f32(float, float)");
+        self.line("");
+        self.line("%GenRef = type { i32, i32 }");
+        self.line("");
+        self.line("@frame.buf = global [4096 x i8] zeroinitializer");
+        self.line("@frame.off = global i64 0");
+        self.line("");
+    }
+
+    /// Byte size of a type, used to advance the frame bump allocator's
+    /// offset by the right amount for each allocation.
+    fn type_size(&self, ty: &Ty) -> u32 {
+        match ty {
+            Ty::Int | Ty::Float => 4,
+            Ty::Bool => 1,
+            Ty::Str => 8,
+            Ty::GenRef(_) => 8, // { i32, i32 }
+            Ty::Vec2 => 8,
+            Ty::Vec3 => 12,
+            Ty::Vec4 => 16,
+            Ty::Mat4 => 64,
+            Ty::Named(n) => self
+                .struct_field_types
+                .get(n)
+                .map(|fields| fields.iter().map(|f| self.type_size(f)).sum())
+                .unwrap_or(8),
+        }
+    }
+
+    fn llvm_ty(&self, ty: &Ty) -> String {
+        match ty {
+            Ty::Int => "i32".into(),
+            Ty::Float => "float".into(),
+            Ty::Str => "i8*".into(),
+            Ty::Bool => "i1".into(),
+            Ty::Vec2 => "{ float, float }".into(),
+            Ty::Vec3 => "{ float, float, float }".into(),
+            Ty::Vec4 => "<4 x float>".into(),
+            Ty::Mat4 => "[4 x <4 x float>]".into(),
+            Ty::Named(n) => format!("%{}", n),
+            Ty::GenRef(_) => "%GenRef".into(),
+        }
+    }
+
+    /// A constant zero value of the given type, for zero-initializing struct
+    /// fields the constructor call site didn't supply an argument for.
+    fn zero_value(&self, ty: &Ty) -> String {
+        match ty {
+            Ty::Int => "0".into(),
+            Ty::Float => "0.0".into(),
+            Ty::Bool => "false".into(),
+            Ty::Str => "null".into(),
+            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat4 | Ty::Named(_) | Ty::GenRef(_) => "zeroinitializer".into(),
+        }
+    }
+
+    fn tmp_name(&mut self) -> String {
+        let n = self.tmp;
+        self.tmp += 1;
+        format!("%t{}", n)
+    }
+
+    fn global_name(&mut self) -> String {
+        let n = self.globals;
+        self.globals += 1;
+        format!("@.str.{}", n)
+    }
+
+    fn sym_ptr(&self, name: &str) -> Option<String> {
+        self.symbols.iter().rev().find(|(n, _, _)| n == name).map(|(_, ptr, _)| ptr.clone())
+    }
+
+    /// Extract the variable name from a base expression used as a method
+    /// receiver, so its alloca pointer can be passed as `self`.
+    fn receiver_name(&self, base: &TypedExpr) -> String {
+        match base {
+            TypedExpr::Ident { name, .. } => name.clone(),
+            _ => String::new(),
+        }
+    }
+
+    /// Emit code that yields a *pointer* to the storage of `expr`, for use as
+    /// the base operand of a `getelementptr`. This differs from `emit_expr`,
+    /// which for an `Ident`/`Field` of aggregate type loads and returns the
+    /// value itself; GEP-ing into that loaded value would be an LLVM type
+    /// mismatch (the register's type is the aggregate, not a pointer to it).
+    pub(super) fn emit_place(&mut self, expr: &TypedExpr) -> String {
+        match expr {
+            TypedExpr::Ident { name, .. } => self.sym_ptr(name).unwrap_or_else(|| "%undef".into()),
+            TypedExpr::SelfExpr(ty, _) => {
+                let ptr = self.sym_ptr("self").unwrap_or_else(|| "%undef".into());
+                let reg = self.tmp_name();
+                let struct_ty = match ty {
+                    Ty::Named(n) => format!("%{}", n),
+                    _ => self.llvm_ty(ty),
+                };
+                self.line(&format!("  {} = load {}*, {}** {}", reg, struct_ty, struct_ty, ptr));
+                reg
+            }
+            TypedExpr::Field { base, field, .. } => {
+                let base_ptr = self.emit_place(base);
+                let gep = self.tmp_name();
+                let bty = self.llvm_ty(&self.expr_ty(base));
+                let idx = self.field_index(&self.expr_ty(base), field);
+                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, bty, bty, base_ptr, idx));
+                gep
+            }
+            // Any other expression (e.g. `gen_ref[idx].field`, chaining a
+            // field access directly onto a struct returned *by value*) has
+            // no existing storage to address -- spill it into a fresh
+            // alloca so the `Field` arm above has a pointer to GEP into.
+            _ => {
+                let val = self.emit_expr(expr);
+                let ty = self.expr_ty(expr);
+                let ty_str = self.llvm_ty(&ty);
+                let bare = self.untag(&val, &ty);
+                let ptr = self.tmp_name();
+                self.line(&format!("  {} = alloca {}", ptr, ty_str));
+                self.line(&format!("  store {} {}, {}* {}", ty_str, bare, ty_str, ptr));
+                ptr
+            }
+        }
+    }
+
+    fn field_index(&mut self, base_ty: &Ty, field: &str) -> u32 {
+        let name = match base_ty {
+            Ty::Named(n) => n.clone(),
+            _ => { self.err("field access on non-struct type", Span::dummy()); return 0; }
+        };
+        // Resolve the field's position from the struct's declared field order.
+        let pos = self
+            .struct_fields
+            .get(&name)
+            .map(|fields| fields.iter().position(|f| f == field));
+        match pos {
+            Some(Some(i)) => i as u32,
+            Some(None) => { self.err(&format!("no field `{}` on `{}`", field, name), Span::dummy()); 0 }
+            None => { self.err(&format!("unknown struct `{}`", name), Span::dummy()); 0 }
+        }
+    }
+
+    /// Map a swizzle character to its lane/component index.
+    fn swizzle_index(&mut self, c: char) -> u32 {
+        match c {
+            'x' => 0,
+            'y' => 1,
+            'z' => 2,
+            'w' => 3,
+            _ => { self.err(&format!("invalid swizzle component `{}`", c), Span::dummy()); 0 }
+        }
+    }
+
+    fn line(&mut self, s: &str) { writeln!(self.ir, "{}", s).unwrap(); }
+    fn write(&mut self, s: &str) { write!(self.ir, "{}", s).unwrap(); }
+    fn err(&mut self, msg: &str, span: Span) { self.errors.push(Diagnostic::error(msg, span)); }
+
+    /// Produce a unique, readable basic-block label for control flow.
+    fn block_label(&mut self, prefix: &str) -> String {
+        let id = self.block_id;
+        self.block_id += 1;
+        format!("{}_{}", prefix, id)
+    }
+
+    /// Extract just the register name from an expression emission result such
+    /// as `i1 %r` or `i32 %r`, discarding the leading type tag.
+    fn reg_of(&self, s: &str) -> String {
+        s.split_whitespace().next_back().unwrap_or(s).to_string()
+    }
+
+    fn expr_ty(&self, e: &TypedExpr) -> Ty {
+        match e {
+            TypedExpr::Int(_, ty, _) | TypedExpr::Float(_, ty, _)
+            | TypedExpr::Str(_, ty, _) | TypedExpr::Bool(_, ty, _)
+            | TypedExpr::Field { ty, .. } | TypedExpr::Call { ty, .. }
+            | TypedExpr::Binary { ty, .. } | TypedExpr::Unary { ty, .. }
+            | TypedExpr::Match { ty, .. } | TypedExpr::StructLit { ty, .. }
+            | TypedExpr::FStr(_, ty, _) | TypedExpr::GenRefIndex { ty, .. } | TypedExpr::Error(ty) => ty.clone(),
+            TypedExpr::Ident { ty, .. } => ty.clone(),
+            TypedExpr::GenRefCreate { inner_ty, .. } => Ty::GenRef(Box::new(inner_ty.clone())),
+            TypedExpr::SelfExpr(ty, _) => ty.clone(),
+            TypedExpr::If { ty, .. } => ty.clone(),
+        }
+    }
+
+    /// The LLVM type of the pointer used to reach a symbol's storage. `self`
+    /// receivers are spilled into a local alloca-of-pointer (see `emit_fn`),
+    /// so reaching them takes one extra level of indirection versus a plain
+    /// value local.
+    fn sym_ptr_llvm_ty(&self, name: &str, ty: &Ty) -> String {
+        if name == "self" {
+            format!("{}**", self.llvm_ty(ty))
+        } else {
+            format!("{}*", self.llvm_ty(ty))
+        }
+    }
+
+    /// Strip a value's leading `<llvm-type> ` tag, given its resolved `Ty`.
+    fn untag(&self, s: &str, ty: &Ty) -> String {
+        let t = self.llvm_ty(ty);
+        s.strip_prefix(&format!("{} ", t)).unwrap_or(s).to_string()
+    }
+
+    /// Strip a bare `i32`/`float` tag and, if the operand is an `Int`,
+    /// convert it to `float` via `sitofp` so it can be used in float
+    /// arithmetic. Returns a bare (untagged) register.
+    fn promote_to_float(&mut self, val: &str, ty: &Ty) -> String {
+        let bare = self.untag(val, ty);
+        if matches!(ty, Ty::Int) {
+            let reg = self.tmp_name();
+            self.line(&format!("  {} = sitofp i32 {} to float", reg, bare));
+            reg
+        } else {
+            bare
+        }
+    }
+
+    /// Extract lane/field `i` from an already-loaded vector value `val` of
+    /// type `ty`, returning a bare `float` register.
+    fn extract_component(&mut self, val: &str, ty: &Ty, i: u32) -> String {
+        let reg = self.tmp_name();
+        match ty {
+            Ty::Vec4 => self.line(&format!("  {} = extractelement <4 x float> {}, i32 {}", reg, val, i)),
+            _ => {
+                let t = self.llvm_ty(ty);
+                self.line(&format!("  {} = extractvalue {} {}, {}", reg, t, val, i));
+            }
+        }
+        reg
+    }
+
+    /// Insert a bare `float` register into lane/field `i` of `acc` (an
+    /// already-built or `undef` aggregate of type `ty`), returning the
+    /// updated aggregate register.
+    fn insert_component(&mut self, acc: &str, ty: &Ty, i: u32, scalar: &str) -> String {
+        let reg = self.tmp_name();
+        match ty {
+            Ty::Vec4 => self.line(&format!("  {} = insertelement <4 x float> {}, float {}, i32 {}", reg, acc, scalar, i)),
+            _ => {
+                let t = self.llvm_ty(ty);
+                self.line(&format!("  {} = insertvalue {} {}, float {}, {}", reg, t, acc, scalar, i));
+            }
+        }
+        reg
+    }
+}
