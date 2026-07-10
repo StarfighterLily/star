@@ -33,6 +33,54 @@ pub enum Item {
     /// Desugared (see [`crate::sequence`]) into a state-holding struct plus a
     /// `resume(mut self) -> bool` method before type checking ever sees it.
     Sequence(SequenceDef),
+    /// `enum Name: Variant1, Variant2(field: Type, ...), ...` - each variant
+    /// is assigned a dense `i32` discriminant in declaration order and may
+    /// optionally carry named, typed payload fields.
+    Enum(EnumDef),
+    /// `import "path.star" as alias` - see [`ImportDecl`].
+    Import(ImportDecl),
+}
+
+/// An `import "path.star" as alias` declaration: brings another file's
+/// top-level items into scope, reachable as `alias::item`. Resolved (parsed,
+/// recursively expanded, and renamed to globally-unique mangled names) by
+/// [`crate::modules`] before the type checker ever sees more than one file --
+/// by the time [`Item::Import`] reaches [`crate::types::Checker`], it has
+/// always already been stripped out of the module.
+#[derive(Clone, Debug)]
+pub struct ImportDecl {
+    pub alias: String,
+    /// The imported file's path, resolved relative to the importing file's
+    /// own directory.
+    pub path: String,
+    pub span: Span,
+}
+
+/// An enum declaration: `enum Name:` followed by one variant per indented
+/// line, each either a bare name (fieldless) or `Name(field: Type, ...)`.
+/// `type_params` holds `<T, U, ...>` for a generic enum (empty otherwise);
+/// see [`crate::types::Checker`]'s monomorphization of generic declarations.
+#[derive(Clone, Debug)]
+pub struct EnumDef {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub variants: Vec<EnumVariantDef>,
+    pub span: Span,
+}
+
+/// A single enum variant: `Name` or `Name(field: Type, ...)`.
+#[derive(Clone, Debug)]
+pub struct EnumVariantDef {
+    pub name: String,
+    pub fields: Vec<EnumFieldDef>,
+    pub span: Span,
+}
+
+/// A single named, typed field of a payload-carrying enum variant.
+#[derive(Clone, Debug)]
+pub struct EnumFieldDef {
+    pub name: String,
+    pub ty: Type,
 }
 
 /// `sequence Name(params): <body>` - see [`Item::Sequence`].
@@ -45,9 +93,12 @@ pub struct SequenceDef {
 }
 
 /// A data structure: named, typed fields with optional defaults.
+/// `type_params` holds `<T, U, ...>` for a generic struct (empty otherwise);
+/// see [`crate::types::Checker`]'s monomorphization of generic declarations.
 #[derive(Clone, Debug)]
 pub struct StructDef {
     pub name: String,
+    pub type_params: Vec<String>,
     pub fields: Vec<FieldDef>,
     pub span: Span,
 }
@@ -86,9 +137,14 @@ pub struct ImplBlock {
 }
 
 /// A function signature without a body (used in traits).
+/// `type_params` holds `<T, U, ...>` for a generic function (empty
+/// otherwise); its type parameters are solved by unifying each argument's
+/// inferred type against the corresponding (possibly parameterized) declared
+/// parameter type at each call site -- see `Checker::instantiate_fn`.
 #[derive(Clone, Debug)]
 pub struct FnSig {
     pub name: String,
+    pub type_params: Vec<String>,
     pub params: Vec<Param>,
     pub ret: Option<Type>,
     pub span: Span,
@@ -122,6 +178,12 @@ pub enum Type {
     Named(String),
     /// A generic application like `Vec<i32>` or `GenRef<T>`.
     Generic(String, Vec<Type>),
+    /// A closure/function type: `Fn(T1, T2, ...) -> Ret`, e.g. the
+    /// declared type of a callback parameter (`f: Fn(i32) -> i32`). Only
+    /// ever produced by [`crate::parser::Parser::parse_type`] recognizing
+    /// the pseudo-keyword `Fn` (a plain, capitalized identifier -- `fn` the
+    /// keyword is reserved for declarations and lambda literals).
+    Fn(Vec<Type>, Box<Type>),
 }
 
 impl Type {
@@ -130,6 +192,7 @@ impl Type {
         match self {
             Type::Named(name) => name == "GenRef",
             Type::Generic(name, _) => name == "GenRef",
+            Type::Fn(..) => false,
         }
     }
 }
@@ -177,6 +240,20 @@ pub enum Stmt {
         else_block: Option<Block>,
         span: Span,
     },
+    /// `for var in start..end: <block>` - exclusive-range iteration over
+    /// `i32` bounds.
+    For {
+        var: String,
+        start: Expr,
+        end: Expr,
+        body: Block,
+        span: Span,
+    },
+    /// `break` - exits the innermost enclosing `while`/`for` loop.
+    Break { span: Span },
+    /// `continue` - skips to the next iteration of the innermost enclosing
+    /// `while`/`for` loop.
+    Continue { span: Span },
     /// `frame: <block>` - temporal allocation scope that resets at end of tick.
     Frame {
         body: Block,
@@ -273,9 +350,14 @@ pub enum Expr {
         arms: Vec<MatchArm>,
         span: Span,
     },
-    /// Struct literal `Player(health = 100, ...)` or `Vec3(0, 0, 0)`.
+    /// Struct literal `Player(health = 100, ...)` or `Vec3(0, 0, 0)`. For a
+    /// generic struct, `type_args` optionally carries an explicit turbofish
+    /// (`Box<i32>(value = 5)`); when empty the checker infers each type
+    /// parameter by unifying the declared field types against the arguments'
+    /// inferred types (see `Checker::instantiate_struct`).
     StructLit {
         name: String,
+        type_args: Vec<Type>,
         args: Vec<Expr>,
         span: Span,
     },
@@ -293,12 +375,53 @@ pub enum Expr {
         value: Box<Expr>,
         span: Span,
     },
-    /// GenRef dereference with index: `genref[idx]` loads with generation check.
+    /// A bracketed index `base[idx]`. Despite the name (kept for
+    /// historical/backward-compatible reasons -- this predates `List<T>`),
+    /// this is the *general* `[..]` index syntax: the checker resolves it to
+    /// either a `GenRef<T>` generation-checked dereference or a `List<T>`
+    /// bounds-checked element access based on `base`'s resolved type (see
+    /// `Checker::infer_expr`'s `Expr::GenRefIndex` arm), lowering to a
+    /// distinct `TypedExpr::GenRefIndex`/`TypedExpr::ListIndex` node either
+    /// way.
     GenRefIndex {
         base: Box<Expr>,
         index: Box<Expr>,
         span: Span,
     },
+    /// An enum variant literal: `EnumName::Variant` or, for a payload
+    /// variant, `EnumName::Variant(args...)`. For a generic enum, `type_args`
+    /// optionally carries an explicit turbofish (`Option<i32>::Some(5)`,
+    /// required when the variant has no payload to infer from, e.g.
+    /// `Option<i32>::None`); see `Checker::instantiate_enum`.
+    EnumVariant {
+        enum_name: String,
+        type_args: Vec<Type>,
+        variant: String,
+        args: Vec<Expr>,
+        span: Span,
+    },
+    /// A lambda/closure literal: `fn(params) [-> RetType]: <body>`, where
+    /// `<body>` is either an indented block or (mirroring a `match` arm) a
+    /// single inline trailing expression. Every local variable visible at
+    /// the definition site is captured *by value* (a snapshot taken at
+    /// creation time, not a live reference) -- see
+    /// `crate::codegen::Codegen::emit_closure_lit` for why: the closure's
+    /// environment is heap-allocated so it can safely outlive the stack
+    /// frame that created it, and copying values (rather than capturing
+    /// pointers into that soon-to-be-popped frame) is what makes that safe.
+    Lambda {
+        params: Vec<Param>,
+        ret: Option<Type>,
+        body: Block,
+        span: Span,
+    },
+    /// A non-empty list literal: `[e1, e2, ...]`. Its element type is
+    /// inferred from the first element (see `Checker::infer_expr`); an empty
+    /// `[]` has no element to infer from and is rejected -- use
+    /// `List<T>()` (parsed as an ordinary `Expr::StructLit` naming the
+    /// builtin `List` type, see `Checker::infer_list_new`) to construct an
+    /// empty list.
+    ListLit(Vec<Expr>, Span),
 }
 
 impl Expr {
@@ -320,7 +443,10 @@ impl Expr {
             | Expr::StructLit { span: s, .. }
             | Expr::If { span: s, .. }
             | Expr::GenRefCreate { span: s, .. }
-            | Expr::GenRefIndex { span: s, .. } => *s,
+            | Expr::GenRefIndex { span: s, .. }
+            | Expr::EnumVariant { span: s, .. }
+            | Expr::Lambda { span: s, .. }
+            | Expr::ListLit(_, s) => *s,
         }
     }
 }
@@ -352,6 +478,14 @@ pub enum Pattern {
     Compare(BinOp, Box<Expr>),
     /// Bind the scrutinee to a name.
     Binding(String),
+    /// An enum variant pattern: `EnumName::Variant` or, for a payload
+    /// variant, `EnumName::Variant(binding, ...)` which destructures each
+    /// field into a fresh local binding in declaration order.
+    EnumVariant(String, String, Vec<String>),
+    /// A struct destructuring pattern: `StructName(binding, ...)`, which
+    /// destructures each of the struct's fields into a fresh local binding
+    /// in declaration order. Carries no tag to test, so it always matches.
+    Struct(String, Vec<String>),
 }
 
 /// Binary operators.

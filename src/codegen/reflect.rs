@@ -5,6 +5,23 @@ use crate::types::*;
 use super::Codegen;
 
 impl Codegen {
+    /// Register an enum's variant names/payload field types and, for a
+    /// payload-carrying enum, emit its tagged-union LLVM struct type
+    /// declaration: `{ i32 tag, [W x i64] payload }`, where `W` is sized to
+    /// the largest variant's fields (see `enum_payload_words`). A fully
+    /// fieldless enum (every variant has no fields) gets no struct
+    /// declaration at all -- it stays a bare `i32` (see `llvm_ty`).
+    pub(super) fn emit_enum_decl(&mut self, e: &TypedEnumDef) {
+        let names: Vec<String> = e.variants.iter().map(|v| v.name.clone()).collect();
+        let field_tys: Vec<Vec<Ty>> = e.variants.iter().map(|v| v.fields.iter().map(|f| f.ty.clone()).collect()).collect();
+        self.enum_variants.insert(e.name.clone(), names);
+        self.enum_variant_fields.insert(e.name.clone(), field_tys);
+        if self.enum_is_payload(&e.name) {
+            let words = self.enum_payload_words(&e.name);
+            self.line(&format!("%{} = type {{ i32, [{} x i64] }}", e.name, words));
+        }
+    }
+
     pub(super) fn emit_struct_decl(&mut self, s: &TypedStructDef) {
         self.struct_fields
             .insert(s.name.clone(), s.fields.iter().map(|f| f.name.clone()).collect());
@@ -32,6 +49,13 @@ impl Codegen {
             Ty::Mat4 => "Mat4".into(),
             Ty::Named(n) => n.clone(),
             Ty::GenRef(inner) => format!("GenRef<{}>", self.reflect_type_name(inner)),
+            Ty::List(inner) => format!("List<{}>", self.reflect_type_name(inner)),
+            Ty::Enum(n) => n.clone(),
+            Ty::Closure(params, ret) => format!(
+                "Fn({}) -> {}",
+                params.iter().map(|p| self.reflect_type_name(p)).collect::<Vec<_>>().join(", "),
+                self.reflect_type_name(ret)
+            ),
         }
     }
 

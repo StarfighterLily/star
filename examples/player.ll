@@ -7,6 +7,18 @@ declare noalias i8* @malloc(i64)
 declare void @free(i8*)
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
+declare i8* @strcpy(i8*, i8*)
+declare i8* @strcat(i8*, i8*)
+declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
+declare i32 @WaitForSingleObject(i8*, i32)
+declare i32 @CloseHandle(i8*)
+declare float @llvm.sqrt.f32(float)
+declare float @llvm.pow.f32(float, float)
+declare float @llvm.fabs.f32(float)
+declare float @llvm.floor.f32(float)
+declare float @llvm.ceil.f32(float)
+declare float @llvm.minnum.f32(float, float)
+declare float @llvm.maxnum.f32(float, float)
 
 %GenRef = type { i32, i32 }
 
@@ -32,25 +44,37 @@ entry:
   %t9 = load %Player*, %Player** %t0
   %t10 = getelementptr inbounds %Player, %Player* %t9, i32 0, i32 0
   %t11 = load i32, i32* %t10
-  %t13 = icmp sle i32 %t11, 0
-  br i1 %t13, label %match_then_0, label %match_next_0
+  br label %match_scrutinee_13
+match_scrutinee_13:
+  %t14 = icmp sle i32 %t11, 0
+  br i1 %t14, label %match_then_0, label %match_next_0
 match_then_0:
-  %t14 = load %Player*, %Player** %t0
-  %t15 = getelementptr inbounds %Player, %Player* %t14, i32 0, i32 2
-  %t16 = load i8*, i8** %t15
+  %t15 = load %Player*, %Player** %t0
+  %t16 = getelementptr inbounds %Player, %Player* %t15, i32 0, i32 2
   %t17 = load i8*, i8** %t16
-  %t18 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.0, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t18, i8* %t17)
+  %t18 = load i8*, i8** %t17
+  %t19 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.0, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t19, i8* %t18)
   br label %match_end_12
 match_next_0:
-  %t19 = load %Player*, %Player** %t0
-  %t20 = getelementptr inbounds %Player, %Player* %t19, i32 0, i32 0
-  %t21 = load i32, i32* %t20
-  %t22 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.1, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t22, i32 %t21)
+  %t20 = load %Player*, %Player** %t0
+  %t21 = getelementptr inbounds %Player, %Player* %t20, i32 0, i32 0
+  %t22 = load i32, i32* %t21
+  %t23 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.1, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t23, i32 %t22)
   br label %match_end_12
 match_end_12:
   ret void
+}
+
+define i32 @remaining_health(%Player* %self) {
+entry:
+  %t0 = alloca %Player*
+  store %Player* %self, %Player** %t0
+  %t1 = load %Player*, %Player** %t0
+  %t2 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 0
+  %t3 = load i32, i32* %t2
+  ret i32 %t3
 }
 
 define void @main() {
@@ -79,6 +103,9 @@ entry:
   store i8* %t12, i8** %t14
   %t15 = load %Player, %Player* %t1
   store %Player %t15, %Player* %t0
+  %t16 = call i32 @remaining_health(%Player* %t0)
+  %t17 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.3, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t17, i32 %t16)
   call void @take_damage(%Player* %t0, i32 150)
   ret void
 }
@@ -88,3 +115,4 @@ entry:
 @.str.0 = private unnamed_addr constant [18 x i8] c"%s has perished.\0A\00"
 @.str.1 = private unnamed_addr constant [21 x i8] c"Health critical: %d\0A\00"
 @.str.2 = private unnamed_addr constant [5 x i8] c"Hero\00"
+@.str.3 = private unnamed_addr constant [15 x i8] c"remaining: %d\0A\00"

@@ -7,9 +7,18 @@ declare noalias i8* @malloc(i64)
 declare void @free(i8*)
 declare i32 @strlen(i8*)
 declare i8* @memcpy(i8*, i8*, i64)
+declare i8* @strcpy(i8*, i8*)
+declare i8* @strcat(i8*, i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
+declare float @llvm.sqrt.f32(float)
+declare float @llvm.pow.f32(float, float)
+declare float @llvm.fabs.f32(float)
+declare float @llvm.floor.f32(float)
+declare float @llvm.ceil.f32(float)
+declare float @llvm.minnum.f32(float, float)
+declare float @llvm.maxnum.f32(float, float)
 
 %GenRef = type { i32, i32 }
 

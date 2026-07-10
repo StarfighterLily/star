@@ -80,6 +80,16 @@ impl Codegen {
     /// (`name(args)`), lowered to `call @method(%Struct* obj, args...)` or
     /// `call @name(args...)` respectively.
     fn emit_call_expr(&mut self, callee: &TypedExpr, args: &[TypedExpr], expr: &TypedExpr) -> String {
+        // A call through a closure *value* (a `let`-bound lambda, a
+        // closure-typed parameter/field, or a lambda literal called
+        // immediately) is an indirect call, resolved from the callee's own
+        // type rather than its syntactic shape -- checked first so a
+        // closure stored in a struct field (`obj.callback(args)`, syntactically
+        // identical to a method call) still routes here instead of being
+        // mistaken for one.
+        if let Ty::Closure(param_tys, ret_ty) = self.expr_ty(callee) {
+            return self.emit_closure_call(callee, args, &param_tys, &ret_ty);
+        }
         if let TypedExpr::Field { base, field, .. } = callee {
             // Method call: `obj.method(args)` -> `@method(%Struct* obj, args...)`.
             let base_ty = self.expr_ty(base);
@@ -166,6 +176,14 @@ impl Codegen {
             }
             TypedExpr::Bool(v, _, _) => format!("i1 {}", if *v { "true" } else { "false" }),
             TypedExpr::Ident { name, ty, .. } => {
+                // A plain top-level function name used as a value (never a
+                // local, so no alloca to load from) rather than called
+                // directly -- see `Codegen::emit_fn_value`.
+                if let Ty::Closure(param_tys, ret_ty) = ty {
+                    if self.sym_ptr(name).is_none() {
+                        return self.emit_fn_value(name, param_tys, ret_ty);
+                    }
+                }
                 let ptr = self.sym_ptr(name).unwrap_or_else(|| "%undef".into());
                 let reg = self.tmp_name();
                 let ts = self.llvm_ty(ty);
@@ -247,14 +265,69 @@ impl Codegen {
                 }
                 reg
             }
-            TypedExpr::Match { scrutinee, arms, ty: _, .. } => {
-                let scrutinee_reg = self.emit_expr(scrutinee);
-                let scrut_val = scrutinee_reg.strip_prefix("i32 ").unwrap_or(&scrutinee_reg);
+            TypedExpr::Match { scrutinee, arms, ty, .. } => {
+                let ty_str = self.llvm_ty(ty);
+                // `unknown` is the established placeholder for "no value"
+                // (see `check_match_arm`, and the same convention
+                // `emit_call_expr`/`closure_ret_llvm` already use for a
+                // function with no declared return type) -- checked against
+                // the `Ty` itself rather than the stringified `ty_str`
+                // because `llvm_ty` has no dedicated `void` case of its own
+                // (every `Ty::Named` is rendered as `%name`, including this
+                // one, so comparing the rendered string against `"void"`
+                // would never match).
+                let produces_value = !matches!(ty, Ty::Named(n) if n == "unknown");
+                // One (value, predecessor-label) pair per arm that falls
+                // through to `end_label` (an arm that terminates on its own
+                // contributes no value, and control never reaches the join
+                // block through it), collected for the `phi` that merges
+                // arm values when this `match` is used as a value-producing
+                // expression rather than purely for side effects.
+                let mut arm_values: Vec<(String, String)> = Vec::new();
+                let scrutinee_ty = self.expr_ty(scrutinee);
+                let is_payload_enum = matches!(&scrutinee_ty, Ty::Enum(n) if self.enum_is_payload(n));
+                let is_struct_scrutinee = matches!(&scrutinee_ty, Ty::Named(n) if self.struct_fields.contains_key(n));
+                // A payload enum's fields (or a struct pattern's fields) are
+                // only reachable through a pointer to their storage (for the
+                // GEP dance below), so the scrutinee is addressed via
+                // `emit_place` (which spills a by-value result into a fresh
+                // alloca if needed) rather than loaded as a plain SSA value
+                // like every other scrutinee kind.
+                let needs_scrut_ptr = is_payload_enum || is_struct_scrutinee;
+                let scrut_ptr = if needs_scrut_ptr { self.emit_place(scrutinee) } else { String::new() };
+                let scrut_val = if needs_scrut_ptr {
+                    String::new()
+                } else {
+                    let reg = self.emit_expr(scrutinee);
+                    reg.strip_prefix("i32 ").unwrap_or(&reg).to_string()
+                };
                 let end_label = format!("match_end_{}", self.tmp);
                 self.tmp += 1;
+                // A `Struct`/`Wildcard` arm (below) carries no tag to test,
+                // so it never opens its own block -- it just runs in
+                // whatever block is already current. That block needs a
+                // name for the `phi` predecessor list, so one is opened
+                // explicitly here (a plain unconditional jump, free of
+                // semantic effect) instead of relying on whatever label
+                // happened to be open before this `match` expression
+                // started; `current_label` is kept up to date with
+                // whichever block is open as each arm is processed.
+                let entry_label = format!("match_scrutinee_{}", self.tmp);
+                self.tmp += 1;
+                self.line(&format!("  br label %{}", entry_label));
+                self.line(&format!("{}:", entry_label));
+                let mut current_label = entry_label;
+                // `Compare`/`EnumVariant` arms each open a "next" block for
+                // the following arm to test against; the very last arm in
+                // the list has no following arm to give that block a
+                // terminator, so it's tracked here and closed explicitly
+                // below (a `Wildcard` arm never opens one, since there's no
+                // "no match" branch to chain to).
+                let mut dangling_next_block = false;
                 for (i, arm) in arms.iter().enumerate() {
                     let then_label = format!("match_then_{}", i);
                     let next_label = format!("match_next_{}", i);
+                    dangling_next_block = matches!(arm.pattern, Pattern::Compare(..) | Pattern::EnumVariant(..));
                     match &arm.pattern {
                         Pattern::Compare(op, rhs) => {
                             let rhs_val = match rhs.as_ref() {
@@ -275,25 +348,152 @@ impl Codegen {
                             self.line(&format!("  {} = {} i32 {}, {}", cmp, llvm_op, scrut_val, rhs_val_clean));
                             self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, then_label, next_label));
                             self.line(&format!("{}:", then_label));
-                            for stmt in &arm.body.stmts {
-                                self.emit_stmt(stmt);
+                            let val = self.emit_stmts_value(&arm.body.stmts);
+                            if !Self::body_terminates(&arm.body.stmts) {
+                                if produces_value {
+                                    let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
+                                    arm_values.push((reg, then_label.clone()));
+                                }
+                                self.line(&format!("  br label %{}", end_label));
                             }
-                            self.line(&format!("  br label %{}", end_label));
                             self.line(&format!("{}:", next_label));
+                            current_label = next_label.clone();
+                        }
+                        Pattern::EnumVariant(enum_name, variant, bindings) => {
+                            let idx = self.enum_variant_index(enum_name, variant);
+                            let cmp = self.tmp_name();
+                            if is_payload_enum {
+                                let enum_ty = format!("%{}", enum_name);
+                                let tag_gep = self.tmp_name();
+                                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0", tag_gep, enum_ty, enum_ty, scrut_ptr));
+                                let tag_reg = self.tmp_name();
+                                self.line(&format!("  {} = load i32, i32* {}", tag_reg, tag_gep));
+                                self.line(&format!("  {} = icmp eq i32 {}, {}", cmp, tag_reg, idx));
+                            } else {
+                                self.line(&format!("  {} = icmp eq i32 {}, {}", cmp, scrut_val, idx));
+                            }
+                            self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, then_label, next_label));
+                            self.line(&format!("{}:", then_label));
+                            // Destructure the variant's payload fields into
+                            // fresh symbol bindings (scoped to this arm's
+                            // body only -- popped right after) by bitcasting
+                            // the enum's shared payload buffer to this
+                            // variant's own field layout and GEP-ing into it.
+                            let mut bound = 0usize;
+                            if is_payload_enum && !bindings.is_empty() {
+                                let enum_ty = format!("%{}", enum_name);
+                                let words = self.enum_payload_words(enum_name);
+                                let payload_gep = self.tmp_name();
+                                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 1", payload_gep, enum_ty, enum_ty, scrut_ptr));
+                                let variant_ty = self.enum_variant_payload_llvm_ty(enum_name, idx);
+                                let variant_ptr = self.tmp_name();
+                                self.line(&format!("  {} = bitcast [{} x i64]* {} to {}*", variant_ptr, words, payload_gep, variant_ty));
+                                let field_tys = self.enum_variant_field_types(enum_name, idx);
+                                for (fi, (bind_name, fty)) in bindings.iter().zip(field_tys.iter()).enumerate() {
+                                    let field_gep = self.tmp_name();
+                                    self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", field_gep, variant_ty, variant_ty, variant_ptr, fi as u32));
+                                    self.symbols.push((bind_name.clone(), field_gep, fty.clone()));
+                                    bound += 1;
+                                }
+                            }
+                            let val = self.emit_stmts_value(&arm.body.stmts);
+                            for _ in 0..bound {
+                                self.symbols.pop();
+                            }
+                            if !Self::body_terminates(&arm.body.stmts) {
+                                if produces_value {
+                                    let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
+                                    arm_values.push((reg, then_label.clone()));
+                                }
+                                self.line(&format!("  br label %{}", end_label));
+                            }
+                            self.line(&format!("{}:", next_label));
+                            current_label = next_label.clone();
+                        }
+                        Pattern::Struct(struct_name, bindings) => {
+                            // A struct pattern carries no tag to test, so it
+                            // always matches: destructure each named field
+                            // into a pointer binding via a direct GEP off the
+                            // scrutinee's own storage (no bitcast needed,
+                            // unlike a payload enum's shared payload buffer),
+                            // then fall straight into the body like `Wildcard`.
+                            let struct_ty = format!("%{}", struct_name);
+                            let field_tys = self.struct_field_types.get(struct_name).cloned().unwrap_or_default();
+                            let mut bound = 0usize;
+                            for (fi, bind_name) in bindings.iter().enumerate() {
+                                let field_gep = self.tmp_name();
+                                self.line(&format!(
+                                    "  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}",
+                                    field_gep, struct_ty, struct_ty, scrut_ptr, fi as u32
+                                ));
+                                let fty = field_tys.get(fi).cloned().unwrap_or(Ty::Named("unknown".into()));
+                                self.symbols.push((bind_name.clone(), field_gep, fty));
+                                bound += 1;
+                            }
+                            let val = self.emit_stmts_value(&arm.body.stmts);
+                            for _ in 0..bound {
+                                self.symbols.pop();
+                            }
+                            if !Self::body_terminates(&arm.body.stmts) {
+                                if produces_value {
+                                    let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
+                                    arm_values.push((reg, current_label.clone()));
+                                }
+                                self.line(&format!("  br label %{}", end_label));
+                            }
                         }
                         Pattern::Wildcard => {
-                            for stmt in &arm.body.stmts {
-                                self.emit_stmt(stmt);
+                            let val = self.emit_stmts_value(&arm.body.stmts);
+                            if !Self::body_terminates(&arm.body.stmts) {
+                                if produces_value {
+                                    let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
+                                    arm_values.push((reg, current_label.clone()));
+                                }
+                                self.line(&format!("  br label %{}", end_label));
                             }
-                            self.line(&format!("  br label %{}", end_label));
                         }
                         _ => {
                             self.err("unsupported match pattern in codegen", Span::dummy());
                         }
                     }
                 }
+                if dangling_next_block {
+                    // The last arm was a `Compare`/`EnumVariant`  with no
+                    // trailing catch-all, so this final "next" block is the
+                    // "no arm matched" case -- unreachable for a well-typed,
+                    // exhaustive match, but still needs a value entry to keep
+                    // the `phi` below well-formed (it must have exactly one
+                    // entry per predecessor block that jumps to `end_label`).
+                    if produces_value {
+                        arm_values.push(("undef".to_string(), current_label.clone()));
+                    }
+                    self.line(&format!("  br label %{}", end_label));
+                }
                 self.line(&format!("{}:", end_label));
-                "%undef".into()
+                // If every arm terminates on its own (each ends in `return`/
+                // `break`/`continue`), this join block is only ever reached
+                // through the final "no arm matched" fallthrough of a
+                // non-exhaustive dispatch, which can't happen for a
+                // well-typed match; close it with `unreachable` rather than
+                // leaving it open for a caller to append a value-producing
+                // terminator to (there is no value to produce). Mirrors
+                // `Codegen::body_terminates`'s `TypedExpr::Match` arm, which
+                // tells callers to skip synthesizing their own terminator in
+                // exactly this case.
+                if !arms.is_empty() && arms.iter().all(|arm| Self::body_terminates(&arm.body.stmts)) {
+                    self.line("  unreachable");
+                    return "%undef".into();
+                }
+                if !produces_value || arm_values.is_empty() {
+                    "%undef".into()
+                } else {
+                    let phi = self.tmp_name();
+                    let incoming: Vec<String> = arm_values.iter()
+                        .map(|(val, label)| format!("[ {}, %{} ]", val, label))
+                        .collect();
+                    self.line(&format!("  {} = phi {} {}", phi, ty_str, incoming.join(", ")));
+                    format!("{} {}", ty_str, phi)
+                }
             }
             TypedExpr::StructLit { name, args, ty, .. } => {
                 match ty {
@@ -451,6 +651,58 @@ impl Codegen {
             }
             TypedExpr::GenRefCreate { inner_ty, value, span } => self.emit_genref_create(inner_ty, value, *span),
             TypedExpr::GenRefIndex { base, ty, span, .. } => self.emit_genref_index(base, ty, *span),
+            TypedExpr::EnumVariant { enum_name, variant, args, .. } => {
+                let idx = self.enum_variant_index(enum_name, variant);
+                if !self.enum_is_payload(enum_name) {
+                    return format!("i32 {}", idx);
+                }
+                // Payload variant construction: alloca the tagged-union
+                // struct, store the discriminant, then bitcast the shared
+                // `[W x i64]` payload buffer to this variant's own field
+                // layout and store each argument (mirroring `StructLit`'s
+                // alloca+GEP+store shape below).
+                let enum_ty = format!("%{}", enum_name);
+                let ptr = self.tmp_name();
+                self.line(&format!("  {} = alloca {}", ptr, enum_ty));
+                let tag_gep = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0", tag_gep, enum_ty, enum_ty, ptr));
+                self.line(&format!("  store i32 {}, i32* {}", idx, tag_gep));
+                if !args.is_empty() {
+                    let words = self.enum_payload_words(enum_name);
+                    let payload_gep = self.tmp_name();
+                    self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 1", payload_gep, enum_ty, enum_ty, ptr));
+                    let variant_ty = self.enum_variant_payload_llvm_ty(enum_name, idx);
+                    let variant_ptr = self.tmp_name();
+                    self.line(&format!("  {} = bitcast [{} x i64]* {} to {}*", variant_ptr, words, payload_gep, variant_ty));
+                    for (i, a) in args.iter().enumerate() {
+                        let val = self.emit_expr(a);
+                        let aty = self.expr_ty(a);
+                        let ats = self.llvm_ty(&aty);
+                        let clean_val = self.untag(&val, &aty);
+                        let field_gep = self.tmp_name();
+                        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", field_gep, variant_ty, variant_ty, variant_ptr, i as u32));
+                        self.line(&format!("  store {} {}, {}* {}", ats, clean_val, ats, field_gep));
+                    }
+                }
+                let loaded = self.tmp_name();
+                self.line(&format!("  {} = load {}, {}* {}", loaded, enum_ty, enum_ty, ptr));
+                format!("{} {}", enum_ty, loaded)
+            }
+            TypedExpr::Closure { params, body, ty, .. } => self.emit_closure_lit(params, body, ty),
+            TypedExpr::ListNew { elem_ty, .. } => self.emit_list_new(elem_ty),
+            TypedExpr::ListLit { elems, elem_ty, .. } => self.emit_list_lit(elems, elem_ty),
+            TypedExpr::ListIndex { base, index, ty, .. } => self.emit_list_index(base, index, ty),
+            TypedExpr::ListMethod { base, method, args, .. } => {
+                // `ty` on this node is the *method's return type* (`i32` for
+                // `len`, the element type for `pop`, `unknown` for `push`),
+                // not the list's element type codegen needs to know its
+                // memory layout -- recover that from `base`'s own type.
+                let elem_ty = match self.expr_ty(base) {
+                    Ty::List(inner) => *inner,
+                    other => { self.err("internal error: list method receiver is not a List<T>", Span::dummy()); other }
+                };
+                self.emit_list_method(base, *method, args, &elem_ty)
+            }
             TypedExpr::Error(_) => "%undef".into(),
         }
     }

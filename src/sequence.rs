@@ -136,12 +136,13 @@ fn desugar_sequence(seq: &SequenceDef) -> Result<(StructDef, ImplBlock), Vec<Dia
         span: seq.span,
     });
 
-    let struct_def = StructDef { name: seq.name.clone(), fields, span: seq.span };
+    let struct_def = StructDef { name: seq.name.clone(), type_params: Vec::new(), fields, span: seq.span };
 
     let resume_body = Block { stmts: vec![build_state_if(&segments, 0, seq.span)], span: seq.span };
     let resume_fn = FnDef {
         sig: FnSig {
             name: "resume".into(),
+            type_params: Vec::new(),
             params: vec![Param { is_self: true, is_mut: true, name: "self".into(), ty: None, span: seq.span }],
             ret: Some(Type::Named("bool".into())),
             span: seq.span,
@@ -232,6 +233,11 @@ fn scan_for_nested_yield(stmt: &Stmt, errors: &mut Vec<Diagnostic>, nested: bool
                 scan_for_nested_yield(s, errors, true);
             }
         }
+        Stmt::For { body, .. } => {
+            for s in &body.stmts {
+                scan_for_nested_yield(s, errors, true);
+            }
+        }
         _ => {}
     }
 }
@@ -260,6 +266,15 @@ fn rewrite_stmt(stmt: &Stmt, hoist: &HashSet<String>) -> Stmt {
             else_block: else_block.as_ref().map(|b| rewrite_block(b, hoist)),
             span: *span,
         },
+        Stmt::For { var, start, end, body, span } => Stmt::For {
+            var: var.clone(),
+            start: rewrite_expr(start, hoist),
+            end: rewrite_expr(end, hoist),
+            body: rewrite_block(body, hoist),
+            span: *span,
+        },
+        Stmt::Break { span } => Stmt::Break { span: *span },
+        Stmt::Continue { span } => Stmt::Continue { span: *span },
         Stmt::Frame { body, span } => Stmt::Frame { body: rewrite_block(body, hoist), span: *span },
         Stmt::Par { var, arena, body, span } => {
             Stmt::Par { var: var.clone(), arena: arena.clone(), body: rewrite_block(body, hoist), span: *span }
@@ -323,9 +338,12 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
                 .collect(),
             span: *span,
         },
-        Expr::StructLit { name, args, span } => {
-            Expr::StructLit { name: name.clone(), args: args.iter().map(|a| rewrite_expr(a, hoist)).collect(), span: *span }
-        }
+        Expr::StructLit { name, type_args, args, span } => Expr::StructLit {
+            name: name.clone(),
+            type_args: type_args.clone(),
+            args: args.iter().map(|a| rewrite_expr(a, hoist)).collect(),
+            span: *span,
+        },
         Expr::If { cond, then_block, else_block, span } => Expr::If {
             cond: Box::new(rewrite_expr(cond, hoist)),
             then_block: rewrite_block(then_block, hoist),
@@ -338,5 +356,22 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
         Expr::GenRefIndex { base, index, span } => {
             Expr::GenRefIndex { base: Box::new(rewrite_expr(base, hoist)), index: Box::new(rewrite_expr(index, hoist)), span: *span }
         }
+        Expr::EnumVariant { enum_name, type_args, variant, args, span } => Expr::EnumVariant {
+            enum_name: enum_name.clone(),
+            type_args: type_args.clone(),
+            variant: variant.clone(),
+            args: args.iter().map(|a| rewrite_expr(a, hoist)).collect(),
+            span: *span,
+        },
+        // A lambda's own parameters aren't hoisted locals, so only its body
+        // needs rewriting (mirrors any other nested block); param/return
+        // types never reference hoisted *value* identifiers.
+        Expr::Lambda { params, ret, body, span } => Expr::Lambda {
+            params: params.clone(),
+            ret: ret.clone(),
+            body: rewrite_block(body, hoist),
+            span: *span,
+        },
+        Expr::ListLit(elems, span) => Expr::ListLit(elems.iter().map(|e| rewrite_expr(e, hoist)).collect(), *span),
     }
 }

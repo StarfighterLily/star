@@ -79,6 +79,19 @@ impl Driver {
             Err(diags) => (None, diags),
         };
 
+        // Inline any `import`ed files into a single flat module before the
+        // checker ever has to think about more than one file.
+        let module = match module {
+            Some(m) => match crate::modules::resolve(m, &self.path) {
+                Ok(resolved) => Some(resolved),
+                Err(diags) => {
+                    diagnostics = diags;
+                    None
+                }
+            },
+            None => None,
+        };
+
         // Run type checker if parsing succeeded.
         let typed = if let Some(ref module) = module {
             let mut checker = Checker::new();

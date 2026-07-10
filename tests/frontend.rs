@@ -4,10 +4,10 @@
 //! the canonical example, guarding against regressions in tokenization,
 //! indentation handling, and parsing.
 
-use star::ast::{Expr, Item, Stmt};
+use star::ast::{BinOp, Expr, Item, Stmt, Type};
 use star::driver::Driver;
 use star::lexer::TokenKind;
-use star::types::{Ty, TypedItem, TypedStmt};
+use star::types::{Ty, TypedExpr, TypedItem, TypedStmt};
 
 /// Lexing a struct should emit INDENT/DEDENT around the field block.
 #[test]
@@ -34,12 +34,13 @@ fn ignores_blank_and_comment_lines() {
 fn parses_canonical_example() {
     let src = include_str!("../examples/player.star");
     let module = Driver::parse(src).expect("canonical example should parse");
-    assert_eq!(module.items.len(), 5);
+    assert_eq!(module.items.len(), 6);
     assert!(matches!(module.items[0], Item::Struct(_)));
     assert!(matches!(module.items[1], Item::Struct(_)));
     assert!(matches!(module.items[2], Item::Trait(_)));
     assert!(matches!(module.items[3], Item::Impl(_)));
-    assert!(matches!(module.items[4], Item::Fn(_)));
+    assert!(matches!(module.items[4], Item::Impl(_)));
+    assert!(matches!(module.items[5], Item::Fn(_)));
 }
 
 /// A struct field with a default should retain its initializer expression.
@@ -1362,6 +1363,9 @@ fn fuzz_lexer_and_parser_do_not_panic() {
         "fn f(a: i32) -> i32:\n    a + 1\n",
         "sequence S(x: i32):\n    yield\n",
         "par e in Enemies:\n    e.hp -= 1\n",
+        "for i in 0..3:\n    break\n",
+        "enum E:\n    A\n    B\n",
+        "enum E:\n    A\n    B(x: i32, y: i32)\n",
     ];
 
     let mut rng = Rng(0x2545_F491_4F6C_DD1D);
@@ -1376,4 +1380,1628 @@ fn fuzz_lexer_and_parser_do_not_panic() {
             }
         });
     }
+}
+
+// ===== `for`/`break`/`continue` + `enum` ====================================
+
+use star::ast::{EnumDef, Pattern};
+
+/// Parse `for var in start..end:` into a `Stmt::For`.
+#[test]
+fn parses_for_stmt() {
+    let src = "fn t():\n    for i in 0..10:\n        break\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::For { var, start, end, body, .. } = &f.body.stmts[0] else { panic!("expected For") };
+    assert_eq!(var, "i");
+    assert!(matches!(start, Expr::Int(0, _)));
+    assert!(matches!(end, Expr::Int(10, _)));
+    assert_eq!(body.stmts.len(), 1);
+}
+
+/// Parse a bare `break` statement.
+#[test]
+fn parses_break_stmt() {
+    let src = "fn t():\n    while true:\n        break\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::While { body, .. } = &f.body.stmts[0] else { panic!("expected While") };
+    assert!(matches!(body.stmts[0], Stmt::Break { .. }));
+}
+
+/// Parse a bare `continue` statement.
+#[test]
+fn parses_continue_stmt() {
+    let src = "fn t():\n    while true:\n        continue\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::While { body, .. } = &f.body.stmts[0] else { panic!("expected While") };
+    assert!(matches!(body.stmts[0], Stmt::Continue { .. }));
+}
+
+/// Parse an `enum` declaration into its ordered variant names.
+#[test]
+fn parses_enum_decl() {
+    let src = "enum Direction:\n    North\n    South\n    East\n    West\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Enum(EnumDef { name, variants, .. }) = &module.items[0] else { panic!("expected enum") };
+    assert_eq!(name, "Direction");
+    let names: Vec<&str> = variants.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(names, vec!["North", "South", "East", "West"]);
+    assert!(variants.iter().all(|v| v.fields.is_empty()), "all variants should be fieldless: {:?}", variants);
+}
+
+/// Parse an `EnumName::Variant` expression.
+#[test]
+fn parses_enum_variant_expr() {
+    let src = "enum Direction:\n    North\n\nfn t():\n    Direction::North\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Expr(Expr::EnumVariant { enum_name, variant, .. }) = &f.body.stmts[0] else {
+        panic!("expected EnumVariant expr, got {:?}", f.body.stmts[0])
+    };
+    assert_eq!(enum_name, "Direction");
+    assert_eq!(variant, "North");
+}
+
+/// Parse an `EnumName::Variant` match pattern.
+#[test]
+fn parses_enum_variant_pattern() {
+    let src = "enum Direction:\n    North\n    South\n\nfn t(d: Direction):\n    match d:\n        Direction::North -> 1\n        _ -> 2\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Expr(Expr::Match { arms, .. }) = &f.body.stmts[0] else { panic!("expected match") };
+    match &arms[0].pattern {
+        Pattern::EnumVariant(enum_name, variant, bindings) => {
+            assert_eq!(enum_name, "Direction");
+            assert_eq!(variant, "North");
+            assert!(bindings.is_empty());
+        }
+        other => panic!("expected EnumVariant pattern, got {:?}", other),
+    }
+    assert!(matches!(arms[1].pattern, Pattern::Wildcard));
+}
+
+const DIRECTION_ENUM_SRC: &str = "enum Direction:\n    North\n    South\n    East\n    West\n\n";
+
+/// A `for` loop's variable is bound as `i32` inside its body.
+#[test]
+fn checks_for_loop_var_is_int() {
+    let src = "fn t() -> i32:\n    for i in 0..5:\n        return i\n    return -1\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "for loop variable should be usable as i32");
+}
+
+/// A `for` loop whose range bound isn't `i32` is a type error.
+#[test]
+fn rejects_for_range_non_int_bound() {
+    let src = "fn t():\n    for i in 0..2.0:\n        let x: i32 = i\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "non-i32 range bound should be a type error");
+}
+
+/// `break` outside of any loop is a type error.
+#[test]
+fn rejects_break_outside_loop() {
+    let module = Driver::parse("fn t():\n    break\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "break outside a loop should be a type error");
+}
+
+/// `continue` outside of any loop is a type error.
+#[test]
+fn rejects_continue_outside_loop() {
+    let module = Driver::parse("fn t():\n    continue\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "continue outside a loop should be a type error");
+}
+
+/// `break` inside a `while` loop type-checks.
+#[test]
+fn accepts_break_inside_while() {
+    let module = Driver::parse("fn t():\n    while true:\n        break\n").expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "break inside a while loop should be allowed");
+}
+
+/// `continue` inside a `for` loop type-checks.
+#[test]
+fn accepts_continue_inside_for() {
+    let module = Driver::parse("fn t():\n    for i in 0..5:\n        continue\n").expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "continue inside a for loop should be allowed");
+}
+
+/// `break` inside a `par`/`swarm` body is rejected even when the `par`
+/// statement is lexically nested inside an outer loop: a worker-thread
+/// dispatch has no well-defined `break` target.
+#[test]
+fn rejects_break_inside_par_even_when_nested_in_loop() {
+    let src = format!(
+        "{}fn t():\n    while true:\n        par e in Enemies:\n            break\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "break inside a par body should be a type error even inside an outer loop");
+}
+
+/// `EnumName::Variant` infers to that enum's type.
+#[test]
+fn checks_enum_variant_type() {
+    let src = format!("{}fn t() -> Direction:\n    Direction::North\n", DIRECTION_ENUM_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let f = typed.items.iter().find_map(|i| if let TypedItem::Fn(f) = i { Some(f) } else { None }).expect("expected a fn item");
+    let ty = match f.body.stmts.last().expect("body should have a statement") {
+        TypedStmt::Expr(e) => e.clone().into_ty(),
+        other => panic!("expected trailing expr statement, got {:?}", other),
+    };
+    assert_eq!(ty, Ty::Enum("Direction".into()));
+}
+
+/// An undefined variant on a known enum is a type error with a "did you
+/// mean" suggestion.
+#[test]
+fn rejects_undefined_enum_variant_with_suggestion() {
+    let src = format!("{}fn t():\n    Direction::Norht\n", DIRECTION_ENUM_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("undefined variant should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("no variant `Norht`")), "{:?}", diags);
+    assert!(
+        diags.iter().any(|d| d.note.as_deref().unwrap_or("").contains("North")),
+        "expected a `did you mean North?` note: {:?}",
+        diags
+    );
+}
+
+/// An undefined enum name is a type error.
+#[test]
+fn rejects_undefined_enum_name() {
+    let module = Driver::parse("fn t():\n    Nope::Foo\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "undefined enum should be a type error");
+}
+
+/// A match pattern naming a different enum than the scrutinee's type is a
+/// type error.
+#[test]
+fn rejects_match_pattern_enum_mismatch() {
+    let src = format!(
+        "{}enum Color:\n    Red\n    Blue\n\nfn t(d: Direction):\n    match d:\n        Color::Red -> 1\n        _ -> 2\n",
+        DIRECTION_ENUM_SRC
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "mismatched enum pattern should be a type error");
+}
+
+/// Codegen for `for`: an `i32` counter alloca, an `icmp slt` bound check,
+/// and an increment-by-one step distinct from the condition/body blocks
+/// (so `continue` can target the increment without re-running the body).
+#[test]
+fn codegen_for_loop_uses_counter_and_increment() {
+    let src = "fn t() -> i32:\n    let mut total: i32 = 0\n    for i in 0..5:\n        total += i\n    total\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("for_cond"), "{}", ir);
+    assert!(ir.contains("for_body"), "{}", ir);
+    assert!(ir.contains("for_step"), "{}", ir);
+    assert!(ir.contains("for_end"), "{}", ir);
+    assert!(ir.contains("icmp slt i32"), "{}", ir);
+    assert!(ir.contains("add i32"), "{}", ir);
+}
+
+/// Codegen for `break`: branches directly to the loop's end block.
+#[test]
+fn codegen_break_branches_to_loop_end() {
+    let src = "fn t():\n    while true:\n        break\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("br label %while_end_"), "{}", ir);
+}
+
+/// Codegen for `continue` inside a `for` loop: branches to the step block,
+/// not straight back to the condition (so the counter still increments).
+#[test]
+fn codegen_continue_branches_to_for_step() {
+    let src = "fn t():\n    for i in 0..5:\n        continue\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("br label %for_step_"), "{}", ir);
+}
+
+/// Codegen for an enum variant literal: lowers straight to its
+/// declaration-order `i32` discriminant, no runtime work involved.
+#[test]
+fn codegen_enum_variant_lowers_to_discriminant_constant() {
+    let src = format!("{}fn t() -> Direction:\n    Direction::East\n", DIRECTION_ENUM_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    // East is the third variant (North=0, South=1, East=2).
+    assert!(ir.contains("ret i32 2"), "{}", ir);
+}
+
+/// Codegen for `match` on an enum: each arm compares the scrutinee against
+/// its variant's discriminant via `icmp eq`, and an exhaustive match (no
+/// wildcard arm) still produces well-formed IR (every block has a
+/// terminator) even though the last arm has no following arm to close its
+/// "no match" branch.
+#[test]
+fn codegen_match_enum_variant_uses_icmp_eq_and_terminates_last_arm() {
+    let src = format!(
+        "{}fn print_dir(d: Direction):\n    match d:\n        Direction::North -> println(\"n\")\n        Direction::South -> println(\"s\")\n        Direction::East -> println(\"e\")\n        Direction::West -> println(\"w\")\n",
+        DIRECTION_ENUM_SRC
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert_eq!(ir.matches("icmp eq i32").count(), 4, "one comparison per variant: {}", ir);
+    // The last arm's "next" block must be closed with a branch to the
+    // match's end block, not left dangling before the next label.
+    assert!(!ir.contains("match_next_3:\nmatch_end_"), "last arm's next-block must not be left without a terminator: {}", ir);
+}
+
+/// Runtime test: `examples/control_flow.exe` exercises `for`/`break`/
+/// `continue` (including a `continue`+`break` combo, nested loops, and a
+/// `while` loop) and matching on every variant of a fieldless `enum`, end
+/// to end through a real clang-compiled executable.
+#[test]
+fn runtime_control_flow_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/control_flow.exe").output().expect("failed to execute control_flow.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("sum: 23"), "continue+break in a for loop: {}", stdout);
+    assert!(stdout.contains("nested: 3"), "break in a nested for loop: {}", stdout);
+    assert!(stdout.contains("while: 4"), "break in a while loop: {}", stdout);
+    assert!(stdout.contains("dir: north"), "match on first enum variant: {}", stdout);
+    assert!(stdout.contains("dir: west"), "match on last enum variant: {}", stdout);
+}
+
+// ===== payload-carrying enums (`Option`/`Result`-style) ====================
+
+const INT_OPTION_ENUM_SRC: &str = "enum IntOption:\n    None\n    Some(value: i32)\n\n";
+
+/// Parse an enum with a fieldless variant and a payload variant.
+#[test]
+fn parses_enum_variant_with_payload_fields() {
+    let src = "enum IntOption:\n    None\n    Some(value: i32)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Enum(EnumDef { name, variants, .. }) = &module.items[0] else { panic!("expected enum") };
+    assert_eq!(name, "IntOption");
+    assert_eq!(variants.len(), 2);
+    assert_eq!(variants[0].name, "None");
+    assert!(variants[0].fields.is_empty());
+    assert_eq!(variants[1].name, "Some");
+    assert_eq!(variants[1].fields.len(), 1);
+    assert_eq!(variants[1].fields[0].name, "value");
+    assert_eq!(variants[1].fields[0].ty, Type::Named("i32".into()));
+}
+
+/// Parse a multi-field payload variant: `Rect(width: i32, height: i32)`.
+#[test]
+fn parses_enum_variant_with_multiple_payload_fields() {
+    let src = "enum Shape:\n    Circle(radius: i32)\n    Rect(width: i32, height: i32)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Enum(EnumDef { variants, .. }) = &module.items[0] else { panic!("expected enum") };
+    assert_eq!(variants[1].name, "Rect");
+    let field_names: Vec<&str> = variants[1].fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(field_names, vec!["width", "height"]);
+}
+
+/// Parse a payload variant constructor: `IntOption::Some(5)`.
+#[test]
+fn parses_enum_variant_ctor_expr_with_args() {
+    let src = format!("{}fn t():\n    IntOption::Some(5)\n", INT_OPTION_ENUM_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Expr(Expr::EnumVariant { enum_name, variant, args, .. }) = &f.body.stmts[0] else {
+        panic!("expected EnumVariant expr, got {:?}", f.body.stmts[0])
+    };
+    assert_eq!(enum_name, "IntOption");
+    assert_eq!(variant, "Some");
+    assert_eq!(args.len(), 1);
+    assert!(matches!(args[0], Expr::Int(5, _)));
+}
+
+/// Parse a payload variant match pattern's destructuring bindings:
+/// `IntOption::Some(v) -> ...`.
+#[test]
+fn parses_enum_variant_pattern_with_bindings() {
+    let src = format!(
+        "{}fn t(o: IntOption) -> i32:\n    match o:\n        IntOption::Some(v) -> v\n        IntOption::None -> 0\n",
+        INT_OPTION_ENUM_SRC
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Expr(Expr::Match { arms, .. }) = &f.body.stmts[0] else { panic!("expected match") };
+    match &arms[0].pattern {
+        Pattern::EnumVariant(enum_name, variant, bindings) => {
+            assert_eq!(enum_name, "IntOption");
+            assert_eq!(variant, "Some");
+            assert_eq!(bindings, &vec!["v".to_string()]);
+        }
+        other => panic!("expected EnumVariant pattern, got {:?}", other),
+    }
+    match &arms[1].pattern {
+        Pattern::EnumVariant(_, _, bindings) => assert!(bindings.is_empty(), "fieldless variant pattern should have no bindings"),
+        other => panic!("expected EnumVariant pattern, got {:?}", other),
+    }
+}
+
+/// A payload pattern's binding is usable at its field's declared type.
+#[test]
+fn checks_payload_pattern_binding_has_field_type() {
+    let src = format!(
+        "{}fn t(o: IntOption) -> i32:\n    match o:\n        IntOption::Some(v) ->\n            return v + 1\n        IntOption::None ->\n            return 0\n",
+        INT_OPTION_ENUM_SRC
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "payload binding should be usable as its field's `i32` type");
+}
+
+/// `EnumName::Variant(args...)` still infers to that enum's type.
+#[test]
+fn checks_payload_enum_variant_ctor_type() {
+    let src = format!("{}fn t() -> IntOption:\n    IntOption::Some(5)\n", INT_OPTION_ENUM_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let f = typed.items.iter().find_map(|i| if let TypedItem::Fn(f) = i { Some(f) } else { None }).expect("expected a fn item");
+    let ty = match f.body.stmts.last().expect("body should have a statement") {
+        TypedStmt::Expr(e) => e.clone().into_ty(),
+        other => panic!("expected trailing expr statement, got {:?}", other),
+    };
+    assert_eq!(ty, Ty::Enum("IntOption".into()));
+}
+
+/// A payload variant constructor called with the wrong number of arguments
+/// is a type error.
+#[test]
+fn rejects_payload_enum_ctor_wrong_arity() {
+    let src = format!("{}fn t():\n    IntOption::Some(1, 2)\n", INT_OPTION_ENUM_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("wrong ctor arity should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("expects 1 argument")), "{:?}", diags);
+}
+
+/// A payload match pattern with the wrong number of bindings is a type error.
+#[test]
+fn rejects_payload_pattern_binding_arity_mismatch() {
+    let src = format!(
+        "{}fn t(o: IntOption):\n    match o:\n        IntOption::Some(a, b) -> 1\n        IntOption::None -> 0\n",
+        INT_OPTION_ENUM_SRC
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("wrong binding arity should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("expects 1 binding")), "{:?}", diags);
+}
+
+/// A payload-carrying enum lowers to a tagged-union LLVM struct (`{ i32
+/// tag, [W x i64] payload }`), unlike a fieldless enum's bare `i32`.
+#[test]
+fn codegen_payload_enum_emits_tagged_union_struct_type() {
+    let src = format!("{}fn t() -> IntOption:\n    IntOption::Some(5)\n", INT_OPTION_ENUM_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("%IntOption = type { i32, [1 x i64] }"), "{}", ir);
+}
+
+/// A fieldless enum coexisting with a payload enum in the same module still
+/// lowers straight to `i32` (no struct declaration of its own) -- the two
+/// representations must not interfere with each other.
+#[test]
+fn codegen_fieldless_enum_stays_i32_alongside_payload_enum() {
+    let src = format!("{}{}fn t() -> Direction:\n    Direction::East\n", DIRECTION_ENUM_SRC, INT_OPTION_ENUM_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(!ir.contains("%Direction = type"), "fieldless enum should not get a struct decl: {}", ir);
+    assert!(ir.contains("ret i32 2"), "{}", ir);
+}
+
+/// Constructing a payload variant stores the dense discriminant into the
+/// tagged union's first field, then bitcasts the shared payload buffer to
+/// the variant's own field layout to store each argument.
+#[test]
+fn codegen_payload_enum_ctor_stores_tag_and_bitcasts_payload() {
+    let src = format!("{}fn t() -> IntOption:\n    IntOption::Some(5)\n", INT_OPTION_ENUM_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    // Some is the second declared variant (None=0, Some=1).
+    assert!(ir.contains("store i32 1,"), "tag store: {}", ir);
+    assert!(ir.contains("bitcast [1 x i64]* "), "payload bitcast: {}", ir);
+}
+
+/// Matching a payload variant destructures its fields by bitcasting the
+/// scrutinee's shared payload buffer to that variant's own field layout and
+/// GEP-ing each bound field out of it.
+#[test]
+fn codegen_match_payload_variant_binds_field_via_bitcast_gep() {
+    let src = format!(
+        "{}fn t(o: IntOption) -> i32:\n    match o:\n        IntOption::Some(v) ->\n            return v\n        IntOption::None ->\n            return 0\n",
+        INT_OPTION_ENUM_SRC
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("bitcast [1 x i64]* "), "{}", ir);
+    // Every arm returns, so the match's join block is provably unreachable
+    // rather than needing a value merged into it.
+    assert!(ir.contains("unreachable"), "exhaustive all-return match should close its join block with `unreachable`: {}", ir);
+}
+
+/// Runtime test: `examples/option_result.exe` exercises payload-carrying
+/// `enum` variants end to end -- constructing `Ok`/`Err`/`Some`/`None`-style
+/// variants, destructuring their payload fields through `match`, and a
+/// multi-field variant (`Rect(width, height)`) -- through a real
+/// clang-compiled executable.
+#[test]
+fn runtime_option_result_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/option_result.exe").output().expect("failed to execute option_result.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("ok: 5"), "Ok(value) payload extraction: {}", stdout);
+    assert!(stdout.contains("err: 1"), "Err(code) payload extraction: {}", stdout);
+    assert!(stdout.contains("found: 4"), "Some(value) payload extraction: {}", stdout);
+    assert!(stdout.contains("found: -1"), "None fallback: {}", stdout);
+    assert!(stdout.contains("circle area: 12"), "single-field variant: {}", stdout);
+    assert!(stdout.contains("rect area: 12"), "multi-field variant: {}", stdout);
+}
+
+// ===== struct destructuring in match patterns ==============================
+
+const POINT_STRUCT_SRC: &str = "struct Point:\n    x: i32\n    y: i32\n\n";
+
+/// Parse a struct destructuring match pattern's bindings: `Point(x, y) -> ...`.
+#[test]
+fn parses_struct_pattern_with_bindings() {
+    let src = format!("{}fn t(p: Point) -> i32:\n    match p:\n        Point(a, b) -> a\n", POINT_STRUCT_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Expr(Expr::Match { arms, .. }) = &f.body.stmts[0] else { panic!("expected match") };
+    match &arms[0].pattern {
+        Pattern::Struct(name, bindings) => {
+            assert_eq!(name, "Point");
+            assert_eq!(bindings, &vec!["a".to_string(), "b".to_string()]);
+        }
+        other => panic!("expected Struct pattern, got {:?}", other),
+    }
+}
+
+/// A struct pattern's binding is usable at its field's declared type.
+#[test]
+fn checks_struct_pattern_binding_has_field_type() {
+    let src = format!(
+        "{}fn t(p: Point) -> i32:\n    match p:\n        Point(x, y) ->\n            return x + y\n",
+        POINT_STRUCT_SRC
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "struct pattern bindings should be usable as their field's `i32` type");
+}
+
+/// A struct pattern with the wrong number of bindings is a type error.
+#[test]
+fn rejects_struct_pattern_binding_arity_mismatch() {
+    let src = format!("{}fn t(p: Point):\n    match p:\n        Point(a) -> 1\n", POINT_STRUCT_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("wrong binding arity should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("expects 2 binding")), "{:?}", diags);
+}
+
+/// A struct pattern naming a different struct than the scrutinee's type is a
+/// type error.
+#[test]
+fn rejects_match_pattern_struct_mismatch() {
+    let src = format!(
+        "{}struct Other:\n    z: i32\n\nfn t(p: Point):\n    match p:\n        Other(z) -> 1\n",
+        POINT_STRUCT_SRC
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "mismatched struct pattern should be a type error");
+}
+
+/// A struct pattern naming an undefined struct is a type error.
+#[test]
+fn rejects_undefined_struct_pattern() {
+    let src = format!("{}fn t(p: Point):\n    match p:\n        Ponit(a, b) -> 1\n", POINT_STRUCT_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("undefined struct pattern should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("undefined struct")), "{:?}", diags);
+}
+
+/// Matching a struct pattern destructures its fields by GEP-ing directly
+/// into the scrutinee's own storage (no bitcast/tag dance, unlike a payload
+/// enum's shared payload buffer, since a struct pattern always matches).
+#[test]
+fn codegen_match_struct_pattern_binds_field_via_gep() {
+    let src = format!(
+        "{}fn t(p: Point) -> i32:\n    match p:\n        Point(x, y) ->\n            return x + y\n",
+        POINT_STRUCT_SRC
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert_eq!(
+        ir.matches("getelementptr inbounds %Point, %Point* %t0, i32 0, i32").count(),
+        2,
+        "one GEP per destructured field: {}",
+        ir
+    );
+    // The arm always matches (no tag to test), so it falls straight through
+    // to its body with no conditional branch guarding it.
+    assert!(!ir.contains("icmp"), "a struct pattern should not emit a tag comparison: {}", ir);
+}
+
+/// Runtime test: `examples/struct_destructure.exe` exercises struct
+/// destructuring in match patterns end to end -- a flat struct (`Point`) and
+/// a struct with struct-typed fields (`Line`, whose `Point` fields are
+/// further field-accessed after being bound), through a real
+/// clang-compiled executable.
+#[test]
+fn runtime_struct_destructure_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/struct_destructure.exe").output().expect("failed to execute struct_destructure.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("sum: 7"), "flat struct field destructuring: {}", stdout);
+    assert!(stdout.contains("length_sq: 25"), "struct-typed field destructuring + further field access: {}", stdout);
+}
+
+// ===== `import`/module resolution (namespaced modules) =====================
+
+use star::ast::FStrExpr;
+
+/// Parsing alone (no file I/O) must recognize the `import "path" as alias`
+/// item and register the alias.
+#[test]
+fn parses_import_decl() {
+    let src = "import \"geometry_lib.star\" as geo\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Import(decl) = &module.items[0] else { panic!("expected an import item") };
+    assert_eq!(decl.alias, "geo");
+    assert_eq!(decl.path, "geometry_lib.star");
+}
+
+/// A qualified struct literal `alias::Name(...)` parses straight to the
+/// mangled name `crate::modules::resolve` would have given that struct --
+/// the parser reproduces the mangling from source text alone, without ever
+/// touching the imported file.
+#[test]
+fn parses_qualified_struct_literal_as_mangled_name() {
+    let src = "import \"lib.star\" as geo\nfn main():\n    let p = geo::Point(1, 2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected let") };
+    let Expr::StructLit { name, args, .. } = value else { panic!("expected struct literal, got {:?}", value) };
+    assert_eq!(name, "geo__Point");
+    assert_eq!(args.len(), 2);
+}
+
+/// A qualified free-function call `alias::name(...)` parses to a `Call`
+/// whose callee is the mangled identifier (lowercase names never trigger
+/// the struct-literal heuristic).
+#[test]
+fn parses_qualified_fn_call_as_mangled_name() {
+    let src = "import \"lib.star\" as geo\nfn main():\n    let d = geo::dot(1, 2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected let") };
+    let Expr::Call { callee, .. } = value else { panic!("expected call, got {:?}", value) };
+    assert!(matches!(callee.as_ref(), Expr::Ident(name, _) if name == "geo__dot"));
+}
+
+/// A 3-segment qualified path `alias::Enum::Variant(...)` parses to an
+/// `EnumVariant` whose enum name is mangled but whose variant name is left
+/// alone (variants aren't top-level declarations of their own).
+#[test]
+fn parses_qualified_enum_variant_as_mangled_enum_name() {
+    let src = "import \"lib.star\" as geo\nfn main():\n    let s = geo::Shape::Circle(2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected let") };
+    let Expr::EnumVariant { enum_name, variant, args, .. } = value else { panic!("expected enum variant, got {:?}", value) };
+    assert_eq!(enum_name, "geo__Shape");
+    assert_eq!(variant, "Circle");
+    assert_eq!(args.len(), 1);
+}
+
+/// A qualified path used inside an f-string interpolation must see the same
+/// import aliases as the rest of the file: interpolated expressions are
+/// re-lexed/parsed by a fresh sub-parser (see `Parser::lower_fstring`), which
+/// must inherit `import_aliases` rather than starting empty.
+#[test]
+fn parses_qualified_call_inside_fstring_interpolation() {
+    let src = "import \"lib.star\" as geo\nfn main():\n    println(f\"{geo::dot(1, 2)}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Expr(Expr::Call { args, .. }) = &f.body.stmts[0] else { panic!("expected call stmt") };
+    let Expr::FStr(parts, _) = &args[0] else { panic!("expected f-string arg") };
+    let FStrExpr::Expr(inner) = &parts[0] else { panic!("expected interpolated expr") };
+    let Expr::Call { callee, .. } = inner.as_ref() else { panic!("expected call, got {:?}", inner) };
+    assert!(matches!(callee.as_ref(), Expr::Ident(name, _) if name == "geo__dot"));
+}
+
+/// A qualified struct pattern `alias::Name(bindings...)` in a `match` arm
+/// mangles the same way an expression-position struct literal would.
+#[test]
+fn parses_qualified_struct_pattern() {
+    let src = "import \"lib.star\" as geo\nfn t(p: geo::Point) -> i32:\n    match p:\n        geo::Point(x, y) -> x\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    assert_eq!(f.sig.params[0].ty, Some(Type::Named("geo__Point".into())));
+    let Stmt::Expr(Expr::Match { arms, .. }) = &f.body.stmts[0] else { panic!("expected match stmt") };
+    assert!(matches!(&arms[0].pattern, Pattern::Struct(name, bindings) if name == "geo__Point" && bindings == &vec!["x".to_string(), "y".to_string()]));
+}
+
+/// A qualified enum-variant pattern `alias::Enum::Variant(bindings...)`.
+#[test]
+fn parses_qualified_enum_variant_pattern() {
+    let src = "import \"lib.star\" as geo\nfn t(s: geo::Shape) -> i32:\n    match s:\n        geo::Shape::Circle(r) -> r\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Expr(Expr::Match { arms, .. }) = &f.body.stmts[0] else { panic!("expected match stmt") };
+    assert!(matches!(
+        &arms[0].pattern,
+        Pattern::EnumVariant(enum_name, variant, bindings)
+            if enum_name == "geo__Shape" && variant == "Circle" && bindings == &vec!["r".to_string()]
+    ));
+}
+
+/// Write `contents` to `dir/name`, creating `dir` if needed, and return its
+/// path -- a tiny helper for tests that exercise `crate::modules::resolve`
+/// against real files on disk (import resolution is inherently file-based).
+fn write_test_file(dir: &std::path::Path, name: &str, contents: &str) -> std::path::PathBuf {
+    std::fs::create_dir_all(dir).expect("create test dir");
+    let path = dir.join(name);
+    std::fs::write(&path, contents).expect("write test file");
+    path
+}
+
+/// A fresh scratch directory under the OS temp dir, namespaced by test name
+/// so parallel test runs never collide.
+fn test_scratch_dir(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join("star_module_tests").join(name)
+}
+
+/// Resolving a single import inlines the imported file's items, mangled to
+/// `alias__name`, and leaves no `Item::Import` behind.
+#[test]
+fn resolve_inlines_and_mangles_imported_items() {
+    let dir = test_scratch_dir("resolve_inlines_and_mangles_imported_items");
+    write_test_file(&dir, "lib.star", "struct Point:\n    x: i32\n    y: i32\n\nfn dot(a: Point, b: Point) -> i32:\n    return a.x * b.x + a.y * b.y\n");
+    let main_path = write_test_file(
+        &dir,
+        "main.star",
+        "import \"lib.star\" as geo\nfn main() -> i32:\n    return geo::dot(geo::Point(1, 2), geo::Point(3, 4))\n",
+    );
+    let module = Driver::parse(&std::fs::read_to_string(&main_path).unwrap()).expect("should parse");
+    let resolved = star::modules::resolve(module, &main_path).expect("should resolve imports");
+
+    assert!(!resolved.items.iter().any(|i| matches!(i, Item::Import(_))), "no Item::Import should remain");
+    assert!(resolved.items.iter().any(|i| matches!(i, Item::Struct(s) if s.name == "geo__Point")));
+    assert!(resolved.items.iter().any(|i| matches!(i, Item::Fn(f) if f.sig.name == "geo__dot")));
+
+    // The merged module must also type-check and codegen cleanly end to end.
+    let typed = Driver::check(&resolved).expect("resolved module should type-check");
+    Driver::codegen(&typed).expect("resolved module should codegen");
+}
+
+/// A cyclic import (`a` imports `b`, `b` imports `a`) must be reported as an
+/// error rather than recursing forever.
+#[test]
+fn resolve_detects_import_cycle() {
+    let dir = test_scratch_dir("resolve_detects_import_cycle");
+    write_test_file(&dir, "a.star", "import \"b.star\" as b\nfn from_a():\n    return\n");
+    let b_path = write_test_file(&dir, "b.star", "import \"a.star\" as a\nfn from_b():\n    return\n");
+    // Enter the cycle from b.star so both files are real, on-disk imports.
+    let module = Driver::parse(&std::fs::read_to_string(&b_path).unwrap()).expect("should parse");
+    let err = star::modules::resolve(module, &b_path).expect_err("cyclic import should fail to resolve");
+    assert!(err.iter().any(|d| d.message.contains("cycle")), "{:?}", err);
+}
+
+/// Importing a file that doesn't exist is a clean error, not a panic.
+#[test]
+fn resolve_reports_missing_import_file() {
+    let dir = test_scratch_dir("resolve_reports_missing_import_file");
+    let main_path = write_test_file(&dir, "main.star", "import \"does_not_exist.star\" as x\nfn main():\n    return\n");
+    let module = Driver::parse(&std::fs::read_to_string(&main_path).unwrap()).expect("should parse");
+    let err = star::modules::resolve(module, &main_path).expect_err("missing import should fail to resolve");
+    assert!(err.iter().any(|d| d.message.contains("cannot import")), "{:?}", err);
+}
+
+/// Runtime test: `examples/modules_main.exe` exercises `import "path" as
+/// alias` end to end -- a qualified struct literal, a qualified
+/// free-function call, and a qualified payload enum variant construction
+/// (a 3-segment `geo::Shape::Circle(...)` path) reaching into
+/// `geometry_lib.star`'s namespace, through a real clang-compiled
+/// executable.
+#[test]
+fn runtime_modules_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/modules_main.exe").output().expect("failed to execute modules_main.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("dot: 11"), "qualified struct literal + free function call: {}", stdout);
+    assert!(stdout.contains("circle area: 12"), "qualified 3-segment enum variant + match inside the imported module: {}", stdout);
+    assert!(stdout.contains("rect area: 12"), "second variant of the same imported enum: {}", stdout);
+}
+
+// ===== user-defined generics (monomorphization) =============================
+//
+// `struct Name<T>`/`enum Name<T>`/`fn name<T>` are implemented by
+// monomorphization: a generic template is never itself checked or emitted,
+// only concrete instantiations produced on demand by substituting each type
+// parameter for a concrete type throughout a syntactic copy of the
+// declaration, then checking/emitting that copy exactly like an ordinary
+// hand-written concrete declaration. See `Checker::instantiate_struct`/
+// `instantiate_enum`/`instantiate_fn` in `src/types/mod.rs`.
+
+/// Parse a generic struct's `<T, U>` type-parameter list.
+#[test]
+fn parses_generic_struct_type_params() {
+    let src = "struct Pair<A, B>:\n    first: A\n    second: B\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Struct(def) = &module.items[0] else { panic!("expected a struct") };
+    assert_eq!(def.type_params, vec!["A".to_string(), "B".to_string()]);
+    assert_eq!(def.fields[0].ty, Type::Named("A".into()));
+}
+
+/// Parse a generic enum's `<T>` type-parameter list.
+#[test]
+fn parses_generic_enum_type_params() {
+    let src = "enum Option<T>:\n    None\n    Some(value: T)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Enum(EnumDef { type_params, variants, .. }) = &module.items[0] else { panic!("expected an enum") };
+    assert_eq!(type_params, &vec!["T".to_string()]);
+    assert_eq!(variants[1].fields[0].ty, Type::Named("T".into()));
+}
+
+/// Parse a generic function's `<T>` type-parameter list.
+#[test]
+fn parses_generic_fn_type_params() {
+    let src = "fn identity<T>(x: T) -> T:\n    return x\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected a fn") };
+    assert_eq!(f.sig.type_params, vec!["T".to_string()]);
+}
+
+/// Parse an explicit turbofish on a generic struct literal: `Box<i32>(value = 5)`.
+#[test]
+fn parses_generic_struct_lit_turbofish() {
+    let src = "struct Box<T>:\n    value: T\n\nfn t():\n    Box<i32>(value = 5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Expr(Expr::StructLit { name, type_args, args, .. }) = &f.body.stmts[0] else {
+        panic!("expected struct literal, got {:?}", f.body.stmts[0])
+    };
+    assert_eq!(name, "Box");
+    assert_eq!(type_args, &vec![Type::Named("i32".into())]);
+    assert_eq!(args.len(), 1);
+}
+
+/// Parse an explicit turbofish on a generic enum variant path:
+/// `Option<i32>::None`.
+#[test]
+fn parses_generic_enum_variant_turbofish() {
+    let src = "enum Option<T>:\n    None\n    Some(value: T)\n\nfn t():\n    Option<i32>::None\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Expr(Expr::EnumVariant { enum_name, type_args, variant, .. }) = &f.body.stmts[0] else {
+        panic!("expected enum variant, got {:?}", f.body.stmts[0])
+    };
+    assert_eq!(enum_name, "Option");
+    assert_eq!(type_args, &vec![Type::Named("i32".into())]);
+    assert_eq!(variant, "None");
+}
+
+const GENERIC_BOX_SRC: &str = "struct Box<T>:\n    value: T\n\n";
+const GENERIC_OPTION_SRC: &str = "enum Option<T>:\n    None\n    Some(value: T)\n\n";
+
+/// A generic struct's template declaration produces no typed item of its
+/// own; only a concrete instantiation (triggered by a use with an inferable
+/// concrete type) is emitted, named by mangling the template with its type
+/// argument.
+#[test]
+fn instantiates_generic_struct_with_inferred_type_arg() {
+    let src = format!("{}fn t():\n    Box(value = 5)\n", GENERIC_BOX_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let struct_names: Vec<&str> = typed.items.iter().filter_map(|i| if let TypedItem::Struct(s) = i { Some(s.name.as_str()) } else { None }).collect();
+    assert_eq!(struct_names, vec!["Box__i32"], "generic template itself must not be emitted, only its instantiation");
+}
+
+/// Two uses of the same generic struct with different concrete type
+/// arguments produce two distinct monomorphized instantiations.
+#[test]
+fn instantiates_generic_struct_once_per_distinct_type_arg() {
+    let src = format!("{}fn t():\n    Box(value = 5)\n    Box(value = 2.5)\n    Box(value = 6)\n", GENERIC_BOX_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let mut struct_names: Vec<&str> = typed.items.iter().filter_map(|i| if let TypedItem::Struct(s) = i { Some(s.name.as_str()) } else { None }).collect();
+    struct_names.sort();
+    assert_eq!(struct_names, vec!["Box__f32", "Box__i32"], "same (template, type arg) pair should be instantiated once: {:?}", struct_names);
+}
+
+/// A generic struct construction whose type argument can't be inferred from
+/// its constructor arguments alone is resolved via an explicit turbofish.
+#[test]
+fn instantiates_generic_struct_via_explicit_turbofish() {
+    let src = format!("{}fn t():\n    Box<i32>(value = 5)\n", GENERIC_BOX_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    assert!(typed.items.iter().any(|i| matches!(i, TypedItem::Struct(s) if s.name == "Box__i32")));
+}
+
+/// A field access on a monomorphized generic struct resolves against its
+/// instantiation's own (substituted, concrete) field type.
+#[test]
+fn checks_generic_struct_field_access_has_substituted_type() {
+    let src = format!("{}fn t() -> i32:\n    let b = Box(value = 5)\n    b.value\n", GENERIC_BOX_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let f = typed.items.iter().find_map(|i| if let TypedItem::Fn(f) = i { Some(f) } else { None }).expect("expected a fn item");
+    let ty = match f.body.stmts.last().expect("body should have a statement") {
+        TypedStmt::Expr(e) => e.clone().into_ty(),
+        other => panic!("expected trailing expr statement, got {:?}", other),
+    };
+    assert_eq!(ty, Ty::Int);
+}
+
+/// A generic struct instantiated with another (already-monomorphized)
+/// generic struct as its own type argument works -- nested instantiation.
+#[test]
+fn instantiates_nested_generic_struct() {
+    let src = format!(
+        "{}fn t() -> i32:\n    let b = Box(value = Box(value = 99))\n    b.value.value\n",
+        GENERIC_BOX_SRC
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "nested generic instantiation should type-check");
+}
+
+/// A generic enum's fieldless variant with no arguments to infer a type
+/// argument from requires an explicit turbofish; without one it's a type
+/// error rather than a silent wrong instantiation.
+#[test]
+fn rejects_generic_enum_variant_without_inferable_type_arg() {
+    let src = format!("{}fn t():\n    Option::None\n", GENERIC_OPTION_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("uninferable generic construction should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("cannot infer")), "{:?}", diags);
+}
+
+/// `Option<i32>::None` and `Option::Some(5)` (inferred `T = i32`) share the
+/// same monomorphized `Option__i32` enum.
+#[test]
+fn instantiates_generic_enum_shared_across_variants() {
+    let src = format!(
+        "{}fn t():\n    let a = Option::Some(5)\n    let b = Option<i32>::None\n",
+        GENERIC_OPTION_SRC
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let enum_names: Vec<&str> = typed.items.iter().filter_map(|i| if let TypedItem::Enum(e) = i { Some(e.name.as_str()) } else { None }).collect();
+    assert_eq!(enum_names, vec!["Option__i32"], "both constructions should share one instantiation: {:?}", enum_names);
+}
+
+/// A `match` pattern written against the generic template name
+/// (`Option::Some(v)`) matches a scrutinee of any concrete instantiation --
+/// the pattern doesn't need to spell out the mangled name.
+#[test]
+fn checks_match_pattern_against_generic_template_name() {
+    let src = format!(
+        "{}fn t(o: Option<i32>) -> i32:\n    match o:\n        Option::Some(v) ->\n            return v\n        Option::None ->\n            return -1\n",
+        GENERIC_OPTION_SRC
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "a generic-template pattern should match a concrete instantiation: {:?}", Driver::check(&module).err());
+}
+
+/// A generic free function's type parameter is inferred from its call-site
+/// argument types (no turbofish call syntax); two calls with different
+/// concrete argument types produce two distinct monomorphized functions.
+#[test]
+fn instantiates_generic_fn_once_per_distinct_call_site_type() {
+    let src = "fn identity<T>(x: T) -> T:\n    return x\n\nfn t():\n    identity(5)\n    identity(2.5)\n    identity(6)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let mut fn_names: Vec<&str> = typed.items.iter()
+        .filter_map(|i| if let TypedItem::Fn(f) = i { Some(f.sig.name.as_str()) } else { None })
+        .filter(|n| n.starts_with("identity"))
+        .collect();
+    fn_names.sort();
+    assert_eq!(fn_names, vec!["identity__f32", "identity__i32"], "{:?}", fn_names);
+}
+
+/// Codegen for a generic function call: the call site lowers to a direct
+/// call against the mangled, monomorphized function's own name.
+#[test]
+fn codegen_generic_fn_call_uses_mangled_name() {
+    let src = "fn identity<T>(x: T) -> T:\n    return x\n\nfn t() -> i32:\n    identity(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("define i32 @identity__i32("), "{}", ir);
+    assert!(ir.contains("call i32 @identity__i32("), "{}", ir);
+}
+
+/// A generic function whose body itself constructs another generic type
+/// parameterized by its own type parameter (`fn wrap<T>(x: T) -> Box<T>`)
+/// type-checks and codegens -- the body's own `Box(value = x)` is checked
+/// against the already-substituted (concrete) parameter type of `x`.
+#[test]
+fn instantiates_generic_fn_that_constructs_generic_struct_of_its_own_param() {
+    let src = format!("{}fn wrap<T>(x: T) -> Box<T>:\n    return Box(value = x)\n\nfn t() -> i32:\n    let b = wrap(5)\n    b.value\n", GENERIC_BOX_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    assert!(typed.items.iter().any(|i| matches!(i, TypedItem::Struct(s) if s.name == "Box__i32")));
+    assert!(typed.items.iter().any(|i| matches!(i, TypedItem::Fn(f) if f.sig.name == "wrap__i32")));
+}
+
+/// Codegen for a monomorphized generic struct: the `%Box__i32 = type { i32
+/// }` declaration and its field access lower exactly like an ordinary
+/// hand-written concrete struct.
+#[test]
+fn codegen_generic_struct_emits_mangled_type_decl() {
+    let src = format!("{}fn t() -> i32:\n    let b = Box(value = 5)\n    b.value\n", GENERIC_BOX_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("%Box__i32 = type { i32 }"), "{}", ir);
+    assert!(ir.contains("alloca %Box__i32"), "{}", ir);
+}
+
+/// Codegen for a monomorphized generic payload enum: lowers to a tagged
+/// union exactly like an ordinary hand-written concrete payload enum.
+#[test]
+fn codegen_generic_enum_emits_mangled_tagged_union() {
+    let src = format!("{}fn t():\n    Option::Some(5)\n", GENERIC_OPTION_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("%Option__i32 = type { i32, [1 x i64] }"), "{}", ir);
+}
+
+/// Runtime test: `examples/generics.exe` exercises user-defined generics end
+/// to end -- a generic struct (`Box<T>`, including a nested `Box<Box<i32>>`
+/// instantiation), a generic `Option<T>`-style enum matched by its generic
+/// template pattern name, a generic `Result<T, E>`-style enum needing an
+/// explicit turbofish on both variants, and a generic free function
+/// (`identity<T>`) instantiated at two different concrete types -- through a
+/// real clang-compiled executable.
+#[test]
+fn runtime_generics_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/generics.exe").output().expect("failed to execute generics.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("box: 42"), "generic struct field read: {}", stdout);
+    assert!(stdout.contains("nested box: 99"), "nested generic struct instantiation: {}", stdout);
+    assert!(stdout.contains("unwrap some: 5"), "generic enum Some payload via generic-template match pattern: {}", stdout);
+    assert!(stdout.contains("unwrap none: -1"), "generic enum None fallback via generic-template match pattern: {}", stdout);
+    assert!(stdout.contains("ok: 10"), "generic two-param enum Ok payload: {}", stdout);
+    assert!(stdout.contains("err: bad"), "generic two-param enum Err payload: {}", stdout);
+    assert!(stdout.contains("identity int: 7"), "generic fn instantiated at i32: {}", stdout);
+    assert!(stdout.contains("identity float: 3.500000"), "generic fn instantiated at f32 (separate instantiation from i32): {}", stdout);
+}
+
+// ===== Closures/lambdas ====================================================
+
+/// Parse an inline-bodied lambda literal (`fn(params) -> Ret: expr`, mirroring
+/// a `match` arm's own inline-body grammar) as a `let` initializer.
+#[test]
+fn parses_lambda_inline_body() {
+    let src = "fn t():\n    let add1 = fn(x: i32) -> i32: x + 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected Let") };
+    let Expr::Lambda { params, ret, body, .. } = value else { panic!("expected Expr::Lambda, got {:?}", value) };
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].name, "x");
+    assert_eq!(ret, &Some(Type::Named("i32".into())));
+    assert!(matches!(body.stmts[0], Stmt::Expr(Expr::Binary { op: BinOp::Add, .. })));
+}
+
+/// Parse a block-bodied lambda literal (full indented block, mirroring
+/// `if`/`match`'s own block-body grammar) -- must be the last statement of
+/// its enclosing block, a pre-existing parser limitation shared with
+/// `if`-expressions used as a `let` value (see todo.md's documented
+/// `match`-as-statement Dedent-consumption bug for the same root cause).
+#[test]
+fn parses_lambda_block_body() {
+    let src = "fn t():\n    let f = fn(x: i32) -> i32:\n        let y = x + 1\n        y\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected Let") };
+    let Expr::Lambda { body, .. } = value else { panic!("expected Expr::Lambda") };
+    assert_eq!(body.stmts.len(), 2);
+}
+
+/// A lambda with no declared parameters and no `->` return type still
+/// parses (both are optional).
+#[test]
+fn parses_lambda_no_params_no_ret() {
+    let src = "fn t():\n    let f = fn(): 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected Let") };
+    let Expr::Lambda { params, ret, .. } = value else { panic!("expected Expr::Lambda") };
+    assert!(params.is_empty());
+    assert!(ret.is_none());
+}
+
+/// A closure literal nested directly in a call's argument list (no `let`
+/// binding) parses fine, since it doesn't itself need to consume a
+/// statement-ending line -- only the call as a whole does.
+#[test]
+fn parses_lambda_as_call_argument() {
+    let src = "fn apply(f: Fn(i32) -> i32, x: i32) -> i32:\n    f(x)\n\nfn t() -> i32:\n    apply(fn(x: i32) -> i32: x * 2, 5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok());
+}
+
+/// A closure-typed parameter annotation `Fn(T1, T2) -> Ret` parses to
+/// `Type::Fn`.
+#[test]
+fn parses_fn_type_annotation() {
+    let src = "fn apply(f: Fn(i32, i32) -> i32) -> i32:\n    f(1, 2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    assert_eq!(
+        f.sig.params[0].ty,
+        Some(Type::Fn(vec![Type::Named("i32".into()), Type::Named("i32".into())], Box::new(Type::Named("i32".into()))))
+    );
+}
+
+/// `let` with no explicit annotation infers a `Ty::Closure` from a lambda
+/// initializer, and a subsequent call through that variable resolves its
+/// result type from the closure's own declared return type.
+#[test]
+fn checks_lambda_infers_closure_ty_and_call_result() {
+    let ty = typed_fn_result_ty("fn t() -> i32:\n    let add1 = fn(x: i32) -> i32: x + 1\n    add1(41)\n");
+    assert_eq!(ty, Ty::Int);
+}
+
+/// A lambda with no `-> Ret` annotation infers its return type from its
+/// trailing expression, exactly like an `if`-expression with no annotation.
+#[test]
+fn checks_lambda_infers_return_type_from_body() {
+    let ty = typed_fn_result_ty("fn t() -> f32:\n    let f = fn(x: f32): x * 2.0\n    f(3.0)\n");
+    assert_eq!(ty, Ty::Float);
+}
+
+/// A closure captures an outer local by value: the checker resolves the
+/// captured identifier's type from the enclosing scope inside the lambda
+/// body, not just its own parameters.
+#[test]
+fn checks_lambda_captures_outer_local() {
+    let ty = typed_fn_result_ty("fn t() -> i32:\n    let base = 10\n    let f = fn(x: i32) -> i32: x + base\n    f(5)\n");
+    assert_eq!(ty, Ty::Int);
+}
+
+/// A closure-typed function parameter (`f: Fn(i32) -> i32`) can be called
+/// like any other closure value inside the function body.
+#[test]
+fn checks_closure_typed_param_is_callable() {
+    let module = Driver::parse("fn apply(f: Fn(i32) -> i32, x: i32) -> i32:\n    f(x)\n").expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "calling a closure-typed parameter should type-check");
+}
+
+/// `self` is rejected in a lambda's parameter list (lambdas have no
+/// receiver).
+#[test]
+fn rejects_self_in_lambda_params() {
+    let src = "struct S:\n    n: i32\n\nimpl S:\n    fn m(self):\n        let f = fn(self) -> i32: 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "`self` in a lambda's own parameter list should be a type error");
+}
+
+/// Codegen for a closure literal: the deferred top-level `closure_N`
+/// function, the `{ i8*, i8* }` fat-pointer value construction (fn ptr +
+/// null env ptr for a capture-free lambda), and no captured-environment
+/// `malloc` call since there's nothing to capture.
+#[test]
+fn codegen_closure_literal_emits_deferred_function_and_fat_pointer() {
+    let src = "fn t() -> i32:\n    let add1 = fn(x: i32) -> i32: x + 1\n    add1(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("define i32 @closure_0(i8* %envp, i32 %arg_x)"), "{}", ir);
+    assert!(ir.contains("insertvalue { i8*, i8* } undef, i8*"), "{}", ir);
+    assert!(!ir.contains("call i8* @malloc"), "a capture-free closure should not allocate an environment: {}", ir);
+}
+
+/// Codegen for a closure that captures an outer local: a `malloc`'d
+/// environment (sized via the GEP-null/`ptrtoint` idiom) plus a store of the
+/// captured value into it.
+#[test]
+fn codegen_closure_capturing_local_allocates_environment() {
+    let src = "fn t() -> i32:\n    let base = 10\n    let f = fn(x: i32) -> i32: x + base\n    f(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("call i8* @malloc"), "a capturing closure should heap-allocate its environment: {}", ir);
+    assert!(ir.contains("ptrtoint { i32 }* "), "environment size should be computed via the GEP-null/ptrtoint sizeof idiom: {}", ir);
+}
+
+/// Codegen for a call through a closure value: an indirect call bitcasting
+/// the extracted `i8*` function pointer back to its real signature, rather
+/// than a direct `call @name(...)`.
+#[test]
+fn codegen_closure_call_is_indirect() {
+    let src = "fn t() -> i32:\n    let add1 = fn(x: i32) -> i32: x + 1\n    add1(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("extractvalue { i8*, i8* }"), "{}", ir);
+    assert!(ir.contains("bitcast i8* %t") && ir.contains("to i32 (i8*, i32)*"), "{}", ir);
+}
+
+/// A void closure (no return value) lowers its deferred function and call
+/// site to LLVM `void`, matching the existing `unknown`-means-`void`
+/// convention used for ordinary functions with no declared return type.
+#[test]
+fn codegen_void_closure_lowers_to_void() {
+    let src = "fn t():\n    let say = fn(): println(\"hi\")\n    say()\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("define void @closure_0(i8* %envp)"), "{}", ir);
+}
+
+/// A closure literal is rejected inside a `par`/`swarm` body (its captured
+/// environment escapes the per-iteration disjointness proof -- see
+/// `Checker::walk_par_expr`'s `TypedExpr::Closure` arm).
+#[test]
+fn rejects_closure_inside_par_body() {
+    let src = "struct P:\n    n: i32\n\narena Arena: P\n\nfn t():\n    par p in Arena:\n        let f = fn() -> i32: p.n\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "a closure literal inside a par/swarm body should be rejected");
+}
+
+/// Runtime test: `examples/closures.exe` exercises closures end to end
+/// through a real clang-compiled executable -- a plain capture-free
+/// closure, a closure capturing an outer immutable local, passing a
+/// closure as a `Fn(i32) -> i32`-typed function argument, *returning* a
+/// closure from a function (the escaping-closure case that specifically
+/// exercises heap-allocating the environment rather than capturing stack
+/// pointers), value-capture semantics (mutating a captured variable after
+/// the closure was created must not affect what the closure already
+/// snapshotted), a void closure called purely for its side effect, and (the
+/// "indirect/function-pointer calls are rejected" bug) a plain top-level
+/// function -- never wrapped in a lambda literal -- called directly and
+/// passed as a first-class `Fn(i32) -> i32` value into `apply_twice`.
+#[test]
+fn runtime_closures_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/closures.exe").output().expect("failed to execute closures.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("add1(5) = 6"), "plain capture-free closure: {}", stdout);
+    assert!(stdout.contains("add_base(7) = 17"), "closure capturing an outer local: {}", stdout);
+    assert!(stdout.contains("apply_twice(add1, 5) = 7"), "closure passed as a Fn(i32) -> i32 argument: {}", stdout);
+    assert!(stdout.contains("add_one(5) = 6"), "direct call to a plain top-level function: {}", stdout);
+    assert!(stdout.contains("apply_twice(add_one, 5) = 7"), "plain top-level function passed as a Fn(i32) -> i32 value: {}", stdout);
+    assert!(stdout.contains("adder(5) = 105"), "closure returned from a function (escaping, heap-allocated environment): {}", stdout);
+    assert!(stdout.contains("bump() = 1"), "value-capture: mutating the captured var after closure creation must not change its snapshot: {}", stdout);
+    assert!(stdout.contains("hi from a void closure"), "void closure called for its side effect: {}", stdout);
+}
+
+// ===== Bug fixes: fn-values, match-as-value, match-as-statement, method calls ====
+
+/// A bare identifier naming a declared top-level function, used as a
+/// first-class *value* (here, `let`-bound) rather than called directly,
+/// is widened to the same `Ty::Closure` a lambda literal would get --
+/// see `Checker::fn_value_ty`. Before this fix the identifier stayed
+/// `unknown`, and codegen had no local `alloca` to load it from (it
+/// names a global function, not a variable), so a plain top-level
+/// function couldn't be used as an indirect/function-pointer value at all.
+#[test]
+fn checks_fn_name_used_as_value_gets_closure_ty() {
+    let src = "fn add_one(x: i32) -> i32:\n    x + 1\n\nfn t() -> i32:\n    let f = add_one\n    f(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let TypedItem::Fn(t) = &typed.items[1] else { panic!("expected fn") };
+    let TypedStmt::Let { value, .. } = &t.body.stmts[0] else { panic!("expected let, got {:?}", t.body.stmts[0]) };
+    assert!(matches!(value.clone().into_ty(), Ty::Closure(..)), "expected Ty::Closure, got {:?}", value.clone().into_ty());
+}
+
+/// Regression guard for the direct-call fast path: a *direct* call to a
+/// named top-level function (`add_one(5)`, not through a variable) must
+/// keep its callee typed as a bare, unwidened `Ident` (`ty: unknown`) --
+/// widening it to `Ty::Closure` here too would route every ordinary call
+/// through the indirect closure-call mechanism instead of `emit_call_expr`'s
+/// direct `call @name(...)` path.
+#[test]
+fn checks_direct_call_to_named_fn_keeps_unwidened_callee_ty() {
+    let src = "fn add_one(x: i32) -> i32:\n    x + 1\n\nfn t() -> i32:\n    add_one(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let TypedItem::Fn(t) = &typed.items[1] else { panic!("expected fn") };
+    let TypedStmt::Expr(TypedExpr::Call { callee, .. }) = &t.body.stmts[0] else { panic!("expected a call statement, got {:?}", t.body.stmts[0]) };
+    assert_eq!(callee.clone().into_ty(), Ty::Named("unknown".into()), "direct-call callee must not be widened to Ty::Closure");
+}
+
+/// Codegen for a direct call to a named function stays a plain `call
+/// @name(...)` -- no indirect thunk involved (mirrors
+/// `checks_direct_call_to_named_fn_keeps_unwidened_callee_ty` at the
+/// codegen layer).
+#[test]
+fn codegen_direct_call_to_named_fn_stays_direct() {
+    let src = "fn add_one(x: i32) -> i32:\n    x + 1\n\nfn t() -> i32:\n    add_one(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("call i32 @add_one(i32 5)"), "{}", ir);
+    assert!(!ir.contains("fnval_add_one"), "a direct call must not go through the fn-value thunk: {}", ir);
+}
+
+/// Codegen for a plain top-level function used as a value: the underlying
+/// `@add_one` was emitted by `emit_fn` with the ordinary (no `i8* %envp`
+/// prefix) signature every direct call uses, so referencing it as a
+/// `Ty::Closure` value goes through a small generated thunk
+/// (`Codegen::emit_fn_value`) that drops the incoming envp and forwards to
+/// the real function, rather than bitcasting `@add_one` itself to the
+/// closure-call shape (which would silently misalign every argument).
+#[test]
+fn codegen_fn_name_used_as_value_wraps_in_thunk() {
+    let src = "fn add_one(x: i32) -> i32:\n    x + 1\n\nfn apply(f: Fn(i32) -> i32, x: i32) -> i32:\n    f(x)\n\nfn t() -> i32:\n    apply(add_one, 5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("define i32 @fnval_add_one(i8* %envp, i32 %arg_0)"), "{}", ir);
+    assert!(ir.contains("call i32 @add_one(i32 %arg_0)"), "the thunk should forward to the real function: {}", ir);
+    assert!(ir.contains("bitcast i32 (i8*, i32)* @fnval_add_one to i8*"), "{}", ir);
+}
+
+/// `match` used as a value-producing expression: each non-terminating arm's
+/// trailing expression is inferred as the arm's own type (previously always
+/// stubbed to `unknown`, see `Checker::check_match_arm`), and the overall
+/// `match` picks up the first arm type that isn't just the "no value"
+/// placeholder.
+#[test]
+fn checks_match_used_as_value_infers_arm_result_ty() {
+    let ty = typed_fn_result_ty("fn t(x: i32) -> i32:\n    match x:\n        <= 0 -> -1\n        _ -> 1\n");
+    assert_eq!(ty, Ty::Int);
+}
+
+/// Codegen for `match` used as a value: non-terminating arms each
+/// contribute `(value, block)` to a `phi` at the join block instead of the
+/// match always yielding a meaningless placeholder register.
+#[test]
+fn codegen_match_used_as_value_emits_phi() {
+    let src = "fn t(x: i32) -> i32:\n    match x:\n        <= 0 -> -1\n        _ -> 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains(" = phi i32 ["), "{}", ir);
+}
+
+/// A `match` used purely for side effects (every arm ends in `println`, not
+/// a value-producing trailing expression) must not spuriously synthesize a
+/// `phi` -- regression guard for conflating the match's own `unknown`
+/// "no value" placeholder with a real result type.
+#[test]
+fn codegen_void_match_does_not_emit_phi() {
+    let src = "fn t(x: i32):\n    match x:\n        <= 0 -> println(\"neg\")\n        _ -> println(\"pos\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(!ir.contains("phi"), "a side-effect-only match should not emit a phi: {}", ir);
+}
+
+/// A `match` used as a bare statement that is *not* the last statement of
+/// its enclosing block must still parse -- `Parser::parse_match`'s own arm
+/// list ends in a `Dedent` that re-syncs with the enclosing block, so the
+/// statement dispatcher must not also expect a trailing `Newline`/`Dedent`
+/// of its own afterward (see `Parser::parse_match_stmt`).
+#[test]
+fn parses_match_stmt_followed_by_another_statement() {
+    let src = "fn t(x: i32):\n    match x:\n        _ -> 1\n    println(\"after\")\n";
+    let module = Driver::parse(src).expect("a match statement followed by another statement at the same indentation should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    assert_eq!(f.body.stmts.len(), 2, "expected the match statement plus the trailing println: {:?}", f.body.stmts);
+    assert!(matches!(f.body.stmts[0], Stmt::Expr(Expr::Match { .. })));
+    assert!(matches!(f.body.stmts[1], Stmt::Expr(Expr::Call { .. })));
+}
+
+/// A method call (`obj.method(args)`) type-checks even though `method`
+/// isn't also a field on `obj`'s struct -- before this fix, `Expr::Call`
+/// always ran its callee through the generic `Expr::Field` inference
+/// (`resolve_field_type`), which only ever looks a name up in the struct's
+/// *field* list and rejected any real method call with "no field `method`
+/// on `Type`".
+#[test]
+fn checks_method_call_not_shadowed_by_field_type_checks() {
+    let src = "struct Counter:\n    count: i32\n\nimpl Counter:\n    fn bump(self, by: i32) -> i32:\n        self.count + by\n\nfn t(c: Counter) -> i32:\n    c.bump(3)\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "a method call not shadowed by a same-named field should type-check");
+}
+
+/// Regression guard: a call naming neither a real field nor a declared
+/// method must still be a type error (the method-call fix must not swallow
+/// genuinely-undefined-name errors).
+#[test]
+fn rejects_call_to_undefined_method_or_field() {
+    let src = "struct Counter:\n    count: i32\n\nfn t(c: Counter) -> i32:\n    c.nonexistent(3)\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "calling an undefined name on a struct should be a type error");
+}
+
+/// Runtime test: `examples/option_result.exe`'s `unwrap_or` uses `match` as
+/// a value-producing expression (each arm's trailing expression, no
+/// explicit `return`), and `describe_sign` uses `match` as a bare statement
+/// immediately followed by another statement at the same indentation.
+#[test]
+fn runtime_match_value_and_statement_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/option_result.exe").output().expect("failed to execute option_result.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("unwrap_or(Some(7), -1) = 7"), "match used as a value, Some arm: {}", stdout);
+    assert!(stdout.contains("unwrap_or(None, -1) = -1"), "match used as a value, None arm: {}", stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    let non_positive_at = lines.iter().position(|l| *l == "non-positive").expect("non-positive line");
+    assert_eq!(lines[non_positive_at + 1], "done describing", "match statement followed by another statement, non-positive branch: {}", stdout);
+    let positive_at = lines.iter().position(|l| *l == "positive").expect("positive line");
+    assert_eq!(lines[positive_at + 1], "done describing", "match statement followed by another statement, positive branch: {}", stdout);
+}
+
+/// Runtime test: `examples/player.exe`'s `take_damage` method (called as a
+/// bare statement) and `remaining_health` method (called as a value inside
+/// an f-string interpolation) both type-check and run correctly.
+#[test]
+fn runtime_method_calls_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/player.exe").output().expect("failed to execute player.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("remaining: 100"), "method call used as a value: {}", stdout);
+    assert!(stdout.contains("Hero has perished."), "method call used as a bare statement: {}", stdout);
+}
+
+// ===== Arrays/Lists/Collections (`List<T>`) Tests ==========================
+
+/// A non-empty list literal `[e1, e2, ...]` parses to `Expr::ListLit`.
+#[test]
+fn parses_list_literal() {
+    let src = "fn t():\n    let x = [1, 2, 3]\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected Let") };
+    let Expr::ListLit(elems, _) = value else { panic!("expected ListLit, got {:?}", value) };
+    assert_eq!(elems.len(), 3);
+}
+
+/// `List<T>()` parses like any other generic-turbofish constructor call,
+/// as an ordinary `Expr::StructLit` naming `List` (see
+/// `Checker::infer_list_new` for how the checker special-cases it).
+#[test]
+fn parses_empty_list_construction() {
+    let src = "fn t():\n    let x = List<i32>()\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected Let") };
+    let Expr::StructLit { name, type_args, args, .. } = value else { panic!("expected StructLit, got {:?}", value) };
+    assert_eq!(name, "List");
+    assert_eq!(type_args, &vec![Type::Named("i32".into())]);
+    assert!(args.is_empty());
+}
+
+/// `list[idx]` parses to the shared bracket-index AST node (also used for
+/// `GenRef<T>` dereferencing); the checker tells them apart later.
+#[test]
+fn parses_list_index() {
+    let src = "fn t(nums: List<i32>) -> i32:\n    nums[0]\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    assert!(matches!(f.body.stmts[0], Stmt::Expr(Expr::GenRefIndex { .. })));
+}
+
+/// A non-empty list literal's element type is inferred from its elements.
+#[test]
+fn checks_list_literal_infers_element_type() {
+    let ty = typed_fn_result_ty("fn t() -> List<i32>:\n    [1, 2, 3]\n");
+    assert_eq!(ty, Ty::List(Box::new(Ty::Int)));
+}
+
+/// `list[idx]` resolves to the list's element type.
+#[test]
+fn checks_list_index_returns_elem_type() {
+    let ty = typed_fn_result_ty("fn t(nums: List<i32>) -> i32:\n    nums[0]\n");
+    assert_eq!(ty, Ty::Int);
+}
+
+/// `list.len()` always resolves to `i32`, regardless of element type.
+#[test]
+fn checks_list_len_returns_int() {
+    let ty = typed_fn_result_ty("fn t(nums: List<f32>) -> i32:\n    nums.len()\n");
+    assert_eq!(ty, Ty::Int);
+}
+
+/// `list.pop()` resolves to the list's element type.
+#[test]
+fn checks_list_pop_returns_elem_type() {
+    let ty = typed_fn_result_ty("fn t(nums: List<i32>) -> i32:\n    nums.pop()\n");
+    assert_eq!(ty, Ty::Int);
+}
+
+/// `List<T>` is usable as an ordinary struct field type, and a method call
+/// through a field access (`inv.items.len()`) resolves correctly.
+#[test]
+fn checks_list_as_struct_field_type() {
+    let src = "struct Inventory:\n    items: List<i32>\n\nfn t(inv: Inventory) -> i32:\n    inv.items.len()\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "List<T> should be usable as a struct field type");
+}
+
+/// An empty list literal `[]` has no element to infer a type from and is
+/// rejected -- `List<T>()` is the empty-list spelling instead.
+#[test]
+fn rejects_empty_list_literal() {
+    let module = Driver::parse("fn t():\n    let x = []\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "an empty list literal should be a type error");
+}
+
+/// A list literal whose elements don't all share the same type is rejected.
+#[test]
+fn rejects_mismatched_list_literal_element_types() {
+    let module = Driver::parse("fn t():\n    let x = [1, \"two\"]\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "mismatched list literal element types should be a type error");
+}
+
+/// `List()` with no `<T>` turbofish has nothing to infer an element type
+/// from and is rejected.
+#[test]
+fn rejects_list_new_without_type_arg() {
+    let module = Driver::parse("fn t():\n    let x = List()\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "`List()` with no type argument should be a type error");
+}
+
+/// `push` requires exactly one argument matching the list's element type.
+#[test]
+fn rejects_list_push_wrong_type() {
+    let module = Driver::parse("fn t(mut nums: List<i32>):\n    nums.push(\"oops\")\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "pushing a mismatched type should be a type error");
+}
+
+/// An unrecognized method name on a `List<T>` receiver is a type error
+/// (rather than, say, silently resolving to nothing).
+#[test]
+fn rejects_unknown_list_method() {
+    let module = Driver::parse("fn t(nums: List<i32>):\n    nums.sort()\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "an unknown List<T> method should be a type error");
+}
+
+/// `[..]` indexing requires a `GenRef<T>` or `List<T>` base; indexing a
+/// plain scalar is a type error.
+#[test]
+fn rejects_indexing_non_indexable_type() {
+    let module = Driver::parse("fn t(x: i32):\n    x[0]\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "indexing a non-List/GenRef type should be a type error");
+}
+
+/// A `par`/`swarm` body that calls a mutating `List<T>` method (`push`) on
+/// a list captured from the enclosing scope is rejected: the mutation can't
+/// be proven disjoint across worker threads (mirrors
+/// `rejects_par_mutating_captured_var`).
+#[test]
+fn rejects_par_pushing_captured_list() {
+    let src = format!(
+        "{}fn t():\n    let mut nums: List<i32> = [1, 2, 3]\n    par e in Enemies:\n        nums.push(e.hp)\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "pushing a captured list inside a par/swarm body should be a type error");
+}
+
+/// `len()` only reads, so calling it on a captured list inside a
+/// `par`/`swarm` body is fine (unlike `push`/`pop` above).
+#[test]
+fn accepts_par_len_on_captured_list() {
+    let src = format!(
+        "{}fn t():\n    let nums: List<i32> = [1, 2, 3]\n    par e in Enemies:\n        e.hp -= nums.len()\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "reading a captured list's len() should be allowed");
+}
+
+/// `List<T>()` (the empty list) lowers to the struct type's zero value --
+/// no instructions needed, just a `zeroinitializer` constant.
+#[test]
+fn codegen_list_new_is_zeroinitializer() {
+    let module = Driver::parse("fn t() -> List<i32>:\n    List<i32>()\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("{ i32*, i64, i64 } zeroinitializer"), "{}", ir);
+}
+
+/// A non-empty list literal `malloc`s a tightly-sized buffer and stores
+/// each element into it via GEP.
+#[test]
+fn codegen_list_literal_allocates_and_stores() {
+    let module = Driver::parse("fn t() -> List<i32>:\n    [1, 2, 3]\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("call i8* @malloc(i64 12)"), "3 x i32 = 12 bytes: {}", ir);
+    assert!(ir.contains("store i32 1,") && ir.contains("store i32 2,") && ir.contains("store i32 3,"), "{}", ir);
+}
+
+/// `push` growing past capacity copies the old buffer into a new, larger
+/// one (`memcpy`) and frees the old one, rather than leaking it.
+#[test]
+fn codegen_list_push_grows_and_copies_old_buffer() {
+    let src = "fn t():\n    let mut nums: List<i32> = List<i32>()\n    nums.push(1)\n    nums.push(2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("icmp sge i64"), "push must check len >= cap before growing: {}", ir);
+    assert!(ir.contains("call i8* @memcpy("), "growing a non-empty list should copy its old contents: {}", ir);
+    assert!(ir.contains("call void @free("), "the old buffer should be freed after copying: {}", ir);
+}
+
+/// `list[idx]` (read) is bounds-checked via an unsigned compare against the
+/// list's `len`, phi-merging the element's zero value on the OOB path
+/// (mirrors `emit_genref_index`'s stale/OOB handling).
+#[test]
+fn codegen_list_index_read_is_bounds_checked() {
+    let module = Driver::parse("fn t(nums: List<i32>) -> i32:\n    nums[0]\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("icmp ult i64"), "{}", ir);
+    assert!(ir.contains("phi i32 ["), "{}", ir);
+}
+
+/// `list[idx] = v` (write) is bounds-checked too; an out-of-bounds write is
+/// a silent no-op rather than writing out of bounds.
+#[test]
+fn codegen_list_index_write_is_bounds_checked() {
+    let module = Driver::parse("fn t(mut nums: List<i32>):\n    nums[0] = 5\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("icmp ult i64"), "{}", ir);
+    assert!(ir.contains("list_set_do"), "{}", ir);
+}
+
+/// `len()` truncates the internal `i64` length counter down to the
+/// language's `i32` int type.
+#[test]
+fn codegen_list_len_truncates_to_i32() {
+    let module = Driver::parse("fn t(nums: List<i32>) -> i32:\n    nums.len()\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("trunc i64"), "{}", ir);
+}
+
+/// Runtime test: `examples/lists.exe` exercises `List<T>` end to end
+/// through a real clang-compiled executable -- a non-empty list literal,
+/// `push`/`pop`/`len`, indexed read and write, passing a list by value into
+/// a function, capacity growth past the initial buffer, `List<String>`,
+/// `List<Point>` (a struct element type), and the "safe zero value" fallback
+/// for out-of-bounds reads/pops on an empty list.
+#[test]
+fn runtime_lists_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/lists.exe").output().expect("failed to execute lists.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("initial len = 3"), "list literal: {}", stdout);
+    assert!(stdout.contains("after push len = 5"), "push: {}", stdout);
+    assert!(stdout.contains("nums[0] = 1"), "{}", stdout);
+    assert!(stdout.contains("nums[4] = 5"), "{}", stdout);
+    assert!(stdout.contains("nums[0] after set = 100"), "indexed write: {}", stdout);
+    assert!(stdout.contains("popped = 5"), "pop: {}", stdout);
+    assert!(stdout.contains("len after pop = 4"), "{}", stdout);
+    assert!(stdout.contains("sum via function = 109"), "list passed by value into a function: {}", stdout);
+    assert!(stdout.contains("empty len = 0"), "{}", stdout);
+    assert!(stdout.contains("pop from empty = 0"), "OOB pop yields the zero value: {}", stdout);
+    assert!(stdout.contains("index oob = 0"), "OOB read yields the zero value: {}", stdout);
+    assert!(stdout.contains("grown len = 20"), "repeated push grows capacity past the initial buffer: {}", stdout);
+    assert!(stdout.contains("grown[19] = 19"), "{}", stdout);
+    assert!(stdout.contains("grown[0] = 0"), "{}", stdout);
+    assert!(stdout.contains("words len = 3"), "List<String>: {}", stdout);
+    assert!(stdout.contains("words[1] = beta"), "{}", stdout);
+    assert!(stdout.contains("points[1] = (3, 4)"), "List<Point> (struct element type): {}", stdout);
 }

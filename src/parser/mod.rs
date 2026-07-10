@@ -16,6 +16,8 @@ mod expr;
 mod items;
 mod stmt;
 
+use std::collections::HashSet;
+
 use crate::ast::*;
 use crate::diagnostics::{Diagnostic, Span};
 use crate::lexer::{Lexer, Token, TokenKind};
@@ -25,11 +27,17 @@ pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     errors: Vec<Diagnostic>,
+    /// Aliases introduced so far by `import "path" as alias` (imports must
+    /// textually precede their use). Consulted when parsing an identifier
+    /// followed by `::` to decide whether it's a module-qualified path
+    /// (rewritten to the mangled name `crate::modules` will have produced)
+    /// or a same-file enum-variant/struct pattern.
+    import_aliases: HashSet<String>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, errors: Vec::new() }
+        Self { tokens, pos: 0, errors: Vec::new(), import_aliases: HashSet::new() }
     }
 
     /// Parse a complete module from source, running the lexer first.
@@ -71,7 +79,33 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Option<Type> {
-        let name = self.expect_ident()?;
+        // A closure/function type: `Fn(T1, T2, ...) -> Ret`. `Fn` is a plain
+        // capitalized identifier here (distinct from the `fn` keyword used
+        // for declarations/lambda literals), so it's recognized by name
+        // rather than a dedicated token.
+        if matches!(self.peek_kind(), TokenKind::Ident(ref n) if n == "Fn") {
+            self.advance();
+            self.expect(&TokenKind::LParen)?;
+            let mut params = Vec::new();
+            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                params.push(self.parse_type()?);
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(&TokenKind::RParen)?;
+            self.expect(&TokenKind::Arrow)?;
+            let ret = self.parse_type()?;
+            return Some(Type::Fn(params, Box::new(ret)));
+        }
+        let mut name = self.expect_ident()?;
+        // A type from an imported module, e.g. `mymod::Point`; reproduce the
+        // same mangled name `crate::modules::resolve` gave that struct/enum.
+        if self.import_aliases.contains(&name) && self.at(&TokenKind::ColonColon) {
+            self.advance();
+            let item = self.expect_ident()?;
+            name = crate::modules::mangle_name(&name, &item);
+        }
         if self.eat(&TokenKind::Lt) {
             let mut args = Vec::new();
             while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {

@@ -27,19 +27,15 @@ impl Parser {
     }
 
     /// Return the binary operator at the cursor with its binding power.
+    ///
+    /// `<` is both a comparison operator and the opener of a generic
+    /// turbofish (`GenRef<T>(..)`, `Box<i32>(..)`); the turbofish forms are
+    /// fully consumed by `parse_primary`/`parse_postfix` *before* control
+    /// ever reaches this function for that `<` (a capitalized identifier
+    /// immediately followed by `<` eagerly parses type arguments there), so
+    /// by the time this is called, any `<` at the cursor genuinely is a
+    /// comparison -- no special-casing needed here.
     fn peek_binop(&self) -> Option<(BinOp, u8)> {
-        // Special case: GenRef followed by < is NOT a binary operator
-        if let TokenKind::Ident(name) = self.peek_kind() {
-            if name == "GenRef" {
-                return None; // GenRef<T> is a type construction, not a comparison
-            }
-        }
-        if let TokenKind::Lt = self.peek_kind() {
-            // Check if previous expression was GenRef (we need to look at context)
-            // This is complex, so we'll handle GenRef<T> in parse_postfix instead
-            // For now, just return None at top-level when we're after GenRef
-            return None;
-        }
         let op = match self.peek_kind() {
             TokenKind::Star => (BinOp::Mul, 7),
             TokenKind::Slash => (BinOp::Div, 7),
@@ -147,6 +143,22 @@ impl Parser {
         Some(expr)
     }
 
+    /// Parse an explicit generic turbofish `<Type, ...>` at an expression
+    /// construction site (`Box<i32>(...)`, `Option<i32>::Some(...)`).
+    /// Assumes the cursor is at `<`.
+    fn parse_type_args(&mut self) -> Option<Vec<Type>> {
+        self.expect(&TokenKind::Lt)?;
+        let mut args = Vec::new();
+        while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {
+            args.push(self.parse_type()?);
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::Gt)?;
+        Some(args)
+    }
+
     pub(super) fn parse_call_args(&mut self) -> Option<Vec<Expr>> {
         self.expect(&TokenKind::LParen)?;
         let mut args = Vec::new();
@@ -195,6 +207,7 @@ impl Parser {
             }
             TokenKind::Match => self.parse_match(),
             TokenKind::If => self.parse_if_expr(),
+            TokenKind::Fn => self.parse_lambda(),
             TokenKind::LParen => {
                 self.advance();
                 let inner = self.parse_expr()?;
@@ -206,14 +219,90 @@ impl Parser {
                 let lowered = self.lower_fstring(parts)?;
                 Some(Expr::FStr(lowered, span))
             }
+            TokenKind::LBracket => {
+                self.advance();
+                let mut elems = Vec::new();
+                while !self.at(&TokenKind::RBracket) && !self.at(&TokenKind::Eof) {
+                    elems.push(self.parse_expr()?);
+                    if !self.eat(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&TokenKind::RBracket)?;
+                let full = span.to(self.prev_span());
+                Some(Expr::ListLit(elems, full))
+            }
             TokenKind::Ident(name) => {
                 self.advance();
                 // Struct literal when an identifier is immediately called and the
                 // name is capitalized (type-like), e.g. `Vec3(0, 0, 0)`.
+                // Explicit generic type arguments: `Box<i32>(...)` or
+                // `Option<i32>::Variant(...)`. Only attempted for
+                // capitalized (type-like) names immediately followed by `<`,
+                // mirroring the `GenRef<T>` special case below -- `<` is
+                // otherwise never treated as a binary operator by
+                // `peek_binop`, so this can't misfire on a real comparison.
+                // `GenRef` itself is excluded: its own `<T>(value)` syntax is
+                // handled entirely by `parse_postfix` below, and must see the
+                // `<` untouched.
+                let type_args = if name != "GenRef" && starts_uppercase(&name) && self.at(&TokenKind::Lt) {
+                    self.parse_type_args()?
+                } else {
+                    Vec::new()
+                };
                 if self.at(&TokenKind::LParen) && starts_uppercase(&name) {
                     let args = self.parse_call_args()?;
                     let full = span.to(self.prev_span());
-                    return Some(Expr::StructLit { name, args, span: full });
+                    return Some(Expr::StructLit { name, type_args, args, span: full });
+                }
+                // A path into an imported module's namespace: either
+                // `module::Enum::Variant[(args)]` or `module::item[(args)]`
+                // (a function call or struct literal, told apart by the same
+                // capitalization convention as the unqualified forms above).
+                // Reproduces the `alias__name` mangling that
+                // `crate::modules::resolve` applied to the imported file's
+                // own top-level declarations.
+                if self.import_aliases.contains(&name) && self.at(&TokenKind::ColonColon) {
+                    self.advance();
+                    let first = self.expect_ident()?;
+                    if self.eat(&TokenKind::ColonColon) {
+                        let variant = self.expect_ident()?;
+                        let args = if self.at(&TokenKind::LParen) {
+                            self.parse_call_args()?
+                        } else {
+                            Vec::new()
+                        };
+                        let full = span.to(self.prev_span());
+                        let enum_name = crate::modules::mangle_name(&name, &first);
+                        return Some(Expr::EnumVariant { enum_name, type_args: Vec::new(), variant, args, span: full });
+                    }
+                    let mangled = crate::modules::mangle_name(&name, &first);
+                    if self.at(&TokenKind::LParen) {
+                        let args = self.parse_call_args()?;
+                        let full = span.to(self.prev_span());
+                        if starts_uppercase(&first) {
+                            return Some(Expr::StructLit { name: mangled, type_args: Vec::new(), args, span: full });
+                        }
+                        return Some(Expr::Call { callee: Box::new(Expr::Ident(mangled, span)), args, span: full });
+                    }
+                    let full = span.to(self.prev_span());
+                    return Some(Expr::Ident(mangled, full));
+                }
+                // Enum variant literal: `EnumName::Variant` or, for a
+                // payload variant, `EnumName::Variant(args...)`.
+                if self.eat(&TokenKind::ColonColon) {
+                    let variant = self.expect_ident()?;
+                    let args = if self.at(&TokenKind::LParen) {
+                        self.parse_call_args()?
+                    } else {
+                        Vec::new()
+                    };
+                    let full = span.to(self.prev_span());
+                    return Some(Expr::EnumVariant { enum_name: name, type_args, variant, args, span: full });
+                }
+                if !type_args.is_empty() {
+                    self.error("expected `(` or `::` after generic type arguments", span);
+                    return None;
                 }
                 Some(Expr::Ident(name, span))
             }
@@ -237,6 +326,43 @@ impl Parser {
         Some(Expr::If { cond, then_block, else_block, span })
     }
 
+    /// Parse a lambda/closure literal: `fn(params) [-> RetType]: <body>`.
+    /// Mirrors `parse_fn_sig`'s param-list/return-type grammar (reusing
+    /// `parse_param`) but in expression position, and mirrors a `match`
+    /// arm's body grammar (`parse_match_arm`): either a full indented block,
+    /// or -- since a lambda is an *expression*, possibly nested inside a
+    /// call's argument list rather than standing alone as a statement -- a
+    /// single inline trailing expression that does *not* consume a line end
+    /// itself (unlike a match arm, which owns its own line).
+    fn parse_lambda(&mut self) -> Option<Expr> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Fn)?;
+        self.expect(&TokenKind::LParen)?;
+        let mut params = Vec::new();
+        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+            params.push(self.parse_param()?);
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RParen)?;
+        let ret = if self.eat(&TokenKind::Arrow) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        self.expect(&TokenKind::Colon)?;
+        let body = if self.at(&TokenKind::Newline) {
+            self.parse_block()?
+        } else {
+            let expr = self.parse_expr()?;
+            let span = expr.span();
+            Block { stmts: vec![Stmt::Expr(expr)], span }
+        };
+        let span = start.to(self.prev_span());
+        Some(Expr::Lambda { params, ret, body, span })
+    }
+
     /// Re-lex and parse the embedded expressions inside an f-string.
     fn lower_fstring(&mut self, parts: Vec<FStrPart>) -> Option<Vec<FStrExpr>> {
         let mut out = Vec::new();
@@ -252,6 +378,10 @@ impl Parser {
                         }
                     };
                     let mut sub = Parser::new(tokens);
+                    // Interpolated expressions can reference module aliases
+                    // brought into scope by an outer `import`, so the
+                    // sub-parser needs to know about them too.
+                    sub.import_aliases = self.import_aliases.clone();
                     let expr = sub.parse_expr()?;
                     self.errors.append(&mut sub.errors);
                     out.push(FStrExpr::Expr(Box::new(expr)));
@@ -261,7 +391,7 @@ impl Parser {
         Some(out)
     }
 
-    fn parse_match(&mut self) -> Option<Expr> {
+    pub(super) fn parse_match(&mut self) -> Option<Expr> {
         let start = self.peek_span();
         self.expect(&TokenKind::Match)?;
         let scrutinee = self.parse_expr()?;
@@ -324,6 +454,77 @@ impl Parser {
             }
             TokenKind::Ident(name) => {
                 self.advance();
+                // A qualified pattern into an imported module: either
+                // `module::Enum::Variant(bindings...)` or
+                // `module::StructName(bindings...)`, mirroring the qualified
+                // expression forms in `parse_primary`.
+                if self.import_aliases.contains(&name) && self.at(&TokenKind::ColonColon) {
+                    self.advance();
+                    let first = self.expect_ident()?;
+                    if self.eat(&TokenKind::ColonColon) {
+                        let variant = self.expect_ident()?;
+                        let bindings = if self.eat(&TokenKind::LParen) {
+                            let mut names = Vec::new();
+                            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                                names.push(self.expect_ident()?);
+                                if !self.eat(&TokenKind::Comma) {
+                                    break;
+                                }
+                            }
+                            self.expect(&TokenKind::RParen)?;
+                            names
+                        } else {
+                            Vec::new()
+                        };
+                        let enum_name = crate::modules::mangle_name(&name, &first);
+                        return Some(Pattern::EnumVariant(enum_name, variant, bindings));
+                    }
+                    self.expect(&TokenKind::LParen)?;
+                    let mut names = Vec::new();
+                    while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                        names.push(self.expect_ident()?);
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&TokenKind::RParen)?;
+                    let struct_name = crate::modules::mangle_name(&name, &first);
+                    return Some(Pattern::Struct(struct_name, names));
+                }
+                // Enum variant pattern: `EnumName::Variant` or, for a
+                // payload variant, `EnumName::Variant(binding, ...)`.
+                if self.eat(&TokenKind::ColonColon) {
+                    let variant = self.expect_ident()?;
+                    let bindings = if self.eat(&TokenKind::LParen) {
+                        let mut names = Vec::new();
+                        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                            names.push(self.expect_ident()?);
+                            if !self.eat(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                        self.expect(&TokenKind::RParen)?;
+                        names
+                    } else {
+                        Vec::new()
+                    };
+                    return Some(Pattern::EnumVariant(name, variant, bindings));
+                }
+                // Struct destructuring pattern: `StructName(binding, ...)`,
+                // which binds each of the struct's fields in declaration
+                // order (mirrors the enum payload pattern's binding syntax).
+                if self.at(&TokenKind::LParen) && starts_uppercase(&name) {
+                    self.advance();
+                    let mut names = Vec::new();
+                    while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                        names.push(self.expect_ident()?);
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&TokenKind::RParen)?;
+                    return Some(Pattern::Struct(name, names));
+                }
                 Some(Pattern::Binding(name))
             }
             other => {

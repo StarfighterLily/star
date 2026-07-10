@@ -14,6 +14,8 @@ impl Parser {
             TokenKind::Fn => self.parse_fn().map(Item::Fn),
             TokenKind::Arena => self.parse_arena().map(Item::Arena),
             TokenKind::Sequence => self.parse_sequence().map(Item::Sequence),
+            TokenKind::Enum => self.parse_enum().map(Item::Enum),
+            TokenKind::Import => self.parse_import().map(Item::Import),
             TokenKind::At => {
                 let span = self.peek_span();
                 self.error("decorators are only supported on struct fields", span);
@@ -25,6 +27,31 @@ impl Parser {
                 None
             }
         }
+    }
+
+    /// `import "path.star" as alias` - must appear before any use of
+    /// `alias::...` elsewhere in the file (the parser learns the alias here
+    /// and consults it later while parsing `::`-qualified paths).
+    fn parse_import(&mut self) -> Option<ImportDecl> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Import)?;
+        let path = match self.peek_kind() {
+            TokenKind::Str(s) => {
+                self.advance();
+                s
+            }
+            other => {
+                let span = self.peek_span();
+                self.error(format!("expected a string literal path, found {}", other.describe()), span);
+                return None;
+            }
+        };
+        self.expect(&TokenKind::As)?;
+        let alias = self.expect_ident()?;
+        self.expect_line_end()?;
+        let span = start.to(self.prev_span());
+        self.import_aliases.insert(alias.clone());
+        Some(ImportDecl { alias, path, span })
     }
 
     fn parse_arena(&mut self) -> Option<ArenaDecl> {
@@ -57,10 +84,74 @@ impl Parser {
         Some(SequenceDef { name, params, body, span })
     }
 
+    fn parse_enum(&mut self) -> Option<EnumDef> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Enum)?;
+        let name = self.expect_ident()?;
+        let type_params = self.parse_opt_type_params()?;
+        self.expect(&TokenKind::Colon)?;
+        self.expect(&TokenKind::Newline)?;
+        self.expect(&TokenKind::Indent)?;
+
+        let mut variants = Vec::new();
+        while !self.at(&TokenKind::Dedent) && !self.at(&TokenKind::Eof) {
+            if let Some(variant) = self.parse_enum_variant() {
+                variants.push(variant);
+            } else {
+                self.recover_to_newline();
+            }
+            self.skip_newlines();
+        }
+        self.expect(&TokenKind::Dedent)?;
+        let span = start.to(self.prev_span());
+        Some(EnumDef { name, type_params, variants, span })
+    }
+
+    /// Parse an optional `<T, U, ...>` type-parameter list following a
+    /// `struct`/`enum`/`fn` name, returning an empty list when absent.
+    fn parse_opt_type_params(&mut self) -> Option<Vec<String>> {
+        if !self.eat(&TokenKind::Lt) {
+            return Some(Vec::new());
+        }
+        let mut params = Vec::new();
+        while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {
+            params.push(self.expect_ident()?);
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::Gt)?;
+        Some(params)
+    }
+
+    /// Parse a single enum variant line: a bare `Name`, or a payload variant
+    /// `Name(field: Type, ...)`.
+    fn parse_enum_variant(&mut self) -> Option<EnumVariantDef> {
+        let start = self.peek_span();
+        let name = self.expect_ident()?;
+        let mut fields = Vec::new();
+        if self.eat(&TokenKind::LParen) {
+            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                let fname = self.expect_ident()?;
+                self.expect(&TokenKind::Colon)?;
+                let fty = self.parse_type()?;
+                fields.push(EnumFieldDef { name: fname, ty: fty });
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(&TokenKind::RParen)?;
+        }
+        self.expect_line_end();
+        let span = start.to(self.prev_span());
+        Some(EnumVariantDef { name, fields, span })
+    }
+
     fn parse_struct(&mut self) -> Option<StructDef> {
         let start = self.peek_span();
         self.expect(&TokenKind::Struct)?;
         let name = self.expect_ident()?;
+        let type_params = self.parse_opt_type_params()?;
         self.expect(&TokenKind::Colon)?;
         self.expect(&TokenKind::Newline)?;
         self.expect(&TokenKind::Indent)?;
@@ -76,7 +167,7 @@ impl Parser {
         }
         self.expect(&TokenKind::Dedent)?;
         let span = start.to(self.prev_span());
-        Some(StructDef { name, fields, span })
+        Some(StructDef { name, type_params, fields, span })
     }
 
     fn parse_field(&mut self) -> Option<FieldDef> {
@@ -155,6 +246,7 @@ impl Parser {
         let start = self.peek_span();
         self.expect(&TokenKind::Fn)?;
         let name = self.expect_ident()?;
+        let type_params = self.parse_opt_type_params()?;
         self.expect(&TokenKind::LParen)?;
         let mut params = Vec::new();
         while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
@@ -170,10 +262,10 @@ impl Parser {
             None
         };
         let span = start.to(self.prev_span());
-        Some(FnSig { name, params, ret, span })
+        Some(FnSig { name, type_params, params, ret, span })
     }
 
-    fn parse_param(&mut self) -> Option<Param> {
+    pub(super) fn parse_param(&mut self) -> Option<Param> {
         let start = self.peek_span();
         let is_mut = self.eat(&TokenKind::Mut);
         // `self` / `mut self` receiver.

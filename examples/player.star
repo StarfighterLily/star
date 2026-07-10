@@ -21,6 +21,15 @@ impl Damageable for Player:
             <= 0 -> print(f"{self.name} has perished.")
             _    -> print(f"Health critical: {self.health}")
 
+# A method call used as a *value* (`p.remaining_health()` feeding an
+# f-string interpolation), not just a bare statement -- exercises the
+# same method-call type-checking path as `take_damage` above from a
+# different call shape.
+impl Player:
+    fn remaining_health(self) -> i32:
+        self.health
+
 fn main():
-    let p = Player(health = 100, position = Vec3(0, 0, 0), name = "Hero")
+    let mut p = Player(health = 100, position = Vec3(0, 0, 0), name = "Hero")
+    println(f"remaining: {p.remaining_health()}")
     p.take_damage(150)

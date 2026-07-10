@@ -1,4 +1,4 @@
-The Star programming language architecture is expressly built to resolve the tension between developer velocity and high-performance game execution. The syntax strips away the noise of semicolons and curly braces in favor of clean, Python-inspired indentation, while retaining the robust type inference, pattern matching, and immutability-by-default of Rust. Furthermore, itI avoid rigid OOP inheritance in favor of a hybrid approach combining data objects with behavior implementations.
+The Star programming language architecture is expressly built to resolve the tension between developer velocity and high-performance game execution. The syntax strips away the noise of semicolons and curly braces in favor of clean, Python-inspired indentation, while retaining the robust type inference, pattern matching, and immutability-by-default of Rust. Furthermore, it avoids rigid OOP inheritance in favor of a hybrid approach combining data objects with behavior implementations.
 
 # Memory
 1. Temporal Allocations (frame Context)
@@ -8,7 +8,7 @@ The Mechanism: The frame keyword introduces an implicit bump allocator that rese
 
 Performance Benefits: This grants massive cache locality and ensures allocations and deallocations are highly performant $O(1)$ operations with zero fragmentation.
 
-Compiler Requirements & Safety: The primary danger of frame allocation is pointer escape, where a long-lived object attempts to read overwritten frame memory, causing non-deterministic bugs. To guarantee safety without a GC, my compiler enforces a strict escape analysis (akin to a specialized borrow checker). This guarantees that frame pointers can never be assigned to lifetimes exceeding the current tick.
+Compiler Requirements & Safety: The primary danger of frame allocation is pointer escape, where a long-lived object attempts to read overwritten frame memory, causing non-deterministic bugs. To guarantee safety without a GC, the compiler enforces a strict escape analysis (akin to a specialized borrow checker). This guarantees that frame pointers can never be assigned to lifetimes exceeding the current tick.
 
 2. First-Class Spatial Arenas
 Objective: Managing macro-level state, large domain groupings, and level-loading lifecycles.

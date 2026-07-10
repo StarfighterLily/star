@@ -72,6 +72,14 @@ impl Checker {
                     self.walk_par_stmts(&e.stmts, &mut l);
                 }
             }
+            TypedStmt::For { var, start, end, body, .. } => {
+                self.walk_par_expr(start, locals);
+                self.walk_par_expr(end, locals);
+                let mut l = locals.clone();
+                l.insert(var.clone());
+                self.walk_par_stmts(&body.stmts, &mut l);
+            }
+            TypedStmt::Break { .. } | TypedStmt::Continue { .. } => {}
             TypedStmt::Frame { body, .. } => {
                 let mut l = locals.clone();
                 self.walk_par_stmts(&body.stmts, &mut l);
@@ -130,6 +138,14 @@ impl Checker {
                 self.walk_par_expr(scrutinee, locals);
                 for arm in arms {
                     let mut l = locals.clone();
+                    // A payload pattern's bindings are fresh per-match
+                    // locals (destructured out of the scrutinee), safe to
+                    // treat the same as any other body-local.
+                    if let Pattern::EnumVariant(_, _, bindings) | Pattern::Struct(_, bindings) = &arm.pattern {
+                        for b in bindings {
+                            l.insert(b.clone());
+                        }
+                    }
                     self.walk_par_stmts(&arm.body.stmts, &mut l);
                 }
             }
@@ -158,6 +174,51 @@ impl Checker {
             TypedExpr::GenRefIndex { base, index, .. } => {
                 self.walk_par_expr(base, locals);
                 self.walk_par_expr(index, locals);
+            }
+            TypedExpr::EnumVariant { args, .. } => {
+                for a in args {
+                    self.walk_par_expr(a, locals);
+                }
+            }
+            // A closure literal's body isn't walked by this per-statement
+            // disjointness proof (it only runs when/if the closure is later
+            // called, possibly from entirely outside this par/swarm body),
+            // so any mutation it makes can't be soundly proven disjoint here.
+            // Simplest safe answer: reject closures inside a par/swarm body
+            // outright, mirroring `spawn`/`despawn` above.
+            TypedExpr::Closure { span, .. } => {
+                self.error("closures are not supported inside a par/swarm body", *span);
+            }
+            TypedExpr::ListNew { .. } => {}
+            TypedExpr::ListLit { elems, .. } => {
+                for e in elems {
+                    self.walk_par_expr(e, locals);
+                }
+            }
+            TypedExpr::ListIndex { base, index, .. } => {
+                self.walk_par_expr(base, locals);
+                self.walk_par_expr(index, locals);
+            }
+            // `push`/`pop` mutate the receiver in place (growing/shrinking
+            // its backing buffer), so they're held to the same standard as
+            // a struct method call above: only the loop variable's own
+            // list (or a body-local one) can be proven disjoint across
+            // threads. `len` only reads, so it's exempt.
+            TypedExpr::ListMethod { base, method, args, span, .. } => {
+                if matches!(method, ListMethod::Push | ListMethod::Pop) {
+                    match root_ident(base) {
+                        Some(root) if locals.contains(&root) => {}
+                        _ => self.error(
+                            "cannot mutate a captured list inside a par/swarm body \
+                             (only the loop variable's own locals may be mutated)",
+                            *span,
+                        ),
+                    }
+                }
+                self.walk_par_expr(base, locals);
+                for a in args {
+                    self.walk_par_expr(a, locals);
+                }
             }
             TypedExpr::Int(..)
             | TypedExpr::Float(..)

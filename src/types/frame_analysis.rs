@@ -103,6 +103,11 @@ impl Checker {
                     self.walk_frame_stmts(&e.stmts, &mut l, in_frame, false);
                 }
             }
+            TypedStmt::For { body, .. } => {
+                let mut l = frame_locals.clone();
+                self.walk_frame_stmts(&body.stmts, &mut l, in_frame, false);
+            }
+            TypedStmt::Break { .. } | TypedStmt::Continue { .. } => {}
             TypedStmt::Frame { body, .. } => {
                 let mut l = frame_locals.clone();
                 self.walk_frame_stmts(&body.stmts, &mut l, true, tail);
@@ -168,6 +173,17 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>) -> Opti
         // `GenRef` creation/dereference is plain index+generation data
         // backed by the arena's own (non-frame) storage; everything else is
         // a scalar. None of these can carry frame identity onward.
+        // A closure literal captures every visible local *by value* (a
+        // snapshot copied into its own heap-allocated environment, not a
+        // reference into this stack frame -- see
+        // `Codegen::emit_closure_lit`), so it can never carry a frame-local
+        // struct's identity onward regardless of what it captured.
+        //
+        // A `List<T>` (`ListNew`/`ListLit`/`ListIndex`/`ListMethod`) stores
+        // its elements by value into its own independently `malloc`'d
+        // buffer (see `crate::codegen::list`), not by reference into this
+        // stack frame -- pushing a frame-local struct into a list copies it,
+        // the same reasoning that makes a closure's captures safe above.
         TypedExpr::Call { .. }
         | TypedExpr::GenRefCreate { .. }
         | TypedExpr::GenRefIndex { .. }
@@ -179,6 +195,12 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>) -> Opti
         | TypedExpr::Bool(..)
         | TypedExpr::FStr(..)
         | TypedExpr::SelfExpr(..)
+        | TypedExpr::EnumVariant { .. }
+        | TypedExpr::Closure { .. }
+        | TypedExpr::ListNew { .. }
+        | TypedExpr::ListLit { .. }
+        | TypedExpr::ListIndex { .. }
+        | TypedExpr::ListMethod { .. }
         | TypedExpr::Error(_) => None,
     }
 }

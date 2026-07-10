@@ -9,6 +9,7 @@ pub mod codegen;
 pub mod diagnostics;
 pub mod driver;
 pub mod lexer;
+pub mod modules;
 pub mod parser;
 pub mod sequence;
 pub mod types;

@@ -20,7 +20,7 @@ impl Codegen {
     /// emit every statement but the last normally, then special-case the last
     /// statement so a trailing expression's value (possibly nested inside a
     /// `frame:` scope) propagates out instead of being silently discarded.
-    fn emit_stmts_value(&mut self, stmts: &[TypedStmt]) -> Option<String> {
+    pub(super) fn emit_stmts_value(&mut self, stmts: &[TypedStmt]) -> Option<String> {
         let (init, last) = match stmts.split_last() {
             Some((last, init)) => (init, last),
             None => return None,
@@ -54,17 +54,27 @@ impl Codegen {
     }
 
     /// True if the last statement of `stmts` unconditionally terminates the
-    /// block with an explicit `return` (looking through trailing `frame`
-    /// scopes), so callers know not to append a synthetic terminator.
-    fn body_ends_in_return(stmts: &[TypedStmt]) -> bool {
+    /// block with an explicit `return`/`break`/`continue` (looking through
+    /// trailing `frame` scopes), so callers know not to append a synthetic
+    /// terminator of their own (LLVM rejects any instruction, including
+    /// another terminator, after a block's first terminator).
+    pub(super) fn body_terminates(stmts: &[TypedStmt]) -> bool {
         match stmts.last() {
-            Some(TypedStmt::Return { .. }) => true,
-            Some(TypedStmt::Frame { body, .. }) => Self::body_ends_in_return(&body.stmts),
+            Some(TypedStmt::Return { .. } | TypedStmt::Break { .. } | TypedStmt::Continue { .. }) => true,
+            Some(TypedStmt::Frame { body, .. }) => Self::body_terminates(&body.stmts),
             // An `if` only terminates the enclosing block if *both* arms do
             // (an `if` with no `else`, or with a non-terminating branch,
             // falls through and still needs the synthetic join point).
             Some(TypedStmt::If { then_block, else_block: Some(else_block), .. }) => {
-                Self::body_ends_in_return(&then_block.stmts) && Self::body_ends_in_return(&else_block.stmts)
+                Self::body_terminates(&then_block.stmts) && Self::body_terminates(&else_block.stmts)
+            }
+            // A `match` terminates the enclosing block if every one of its
+            // arms does (each ends in its own `return`/`break`/`continue`),
+            // matching `emit_expr`'s `TypedExpr::Match` codegen, which closes
+            // its own join block with `unreachable` in exactly this case
+            // instead of leaving it open for a value to flow through.
+            Some(TypedStmt::Expr(TypedExpr::Match { arms, .. })) => {
+                !arms.is_empty() && arms.iter().all(|arm| Self::body_terminates(&arm.body.stmts))
             }
             _ => false,
         }
@@ -98,7 +108,7 @@ impl Codegen {
             self.symbols.push((p.name.clone(), alloca, p.ty.clone()));
         }
 
-        let terminated = Self::body_ends_in_return(&f.body.stmts);
+        let terminated = Self::body_terminates(&f.body.stmts);
         let trailing_val = self.emit_stmts_value(&f.body.stmts);
 
         if !terminated {
@@ -191,8 +201,8 @@ impl Codegen {
                 // rejects instructions following a terminator in the same
                 // block. The `end` block itself is only emitted if at least
                 // one arm can still reach it.
-                let then_terminates = Self::body_ends_in_return(&then_block.stmts);
-                let else_terminates = else_block.as_ref().map(|b| Self::body_ends_in_return(&b.stmts)).unwrap_or(false);
+                let then_terminates = Self::body_terminates(&then_block.stmts);
+                let else_terminates = else_block.as_ref().map(|b| Self::body_terminates(&b.stmts)).unwrap_or(false);
                 let both_terminate = then_terminates && else_terminates;
 
                 let cond_val = self.emit_expr(cond);
@@ -233,12 +243,18 @@ impl Codegen {
                 let cond_val = self.emit_expr(cond);
                 let cond_reg = self.reg_of(&cond_val);
                 self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, body_label, end_label));
-                // Loop body: runs, then jumps back to the condition.
+                // Loop body: runs, then jumps back to the condition. `break`
+                // targets `end_label` and `continue` targets `cond_label`
+                // directly (re-evaluating the condition has no side effects).
                 self.line(&format!("{}:", body_label));
+                self.loop_stack.push((cond_label.clone(), end_label.clone()));
                 for stmt in &then_block.stmts {
                     self.emit_stmt(stmt);
                 }
-                self.line(&format!("  br label %{}", cond_label));
+                self.loop_stack.pop();
+                if !Self::body_terminates(&then_block.stmts) {
+                    self.line(&format!("  br label %{}", cond_label));
+                }
                 // Optional else clause runs once after the loop exits, then joins end.
                 self.line(&format!("{}:", else_label));
                 if let Some(else_b) = else_block {
@@ -248,6 +264,23 @@ impl Codegen {
                 }
                 self.line(&format!("  br label %{}", end_label));
                 self.line(&format!("{}:", end_label));
+            }
+            TypedStmt::For { var, start, end, body, .. } => {
+                self.emit_for_stmt(var, start, end, body);
+            }
+            TypedStmt::Break { .. } => {
+                let break_label = self.loop_stack.last().map(|(_, b)| b.clone()).unwrap_or_else(|| {
+                    self.err("`break` outside of a loop", Span::dummy());
+                    "undef".into()
+                });
+                self.line(&format!("  br label %{}", break_label));
+            }
+            TypedStmt::Continue { .. } => {
+                let continue_label = self.loop_stack.last().map(|(c, _)| c.clone()).unwrap_or_else(|| {
+                    self.err("`continue` outside of a loop", Span::dummy());
+                    "undef".into()
+                });
+                self.line(&format!("  br label %{}", continue_label));
             }
             TypedStmt::Par { var, elem_ty, arena, body, .. } => {
                 self.emit_par_stmt(var, elem_ty, arena, body);
@@ -259,6 +292,55 @@ impl Codegen {
                 self.emit_despawn_stmt(arena, index);
             }
         }
+    }
+
+    /// Emit `for var in start..end: <body>`: an `i32` counter alloca,
+    /// incremented in a dedicated step block so `continue` can jump straight
+    /// to the increment without re-running the loop body.
+    fn emit_for_stmt(&mut self, var: &str, start: &TypedExpr, end: &TypedExpr, body: &TypedBlock) {
+        let start_val = self.emit_expr(start);
+        let start_bare = self.untag(&start_val, &Ty::Int);
+        let end_val = self.emit_expr(end);
+        let end_bare = self.untag(&end_val, &Ty::Int);
+
+        let i_ptr = self.tmp_name();
+        self.line(&format!("  {} = alloca i32", i_ptr));
+        self.line(&format!("  store i32 {}, i32* {}", start_bare, i_ptr));
+
+        let cond_label = self.block_label("for_cond");
+        let body_label = self.block_label("for_body");
+        let step_label = self.block_label("for_step");
+        let end_label = self.block_label("for_end");
+
+        self.line(&format!("  br label %{}", cond_label));
+        self.line(&format!("{}:", cond_label));
+        let i_reg = self.tmp_name();
+        self.line(&format!("  {} = load i32, i32* {}", i_reg, i_ptr));
+        let cmp = self.tmp_name();
+        self.line(&format!("  {} = icmp slt i32 {}, {}", cmp, i_reg, end_bare));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, body_label, end_label));
+
+        self.line(&format!("{}:", body_label));
+        self.symbols.push((var.to_string(), i_ptr.clone(), Ty::Int));
+        self.loop_stack.push((step_label.clone(), end_label.clone()));
+        for stmt in &body.stmts {
+            self.emit_stmt(stmt);
+        }
+        self.loop_stack.pop();
+        self.symbols.pop();
+        if !Self::body_terminates(&body.stmts) {
+            self.line(&format!("  br label %{}", step_label));
+        }
+
+        self.line(&format!("{}:", step_label));
+        let i_reg2 = self.tmp_name();
+        self.line(&format!("  {} = load i32, i32* {}", i_reg2, i_ptr));
+        let i_next = self.tmp_name();
+        self.line(&format!("  {} = add i32 {}, 1", i_next, i_reg2));
+        self.line(&format!("  store i32 {}, i32* {}", i_next, i_ptr));
+        self.line(&format!("  br label %{}", cond_label));
+
+        self.line(&format!("{}:", end_label));
     }
 
     fn load_target(&mut self, target: &TypedExpr) -> String {
@@ -285,6 +367,10 @@ impl Codegen {
                 self.line(&format!("  {} = load {}, {}* {}", reg, ts, ts, gep));
                 reg
             }
+            TypedExpr::ListIndex { base, index, ty, .. } => {
+                let val = self.emit_list_index(base, index, ty);
+                self.reg_of(&val)
+            }
             _ => { self.err("cannot load from this expression", Span::dummy()); "%undef".into() }
         }
     }
@@ -310,6 +396,9 @@ impl Codegen {
                 let ts = self.llvm_ty(ty);
                 let clean_val = val.strip_prefix(&format!("{} ", ts)).unwrap_or(val);
                 self.line(&format!("  store {} {}, {}* {}", ts, clean_val, ts, gep));
+            }
+            TypedExpr::ListIndex { base, index, ty, .. } => {
+                self.store_list_index(base, index, ty, val);
             }
             _ => { self.err("cannot store to this expression", Span::dummy()); }
         }

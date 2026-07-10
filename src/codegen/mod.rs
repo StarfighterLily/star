@@ -13,7 +13,9 @@
 
 mod arena;
 mod builtins;
+mod closure;
 mod expr;
+mod list;
 mod reflect;
 mod stmt;
 mod vector_math;
@@ -70,6 +72,26 @@ pub struct Codegen {
     /// proven exactly one exists). Populated while arena decls are emitted,
     /// which happens before any function body -- see `emit()`.
     arena_by_elem: Vec<(Ty, String)>,
+    /// Variant name lists per enum, in declaration order, so an
+    /// `EnumName::Variant` literal or match pattern can be lowered to its
+    /// dense `i32` discriminant.
+    enum_variants: std::collections::HashMap<String, Vec<String>>,
+    /// Per-variant payload field types (in declaration order), parallel to
+    /// `enum_variants`. An empty inner `Vec` means a fieldless variant; an
+    /// enum where every variant is fieldless is lowered directly to `i32`
+    /// (see `llvm_ty`), otherwise to a tagged-union struct (see
+    /// `emit_enum_decl`).
+    enum_variant_fields: std::collections::HashMap<String, Vec<Vec<Ty>>>,
+    /// Stack of `(continue_label, break_label)` pairs for the innermost
+    /// enclosing loops, so `break`/`continue` codegen can jump to the right
+    /// block without threading loop context through every statement emitter.
+    loop_stack: Vec<(String, String)>,
+    /// Maps a top-level function name -> the name of the no-capture,
+    /// envp-ignoring thunk generated the first time that function is used as
+    /// a first-class value (see `Codegen::emit_fn_value`), so referencing the
+    /// same function as a value more than once reuses one thunk instead of
+    /// emitting a duplicate `define`.
+    fn_value_thunks: std::collections::HashMap<String, String>,
 }
 
 impl Codegen {
@@ -92,6 +114,10 @@ impl Codegen {
             in_frame: false,
             pending_top: Vec::new(),
             arena_by_elem: Vec::new(),
+            enum_variants: std::collections::HashMap::new(),
+            enum_variant_fields: std::collections::HashMap::new(),
+            loop_stack: Vec::new(),
+            fn_value_thunks: std::collections::HashMap::new(),
         }
     }
 
@@ -107,6 +133,7 @@ impl Codegen {
             match item {
                 TypedItem::Struct(s) => self.emit_struct_decl(s),
                 TypedItem::Arena(a) => self.emit_arena_decl(a),
+                TypedItem::Enum(e) => self.emit_enum_decl(e),
                 _ => {}
             }
         }
@@ -207,6 +234,21 @@ impl Codegen {
                 .get(n)
                 .map(|fields| fields.iter().map(|f| self.type_size(f)).sum())
                 .unwrap_or(8),
+            // `{ T*, i64, i64 }`: a pointer plus two 8-byte counters,
+            // regardless of the element type `T` -- see `crate::codegen::list`.
+            Ty::List(_) => 24,
+            // A fieldless enum is a bare `i32` discriminant. A payload
+            // enum is `{ i32 tag, [W x i64] payload }`; the `[W x i64]`
+            // array forces 8-byte alignment, so the tag field is padded out
+            // to 8 bytes before it (matching the LLVM struct's actual
+            // layout), giving `8 + 8*W` total.
+            Ty::Enum(n) => {
+                let words = self.enum_payload_words(n);
+                if words > 0 { 8 + words * 8 } else { 4 }
+            }
+            // `{ i8*, i8* }`: two pointers, 8 bytes each on this compiler's
+            // sole `x86_64-w64-windows-gnu` target.
+            Ty::Closure(..) => 16,
         }
     }
 
@@ -222,7 +264,75 @@ impl Codegen {
             Ty::Mat4 => "[4 x <4 x float>]".into(),
             Ty::Named(n) => format!("%{}", n),
             Ty::GenRef(_) => "%GenRef".into(),
+            // An anonymous (structural, not name-declared) LLVM struct type
+            // -- LLVM deduplicates identically-shaped anonymous types on its
+            // own, so every `List<T>` instantiation for the same `T` needs
+            // no separate `%List_T = type ...` declaration (mirrors how
+            // `emit_par_stmt`'s argument struct is spelled anonymously).
+            Ty::List(inner) => format!("{{ {}*, i64, i64 }}", self.llvm_ty(inner)),
+            // A fieldless enum has no LLVM struct declaration of its own --
+            // it's just a dense discriminant, so it's represented directly
+            // as `i32` (see `enum_variant_index`). A payload enum lowers to
+            // its own tagged-union struct type (see `emit_enum_decl`).
+            Ty::Enum(n) => if self.enum_is_payload(n) { format!("%{}", n) } else { "i32".into() },
+            // A closure value is a fixed-shape "fat pointer" regardless of
+            // its actual parameter/return types (those are only needed to
+            // build the real function-pointer type at a call site, via
+            // `closure_fn_ptr_ty` -- see `crate::codegen::closure`).
+            Ty::Closure(..) => "{ i8*, i8* }".into(),
         }
+    }
+
+    /// Resolve `enum_name::variant` to its dense declaration-order
+    /// discriminant. The checker has already validated the name/variant
+    /// pair exists (see `Checker::check_enum_variant_name`); a lookup miss
+    /// here means an internal inconsistency, not user error.
+    fn enum_variant_index(&mut self, enum_name: &str, variant: &str) -> u32 {
+        match self.enum_variants.get(enum_name).and_then(|vs| vs.iter().position(|v| v == variant)) {
+            Some(i) => i as u32,
+            None => {
+                self.err(&format!("unknown enum variant `{}::{}`", enum_name, variant), Span::dummy());
+                0
+            }
+        }
+    }
+
+    /// True if any variant of `enum_name` carries payload fields -- such an
+    /// enum lowers to a tagged-union struct rather than a bare `i32`.
+    fn enum_is_payload(&self, enum_name: &str) -> bool {
+        self.enum_variant_fields.get(enum_name).map(|vs| vs.iter().any(|f| !f.is_empty())).unwrap_or(false)
+    }
+
+    /// The field types (in declaration order) of one variant of an enum, or
+    /// an empty list if the enum/variant/index is unknown (an internal
+    /// inconsistency past the checker, not user error).
+    fn enum_variant_field_types(&self, enum_name: &str, variant_idx: u32) -> Vec<Ty> {
+        self.enum_variant_fields
+            .get(enum_name)
+            .and_then(|vs| vs.get(variant_idx as usize))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Number of `i64` words needed to hold the largest variant's payload
+    /// fields for `enum_name`, `0` if the enum is fieldless. Every variant
+    /// shares this one word count so the enum's tagged-union struct has a
+    /// single fixed layout regardless of which variant is active.
+    fn enum_payload_words(&self, enum_name: &str) -> u32 {
+        let max_bytes: u64 = self
+            .enum_variant_fields
+            .get(enum_name)
+            .map(|vs| vs.iter().map(|fields| fields.iter().map(|t| self.type_size(t) as u64).sum::<u64>()).max().unwrap_or(0))
+            .unwrap_or(0);
+        ((max_bytes + 7) / 8) as u32
+    }
+
+    /// The LLVM struct type text for one variant's payload fields (e.g.
+    /// `{ i32, float }`), used to bitcast into/out of the enum's shared
+    /// `[W x i64]` payload buffer when constructing or matching that variant.
+    fn enum_variant_payload_llvm_ty(&self, enum_name: &str, variant_idx: u32) -> String {
+        let parts: Vec<String> = self.enum_variant_field_types(enum_name, variant_idx).iter().map(|t| self.llvm_ty(t)).collect();
+        format!("{{ {} }}", parts.join(", "))
     }
 
     /// A constant zero value of the given type, for zero-initializing struct
@@ -233,7 +343,8 @@ impl Codegen {
             Ty::Float => "0.0".into(),
             Ty::Bool => "false".into(),
             Ty::Str => "null".into(),
-            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat4 | Ty::Named(_) | Ty::GenRef(_) => "zeroinitializer".into(),
+            Ty::Enum(n) if !self.enum_is_payload(n) => "0".into(),
+            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat4 | Ty::Named(_) | Ty::GenRef(_) | Ty::Enum(_) | Ty::Closure(..) | Ty::List(_) => "zeroinitializer".into(),
         }
     }
 
@@ -357,9 +468,13 @@ impl Codegen {
             | TypedExpr::Field { ty, .. } | TypedExpr::Call { ty, .. }
             | TypedExpr::Binary { ty, .. } | TypedExpr::Unary { ty, .. }
             | TypedExpr::Match { ty, .. } | TypedExpr::StructLit { ty, .. }
-            | TypedExpr::FStr(_, ty, _) | TypedExpr::GenRefIndex { ty, .. } | TypedExpr::Error(ty) => ty.clone(),
+            | TypedExpr::FStr(_, ty, _) | TypedExpr::GenRefIndex { ty, .. } | TypedExpr::EnumVariant { ty, .. }
+            | TypedExpr::Closure { ty, .. } | TypedExpr::ListIndex { ty, .. } | TypedExpr::ListMethod { ty, .. }
+            | TypedExpr::Error(ty) => ty.clone(),
             TypedExpr::Ident { ty, .. } => ty.clone(),
             TypedExpr::GenRefCreate { inner_ty, .. } => Ty::GenRef(Box::new(inner_ty.clone())),
+            TypedExpr::ListNew { elem_ty, .. } => Ty::List(Box::new(elem_ty.clone())),
+            TypedExpr::ListLit { elem_ty, .. } => Ty::List(Box::new(elem_ty.clone())),
             TypedExpr::SelfExpr(ty, _) => ty.clone(),
             TypedExpr::If { ty, .. } => ty.clone(),
         }

@@ -44,9 +44,15 @@ pub enum TokenKind {
     For,
     In,
     While,
+    Break,
+    Continue,
     True,
     False,
     SelfKw,
+    Enum,
+    /// `import "path.star" as alias`.
+    Import,
+    As,
     // Memory / concurrency keywords (reserved now, used in later milestones).
     Frame,
     Arena,
@@ -59,8 +65,10 @@ pub enum TokenKind {
 
     // Punctuation & operators.
     Colon,
+    ColonColon, // ::
     Comma,
     Dot,
+    DotDot,     // ..
     Arrow,      // ->
     FatArrow,   // =>
     LParen,
@@ -120,9 +128,14 @@ impl TokenKind {
             TokenKind::For => "'for'".into(),
             TokenKind::In => "'in'".into(),
             TokenKind::While => "'while'".into(),
+            TokenKind::Break => "'break'".into(),
+            TokenKind::Continue => "'continue'".into(),
             TokenKind::True => "'true'".into(),
             TokenKind::False => "'false'".into(),
             TokenKind::SelfKw => "'self'".into(),
+            TokenKind::Enum => "'enum'".into(),
+            TokenKind::Import => "'import'".into(),
+            TokenKind::As => "'as'".into(),
             TokenKind::Frame => "'frame'".into(),
             TokenKind::Arena => "'arena'".into(),
             TokenKind::Swarm => "'swarm'".into(),
@@ -132,8 +145,10 @@ impl TokenKind {
             TokenKind::Spawn => "'spawn'".into(),
             TokenKind::Despawn => "'despawn'".into(),
             TokenKind::Colon => "':'".into(),
+            TokenKind::ColonColon => "'::'".into(),
             TokenKind::Comma => "','".into(),
             TokenKind::Dot => "'.'".into(),
+            TokenKind::DotDot => "'..'".into(),
             TokenKind::Arrow => "'->'".into(),
             TokenKind::FatArrow => "'=>'".into(),
             TokenKind::LParen => "'('".into(),
@@ -483,6 +498,8 @@ impl<'src> Lexer<'src> {
         match (c, two) {
             (b'-', Some(b'>')) => two_char!(TokenKind::Arrow),
             (b'=', Some(b'>')) => two_char!(TokenKind::FatArrow),
+            (b'.', Some(b'.')) => two_char!(TokenKind::DotDot),
+            (b':', Some(b':')) => two_char!(TokenKind::ColonColon),
             (b'=', Some(b'=')) => two_char!(TokenKind::EqEq),
             (b'!', Some(b'=')) => two_char!(TokenKind::NotEq),
             (b'<', Some(b'=')) => two_char!(TokenKind::LtEq),
@@ -587,9 +604,14 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "for" => TokenKind::For,
         "in" => TokenKind::In,
         "while" => TokenKind::While,
+        "break" => TokenKind::Break,
+        "continue" => TokenKind::Continue,
         "true" => TokenKind::True,
         "false" => TokenKind::False,
         "self" => TokenKind::SelfKw,
+        "enum" => TokenKind::Enum,
+        "import" => TokenKind::Import,
+        "as" => TokenKind::As,
         "frame" => TokenKind::Frame,
         "arena" => TokenKind::Arena,
         "swarm" => TokenKind::Swarm,

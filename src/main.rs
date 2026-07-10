@@ -124,8 +124,8 @@ fn cmd_build(file: &str, output: Option<&str>) -> ExitCode {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| src_path.with_extension("exe"));
 
-    let clang = r"E:\LLVM\bin\clang.exe";
-    let status = match std::process::Command::new(clang)
+    let clang = find_clang();
+    let status = match std::process::Command::new(&clang)
         .arg("-o")
         .arg(&exe_path)
         .arg(&ll_path)
@@ -145,6 +145,68 @@ fn cmd_build(file: &str, output: Option<&str>) -> ExitCode {
     } else {
         eprintln!("error: clang compilation failed");
         ExitCode::FAILURE
+    }
+}
+
+/// Locate a `clang` executable: prefer one on `PATH`, falling back to the
+/// well-known LLVM install location the README documents.
+fn find_clang() -> std::path::PathBuf {
+    find_clang_on(std::env::var_os("PATH").as_deref())
+}
+
+/// `find_clang`'s search logic, parameterized over the `PATH` value so it
+/// can be exercised on a synthetic directory list without touching the
+/// process's real environment (see the `tests` module below).
+fn find_clang_on(path_var: Option<&std::ffi::OsStr>) -> std::path::PathBuf {
+    let exe_name = if cfg!(windows) { "clang.exe" } else { "clang" };
+    if let Some(paths) = path_var {
+        for dir in std::env::split_paths(paths) {
+            let candidate = dir.join(exe_name);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    std::path::PathBuf::from(r"E:\LLVM\bin\clang.exe")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_clang_on;
+
+    /// A `clang`/`clang.exe` on `PATH` is preferred over the hardcoded
+    /// `E:\LLVM\bin\clang.exe` fallback -- the bug this guards against: the
+    /// old `cmd_build` hardcoded that path unconditionally, ignoring `PATH`
+    /// entirely (contradicting the README's "Clang on PATH (or at
+    /// `E:\LLVM\bin\clang.exe`)").
+    #[test]
+    fn prefers_clang_on_path_over_hardcoded_fallback() {
+        let dir = std::env::temp_dir().join("star_test_find_clang_on_path");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe_name = if cfg!(windows) { "clang.exe" } else { "clang" };
+        let clang_path = dir.join(exe_name);
+        std::fs::write(&clang_path, b"").unwrap();
+
+        let path_var = std::env::join_paths([&dir]).unwrap();
+        let found = find_clang_on(Some(&path_var));
+        assert_eq!(found, clang_path);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// With no `clang` anywhere on `PATH` (or no `PATH` at all), the search
+    /// falls back to the well-known LLVM install location rather than
+    /// failing outright.
+    #[test]
+    fn falls_back_to_hardcoded_path_when_not_on_path() {
+        let dir = std::env::temp_dir().join("star_test_find_clang_empty");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path_var = std::env::join_paths([&dir]).unwrap();
+
+        assert_eq!(find_clang_on(Some(&path_var)), std::path::PathBuf::from(r"E:\LLVM\bin\clang.exe"));
+        assert_eq!(find_clang_on(None), std::path::PathBuf::from(r"E:\LLVM\bin\clang.exe"));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 

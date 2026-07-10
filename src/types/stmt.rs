@@ -52,9 +52,42 @@ impl Checker {
                 if !matches!(cond_typed.clone().into_ty(), Ty::Bool) {
                     self.error("while condition must be of type bool", cond.span());
                 }
+                self.loop_depth += 1;
                 let then_typed = self.check_block_inner(body, &mut vars.clone());
+                self.loop_depth -= 1;
+                // The `else:` clause runs once after the loop exits normally;
+                // it is not itself loop body, so `break`/`continue` inside it
+                // still refer to any *enclosing* loop, not this one.
                 let else_typed = else_block.as_ref().map(|b| self.check_block_inner(b, &mut vars.clone()));
                 TypedStmt::While { cond: cond_typed, then_block: then_typed, else_block: else_typed, span: *span }
+            }
+            Stmt::For { var, start, end, body, span } => {
+                let start_typed = self.infer_expr(start, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
+                let end_typed = self.infer_expr(end, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
+                if !matches!(start_typed.clone().into_ty(), Ty::Int) {
+                    self.error("`for` range start must be of type `i32`", start.span());
+                }
+                if !matches!(end_typed.clone().into_ty(), Ty::Int) {
+                    self.error("`for` range end must be of type `i32`", end.span());
+                }
+                let mut inner_vars = vars.clone();
+                inner_vars.insert(var.clone(), Ty::Int);
+                self.loop_depth += 1;
+                let body_typed = self.check_block_inner(body, &mut inner_vars);
+                self.loop_depth -= 1;
+                TypedStmt::For { var: var.clone(), start: start_typed, end: end_typed, body: body_typed, span: *span }
+            }
+            Stmt::Break { span } => {
+                if self.loop_depth == 0 {
+                    self.error("`break` outside of a loop", *span);
+                }
+                TypedStmt::Break { span: *span }
+            }
+            Stmt::Continue { span } => {
+                if self.loop_depth == 0 {
+                    self.error("`continue` outside of a loop", *span);
+                }
+                TypedStmt::Continue { span: *span }
             }
             Stmt::Frame { body, span } => {
                 let body_typed = self.check_block_inner(body, &mut vars.clone());
@@ -70,7 +103,14 @@ impl Checker {
                 };
                 let mut inner_vars = vars.clone();
                 inner_vars.insert(var.clone(), elem_ty.clone());
+                // A `par`/`swarm` body dispatches across worker threads, so
+                // `break`/`continue` have no well-defined target even if this
+                // statement is lexically nested inside an outer loop; hide
+                // any outer loop depth for the duration of this body.
+                let saved_loop_depth = self.loop_depth;
+                self.loop_depth = 0;
                 let body_typed = self.check_block_inner(body, &mut inner_vars);
+                self.loop_depth = saved_loop_depth;
                 self.check_par_disjoint(var, &body_typed);
                 TypedStmt::Par { var: var.clone(), elem_ty, arena: arena.clone(), body: body_typed, span: *span }
             }

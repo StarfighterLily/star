@@ -27,6 +27,30 @@ pub enum TypedItem {
     Impl(TypedImplBlock),
     Fn(TypedFnDef),
     Arena(TypedArenaDecl),
+    Enum(TypedEnumDef),
+}
+
+/// A type-checked enum declaration.
+#[derive(Clone, Debug)]
+pub struct TypedEnumDef {
+    pub name: String,
+    pub variants: Vec<TypedEnumVariantDef>,
+    pub span: Span,
+}
+
+/// A type-checked enum variant, with its payload fields (if any) resolved.
+#[derive(Clone, Debug)]
+pub struct TypedEnumVariantDef {
+    pub name: String,
+    pub fields: Vec<TypedEnumFieldDef>,
+    pub span: Span,
+}
+
+/// A type-checked enum variant payload field.
+#[derive(Clone, Debug)]
+pub struct TypedEnumFieldDef {
+    pub name: String,
+    pub ty: Ty,
 }
 
 #[derive(Clone, Debug)]
@@ -109,6 +133,18 @@ pub enum TypedStmt {
         else_block: Option<TypedBlock>,
         span: Span,
     },
+    /// `for var in start..end: <body>` - see [`crate::ast::Stmt::For`].
+    For {
+        var: String,
+        start: TypedExpr,
+        end: TypedExpr,
+        body: TypedBlock,
+        span: Span,
+    },
+    /// `break` - see [`crate::ast::Stmt::Break`].
+    Break { span: Span },
+    /// `continue` - see [`crate::ast::Stmt::Continue`].
+    Continue { span: Span },
     Frame {
         body: TypedBlock,
         span: Span,
@@ -170,7 +206,38 @@ pub enum TypedExpr {
     },
     GenRefCreate { inner_ty: Ty, value: Box<TypedExpr>, span: Span },
     GenRefIndex { base: Box<TypedExpr>, index: Box<TypedExpr>, ty: Ty, span: Span },
+    /// An enum variant literal: `EnumName::Variant`, see [`crate::ast::Expr::EnumVariant`].
+    EnumVariant { enum_name: String, variant: String, args: Vec<TypedExpr>, ty: Ty, span: Span },
+    /// A lambda/closure literal, see [`crate::ast::Expr::Lambda`]. `ty` is
+    /// always a `Ty::Closure(param_tys, ret_ty)`.
+    Closure { params: Vec<TypedParam>, body: TypedBlock, ty: Ty, span: Span },
+    /// `List<T>()` -- an empty list construction, see
+    /// `Checker::infer_list_new`.
+    ListNew { elem_ty: Ty, span: Span },
+    /// A non-empty list literal `[e1, e2, ...]`, see
+    /// [`crate::ast::Expr::ListLit`].
+    ListLit { elems: Vec<TypedExpr>, elem_ty: Ty, span: Span },
+    /// `list[idx]`: a bounds-checked `List<T>` element read. `ty` is the
+    /// element type `T`. See [`crate::ast::Expr::GenRefIndex`]'s doc comment
+    /// for why this shares that AST node with `GenRef<T>` dereferencing.
+    ListIndex { base: Box<TypedExpr>, index: Box<TypedExpr>, ty: Ty, span: Span },
+    /// `list.push(v)` / `list.pop()` / `list.len()`, see
+    /// `Checker::infer_list_method`.
+    ListMethod { base: Box<TypedExpr>, method: ListMethod, args: Vec<TypedExpr>, ty: Ty, span: Span },
     Error(Ty),
+}
+
+/// The builtin `List<T>` methods -- see `TypedExpr::ListMethod`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ListMethod {
+    /// `list.push(v)` -- appends `v`, growing the backing buffer if needed.
+    Push,
+    /// `list.pop()` -- removes and returns the last element, or the element
+    /// type's zero value if the list is empty (mirrors `GenRef`'s "safe
+    /// null equivalent" convention rather than a `Result`/`Option` type).
+    Pop,
+    /// `list.len()` -- the current element count as an `i32`.
+    Len,
 }
 
 impl TypedExpr {
@@ -179,11 +246,15 @@ impl TypedExpr {
             TypedExpr::Int(_, ty, _) | TypedExpr::Float(_, ty, _) | TypedExpr::Str(_, ty, _) | TypedExpr::Bool(_, ty, _)
             | TypedExpr::Field { ty, .. } | TypedExpr::Call { ty, .. } | TypedExpr::Binary { ty, .. }
             | TypedExpr::Unary { ty, .. } | TypedExpr::Match { ty, .. } | TypedExpr::StructLit { ty, .. }
-            | TypedExpr::FStr(_, ty, _) | TypedExpr::GenRefIndex { ty, .. } | TypedExpr::Error(ty) => ty,
+            | TypedExpr::FStr(_, ty, _) | TypedExpr::GenRefIndex { ty, .. } | TypedExpr::EnumVariant { ty, .. }
+            | TypedExpr::Closure { ty, .. } | TypedExpr::ListIndex { ty, .. } | TypedExpr::ListMethod { ty, .. }
+            | TypedExpr::Error(ty) => ty,
             TypedExpr::Ident { ty, .. } => ty,
             TypedExpr::SelfExpr(ty, _) => ty,
             TypedExpr::If { ty, .. } => ty.clone(),
             TypedExpr::GenRefCreate { inner_ty, .. } => Ty::GenRef(Box::new(inner_ty)),
+            TypedExpr::ListNew { elem_ty, .. } => Ty::List(Box::new(elem_ty)),
+            TypedExpr::ListLit { elem_ty, .. } => Ty::List(Box::new(elem_ty)),
         }
     }
 
@@ -194,7 +265,9 @@ impl TypedExpr {
             TypedExpr::Ident { span, .. } | TypedExpr::Field { span, .. } | TypedExpr::Call { span, .. }
             | TypedExpr::Binary { span, .. } | TypedExpr::Unary { span, .. } | TypedExpr::Match { span, .. }
             | TypedExpr::StructLit { span, .. } | TypedExpr::If { span, .. } | TypedExpr::GenRefCreate { span, .. }
-            | TypedExpr::GenRefIndex { span, .. } => *span,
+            | TypedExpr::GenRefIndex { span, .. } | TypedExpr::EnumVariant { span, .. }
+            | TypedExpr::Closure { span, .. } | TypedExpr::ListNew { span, .. } | TypedExpr::ListLit { span, .. }
+            | TypedExpr::ListIndex { span, .. } | TypedExpr::ListMethod { span, .. } => *span,
             TypedExpr::SelfExpr(_, s) => *s,
             TypedExpr::Error(_) => Span::dummy(),
         }

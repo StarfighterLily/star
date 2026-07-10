@@ -29,7 +29,19 @@ impl Parser {
             TokenKind::Let => self.parse_let(),
             TokenKind::Return => self.parse_return(),
             TokenKind::If => self.parse_if_stmt(),
+            // `match` is dispatched here rather than falling through to the
+            // generic bare-expression case below: like `if`/`while`/`for`,
+            // its own arm list ends in a `Dedent` (see `Parser::parse_match`)
+            // that already re-syncs the token stream with the enclosing
+            // block, so calling `expect_line_end()` afterward (as the
+            // generic case does for an ordinary expression statement) would
+            // look for a `Newline`/`Dedent` that was already consumed and
+            // reject whatever token starts the *next* statement instead.
+            TokenKind::Match => self.parse_match_stmt(),
             TokenKind::While => self.parse_while_stmt(),
+            TokenKind::For => self.parse_for_stmt(),
+            TokenKind::Break => self.parse_break_stmt(),
+            TokenKind::Continue => self.parse_continue_stmt(),
             TokenKind::Frame => self.parse_frame_stmt(),
             TokenKind::Yield => self.parse_yield_stmt(),
             TokenKind::Par | TokenKind::Swarm => self.parse_par_stmt(),
@@ -164,6 +176,16 @@ impl Parser {
         Some(Stmt::If { cond, then_block, else_block, span })
     }
 
+    /// Parse a `match` used as a bare statement: shares `Parser::parse_match`
+    /// (also used for `match` nested inside a larger expression, e.g. `let x
+    /// = match ...`) but, like `parse_if_stmt`, does not call
+    /// `expect_line_end()` afterward -- `parse_match`'s own arm list already
+    /// consumes the `Dedent` that re-syncs with the enclosing block.
+    fn parse_match_stmt(&mut self) -> Option<Stmt> {
+        let expr = self.parse_match()?;
+        Some(Stmt::Expr(expr))
+    }
+
     /// Parse `while <cond>:` followed by a loop body and an optional `else:` block.
     fn parse_while_stmt(&mut self) -> Option<Stmt> {
         let start = self.peek_span();
@@ -174,6 +196,38 @@ impl Parser {
         let else_block = self.parse_opt_else();
         let span = start.to(self.prev_span());
         Some(Stmt::While { cond, body, else_block, span })
+    }
+
+    /// Parse `for <var> in <start>..<end>:` followed by a loop body
+    /// (exclusive-range iteration over `i32` bounds).
+    fn parse_for_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::For)?;
+        let var = self.expect_ident()?;
+        self.expect(&TokenKind::In)?;
+        let range_start = self.parse_expr()?;
+        self.expect(&TokenKind::DotDot)?;
+        let range_end = self.parse_expr()?;
+        self.expect(&TokenKind::Colon)?;
+        let body = self.parse_block()?;
+        let span = start.to(self.prev_span());
+        Some(Stmt::For { var, start: range_start, end: range_end, body, span })
+    }
+
+    fn parse_break_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Break)?;
+        self.expect_line_end()?;
+        let span = start.to(self.prev_span());
+        Some(Stmt::Break { span })
+    }
+
+    fn parse_continue_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Continue)?;
+        self.expect_line_end()?;
+        let span = start.to(self.prev_span());
+        Some(Stmt::Continue { span })
     }
 
     /// If an `else:` token is next (at the current indentation level), consume it
