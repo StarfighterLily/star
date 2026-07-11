@@ -122,19 +122,17 @@ match_then_0:
   %t16 = getelementptr inbounds %Player, %Player* %t15, i32 0, i32 2
   %t17 = load i8*, i8** %t16
   %t18 = load i8*, i8** %t16
-  %t19 = load i8*, i8** %t18
-  call void @star_rc_retain(i8* %t19)
-  %t20 = load i8*, i8** %t17
-  call void @star_rc_release(i8* %t20)
-  %t21 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.0, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t21, i8* %t20)
+  call void @star_rc_retain(i8* %t18)
+  call void @star_rc_release(i8* %t17)
+  %t19 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.0, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t19, i8* %t17)
   br label %match_end_12
 match_next_0:
-  %t22 = load %Player*, %Player** %t0
-  %t23 = getelementptr inbounds %Player, %Player* %t22, i32 0, i32 0
-  %t24 = load i32, i32* %t23
-  %t25 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.1, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t25, i32 %t24)
+  %t20 = load %Player*, %Player** %t0
+  %t21 = getelementptr inbounds %Player, %Player* %t20, i32 0, i32 0
+  %t22 = load i32, i32* %t21
+  %t23 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.1, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t23, i32 %t22)
   br label %match_end_12
 match_end_12:
   ret void
@@ -164,21 +162,18 @@ entry:
   %t8 = insertelement <3 x float> %t6, float %t7, i32 2
   %t9 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 1
   store <3 x float> %t8, <3 x float>* %t9
-  %t11 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.2, i64 0, i32 2, i64 0
-  %t10 = alloca i8*
-  store i8* %t11, i8** %t10
-  %t12 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 2
-  store i8* %t10, i8** %t12
-  %t13 = load %Player, %Player* %t1
-  store %Player %t13, %Player* %t0
-  %t14 = call i32 @remaining_health(%Player* %t0)
-  %t15 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.3, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t15, i32 %t14)
+  %t10 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.2, i64 0, i32 2, i64 0
+  %t11 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 2
+  store i8* %t10, i8** %t11
+  %t12 = load %Player, %Player* %t1
+  store %Player %t12, %Player* %t0
+  %t13 = call i32 @remaining_health(%Player* %t0)
+  %t14 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.3, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t14, i32 %t13)
   call void @take_damage(%Player* %t0, i32 150)
-  %t17 = getelementptr inbounds %Player, %Player* %t0, i32 0, i32 2
-  %t18 = load i8*, i8** %t17
-  %t19 = load i8*, i8** %t18
-  call void @star_rc_release(i8* %t19)
+  %t16 = getelementptr inbounds %Player, %Player* %t0, i32 0, i32 2
+  %t17 = load i8*, i8** %t16
+  call void @star_rc_release(i8* %t17)
   ret i32 0
 }
 

@@ -36,19 +36,17 @@ impl Codegen {
                         // `emit_expr` may return either a bare register
                         // or one already tagged with its LLVM type
                         // (e.g. swizzle reads) — strip any existing tag
-                        // so it isn't double-tagged below.
+                        // so it isn't double-tagged below. For a `Str`
+                        // value this already *is* the raw `i8*` pointer
+                        // `%s` expects (no boxing indirection to unwrap).
                         let bare_val = self.untag(&val, &ty);
-                        // For string arguments, `bare_val` is the alloca
-                        // holding the `i8*`; load it to get the pointer
-                        // that `%s` expects. A `bool` isn't a pointer at
-                        // all -- printing it via `%p` on a bare `i1` is
-                        // undefined behavior (varargs promotion reads a
-                        // pointer-sized value off the stack/register that
-                        // was never written); select between "true"/"false"
-                        // string constants instead, same as any other `%s`.
+                        // A `bool` isn't a pointer at all -- printing it via
+                        // `%p` on a bare `i1` is undefined behavior (varargs
+                        // promotion reads a pointer-sized value off the
+                        // stack/register that was never written); select
+                        // between "true"/"false" string constants instead,
+                        // same as any other `%s`.
                         let arg_val = if matches!(ty, Ty::Str) {
-                            let loaded = self.tmp_name();
-                            self.line(&format!("  {} = load i8*, i8** {}", loaded, bare_val));
                             // Same reasoning as `emit_raw_str_ptr`: balance
                             // back out whatever retain `emit_expr(e)` above
                             // did on `e`'s behalf (a no-op if `e` was a
@@ -57,9 +55,9 @@ impl Codegen {
                             // the bytes for `printf`, it doesn't keep the
                             // pointer around.
                             if Self::is_rc_borrowing_read(e) {
-                                self.line(&format!("  call void @star_rc_release(i8* {})", loaded));
+                                self.line(&format!("  call void @star_rc_release(i8* {})", bare_val));
                             }
-                            loaded
+                            bare_val
                         } else if matches!(ty, Ty::Bool) {
                             self.emit_bool_str(&bare_val)
                         } else {
@@ -97,9 +95,15 @@ impl Codegen {
             }
             self.line(&format!("  call i32 (i8*, ...) @printf({})", call_args.join(", ")));
         } else {
-            let fmt_ptr = self.emit_expr(arg);
-            let loaded = self.tmp_name();
-            self.line(&format!("  {} = load i8*, i8** {}", loaded, fmt_ptr));
+            let val = self.emit_expr(arg);
+            // `emit_expr` may return either a bare register or one already
+            // tagged with its LLVM type (e.g. a `ListIndex`/closure-call
+            // result) -- strip any existing tag so it isn't double-tagged
+            // below (previously missing here, this produced malformed IR
+            // like `load i8*, i8** i8* %reg` for anything but a plain
+            // `Ident`/`Field` argument). This is already the raw `i8*`
+            // pointer `printf` expects, no boxing indirection to unwrap.
+            let loaded = self.untag(&val, &Ty::Str);
             // Same reasoning as `emit_raw_str_ptr`/the f-string branch
             // above: balance back out whatever retain `emit_expr(arg)`
             // did on `arg`'s behalf.
@@ -222,16 +226,14 @@ impl Codegen {
         }
     }
 
-    /// Load the real `i8*` out of a `Str`-typed expression. Every `Str`-typed
-    /// value in this codegen is represented as a pointer to a slot holding
-    /// the actual string pointer (see `TypedExpr::Str`'s own codegen below),
-    /// so getting the real bytes always takes one more `load` than the
-    /// expression's own emitted register.
+    /// Get the real `i8*` out of a `Str`-typed expression. A `Str` value's
+    /// `emit_expr` result *is* the raw string pointer (tagged for a literal,
+    /// bare for a load/call), so this is just a tag-stripping pass-through --
+    /// kept as its own function since every caller also needs the
+    /// `is_rc_borrowing_read` release-balancing below.
     fn emit_raw_str_ptr(&mut self, e: &TypedExpr) -> String {
         let val = self.emit_expr(e);
-        let bare = self.untag(&val, &Ty::Str);
-        let reg = self.tmp_name();
-        self.line(&format!("  {} = load i8*, i8** {}", reg, bare));
+        let reg = self.untag(&val, &Ty::Str);
         // If `e` reads an existing owned slot, `emit_expr` above already
         // retained a fresh reference on its behalf (see `rc.rs`) -- but
         // this function only extracts the raw bytes for a synchronous
@@ -243,17 +245,6 @@ impl Codegen {
             self.line(&format!("  call void @star_rc_release(i8* {})", reg));
         }
         reg
-    }
-
-    /// Box a raw `i8*` into the same "pointer to a slot holding the string
-    /// pointer" representation `TypedExpr::Str` produces, so a builtin's
-    /// `Str`-typed result composes with the rest of the codegen (`let`,
-    /// further `print`/`concat` calls, ...) exactly like a literal would.
-    fn box_str_ptr(&mut self, raw_ptr: &str) -> String {
-        let slot = self.tmp_name();
-        self.line(&format!("  {} = alloca i8*", slot));
-        self.line(&format!("  store i8* {}, i8** {}", raw_ptr, slot));
-        slot
     }
 
     /// `len(s) -> i32`.
@@ -291,6 +282,6 @@ impl Codegen {
         self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", buf, total64));
         self.line(&format!("  call i8* @strcpy(i8* {}, i8* {})", buf, a));
         self.line(&format!("  call i8* @strcat(i8* {}, i8* {})", buf, b));
-        self.box_str_ptr(&buf)
+        buf
     }
 }

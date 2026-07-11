@@ -34,13 +34,40 @@ fn lexes_indentation_markers() {
     assert_eq!(kinds.last(), Some(&TokenKind::Eof));
 }
 
-/// Blank and comment-only lines must not produce structural tokens.
+/// Blank and comment-only lines must not produce structural tokens -- not
+/// even a spurious `Newline` (previously `handle_line_start` measured and
+/// discarded such a line's indentation but left its trailing `\n` for
+/// `scan_line_content` to turn into an extra `Newline` token, which broke
+/// `parse_block`'s bare `expect(Newline); expect(Indent)` when the block's
+/// very first line was a comment -- see `parses_comment_as_first_line_of_block`).
 #[test]
 fn ignores_blank_and_comment_lines() {
     let src = "struct P:\n\n    # a comment\n    health: i32\n";
     let tokens = Driver::lex(src).expect("lexing should succeed");
     let indents = tokens.iter().filter(|t| t.kind == TokenKind::Indent).count();
     assert_eq!(indents, 1, "only one real indentation level expected");
+    let newlines = tokens.iter().filter(|t| t.kind == TokenKind::Newline).count();
+    assert_eq!(newlines, 2, "one Newline for `struct P:`, one for `health: i32` -- none for the blank/comment lines");
+}
+
+/// A comment as the very first line of an indented block (right after the
+/// opening `:`) must not break indentation tracking -- previously this
+/// produced "expected an indented block, found end of line" because the
+/// comment line's spurious `Newline` (see `ignores_blank_and_comment_lines`)
+/// landed exactly where `parse_block` expects `Indent`.
+#[test]
+fn parses_comment_as_first_line_of_block() {
+    let src = "fn main():\n    # a leading comment\n    let x = 1\n";
+    Driver::parse(src).expect("a comment as the first line of a block should parse");
+}
+
+/// Two consecutive comment/blank lines as the first lines of a block, to
+/// guard the loop in `handle_line_start` (a single skip-and-return would
+/// only have shifted the bug to this case).
+#[test]
+fn parses_consecutive_comments_as_first_lines_of_block() {
+    let src = "fn main():\n    # first comment\n\n    # second comment\n    let x = 1\n";
+    Driver::parse(src).expect("consecutive comment/blank lines as the first lines of a block should parse");
 }
 
 /// The canonical example from the docs must parse without diagnostics.
@@ -2657,10 +2684,7 @@ fn parses_lambda_inline_body() {
 }
 
 /// Parse a block-bodied lambda literal (full indented block, mirroring
-/// `if`/`match`'s own block-body grammar) -- must be the last statement of
-/// its enclosing block, a pre-existing parser limitation shared with
-/// `if`-expressions used as a `let` value (see todo.md's documented
-/// `match`-as-statement Dedent-consumption bug for the same root cause).
+/// `if`/`match`'s own block-body grammar).
 #[test]
 fn parses_lambda_block_body() {
     let src = "fn t():\n    let f = fn(x: i32) -> i32:\n        let y = x + 1\n        y\n";
@@ -2669,6 +2693,36 @@ fn parses_lambda_block_body() {
     let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected Let") };
     let Expr::Lambda { body, .. } = value else { panic!("expected Expr::Lambda") };
     assert_eq!(body.stmts.len(), 2);
+}
+
+/// A `let` bound to a block-bodied lambda, followed by another statement at
+/// the *same* indentation as the `let` itself, must parse -- previously the
+/// lambda body's own closing `Dedent` (which re-syncs with the enclosing
+/// block) was consumed by the nested `parse_block`, leaving nothing for
+/// `parse_let`'s own `expect_line_end()`, which then choked on the next
+/// statement's first token ("expected end of line, found an integer
+/// literal"). Exact repro from todo.md's "Immediate" section.
+#[test]
+fn parses_let_bound_block_lambda_followed_by_sibling_statement() {
+    let src = "fn t() -> i32:\n    let c = fn() -> i32:\n        let y = 1\n        y\n    0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    assert_eq!(f.body.stmts.len(), 2, "both the `let` and the trailing `0` must be parsed as sibling statements");
+    assert!(matches!(f.body.stmts[0], Stmt::Let { .. }));
+    assert!(matches!(f.body.stmts[1], Stmt::Expr(Expr::Int(0, _))));
+}
+
+/// The same Dedent-consumption root cause, but via an `if`-expression (not
+/// an `if`-statement) used as a `let` value, followed by a sibling
+/// statement -- covered by the same generic `block_just_closed` fix rather
+/// than a lambda-specific patch.
+#[test]
+fn parses_let_bound_if_expr_followed_by_sibling_statement() {
+    let src = "fn t(cond: bool) -> i32:\n    let x = if cond:\n        1\n    else:\n        2\n    x + 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    assert_eq!(f.body.stmts.len(), 2, "both the `let` and the trailing `x + 1` must be parsed as sibling statements");
+    assert!(matches!(f.body.stmts[0], Stmt::Let { .. }));
 }
 
 /// A lambda with no declared parameters and no `->` return type still
@@ -4038,6 +4092,74 @@ fn runtime_rc_strings_end_to_end() {
     assert!(stdout.contains("words len = 3"), "{}", stdout);
     assert!(stdout.contains("shout_len(go) = 5"), "a str passed into a function and used there should still be valid: {}", stdout);
     assert!(stdout.contains("start-x-x-x-x-x"), "repeated reassignment should never corrupt the accumulator: {}", stdout);
+    assert_eq!(output.status.code(), Some(0));
+}
+
+/// A function returning a freshly-constructed `str` (a bare literal or a
+/// `concat` result) no longer boxes it in a per-call stack `alloca` --
+/// previously this dangled the instant the function returned. With the box
+/// removed, the returned value is just the raw `i8*` pointer computed
+/// in-function (a GEP into an immortal global, or a `star_rc_alloc`'d
+/// buffer), neither of which depend on this function's own stack frame.
+#[test]
+fn codegen_fn_returning_fresh_str_does_not_box_on_stack() {
+    let src = "fn lit() -> str:\n    \"hi\"\n\nfn built(a: str, b: str) -> str:\n    concat(a, b)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let lit_ir = extract_fn_body(&ir, "define i8* @lit(");
+    assert!(!lit_ir.contains("alloca"), "a fresh string literal (no params to box either) must not allocate anything: {}", lit_ir);
+    // `built`'s two `str` parameters each still get their own ordinary
+    // parameter-storage alloca (unrelated to the bug) -- exactly 2, not 3,
+    // confirms no *extra* box alloca wraps the concat result being returned.
+    let built_ir = extract_fn_body(&ir, "define i8* @built(");
+    assert_eq!(built_ir.matches("alloca").count(), 2, "only the 2 parameter allocas should remain, no extra box alloca for the returned concat result: {}", built_ir);
+}
+
+/// Runtime test: `examples/str_fixes.exe` exercises a function returning a
+/// freshly-constructed `str` (both a bare literal and a `concat` result),
+/// printed from the caller -- the direct empirical proof the returned
+/// pointer isn't dangling, since a dangling read would print garbage or
+/// crash rather than the exact expected text.
+#[test]
+fn runtime_str_return_fresh_value_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/str_fixes.exe").output().expect("failed to execute str_fixes.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("fresh literal return"), "a function returning a bare literal must not dangle: {}", stdout);
+    assert!(stdout.contains("fresh concat return"), "a function returning a concat result must not dangle: {}", stdout);
+    assert_eq!(output.status.code(), Some(0));
+}
+
+/// `println`/`print` with a non-f-string argument that isn't a plain
+/// `Ident`/`Field` (here, a `List` index) must not double-tag the value --
+/// previously `emit_print_like`'s bare-argument branch used `emit_expr`'s
+/// result directly as an untagged register, producing malformed IR like
+/// `load i8*, i8** i8* %reg` for a `ListIndex`/closure-call result (both of
+/// which return a tagged register), which clang rejects.
+#[test]
+fn codegen_println_of_list_index_does_not_double_tag() {
+    let src = "fn t(words: List<str>):\n    println(words[0])\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define void @t(");
+    assert!(!fn_ir.contains("i8** i8*"), "the ListIndex result must be untagged before use, not double-tagged: {}", fn_ir);
+}
+
+/// Runtime test: `examples/str_fixes.exe` also prints a `List<str>` index
+/// and a closure-call result directly through `println` (not routed through
+/// an f-string interpolation, which every pre-existing example used to
+/// route around this exact bug) -- confirming the fix compiles *and* runs.
+#[test]
+fn runtime_println_of_list_index_and_closure_call_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/str_fixes.exe").output().expect("failed to execute str_fixes.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("beta"), "println(list[i]) directly (no f-string) must print correctly: {}", stdout);
+    assert!(stdout.contains("hello from a closure call"), "println(closure()) directly (no f-string) must print correctly: {}", stdout);
     assert_eq!(output.status.code(), Some(0));
 }
 

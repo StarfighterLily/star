@@ -275,31 +275,22 @@ match_scrutinee_3:
   %t4 = icmp sle i32 %t1, 0
   br i1 %t4, label %match_then_0, label %match_next_0
 match_then_0:
-  %t6 = getelementptr inbounds { i64, i8*, [13 x i8] }, { i64, i8*, [13 x i8] }* @.str.0, i64 0, i32 2, i64 0
-  %t5 = alloca i8*
-  store i8* %t6, i8** %t5
-  %t7 = load i8*, i8** %t5
-  call i32 (i8*, ...) @printf(i8* %t7)
-  %t8 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.1, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t8)
+  %t5 = getelementptr inbounds { i64, i8*, [13 x i8] }, { i64, i8*, [13 x i8] }* @.str.0, i64 0, i32 2, i64 0
+  call i32 (i8*, ...) @printf(i8* %t5)
+  %t6 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.1, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t6)
   br label %match_end_2
 match_next_0:
-  %t10 = getelementptr inbounds { i64, i8*, [9 x i8] }, { i64, i8*, [9 x i8] }* @.str.2, i64 0, i32 2, i64 0
-  %t9 = alloca i8*
-  store i8* %t10, i8** %t9
-  %t11 = load i8*, i8** %t9
-  call i32 (i8*, ...) @printf(i8* %t11)
-  %t12 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.3, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t12)
+  %t7 = getelementptr inbounds { i64, i8*, [9 x i8] }, { i64, i8*, [9 x i8] }* @.str.2, i64 0, i32 2, i64 0
+  call i32 (i8*, ...) @printf(i8* %t7)
+  %t8 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.3, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t8)
   br label %match_end_2
 match_end_2:
-  %t14 = getelementptr inbounds { i64, i8*, [16 x i8] }, { i64, i8*, [16 x i8] }* @.str.4, i64 0, i32 2, i64 0
-  %t13 = alloca i8*
-  store i8* %t14, i8** %t13
-  %t15 = load i8*, i8** %t13
-  call i32 (i8*, ...) @printf(i8* %t15)
-  %t16 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.5, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t16)
+  %t9 = getelementptr inbounds { i64, i8*, [16 x i8] }, { i64, i8*, [16 x i8] }* @.str.4, i64 0, i32 2, i64 0
+  call i32 (i8*, ...) @printf(i8* %t9)
+  %t10 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.5, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t10)
   ret void
 }
 

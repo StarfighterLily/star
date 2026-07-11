@@ -189,7 +189,6 @@ impl Codegen {
             TypedExpr::Int(v, _, _) => format!("i32 {}", v),
             TypedExpr::Float(v, _, _) => format!("float {}", format_f32_literal(*v)),
             TypedExpr::Str(s, _, _) => {
-                let var = self.tmp_name();
                 let escaped = s.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
                 let g = self.global_name();
                 let n = s.len() + 1;
@@ -210,9 +209,14 @@ impl Codegen {
                 ));
                 let gep = self.tmp_name();
                 self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 0, i32 2, i64 0", gep, struct_ty, struct_ty, g));
-                self.line(&format!("  {} = alloca i8*", var));
-                self.line(&format!("  store i8* {}, i8** {}", gep, var));
-                var
+                // A `Str` value is just the raw `i8*` bytes pointer directly
+                // (matching `Int`/`Float`/`Bool` literals, which also return
+                // their value tagged with its LLVM type) -- no extra
+                // indirection through a stack-allocated "box". Boxing used
+                // to wrap `gep` in a fresh `alloca i8*`, which dangled the
+                // instant a function returning a freshly-constructed `str`
+                // returned that alloca's address.
+                format!("i8* {}", gep)
             }
             TypedExpr::Bool(v, _, _) => format!("i1 {}", if *v { "true" } else { "false" }),
             TypedExpr::Ident { name, ty, .. } => {

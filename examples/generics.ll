@@ -127,12 +127,10 @@ match_then_1:
   %t16 = getelementptr inbounds { i8* }, { i8* }* %t15, i32 0, i32 0
   %t17 = load i8*, i8** %t16
   %t18 = load i8*, i8** %t16
-  %t19 = load i8*, i8** %t18
-  call void @star_rc_retain(i8* %t19)
-  %t20 = load i8*, i8** %t17
-  call void @star_rc_release(i8* %t20)
-  %t21 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.1, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t21, i8* %t20)
+  call void @star_rc_retain(i8* %t18)
+  call void @star_rc_release(i8* %t17)
+  %t19 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.1, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t19, i8* %t17)
   br label %match_end_1
 match_next_1:
   br label %match_end_1
@@ -208,24 +206,22 @@ entry:
   store i32 1, i32* %t45
   %t46 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t44, i32 0, i32 1
   %t47 = bitcast [1 x i64]* %t46 to { i8* }*
-  %t49 = getelementptr inbounds { i64, i8*, [4 x i8] }, { i64, i8*, [4 x i8] }* @.str.6, i64 0, i32 2, i64 0
-  %t48 = alloca i8*
-  store i8* %t49, i8** %t48
-  %t50 = getelementptr inbounds { i8* }, { i8* }* %t47, i32 0, i32 0
-  store i8* %t48, i8** %t50
-  %t51 = load %Result__i32__str, %Result__i32__str* %t44
-  store %Result__i32__str %t51, %Result__i32__str* %t43
-  %t52 = load %Result__i32__str, %Result__i32__str* %t36
+  %t48 = getelementptr inbounds { i64, i8*, [4 x i8] }, { i64, i8*, [4 x i8] }* @.str.6, i64 0, i32 2, i64 0
+  %t49 = getelementptr inbounds { i8* }, { i8* }* %t47, i32 0, i32 0
+  store i8* %t48, i8** %t49
+  %t50 = load %Result__i32__str, %Result__i32__str* %t44
+  store %Result__i32__str %t50, %Result__i32__str* %t43
+  %t51 = load %Result__i32__str, %Result__i32__str* %t36
+  call void @print_result(%Result__i32__str %t51)
+  %t52 = load %Result__i32__str, %Result__i32__str* %t43
   call void @print_result(%Result__i32__str %t52)
-  %t53 = load %Result__i32__str, %Result__i32__str* %t43
-  call void @print_result(%Result__i32__str %t53)
-  %t54 = call i32 @identity__i32(i32 7)
-  %t55 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.7, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t55, i32 %t54)
-  %t56 = call float @identity__f32(float 0x400C000000000000)
-  %t57 = getelementptr inbounds [20 x i8], [20 x i8]* @.str.8, i64 0, i64 0
-  %t58 = fpext float %t56 to double
-  call i32 (i8*, ...) @printf(i8* %t57, double %t58)
+  %t53 = call i32 @identity__i32(i32 7)
+  %t54 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.7, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t54, i32 %t53)
+  %t55 = call float @identity__f32(float 0x400C000000000000)
+  %t56 = getelementptr inbounds [20 x i8], [20 x i8]* @.str.8, i64 0, i64 0
+  %t57 = fpext float %t55 to double
+  call i32 (i8*, ...) @printf(i8* %t56, double %t57)
   ret i32 0
 }
 

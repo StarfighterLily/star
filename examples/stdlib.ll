@@ -155,55 +155,40 @@ entry:
   %t24 = getelementptr inbounds [13 x i8], [13 x i8]* @.str.7, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t24, i32 %t23)
   %t25 = alloca i8*
-  %t27 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.8, i64 0, i32 2, i64 0
-  %t26 = alloca i8*
-  store i8* %t27, i8** %t26
+  %t26 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.8, i64 0, i32 2, i64 0
   store i8* %t26, i8** %t25
+  %t27 = load i8*, i8** %t25
   %t28 = load i8*, i8** %t25
-  %t29 = load i8*, i8** %t25
-  %t30 = load i8*, i8** %t29
-  call void @star_rc_retain(i8* %t30)
-  %t31 = load i8*, i8** %t28
-  call void @star_rc_release(i8* %t31)
-  %t32 = call i32 @strlen(i8* %t31)
-  %t33 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.9, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t33, i32 %t32)
-  %t34 = alloca i8*
-  %t36 = getelementptr inbounds { i64, i8*, [8 x i8] }, { i64, i8*, [8 x i8] }* @.str.10, i64 0, i32 2, i64 0
-  %t35 = alloca i8*
-  store i8* %t36, i8** %t35
-  %t37 = load i8*, i8** %t35
-  %t38 = load i8*, i8** %t25
-  %t39 = load i8*, i8** %t25
-  %t40 = load i8*, i8** %t39
-  call void @star_rc_retain(i8* %t40)
-  %t41 = load i8*, i8** %t38
+  call void @star_rc_retain(i8* %t28)
+  call void @star_rc_release(i8* %t27)
+  %t29 = call i32 @strlen(i8* %t27)
+  %t30 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.9, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t30, i32 %t29)
+  %t31 = alloca i8*
+  %t32 = getelementptr inbounds { i64, i8*, [8 x i8] }, { i64, i8*, [8 x i8] }* @.str.10, i64 0, i32 2, i64 0
+  %t33 = load i8*, i8** %t25
+  %t34 = load i8*, i8** %t25
+  call void @star_rc_retain(i8* %t34)
+  call void @star_rc_release(i8* %t33)
+  %t35 = call i32 @strlen(i8* %t32)
+  %t36 = call i32 @strlen(i8* %t33)
+  %t37 = add i32 %t35, %t36
+  %t38 = add i32 %t37, 1
+  %t39 = sext i32 %t38 to i64
+  %t40 = call i8* @star_rc_alloc(i64 %t39, i8* null)
+  call i8* @strcpy(i8* %t40, i8* %t32)
+  call i8* @strcat(i8* %t40, i8* %t33)
+  store i8* %t40, i8** %t31
+  %t41 = load i8*, i8** %t31
+  %t42 = load i8*, i8** %t31
+  call void @star_rc_retain(i8* %t42)
   call void @star_rc_release(i8* %t41)
-  %t42 = call i32 @strlen(i8* %t37)
-  %t43 = call i32 @strlen(i8* %t41)
-  %t44 = add i32 %t42, %t43
-  %t45 = add i32 %t44, 1
-  %t46 = sext i32 %t45 to i64
-  %t47 = call i8* @star_rc_alloc(i64 %t46, i8* null)
-  call i8* @strcpy(i8* %t47, i8* %t37)
-  call i8* @strcat(i8* %t47, i8* %t41)
-  %t48 = alloca i8*
-  store i8* %t47, i8** %t48
-  store i8* %t48, i8** %t34
-  %t49 = load i8*, i8** %t34
-  %t50 = load i8*, i8** %t34
-  %t51 = load i8*, i8** %t50
-  call void @star_rc_retain(i8* %t51)
-  %t52 = load i8*, i8** %t49
-  call void @star_rc_release(i8* %t52)
-  %t53 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.11, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t53, i8* %t52)
-  %t54 = load i8*, i8** %t34
-  %t55 = load i8*, i8** %t54
-  call void @star_rc_release(i8* %t55)
-  %t56 = load i8*, i8** %t25
-  %t57 = load i8*, i8** %t56
-  call void @star_rc_release(i8* %t57)
+  %t43 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.11, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t43, i8* %t41)
+  %t44 = load i8*, i8** %t31
+  call void @star_rc_release(i8* %t44)
+  %t45 = load i8*, i8** %t25
+  call void @star_rc_release(i8* %t45)
   ret i32 0
 }
 

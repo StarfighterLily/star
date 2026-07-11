@@ -2,44 +2,74 @@
 
 ## Immediate
 
-a comment as the very first line of an indented block (e.g. right after `fn main():`) breaks indentation
-tracking in the lexer (`error: expected an indented block, found end of line`).
+All four items below (found as pre-existing, unrelated bugs while doing
+earlier work) are now **done**, each with a regression test.
 
-Similarly, `let` bound to a lambda literal with a *block* body, followed by
-another statement at the same indentation level as the `let`, fails to parse
-(`error: expected end of line, found an integer literal`) — reproduced with
-`fn t() -> i32:\n    let c = fn() -> i32:\n        let y = 1\n        y\n    0\n`.
-Also pre-existing and unrelated; likely a `parse_block`/`Stmt::Let`
-line-end-expectation interaction worth a follow-up.
-
-While implementing #13 below, found two more pre-existing, unrelated bugs
-(confirmed present in the last commit before that work, not introduced by
-it) in how a `Str` value's "box" (the `alloca i8*` wrapper every `Str`
-expression's `emit_expr` result points to — see `Codegen::emit_raw_str_ptr`'s
-doc comment) is represented — both are dangling-pointer bugs, not leaks, so
-orthogonal to #13's fix, and out of scope for it:
-- A function that returns a **freshly constructed** `str` (e.g. `fn f() ->
-  str: concat(a, b)`, or even a bare string literal) returns the address of
-  an `alloca` *inside that function's own stack frame* — valid until the
-  function returns, dangling immediately after. Returning an *existing*
-  value (a parameter, a field read) is fine (the box lives in the caller's
-  frame instead); it's specifically returning something built fresh inside
-  the callee that's broken. `Codegen::box_str_ptr`/`TypedExpr::Str`'s
-  literal codegen would need the outer box itself heap-allocated (not just
-  the string bytes) to fix this — a representation change, not a local patch.
-- `println`/`print` (and by extension any bare, non-f-string argument) only
-  works correctly when passed a plain `Ident`/`Field` expression — passing
-  anything whose `emit_expr` result is *tagged* (e.g. `println(list[i])` or
-  `println(closure())`) produces malformed IR (`load i8*, i8** i8* %reg`,
-  a double-tagged operand) that clang rejects. Every existing example
-  routes list/call results through an f-string interpolation instead
-  (`println(f"{list[i]}")`), which takes a different, working code path —
-  so this was never exercised. Likely needs `emit_print_like`'s non-f-string
-  branch to call `Codegen::untag` before using the value, matching the
-  f-string branch's own handling.
+15. **DONE — A comment as the very first line of an indented block broke
+    lexer indentation tracking.** `Lexer::handle_line_start` (`src/lexer.rs`)
+    measured a blank/comment-only line's indentation, discarded it, and
+    returned *without* consuming the line's own trailing `\n` — left for
+    `scan_line_content` to turn into a spurious `Newline` token, which broke
+    `parse_block`'s bare `expect(Newline); expect(Indent)` whenever a
+    block's first line was a comment (`error: expected an indented block,
+    found end of line`). Fixed by turning the blank/comment skip into a loop
+    that consumes each such line (including its `\n`) and re-checks the next
+    physical line before falling through to measure real indentation, so
+    `scan_line_content` is still called exactly once per real line. See
+    `ignores_blank_and_comment_lines`, `parses_comment_as_first_line_of_block`,
+    `parses_consecutive_comments_as_first_lines_of_block`.
+16. **DONE — `let` bound to a block-bodied lambda, followed by a sibling
+    statement at the same indentation, failed to parse.** A value
+    expression ending in an indented block (a block-bodied lambda, an
+    `if`-expression, a `match`-expression) already consumes, via its own
+    nested `parse_block`, the `Newline`/`Dedent` that re-syncs with the
+    *enclosing* block — the same one `parse_let` (and the generic
+    bare-expression/assign arm) then tried to consume again via
+    `expect_line_end()`, choking on the next statement's first token instead
+    (`error: expected end of line, found an integer literal`). Fixed
+    generically rather than per-expression-kind: a new `Parser::
+    block_just_closed` flag (`src/parser/mod.rs`) is set right after
+    `parse_block`/`parse_match` consume their closing `Dedent`, cleared at
+    the top of every `advance()`, and accepted by `expect_line_end()` as an
+    already-satisfied terminator. See
+    `parses_let_bound_block_lambda_followed_by_sibling_statement`,
+    `parses_let_bound_if_expr_followed_by_sibling_statement`.
+17. **DONE — A function returning a freshly-constructed `str` dangled.**
+    Every `Str`-typed value's `emit_expr` result used to be a pointer to a
+    "box" (an `alloca i8*` wrapper) rather than the raw `i8*` bytes pointer
+    itself; returning a value built fresh in the current function (a
+    literal, a `concat` result) returned that box's address, an `alloca` in
+    the current function's own dead stack frame. Fixed by eliminating the
+    box indirection entirely rather than heap-allocating it (which would
+    have needed its own cascading refcount/release-fn machinery to avoid
+    leaking one box per `Str` production, risking a regression against
+    `runtime_rc_stress_memory_stays_bounded`): a `Str` value is now just the
+    raw `i8*` pointer directly, matching `Int`/`Float`/`Bool`. Touched
+    `TypedExpr::Str` (`src/codegen/expr.rs`), `emit_raw_str_ptr`/
+    `emit_str_concat`/`emit_print_like` (`src/codegen/builtins.rs`, and
+    removed `box_str_ptr` outright), and `emit_rc_walk`'s `Str` arm
+    (`src/codegen/rc.rs`, now one load instead of two) — retain/release
+    already targeted the real bytes pointer, so this changes where that
+    pointer comes from, not what gets retained/released. See
+    `examples/str_fixes.star` /
+    `codegen_fn_returning_fresh_str_does_not_box_on_stack`,
+    `runtime_str_return_fresh_value_end_to_end`.
+18. **DONE — `println`/`print` double-tagged a non-`Ident`/`Field`
+    argument.** `emit_print_like`'s non-f-string branch used `emit_expr`'s
+    result directly as an untagged register, which works for `Ident`/
+    `Field`/`Str`-literal arguments but broke for a `ListIndex` or
+    closure-call result (both return a *tagged* register), producing
+    malformed IR (`load i8*, i8** i8* %reg`) that clang rejected. Every
+    existing example had routed list/call results through an f-string
+    interpolation instead, so this path was never exercised. Fixed by
+    calling `Codegen::untag` on the argument before use, matching the
+    f-string branch's own handling (and, with item 17's box removed, the
+    branch no longer needs a `load` at all). See `examples/str_fixes.star` /
+    `codegen_println_of_list_index_does_not_double_tag`,
+    `runtime_println_of_list_index_and_closure_call_end_to_end`.
 
 Last actions:
-All 14 items below are **done**, each with a regression test (type-level
+All 18 items below are **done**, each with a regression test (type-level
 tests in `tests/frontend.rs`, plus a dedicated `examples/*.star` program and
 an end-to-end runtime test for anything only observable by actually running a
 compiled binary).

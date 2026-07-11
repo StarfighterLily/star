@@ -280,69 +280,69 @@ entry:
   %t146 = getelementptr inbounds [13 x i8], [13 x i8]* @.str.6, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t146, i32 %t145)
   %t147 = alloca { i8*, i8* }
-  %t179 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* null, i32 1
-  %t180 = ptrtoint { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t179 to i64
-  %t194 = bitcast void (i8*)* @closure_4_release_env to i8*
-  %t195 = call i8* @star_rc_alloc(i64 %t180, i8* %t194)
-  %t196 = bitcast i8* %t195 to { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }*
-  %t197 = load { i8*, i8* }, { i8*, i8* }* %t0
-  %t198 = load { i8*, i8* }, { i8*, i8* }* %t0
-  %t199 = extractvalue { i8*, i8* } %t198, 1
-  call void @star_rc_retain(i8* %t199)
-  %t200 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t196, i32 0, i32 0
-  store { i8*, i8* } %t197, { i8*, i8* }* %t200
-  %t201 = load i32, i32* %t15
-  %t202 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t196, i32 0, i32 1
-  store i32 %t201, i32* %t202
-  %t203 = load { i8*, i8* }, { i8*, i8* }* %t16
-  %t204 = load { i8*, i8* }, { i8*, i8* }* %t16
-  %t205 = extractvalue { i8*, i8* } %t204, 1
-  call void @star_rc_retain(i8* %t205)
-  %t206 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t196, i32 0, i32 2
-  store { i8*, i8* } %t203, { i8*, i8* }* %t206
-  %t207 = load { i8*, i8* }, { i8*, i8* }* %t69
-  %t208 = load { i8*, i8* }, { i8*, i8* }* %t69
-  %t209 = extractvalue { i8*, i8* } %t208, 1
-  call void @star_rc_retain(i8* %t209)
-  %t210 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t196, i32 0, i32 3
-  store { i8*, i8* } %t207, { i8*, i8* }* %t210
-  %t211 = load i32, i32* %t79
-  %t212 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t196, i32 0, i32 4
-  store i32 %t211, i32* %t212
-  %t213 = load { i8*, i8* }, { i8*, i8* }* %t80
-  %t214 = load { i8*, i8* }, { i8*, i8* }* %t80
-  %t215 = extractvalue { i8*, i8* } %t214, 1
-  call void @star_rc_retain(i8* %t215)
-  %t216 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t196, i32 0, i32 5
-  store { i8*, i8* } %t213, { i8*, i8* }* %t216
-  %t217 = bitcast void (i8*)* @closure_4 to i8*
-  %t218 = insertvalue { i8*, i8* } undef, i8* %t217, 0
-  %t219 = insertvalue { i8*, i8* } %t218, i8* %t195, 1
-  store { i8*, i8* } %t219, { i8*, i8* }* %t147
-  %t220 = load { i8*, i8* }, { i8*, i8* }* %t147
-  %t221 = load { i8*, i8* }, { i8*, i8* }* %t147
-  %t222 = extractvalue { i8*, i8* } %t221, 1
-  call void @star_rc_retain(i8* %t222)
-  %t223 = extractvalue { i8*, i8* } %t220, 0
-  %t224 = extractvalue { i8*, i8* } %t220, 1
-  call void @star_rc_release(i8* %t224)
-  %t225 = bitcast i8* %t223 to void (i8*)*
-  call void %t225(i8* %t224)
-  %t226 = load { i8*, i8* }, { i8*, i8* }* %t147
+  %t177 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* null, i32 1
+  %t178 = ptrtoint { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t177 to i64
+  %t192 = bitcast void (i8*)* @closure_4_release_env to i8*
+  %t193 = call i8* @star_rc_alloc(i64 %t178, i8* %t192)
+  %t194 = bitcast i8* %t193 to { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }*
+  %t195 = load { i8*, i8* }, { i8*, i8* }* %t0
+  %t196 = load { i8*, i8* }, { i8*, i8* }* %t0
+  %t197 = extractvalue { i8*, i8* } %t196, 1
+  call void @star_rc_retain(i8* %t197)
+  %t198 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t194, i32 0, i32 0
+  store { i8*, i8* } %t195, { i8*, i8* }* %t198
+  %t199 = load i32, i32* %t15
+  %t200 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t194, i32 0, i32 1
+  store i32 %t199, i32* %t200
+  %t201 = load { i8*, i8* }, { i8*, i8* }* %t16
+  %t202 = load { i8*, i8* }, { i8*, i8* }* %t16
+  %t203 = extractvalue { i8*, i8* } %t202, 1
+  call void @star_rc_retain(i8* %t203)
+  %t204 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t194, i32 0, i32 2
+  store { i8*, i8* } %t201, { i8*, i8* }* %t204
+  %t205 = load { i8*, i8* }, { i8*, i8* }* %t69
+  %t206 = load { i8*, i8* }, { i8*, i8* }* %t69
+  %t207 = extractvalue { i8*, i8* } %t206, 1
+  call void @star_rc_retain(i8* %t207)
+  %t208 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t194, i32 0, i32 3
+  store { i8*, i8* } %t205, { i8*, i8* }* %t208
+  %t209 = load i32, i32* %t79
+  %t210 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t194, i32 0, i32 4
+  store i32 %t209, i32* %t210
+  %t211 = load { i8*, i8* }, { i8*, i8* }* %t80
+  %t212 = load { i8*, i8* }, { i8*, i8* }* %t80
+  %t213 = extractvalue { i8*, i8* } %t212, 1
+  call void @star_rc_retain(i8* %t213)
+  %t214 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t194, i32 0, i32 5
+  store { i8*, i8* } %t211, { i8*, i8* }* %t214
+  %t215 = bitcast void (i8*)* @closure_4 to i8*
+  %t216 = insertvalue { i8*, i8* } undef, i8* %t215, 0
+  %t217 = insertvalue { i8*, i8* } %t216, i8* %t193, 1
+  store { i8*, i8* } %t217, { i8*, i8* }* %t147
+  %t218 = load { i8*, i8* }, { i8*, i8* }* %t147
+  %t219 = load { i8*, i8* }, { i8*, i8* }* %t147
+  %t220 = extractvalue { i8*, i8* } %t219, 1
+  call void @star_rc_retain(i8* %t220)
+  %t221 = extractvalue { i8*, i8* } %t218, 0
+  %t222 = extractvalue { i8*, i8* } %t218, 1
+  call void @star_rc_release(i8* %t222)
+  %t223 = bitcast i8* %t221 to void (i8*)*
+  call void %t223(i8* %t222)
+  %t224 = load { i8*, i8* }, { i8*, i8* }* %t147
+  %t225 = extractvalue { i8*, i8* } %t224, 1
+  call void @star_rc_release(i8* %t225)
+  %t226 = load { i8*, i8* }, { i8*, i8* }* %t80
   %t227 = extractvalue { i8*, i8* } %t226, 1
   call void @star_rc_release(i8* %t227)
-  %t228 = load { i8*, i8* }, { i8*, i8* }* %t80
+  %t228 = load { i8*, i8* }, { i8*, i8* }* %t69
   %t229 = extractvalue { i8*, i8* } %t228, 1
   call void @star_rc_release(i8* %t229)
-  %t230 = load { i8*, i8* }, { i8*, i8* }* %t69
+  %t230 = load { i8*, i8* }, { i8*, i8* }* %t16
   %t231 = extractvalue { i8*, i8* } %t230, 1
   call void @star_rc_release(i8* %t231)
-  %t232 = load { i8*, i8* }, { i8*, i8* }* %t16
+  %t232 = load { i8*, i8* }, { i8*, i8* }* %t0
   %t233 = extractvalue { i8*, i8* } %t232, 1
   call void @star_rc_release(i8* %t233)
-  %t234 = load { i8*, i8* }, { i8*, i8* }* %t0
-  %t235 = extractvalue { i8*, i8* } %t234, 1
-  call void @star_rc_release(i8* %t235)
   ret i32 0
 }
 
@@ -499,48 +499,45 @@ entry:
   %t165 = load { i8*, i8* }, { i8*, i8* }* %t164
   %t166 = alloca { i8*, i8* }
   store { i8*, i8* } %t165, { i8*, i8* }* %t166
-  %t168 = getelementptr inbounds { i64, i8*, [23 x i8] }, { i64, i8*, [23 x i8] }* @.str.7, i64 0, i32 2, i64 0
-  %t167 = alloca i8*
-  store i8* %t168, i8** %t167
-  %t169 = load i8*, i8** %t167
-  call i32 (i8*, ...) @printf(i8* %t169)
-  %t170 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.8, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t170)
-  %t171 = load { i8*, i8* }, { i8*, i8* }* %t166
+  %t167 = getelementptr inbounds { i64, i8*, [23 x i8] }, { i64, i8*, [23 x i8] }* @.str.7, i64 0, i32 2, i64 0
+  call i32 (i8*, ...) @printf(i8* %t167)
+  %t168 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.8, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t168)
+  %t169 = load { i8*, i8* }, { i8*, i8* }* %t166
+  %t170 = extractvalue { i8*, i8* } %t169, 1
+  call void @star_rc_release(i8* %t170)
+  %t171 = load { i8*, i8* }, { i8*, i8* }* %t160
   %t172 = extractvalue { i8*, i8* } %t171, 1
   call void @star_rc_release(i8* %t172)
-  %t173 = load { i8*, i8* }, { i8*, i8* }* %t160
+  %t173 = load { i8*, i8* }, { i8*, i8* }* %t157
   %t174 = extractvalue { i8*, i8* } %t173, 1
   call void @star_rc_release(i8* %t174)
-  %t175 = load { i8*, i8* }, { i8*, i8* }* %t157
+  %t175 = load { i8*, i8* }, { i8*, i8* }* %t151
   %t176 = extractvalue { i8*, i8* } %t175, 1
   call void @star_rc_release(i8* %t176)
-  %t177 = load { i8*, i8* }, { i8*, i8* }* %t151
-  %t178 = extractvalue { i8*, i8* } %t177, 1
-  call void @star_rc_release(i8* %t178)
   ret void
 }
 
 
 define void @closure_4_release_env(i8* %envp) {
 entry:
-  %t181 = bitcast i8* %envp to { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }*
-  %t182 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t181, i32 0, i32 0
-  %t183 = load { i8*, i8* }, { i8*, i8* }* %t182
-  %t184 = extractvalue { i8*, i8* } %t183, 1
-  call void @star_rc_release(i8* %t184)
-  %t185 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t181, i32 0, i32 2
-  %t186 = load { i8*, i8* }, { i8*, i8* }* %t185
-  %t187 = extractvalue { i8*, i8* } %t186, 1
-  call void @star_rc_release(i8* %t187)
-  %t188 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t181, i32 0, i32 3
-  %t189 = load { i8*, i8* }, { i8*, i8* }* %t188
-  %t190 = extractvalue { i8*, i8* } %t189, 1
-  call void @star_rc_release(i8* %t190)
-  %t191 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t181, i32 0, i32 5
-  %t192 = load { i8*, i8* }, { i8*, i8* }* %t191
-  %t193 = extractvalue { i8*, i8* } %t192, 1
-  call void @star_rc_release(i8* %t193)
+  %t179 = bitcast i8* %envp to { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }*
+  %t180 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t179, i32 0, i32 0
+  %t181 = load { i8*, i8* }, { i8*, i8* }* %t180
+  %t182 = extractvalue { i8*, i8* } %t181, 1
+  call void @star_rc_release(i8* %t182)
+  %t183 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t179, i32 0, i32 2
+  %t184 = load { i8*, i8* }, { i8*, i8* }* %t183
+  %t185 = extractvalue { i8*, i8* } %t184, 1
+  call void @star_rc_release(i8* %t185)
+  %t186 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t179, i32 0, i32 3
+  %t187 = load { i8*, i8* }, { i8*, i8* }* %t186
+  %t188 = extractvalue { i8*, i8* } %t187, 1
+  call void @star_rc_release(i8* %t188)
+  %t189 = getelementptr inbounds { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }, { { i8*, i8* }, i32, { i8*, i8* }, { i8*, i8* }, i32, { i8*, i8* } }* %t179, i32 0, i32 5
+  %t190 = load { i8*, i8* }, { i8*, i8* }* %t189
+  %t191 = extractvalue { i8*, i8* } %t190, 1
+  call void @star_rc_release(i8* %t191)
   ret void
 }
 

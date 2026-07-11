@@ -165,11 +165,8 @@ for_step_2:
   store i32 %t27, i32* %t0
   br label %for_cond_0
 for_end_3:
-  %t29 = getelementptr inbounds { i64, i8*, [14 x i8] }, { i64, i8*, [14 x i8] }* @.str.1, i64 0, i32 2, i64 0
-  %t28 = alloca i8*
-  store i8* %t29, i8** %t28
-  %t30 = load i8*, i8** %t28
-  call i32 (i8*, ...) @printf(i8* %t30)
+  %t28 = getelementptr inbounds { i64, i8*, [14 x i8] }, { i64, i8*, [14 x i8] }* @.str.1, i64 0, i32 2, i64 0
+  call i32 (i8*, ...) @printf(i8* %t28)
   ret i32 0
 }
 

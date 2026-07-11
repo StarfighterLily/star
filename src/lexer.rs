@@ -268,41 +268,65 @@ impl<'src> Lexer<'src> {
     /// At the beginning of a logical line, measure indentation and emit
     /// INDENT/DEDENT tokens relative to the indentation stack.
     fn handle_line_start(&mut self) {
-        let line_start = self.pos;
-        let mut width = 0;
-        let mut i = self.pos;
-        while i < self.bytes.len() {
-            match self.bytes[i] {
-                b' ' => width += 1,
-                b'\t' => width = (width / TAB_WIDTH + 1) * TAB_WIDTH,
-                _ => break,
+        // Loop past any run of blank/comment-only lines (each contributes no
+        // structural tokens and must not affect the indentation stack) until
+        // a real content line is found, then measure its indentation exactly
+        // once. Looping here (rather than a single skip-and-return) matters
+        // because `tokenize()`'s driver loop calls this function once, then
+        // `scan_line_content()` once, per iteration -- if a blank/comment
+        // line's own trailing `\n` were consumed without also resolving the
+        // *next* line's indentation before returning, `scan_line_content()`
+        // would scan that next line's tokens with its indentation never
+        // measured, silently dropping the `Indent`/`Dedent` it needs.
+        loop {
+            let line_start = self.pos;
+            let mut width = 0;
+            let mut i = self.pos;
+            while i < self.bytes.len() {
+                match self.bytes[i] {
+                    b' ' => width += 1,
+                    b'\t' => width = (width / TAB_WIDTH + 1) * TAB_WIDTH,
+                    _ => break,
+                }
+                i += 1;
             }
-            i += 1;
-        }
 
-        // Skip blank or comment-only lines without emitting structural tokens.
-        if i >= self.bytes.len() || self.bytes[i] == b'\n' || self.bytes[i] == b'#' {
+            if i >= self.bytes.len() {
+                self.pos = i;
+                return;
+            }
+
+            // Skip blank or comment-only lines without emitting structural
+            // tokens -- consuming the line's own trailing `\n` too, so
+            // `scan_line_content()` never sees it and can't emit a spurious
+            // `Newline` for a line that's supposed to produce no tokens.
+            if self.bytes[i] == b'\n' || self.bytes[i] == b'#' {
+                self.pos = i;
+                self.skip_to_line_end();
+                if self.pos < self.bytes.len() && self.bytes[self.pos] == b'\n' {
+                    self.pos += 1;
+                }
+                continue;
+            }
+
             self.pos = i;
-            self.skip_to_line_end();
+            let current = *self.indents.last().unwrap();
+            if width > current {
+                self.indents.push(width);
+                self.push(TokenKind::Indent, line_start, self.pos);
+            } else if width < current {
+                while *self.indents.last().unwrap() > width {
+                    self.indents.pop();
+                    self.push(TokenKind::Dedent, line_start, self.pos);
+                }
+                if *self.indents.last().unwrap() != width {
+                    self.errors.push(Diagnostic::error(
+                        "inconsistent indentation",
+                        Span::new(line_start, self.pos),
+                    ));
+                }
+            }
             return;
-        }
-
-        self.pos = i;
-        let current = *self.indents.last().unwrap();
-        if width > current {
-            self.indents.push(width);
-            self.push(TokenKind::Indent, line_start, self.pos);
-        } else if width < current {
-            while *self.indents.last().unwrap() > width {
-                self.indents.pop();
-                self.push(TokenKind::Dedent, line_start, self.pos);
-            }
-            if *self.indents.last().unwrap() != width {
-                self.errors.push(Diagnostic::error(
-                    "inconsistent indentation",
-                    Span::new(line_start, self.pos),
-                ));
-            }
         }
     }
 

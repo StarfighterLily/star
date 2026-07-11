@@ -52,6 +52,9 @@ do:
   %hdr_i8 = getelementptr inbounds i8, i8* %p, i64 -16
   %hdr = bitcast i8* %hdr_i8 to i64*
   %rc = load i64, i64* %hdr
+  %is_immortal = icmp eq i64 %rc, -1
+  br i1 %is_immortal, label %done, label %incr
+incr:
   %rc1 = add i64 %rc, 1
   store i64 %rc1, i64* %hdr
   br label %done
@@ -67,6 +70,9 @@ do:
   %hdr_i8 = getelementptr inbounds i8, i8* %p, i64 -16
   %hdr = bitcast i8* %hdr_i8 to i64*
   %rc = load i64, i64* %hdr
+  %is_immortal = icmp eq i64 %rc, -1
+  br i1 %is_immortal, label %done, label %decr
+decr:
   %rc1 = sub i64 %rc, 1
   store i64 %rc1, i64* %hdr
   %iszero = icmp eq i64 %rc1, 0

@@ -33,11 +33,22 @@ pub struct Parser {
     /// (rewritten to the mangled name `crate::modules` will have produced)
     /// or a same-file enum-variant/struct pattern.
     import_aliases: HashSet<String>,
+    /// Set immediately after a block-closing `Dedent` is consumed (by
+    /// `parse_block`/`parse_match`) and cleared at the top of every
+    /// `advance()`, so it's `true` only when nothing has been consumed since.
+    /// A value expression that ends in an indented block (a block-bodied
+    /// lambda, an `if`-expression, a `match`-expression) already consumes,
+    /// via that nested block, the very `Newline`/`Dedent` that would
+    /// otherwise terminate the *enclosing* statement's own line -- so
+    /// `expect_line_end()` treats this flag as an already-satisfied
+    /// terminator instead of erroring on whatever token starts the next
+    /// statement.
+    block_just_closed: bool,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, errors: Vec::new(), import_aliases: HashSet::new() }
+        Self { tokens, pos: 0, errors: Vec::new(), import_aliases: HashSet::new(), block_just_closed: false }
     }
 
     /// Parse a complete module from source, running the lexer first.
@@ -143,6 +154,7 @@ impl Parser {
     }
 
     fn advance(&mut self) -> Token {
+        self.block_just_closed = false;
         let tok = self.tokens[self.pos].clone();
         if self.pos < self.tokens.len() - 1 {
             self.pos += 1;
@@ -184,9 +196,14 @@ impl Parser {
         }
     }
 
-    /// Consume a newline or accept EOF/Dedent as an implicit line end.
+    /// Consume a newline or accept EOF/Dedent as an implicit line end. Also
+    /// accepts `block_just_closed`: a value expression that ended in an
+    /// indented block already consumed its own terminating Dedent via that
+    /// nested block, so there's nothing left here to consume.
     fn expect_line_end(&mut self) -> Option<()> {
-        if self.at(&TokenKind::Newline) {
+        if self.block_just_closed {
+            Some(())
+        } else if self.at(&TokenKind::Newline) {
             self.advance();
             Some(())
         } else if self.at(&TokenKind::Eof) || self.at(&TokenKind::Dedent) {

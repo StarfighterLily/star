@@ -20,6 +20,7 @@ impl Parser {
             self.skip_newlines();
         }
         self.expect(&TokenKind::Dedent)?;
+        self.block_just_closed = true;
         let span = start.to(self.prev_span());
         Some(Block { stmts, span })
     }

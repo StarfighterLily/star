@@ -366,11 +366,8 @@ frame_alloc_ok_1:
   store [4 x <4 x float>] %t147, [4 x <4 x float>]* %t148
   %t149 = load %Big, %Big* %t8
   store %Big %t149, %Big* %t7
-  %t151 = getelementptr inbounds { i64, i8*, [65 x i8] }, { i64, i8*, [65 x i8] }* @.str.1, i64 0, i32 2, i64 0
-  %t150 = alloca i8*
-  store i8* %t151, i8** %t150
-  %t152 = load i8*, i8** %t150
-  call i32 (i8*, ...) @printf(i8* %t152)
+  %t150 = getelementptr inbounds { i64, i8*, [65 x i8] }, { i64, i8*, [65 x i8] }* @.str.1, i64 0, i32 2, i64 0
+  call i32 (i8*, ...) @printf(i8* %t150)
   store i64 %t0, i64* @frame.off
   ret i32 0
 }

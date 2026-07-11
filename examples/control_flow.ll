@@ -104,49 +104,37 @@ match_scrutinee_3:
   %t4 = icmp eq i32 %t1, 0
   br i1 %t4, label %match_then_0, label %match_next_0
 match_then_0:
-  %t6 = getelementptr inbounds { i64, i8*, [11 x i8] }, { i64, i8*, [11 x i8] }* @.str.0, i64 0, i32 2, i64 0
-  %t5 = alloca i8*
-  store i8* %t6, i8** %t5
-  %t7 = load i8*, i8** %t5
-  call i32 (i8*, ...) @printf(i8* %t7)
-  %t8 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.1, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t8)
+  %t5 = getelementptr inbounds { i64, i8*, [11 x i8] }, { i64, i8*, [11 x i8] }* @.str.0, i64 0, i32 2, i64 0
+  call i32 (i8*, ...) @printf(i8* %t5)
+  %t6 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.1, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t6)
   br label %match_end_2
 match_next_0:
-  %t9 = icmp eq i32 %t1, 1
-  br i1 %t9, label %match_then_1, label %match_next_1
+  %t7 = icmp eq i32 %t1, 1
+  br i1 %t7, label %match_then_1, label %match_next_1
 match_then_1:
-  %t11 = getelementptr inbounds { i64, i8*, [11 x i8] }, { i64, i8*, [11 x i8] }* @.str.2, i64 0, i32 2, i64 0
-  %t10 = alloca i8*
-  store i8* %t11, i8** %t10
-  %t12 = load i8*, i8** %t10
-  call i32 (i8*, ...) @printf(i8* %t12)
-  %t13 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.3, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t13)
+  %t8 = getelementptr inbounds { i64, i8*, [11 x i8] }, { i64, i8*, [11 x i8] }* @.str.2, i64 0, i32 2, i64 0
+  call i32 (i8*, ...) @printf(i8* %t8)
+  %t9 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.3, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t9)
   br label %match_end_2
 match_next_1:
-  %t14 = icmp eq i32 %t1, 2
-  br i1 %t14, label %match_then_2, label %match_next_2
+  %t10 = icmp eq i32 %t1, 2
+  br i1 %t10, label %match_then_2, label %match_next_2
 match_then_2:
-  %t16 = getelementptr inbounds { i64, i8*, [10 x i8] }, { i64, i8*, [10 x i8] }* @.str.4, i64 0, i32 2, i64 0
-  %t15 = alloca i8*
-  store i8* %t16, i8** %t15
-  %t17 = load i8*, i8** %t15
-  call i32 (i8*, ...) @printf(i8* %t17)
-  %t18 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.5, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t18)
+  %t11 = getelementptr inbounds { i64, i8*, [10 x i8] }, { i64, i8*, [10 x i8] }* @.str.4, i64 0, i32 2, i64 0
+  call i32 (i8*, ...) @printf(i8* %t11)
+  %t12 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.5, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t12)
   br label %match_end_2
 match_next_2:
-  %t19 = icmp eq i32 %t1, 3
-  br i1 %t19, label %match_then_3, label %match_next_3
+  %t13 = icmp eq i32 %t1, 3
+  br i1 %t13, label %match_then_3, label %match_next_3
 match_then_3:
-  %t21 = getelementptr inbounds { i64, i8*, [10 x i8] }, { i64, i8*, [10 x i8] }* @.str.6, i64 0, i32 2, i64 0
-  %t20 = alloca i8*
-  store i8* %t21, i8** %t20
-  %t22 = load i8*, i8** %t20
-  call i32 (i8*, ...) @printf(i8* %t22)
-  %t23 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.7, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t23)
+  %t14 = getelementptr inbounds { i64, i8*, [10 x i8] }, { i64, i8*, [10 x i8] }* @.str.6, i64 0, i32 2, i64 0
+  call i32 (i8*, ...) @printf(i8* %t14)
+  %t15 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.7, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t15)
   br label %match_end_2
 match_next_3:
   br label %match_end_2

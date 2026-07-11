@@ -78,20 +78,13 @@ impl Codegen {
         let helper = if retain { "@star_rc_retain" } else { "@star_rc_release" };
         match ty {
             Ty::Str => {
-                // A `Str`-typed storage slot's own content is *not* the
-                // real backing pointer -- every producer of a `Str` value
-                // (a literal, `concat`, an `Ident`/`Field`/`ListIndex` read)
-                // returns one level of indirection short of it (see
-                // `Codegen::emit_raw_str_ptr`'s doc comment), and every
-                // consumer of `emit_expr`'s result compensates with one
-                // extra load. `ptr` here is a storage *address* (matching
-                // what `emit_expr` would read in one load), so reaching the
-                // real pointer this call needs to retain/release takes the
-                // same two loads `emit_raw_str_ptr`/`emit_print_like` do.
-                let first = self.tmp_name();
-                self.line(&format!("  {} = load i8*, i8** {}", first, ptr));
+                // `ptr` is a storage address holding the real `i8*` backing
+                // pointer directly (see `Codegen::emit_raw_str_ptr`'s doc
+                // comment -- a `Str` value has no extra boxing indirection),
+                // so one load reaches the pointer this call needs to
+                // retain/release.
                 let real = self.tmp_name();
-                self.line(&format!("  {} = load i8*, i8** {}", real, first));
+                self.line(&format!("  {} = load i8*, i8** {}", real, ptr));
                 self.line(&format!("  call void {}(i8* {})", helper, real));
             }
             Ty::Closure(..) => {
