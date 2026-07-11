@@ -16,6 +16,7 @@ impl Parser {
             TokenKind::Sequence => self.parse_sequence().map(Item::Sequence),
             TokenKind::Enum => self.parse_enum().map(Item::Enum),
             TokenKind::Import => self.parse_import().map(Item::Import),
+            TokenKind::Extern => self.parse_extern_fn().map(Item::ExternFn),
             TokenKind::At => {
                 let span = self.peek_span();
                 self.error("decorators are only supported on struct fields", span);
@@ -52,6 +53,30 @@ impl Parser {
         let span = start.to(self.prev_span());
         self.import_aliases.insert(alias.clone());
         Some(ImportDecl { alias, path, span })
+    }
+
+    /// `extern "C" fn name(params) -> ret` - a body-less foreign function
+    /// declaration. Reuses `parse_fn_sig` (the same signature grammar
+    /// `parse_fn`/trait methods use) since only the trailing body differs:
+    /// an extern declaration ends at the line, not a `:` + indented block.
+    fn parse_extern_fn(&mut self) -> Option<ExternFnDecl> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Extern)?;
+        let abi = match self.peek_kind() {
+            TokenKind::Str(s) => {
+                self.advance();
+                s
+            }
+            other => {
+                let span = self.peek_span();
+                self.error(format!("expected a string literal ABI (e.g. \"C\"), found {}", other.describe()), span);
+                return None;
+            }
+        };
+        let sig = self.parse_fn_sig()?;
+        self.expect_line_end()?;
+        let span = start.to(self.prev_span());
+        Some(ExternFnDecl { abi, sig, span })
     }
 
     fn parse_arena(&mut self) -> Option<ArenaDecl> {

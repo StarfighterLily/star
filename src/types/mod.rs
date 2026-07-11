@@ -49,6 +49,12 @@ pub enum Ty {
     /// Lowered to a `{ i8* fn_ptr, i8* env_ptr }` "fat pointer" pair -- see
     /// `crate::codegen::Codegen::emit_closure_lit`.
     Closure(Vec<Ty>, Box<Ty>),
+    /// An opaque foreign pointer (`ptr`), lowered to a bare `i8*` with no RC
+    /// header -- unlike `Ty::Str`, a `Ty::Ptr` value is never
+    /// retained/released (see `contains_rc`). Exists for `extern "C"` FFI:
+    /// C handles/buffers/`char*` results that don't fit any other Star type.
+    /// See `crate::codegen::builtins`'s `null_ptr`/`is_null`/`ptr_to_str`.
+    Ptr,
 }
 
 impl Ty {
@@ -119,6 +125,13 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "rand" => Some(Ty::Float),
         "rand_range" => Some(Ty::Int),
         "rand_seed" => Some(Ty::Named("unknown".into())),
+        // `extern "C"` FFI helpers -- see `crate::codegen::builtins` for
+        // their lowering and `Checker::check_extern_fn` for why a returned
+        // `char*` must be bridged through `ptr_to_str` rather than treated
+        // as `str` directly.
+        "null_ptr" => Some(Ty::Ptr),
+        "is_null" => Some(Ty::Bool),
+        "ptr_to_str" => Some(Ty::Str),
         _ => None,
     }
 }
@@ -272,6 +285,13 @@ impl Checker {
                     self.functions.insert(f.sig.name.clone(), (param_tys, ret_ty));
                 }
                 Item::Fn(_) => {}
+                Item::ExternFn(e) => {
+                    let param_tys: Vec<Ty> = e.sig.params.iter().map(|p| {
+                        p.ty.as_ref().and_then(|t| self.resolve_type(t)).unwrap_or(Ty::Named("infer".into()))
+                    }).collect();
+                    let ret_ty = e.sig.ret.as_ref().and_then(|t| self.resolve_type(t));
+                    self.functions.insert(e.sig.name.clone(), (param_tys, ret_ty));
+                }
                 Item::Impl(blk) => {
                     for m in &blk.methods {
                         let param_tys: Vec<Ty> = m.sig.params.iter().map(|p| {
@@ -363,7 +383,78 @@ impl Checker {
             // Resolved (and stripped) by `crate::modules` before the checker
             // ever runs; never present past this point.
             Item::Import(_) => None,
+            Item::ExternFn(e) => self.check_extern_fn(e),
         }
+    }
+
+    /// The types an `extern "C"` signature may use, in either parameter or
+    /// return position -- everything else (struct/`List`/`GenRef`/`Enum`/
+    /// `Closure`) has no defined C-ABI layout in this compiler and is
+    /// rejected outright rather than silently emitting IR whose calling
+    /// convention doesn't match the real foreign symbol.
+    fn is_ffi_scalar_ty(ty: &Ty) -> bool {
+        matches!(ty, Ty::Int | Ty::Float | Ty::Ptr)
+    }
+
+    /// Type-check an `extern "C" fn` declaration: register (already done in
+    /// `check`'s pass 1) and validate its signature, producing a body-less
+    /// `TypedItem::ExternFn`. Unlike `check_fn`, this never calls
+    /// `check_block` -- there is no body to check.
+    fn check_extern_fn(&mut self, e: &ExternFnDecl) -> Option<TypedItem> {
+        if e.abi != "C" {
+            self.error(format!("unsupported extern ABI \"{}\"; only \"C\" is supported", e.abi), e.span);
+        }
+        if !e.sig.type_params.is_empty() {
+            self.error("extern \"C\" functions cannot be generic", e.span);
+        }
+        // Star's grammar always parses `Name(args)` as a struct-literal
+        // constructor when `Name` starts with an uppercase letter
+        // (`Vec3(0, 0, 0)`, `Player(health = 100)`, ... -- see
+        // `Parser::parse_primary`'s `starts_uppercase` check in
+        // `src/parser/expr.rs`), regardless of whether any such struct is
+        // actually declared. Since the declared name here must exactly
+        // match the real foreign symbol (there's no rename/alias syntax),
+        // an extern fn bound to an uppercase-starting C symbol (common in
+        // the Win32 API, e.g. `CreateThread`) would parse at every call
+        // site as an attempt to construct a nonexistent struct instead of
+        // a call -- reported at the *call* site as a confusing "unknown
+        // struct" error with no hint of the real cause. Catching it here,
+        // at the declaration, gives an immediate and actionable diagnostic
+        // instead.
+        if e.sig.name.chars().next().is_some_and(|c| c.is_uppercase()) {
+            self.error(
+                format!(
+                    "extern \"C\" fn `{}` starts with an uppercase letter, which Star always parses as a struct-literal constructor at the call site (`Name(args)`); this symbol cannot be called directly under the current grammar",
+                    e.sig.name
+                ),
+                e.span,
+            );
+        }
+        let sig = self.check_fn_sig(&e.sig)?;
+        for p in &sig.params {
+            // `str` is allowed as a parameter (a Star `Str`'s payload is
+            // already a bare `i8*`, directly ABI-compatible with `const
+            // char*` for read-only use -- see `Codegen::emit_extern_call`)
+            // but not as a return type (see the check below): a `char*`
+            // handed back from C has no RC header, so it must go through
+            // the `ptr_to_str` builtin rather than being treated as `str`.
+            if p.ty == Ty::Str || Self::is_ffi_scalar_ty(&p.ty) {
+                continue;
+            }
+            self.error(
+                format!("extern \"C\" parameter `{}` has unsupported type `{:?}`; only int, float, ptr, and str are allowed", p.name, p.ty),
+                p.span,
+            );
+        }
+        if let Some(ret) = &sig.ret {
+            if !Self::is_ffi_scalar_ty(ret) {
+                self.error(
+                    format!("extern \"C\" return type `{:?}` is unsupported; only int, float, and ptr are allowed (use `ptr_to_str` to bridge a returned `char*`)", ret),
+                    e.span,
+                );
+            }
+        }
+        Some(TypedItem::ExternFn(sig))
     }
 
     fn check_enum(&mut self, e: &EnumDef) -> TypedEnumDef {
@@ -683,6 +774,7 @@ impl Checker {
                 "Vec3" => Ty::Vec3,
                 "Vec4" => Ty::Vec4,
                 "Mat4" => Ty::Mat4,
+                "ptr" => Ty::Ptr,
                 _ => Ty::Named(name.clone()),
             }),
             Type::Generic(name, args) => {
@@ -981,6 +1073,10 @@ fn mangle_ty(ty: &Ty) -> String {
             let param_str: Vec<String> = params.iter().map(mangle_ty).collect();
             format!("Fn_{}_{}", param_str.join("_"), mangle_ty(ret))
         }
+        // Like `Closure` above: `ptr` is never used as a generic type
+        // argument (extern fns can't be generic, see
+        // `Checker::check_extern_fn`); exists for match exhaustiveness.
+        Ty::Ptr => "ptr".into(),
     }
 }
 
@@ -1017,6 +1113,7 @@ fn ty_to_type(ty: &Ty) -> Type {
         Ty::GenRef(inner) => Type::Generic("GenRef".into(), vec![ty_to_type(inner)]),
         Ty::List(inner) => Type::Generic("List".into(), vec![ty_to_type(inner)]),
         Ty::Closure(params, ret) => Type::Fn(params.iter().map(ty_to_type).collect(), Box::new(ty_to_type(ret))),
+        Ty::Ptr => Type::Named("ptr".into()),
     }
 }
 

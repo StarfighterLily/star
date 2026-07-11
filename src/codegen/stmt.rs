@@ -120,6 +120,17 @@ impl Codegen {
         }
     }
 
+    /// `extern "C" fn name(params) -> ret`: a bare LLVM `declare`, no body.
+    /// Parameter names aren't needed in a `declare` (LLVM's textual IR only
+    /// requires them on `define`), so this is just a type-signature dump --
+    /// contrast with `emit_fn` below, which allocas/stores every parameter
+    /// and walks a real body.
+    pub(super) fn emit_extern_fn_decl(&mut self, sig: &TypedFnSig) {
+        let ret_ty = match &sig.ret { Some(t) => self.llvm_ty(t), None => "void".into() };
+        let params: Vec<String> = sig.params.iter().map(|p| self.llvm_ty(&p.ty)).collect();
+        self.line(&format!("declare {} @{}({})", ret_ty, sig.name, params.join(", ")));
+    }
+
     pub(super) fn emit_fn(&mut self, f: &TypedFnDef) {
         self.symbols.clear();
         self.owned_stack.clear();

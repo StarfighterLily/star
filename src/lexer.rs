@@ -53,6 +53,8 @@ pub enum TokenKind {
     /// `import "path.star" as alias`.
     Import,
     As,
+    /// `extern "C" fn ...` - a foreign function declaration with no body.
+    Extern,
     // Memory / concurrency keywords (reserved now, used in later milestones).
     Frame,
     Arena,
@@ -138,6 +140,7 @@ impl TokenKind {
             TokenKind::Enum => "'enum'".into(),
             TokenKind::Import => "'import'".into(),
             TokenKind::As => "'as'".into(),
+            TokenKind::Extern => "'extern'".into(),
             TokenKind::Frame => "'frame'".into(),
             TokenKind::Arena => "'arena'".into(),
             TokenKind::Swarm => "'swarm'".into(),
@@ -686,6 +689,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "enum" => TokenKind::Enum,
         "import" => TokenKind::Import,
         "as" => TokenKind::As,
+        "extern" => TokenKind::Extern,
         "frame" => TokenKind::Frame,
         "arena" => TokenKind::Arena,
         "swarm" => TokenKind::Swarm,

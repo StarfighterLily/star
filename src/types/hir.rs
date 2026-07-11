@@ -28,6 +28,10 @@ pub enum TypedItem {
     Fn(TypedFnDef),
     Arena(TypedArenaDecl),
     Enum(TypedEnumDef),
+    /// A checked `extern "C" fn` declaration -- signature only, no body
+    /// (see `crate::ast::ExternFnDecl`). `codegen` lowers this to a bare
+    /// `declare` rather than a `define` (see `Codegen::emit`).
+    ExternFn(TypedFnSig),
 }
 
 /// A type-checked enum declaration.

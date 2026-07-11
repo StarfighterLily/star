@@ -119,6 +119,13 @@ pub struct Codegen {
     /// program with more than one `par`/`swarm` statement -- see
     /// `par_pool::ensure_par_pool_emitted`.
     par_pool_emitted: bool,
+    /// Names of every `extern "C" fn` declared in the module, populated
+    /// before any function body is emitted (see `emit`). Consulted by
+    /// `TypedExpr::Call` codegen (`expr.rs`) to route a call through
+    /// `emit_extern_call` instead of the ordinary `emit_call_expr` --
+    /// they need different argument-passing conventions for RC'd (`str`)
+    /// arguments, see `emit_extern_call`'s own doc comment.
+    extern_fns: std::collections::HashSet<String>,
 }
 
 impl Codegen {
@@ -152,6 +159,7 @@ impl Codegen {
             owned_stack: Vec::new(),
             fn_value_thunks: std::collections::HashMap::new(),
             par_pool_emitted: false,
+            extern_fns: std::collections::HashSet::new(),
         }
     }
 
@@ -163,11 +171,22 @@ impl Codegen {
 
         self.emit_builtins();
 
+        // Register every extern fn's name before any function body is
+        // emitted, so a call to one (from anywhere in the module,
+        // regardless of declaration order) is recognized by
+        // `TypedExpr::Call` codegen -- see `extern_fns`'s own doc comment.
+        for item in &module.items {
+            if let TypedItem::ExternFn(sig) = item {
+                self.extern_fns.insert(sig.name.clone());
+            }
+        }
+
         for item in &module.items {
             match item {
                 TypedItem::Struct(s) => self.emit_struct_decl(s),
                 TypedItem::Arena(a) => self.emit_arena_decl(a),
                 TypedItem::Enum(e) => self.emit_enum_decl(e),
+                TypedItem::ExternFn(sig) => self.emit_extern_fn_decl(sig),
                 _ => {}
             }
         }
@@ -398,6 +417,7 @@ impl Codegen {
             // `{ i8*, i8* }`: two pointers, 8 bytes each on this compiler's
             // sole `x86_64-w64-windows-gnu` target.
             Ty::Closure(..) => 16,
+            Ty::Ptr => 8,
         }
     }
 
@@ -429,6 +449,7 @@ impl Codegen {
             // build the real function-pointer type at a call site, via
             // `closure_fn_ptr_ty` -- see `crate::codegen::closure`).
             Ty::Closure(..) => "{ i8*, i8* }".into(),
+            Ty::Ptr => "i8*".into(),
         }
     }
 
@@ -492,6 +513,7 @@ impl Codegen {
             Ty::Float => "0.0".into(),
             Ty::Bool => "false".into(),
             Ty::Str => "null".into(),
+            Ty::Ptr => "null".into(),
             Ty::Enum(n) if !self.enum_is_payload(n) => "0".into(),
             Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat4 | Ty::Named(_) | Ty::GenRef(_) | Ty::Enum(_) | Ty::Closure(..) | Ty::List(_) => "zeroinitializer".into(),
         }

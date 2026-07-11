@@ -149,6 +149,45 @@ impl Codegen {
         }
     }
 
+    /// A call to a user-declared `extern "C" fn`: `call @name(args...)`,
+    /// like `emit_call_expr`'s free-function path, but with a different
+    /// convention for `str` arguments. `emit_call_expr` assumes the callee
+    /// (an ordinary Star function) takes ownership of any RC'd argument and
+    /// releases it at its own scope exit (see `emit_fn`'s `track_owned` in
+    /// `stmt.rs`) -- an extern C function never calls `star_rc_release`, so
+    /// passing a `str` straight through that convention would retain once
+    /// (via `emit_expr` reading the argument) and never release it, leaking
+    /// one refcount per call. `emit_raw_str_ptr` already implements exactly
+    /// the right convention for a transient read (extract the raw `i8*`,
+    /// balance any borrowed retain back out immediately) -- the same one
+    /// `printf`/`len`/`concat` use -- so reuse it here instead of duplicating
+    /// the retain/release bookkeeping.
+    fn emit_extern_call(&mut self, name: &str, args: &[TypedExpr], expr: &TypedExpr) -> String {
+        let call_args: Vec<String> = args.iter().map(|a| {
+            let ty = self.expr_ty(a);
+            if ty == Ty::Str {
+                format!("i8* {}", self.emit_raw_str_ptr(a))
+            } else {
+                let reg = self.emit_expr(a);
+                let ats = self.llvm_ty(&ty);
+                let clean_val = reg.strip_prefix(&format!("{} ", ats)).unwrap_or(&reg).to_string();
+                format!("{} {}", ats, clean_val)
+            }
+        }).collect();
+        let ret_ty = match &self.expr_ty(expr) {
+            Ty::Named(n) if n == "unknown" => "void".to_string(),
+            other => self.llvm_ty(other),
+        };
+        if ret_ty == "void" {
+            self.line(&format!("  call void @{}({})", name, call_args.join(", ")));
+            "%undef".into()
+        } else {
+            let ret = self.tmp_name();
+            self.line(&format!("  {} = call {} @{}({})", ret, ret_ty, name, call_args.join(", ")));
+            format!("{} {}", ret_ty, ret)
+        }
+    }
+
     /// Short-circuit lowering for `&&`/`and` and `||`/`or`: `rhs` is only
     /// evaluated when its value could actually change the result (mirrors
     /// every mainstream language's logical-operator semantics, and matters
@@ -295,6 +334,10 @@ impl Codegen {
                     Some("rand") => self.emit_rand(),
                     Some("rand_range") => self.emit_rand_range(args),
                     Some("rand_seed") => { self.emit_rand_seed(args); "%undef".into() }
+                    Some("null_ptr") => self.emit_null_ptr(),
+                    Some("is_null") => self.emit_is_null(args),
+                    Some("ptr_to_str") => self.emit_ptr_to_str(args),
+                    Some(name) if self.extern_fns.contains(name) => self.emit_extern_call(name, args, expr),
                     _ => self.emit_call_expr(callee, args, expr),
                 }
             }

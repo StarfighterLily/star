@@ -46,6 +46,16 @@ enum Command {
         /// `--opt-level` if both are given.
         #[arg(long)]
         release: bool,
+        /// Link against an additional library (passed through to clang as
+        /// `-l<name>`), e.g. `-l SDL2`. Repeatable. Needed for `extern "C"
+        /// fn` declarations that bind a symbol from a library beyond the
+        /// ones already linked by default (libc/kernel32 on this target).
+        #[arg(short = 'l', long = "lib")]
+        libs: Vec<String>,
+        /// Add a library search directory (passed through to clang as
+        /// `-L<path>`), e.g. `-L C:\SDL2\lib`. Repeatable.
+        #[arg(short = 'L', long = "lib-path")]
+        lib_paths: Vec<String>,
     },
     /// Emit an intermediate representation for debugging.
     Emit {
@@ -71,7 +81,9 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Check { file } => cmd_check(&file),
-        Command::Build { file, output, opt_level, release } => cmd_build(&file, output.as_deref(), opt_level, release),
+        Command::Build { file, output, opt_level, release, libs, lib_paths } => {
+            cmd_build(&file, output.as_deref(), opt_level, release, &libs, &lib_paths)
+        }
         Command::Emit { what, file } => cmd_emit(what, &file),
     }
 }
@@ -106,8 +118,17 @@ fn opt_flag(opt_level: u8, release: bool) -> String {
     format!("-O{}", level)
 }
 
+/// The `-l<name>`/`-L<path>` flags clang should be invoked with for `-l`/
+/// `--lib` and `-L`/`--lib-path`, in `-L`-before-`-l` order (matching how a
+/// linker resolves `-l` against whatever search paths precede it on the
+/// command line). Split out from `cmd_build` so it can be exercised directly
+/// without shelling out to clang -- see the `tests` module below.
+fn link_args(libs: &[String], lib_paths: &[String]) -> Vec<String> {
+    lib_paths.iter().map(|p| format!("-L{}", p)).chain(libs.iter().map(|l| format!("-l{}", l))).collect()
+}
+
 /// Full pipeline: parse, type-check, emit LLVM IR, compile with clang.
-fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, release: bool) -> ExitCode {
+fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, release: bool, libs: &[String], lib_paths: &[String]) -> ExitCode {
     let driver = Driver::new(file);
     let compilation = match driver.compile() {
         Ok(c) => c,
@@ -154,6 +175,7 @@ fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, release: bool) -> 
         .arg(&ll_path)
         .arg(opt_flag(opt_level, release))
         .arg("-Wno-override-module")
+        .args(link_args(libs, lib_paths))
         .status()
     {
         Ok(s) => s,
@@ -196,7 +218,7 @@ fn find_clang_on(path_var: Option<&std::ffi::OsStr>) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_clang_on, opt_flag};
+    use super::{find_clang_on, link_args, opt_flag};
 
     /// `star build` with no flags at all defaults to `-O2` -- previously
     /// every build (including every shipped example) was fully unoptimized.
@@ -225,6 +247,31 @@ mod tests {
     #[test]
     fn opt_flag_clamps_out_of_range_level() {
         assert_eq!(opt_flag(9, false), "-O3");
+    }
+
+    /// No `-l`/`-L` flags at all produces no extra arguments -- the common
+    /// case (a program using only what's already linked by default) must
+    /// not grow the clang invocation.
+    #[test]
+    fn link_args_empty_when_no_libs_or_paths() {
+        assert!(link_args(&[], &[]).is_empty());
+    }
+
+    /// Each `-l NAME` becomes a bare `-lNAME` (clang's expected spelling,
+    /// no space) -- one per repeated flag, in the order given.
+    #[test]
+    fn link_args_formats_libs() {
+        assert_eq!(link_args(&["SDL2".to_string(), "m".to_string()], &[]), vec!["-lSDL2", "-lm"]);
+    }
+
+    /// `-L` search paths are emitted *before* `-l` libraries, matching how a
+    /// linker resolves `-l` only against search paths already seen on the
+    /// command line.
+    #[test]
+    fn link_args_orders_lib_paths_before_libs() {
+        let libs = vec!["SDL2".to_string()];
+        let lib_paths = vec![r"C:\SDL2\lib".to_string()];
+        assert_eq!(link_args(&libs, &lib_paths), vec![r"-LC:\SDL2\lib", "-lSDL2"]);
     }
 
     /// A `clang`/`clang.exe` on `PATH` is preferred over the hardcoded

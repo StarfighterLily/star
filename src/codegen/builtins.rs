@@ -231,7 +231,7 @@ impl Codegen {
     /// bare for a load/call), so this is just a tag-stripping pass-through --
     /// kept as its own function since every caller also needs the
     /// `is_rc_borrowing_read` release-balancing below.
-    fn emit_raw_str_ptr(&mut self, e: &TypedExpr) -> String {
+    pub(super) fn emit_raw_str_ptr(&mut self, e: &TypedExpr) -> String {
         let val = self.emit_expr(e);
         let reg = self.untag(&val, &Ty::Str);
         // If `e` reads an existing owned slot, `emit_expr` above already
@@ -349,5 +349,49 @@ impl Codegen {
         self.line(&format!("  call i8* @strcpy(i8* {}, i8* {})", buf, a));
         self.line(&format!("  call i8* @strcat(i8* {}, i8* {})", buf, b));
         buf
+    }
+
+    /// `null_ptr() -> ptr`: the constant `i8* null`.
+    pub(super) fn emit_null_ptr(&mut self) -> String {
+        "i8* null".into()
+    }
+
+    /// `is_null(p: ptr) -> bool`.
+    pub(super) fn emit_is_null(&mut self, args: &[TypedExpr]) -> String {
+        let Some(arg) = args.first() else {
+            self.err("is_null(..) expects 1 argument", Span::dummy());
+            return "i1 false".into();
+        };
+        let val = self.emit_expr(arg);
+        let p = self.untag(&val, &Ty::Ptr);
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i8* {}, null", reg, p));
+        format!("i1 {}", reg)
+    }
+
+    /// `ptr_to_str(p: ptr) -> str`: copies a NUL-terminated C string at `p`
+    /// into a fresh, properly RC'd Star `str` (`strlen` + `star_rc_alloc` +
+    /// `strcpy`, mirroring `emit_str_concat`'s buffer-allocation pattern
+    /// above). The safe bridge for a `char*` handed back by an `extern "C"`
+    /// function -- `p` itself has no RC header (see `Ty::Ptr`'s doc comment
+    /// in `crate::types`), so it must never be treated as a Star `Str`
+    /// directly.
+    pub(super) fn emit_ptr_to_str(&mut self, args: &[TypedExpr]) -> String {
+        let Some(arg) = args.first() else {
+            self.err("ptr_to_str(..) expects 1 argument", Span::dummy());
+            return "i8* null".into();
+        };
+        let val = self.emit_expr(arg);
+        let p = self.untag(&val, &Ty::Ptr);
+        let len = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", len, p));
+        let total = self.tmp_name();
+        self.line(&format!("  {} = add i32 {}, 1", total, len));
+        let total64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", total64, total));
+        let buf = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", buf, total64));
+        self.line(&format!("  call i8* @strcpy(i8* {}, i8* {})", buf, p));
+        format!("i8* {}", buf)
     }
 }

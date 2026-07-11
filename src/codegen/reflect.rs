@@ -56,6 +56,7 @@ impl Codegen {
                 params.iter().map(|p| self.reflect_type_name(p)).collect::<Vec<_>>().join(", "),
                 self.reflect_type_name(ret)
             ),
+            Ty::Ptr => "ptr".into(),
         }
     }
 

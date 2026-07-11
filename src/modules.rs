@@ -145,7 +145,14 @@ fn collect_names(module: &Module, alias: &str) -> HashMap<String, String> {
             Item::Arena(a) => &a.name,
             Item::Sequence(s) => &s.name,
             Item::Enum(e) => &e.name,
-            Item::Impl(_) | Item::Import(_) => continue,
+            // An `extern "C" fn` names a real, global C symbol -- it must
+            // never be mangled the way ordinary top-level declarations are,
+            // or the emitted `declare`/`call` would no longer match the
+            // actual foreign symbol. `Item::Impl`/`Item::Import` are
+            // excluded for a different reason (see their own comments
+            // elsewhere in this file: an impl introduces no fresh top-level
+            // name, and imports are already stripped by this point).
+            Item::Impl(_) | Item::Import(_) | Item::ExternFn(_) => continue,
         };
         names.insert(name.clone(), mangle_name(alias, name));
     }
@@ -225,6 +232,9 @@ fn rename_item(item: &Item, names: &HashMap<String, String>) -> Item {
         // Never present: `resolve_inner` only ever passes already-import-free
         // modules to `rename_module`.
         Item::Import(imp) => Item::Import(imp.clone()),
+        // Passed through unchanged -- see `collect_names`'s `Item::ExternFn`
+        // exclusion for why the C symbol name is never mangled.
+        Item::ExternFn(e) => Item::ExternFn(e.clone()),
     }
 }
 

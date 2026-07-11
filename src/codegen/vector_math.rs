@@ -245,6 +245,24 @@ impl Codegen {
         if matches!(lty, Ty::Int | Ty::Float) && matches!(rty, Ty::Int | Ty::Float) {
             return self.emit_scalar_binop(lhs, lty, rhs, rty, op);
         }
+        // `ptr == ptr` / `ptr != ptr` -- e.g. `is_null`-style handle checks
+        // against a value other than the `null_ptr()` builtin.
+        if matches!((lty, rty), (Ty::Ptr, Ty::Ptr)) {
+            return match op {
+                BinOp::Eq | BinOp::Ne => {
+                    let l = self.untag(lhs, &Ty::Ptr);
+                    let r = self.untag(rhs, &Ty::Ptr);
+                    let pred = if op == BinOp::Eq { "eq" } else { "ne" };
+                    let reg = self.tmp_name();
+                    self.line(&format!("  {} = icmp {} i8* {}, {}", reg, pred, l, r));
+                    format!("i1 {}", reg)
+                }
+                _ => {
+                    self.err("only `==`/`!=` are supported on `ptr` values", Span::dummy());
+                    "%undef".into()
+                }
+            };
+        }
         if matches!(op, BinOp::Rem | BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge) {
             self.err("`%` and comparison operators are not supported on vector/matrix types", Span::dummy());
             return "%undef".into();

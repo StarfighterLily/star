@@ -39,6 +39,23 @@ pub enum Item {
     Enum(EnumDef),
     /// `import "path.star" as alias` - see [`ImportDecl`].
     Import(ImportDecl),
+    /// `extern "C" fn ...` - a foreign function declaration with no body,
+    /// see [`ExternFnDecl`].
+    ExternFn(ExternFnDecl),
+}
+
+/// `extern "C" fn name(params) -> ret` - declares a symbol implemented
+/// elsewhere (a C library) rather than by a Star function body. `abi` is the
+/// string literal naming the calling convention (`"C"` is the only one the
+/// checker currently accepts; see `crate::types::Checker::check_item`).
+/// `sig` is reused from ordinary function declarations since the shape
+/// (name/type params/params/return type) is identical -- only the (absent)
+/// body differs.
+#[derive(Clone, Debug)]
+pub struct ExternFnDecl {
+    pub abi: String,
+    pub sig: FnSig,
+    pub span: Span,
 }
 
 /// An `import "path.star" as alias` declaration: brings another file's
