@@ -5041,3 +5041,461 @@ fn runtime_extern_ptr_round_trip_end_to_end() {
     let _ = std::fs::remove_file(&ll);
     let _ = std::fs::remove_file(&exe);
 }
+
+/// An `extern "C" fn` sharing a name with a recognized standard-library
+/// builtin (e.g. `abs`) is rejected at the declaration, not silently allowed
+/// through to become permanently unreachable at every call site --
+/// `builtin_return_ty`/`Codegen::emit_expr`'s `TypedExpr::Call` arm both
+/// dispatch on name *ahead* of the user function table (see
+/// `extern_fn_call_arity_is_checked`'s doc comment), so without this check
+/// the extern declaration would compile clean, its `declare` would sit
+/// unused in the IR, and every call would quietly run the builtin instead --
+/// with no argument/type checking against the real foreign signature.
+#[test]
+fn extern_fn_rejects_builtin_name_collision() {
+    let src = "extern \"C\" fn abs(x: int) -> int\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("extern fn colliding with a builtin name should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("collides with a built-in name")), "{:?}", diags);
+}
+
+/// An `extern "C" fn` reusing the name of a symbol `Codegen::emit_builtins`/
+/// `emit_rc_runtime` already `declare`s or `define`s unconditionally in every
+/// generated module (here, `puts` -- also used by `println`) is rejected at
+/// the declaration. Without this check the checker accepts it, codegen
+/// happily emits a second `declare i32 @puts(i8*)`, and only clang's LLVM
+/// parser rejects it -- with "invalid redefinition of function", pointing at
+/// generated IR the user never wrote, not at their `.star` source.
+#[test]
+fn extern_fn_rejects_reserved_runtime_symbol_name() {
+    let src = "extern \"C\" fn puts(s: str) -> int\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("extern fn colliding with a reserved runtime symbol should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("compiler always declares internally")), "{:?}", diags);
+}
+
+/// `main` -- the reserved process entry point every program's `fn main()`
+/// lowers to (see `Codegen::emit_fn`'s `is_main` special-casing) -- is also a
+/// reserved runtime symbol name for this same reason: `extern "C" fn main`
+/// would collide with the real, forced-`i32`-return `@main` definition.
+#[test]
+fn extern_fn_rejects_main_as_reserved_name() {
+    let src = "extern \"C\" fn main() -> int\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("extern fn named `main` should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("compiler always declares internally")), "{:?}", diags);
+}
+
+/// Two `extern "C" fn` declarations under the same name -- even with
+/// byte-for-byte identical signatures -- are rejected at the second
+/// declaration. LLVM's textual IR parser refuses a duplicate `declare` for
+/// the same global outright (confirmed directly: even two hand-written,
+/// identical `declare i32 @puts(i8*)` lines back to back fail clang with
+/// "invalid redefinition of function"), so without this check a copy-pasted
+/// or accidentally repeated extern declaration would compile clean here and
+/// only fail at the clang step.
+#[test]
+fn extern_fn_rejects_duplicate_declaration() {
+    let src = "extern \"C\" fn getenv(name: str) -> ptr\nextern \"C\" fn getenv(name: str) -> ptr\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("a duplicate extern fn declaration should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("declared more than once")), "{:?}", diags);
+}
+
+/// Calling an `extern "C" fn` *indirectly* through a first-class function
+/// value (`let g = some_extern_fn; g(s)`) must release a `str` argument's
+/// reference exactly once per call, the same way a direct call
+/// (`emit_extern_call`) already does -- see the fix's own doc comment in
+/// `Codegen::emit_fn_value` (`src/codegen/closure.rs`). Before that fix, the
+/// generated thunk forwarded the argument straight to the extern `declare`
+/// and released nothing, leaking one refcount per call (confirmed with a
+/// Working-Set memory sample over `examples/extern_fnvalue_stress.star`:
+/// unbounded growth from ~15MB to ~146MB over 5,000,000 iterations before
+/// the fix, flat at ~3MB after). This test checks the generated IR directly
+/// rather than sampling memory (that's `runtime_rc_stress_memory_stays_bounded`'s
+/// job for the general RC mechanism; this just needs to confirm the specific
+/// release call is present in the specific thunk).
+#[test]
+fn codegen_extern_fn_value_thunk_releases_str_arg() {
+    let src = "extern \"C\" fn atoi(s: str) -> int\nfn main():\n    let g = atoi\n    let s = concat(\"4\", \"2\")\n    g(s)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let thunk_ir = extract_fn_body(&ir, "define i32 @fnval_atoi(");
+    assert!(thunk_ir.contains("call i32 @atoi(i8* %arg_0)"), "{}", thunk_ir);
+    assert!(
+        thunk_ir.contains("call void @star_rc_release(i8* %arg_0)"),
+        "the thunk must release the str arg after forwarding the call, since the extern declaration itself never does: {}",
+        thunk_ir
+    );
+}
+
+/// A first-class value referencing an *ordinary* (non-extern) function must
+/// not gain a release in its thunk -- that function's own `emit_fn`-generated
+/// body already tracks and releases its own `str` params at its own scope
+/// exit (see `track_owned`/`pop_scope` in `rc.rs`), so adding a second
+/// release in the thunk would double-release (and, on the last reference,
+/// double-free) the argument. Guards the `is_extern_target` gate in the
+/// fix above -- it must trigger only for a thunk wrapping an extern
+/// declaration, never for a thunk wrapping a real Star function.
+#[test]
+fn codegen_ordinary_fn_value_thunk_does_not_double_release_str_arg() {
+    let src = "fn take(s: str) -> int:\n    len(s)\nfn main():\n    let g = take\n    let s = concat(\"4\", \"2\")\n    g(s)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let thunk_ir = extract_fn_body(&ir, "define i32 @fnval_take(");
+    assert!(
+        !thunk_ir.contains("star_rc_release"),
+        "a thunk wrapping an ordinary Star fn must not release its own args -- `take`'s own body already does: {}",
+        thunk_ir
+    );
+}
+
+// ===== File I/O builtins (todo.md "Next Steps" #2) =========================
+//
+// `file_open` returns `ptr` (null on failure, same convention as `getenv`);
+// `file_read`/`file_read_line` return `str` (empty on EOF, same convention as
+// `read_line`); `file_write`/`file_exists` return `bool`; a null/closed
+// handle passed to `file_read`/`file_read_line`/`file_write`/`file_close` is
+// a programmer error and aborts loudly (same convention as frame overflow /
+// integer division by zero). See `crate::codegen::file_io`.
+
+/// `file_open` type-checks to `ptr`.
+#[test]
+fn checks_file_open_returns_ptr() {
+    let src = "fn t():\n    let h: ptr = file_open(\"x.txt\", \"r\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("file_open(..) should type-check as ptr");
+}
+
+/// `file_read`/`file_read_line` type-check to `str`.
+#[test]
+fn checks_file_read_and_read_line_return_str() {
+    let src = "fn t():\n    let h = file_open(\"x.txt\", \"r\")\n    let a: str = file_read(h)\n    let b: str = file_read_line(h)\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("file_read/file_read_line should type-check as str");
+}
+
+/// `file_write`/`file_exists` type-check to `bool`.
+#[test]
+fn checks_file_write_and_exists_return_bool() {
+    let src = "fn t():\n    let h = file_open(\"x.txt\", \"w\")\n    let ok: bool = file_write(h, \"data\")\n    let e: bool = file_exists(\"x.txt\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("file_write/file_exists should type-check as bool");
+}
+
+/// `file_read` sizes its buffer via `ftell`/`fseek` and allocates through
+/// `star_rc_alloc` (a fresh owned `str`), not a bare `malloc`.
+#[test]
+fn codegen_file_read_uses_ftell_fseek_and_rc_alloc() {
+    let src = "fn t() -> str:\n    let h = file_open(\"x.txt\", \"r\")\n    file_read(h)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i8* @t(");
+    assert!(fn_ir.contains("call i32 @ftell"), "{}", fn_ir);
+    assert!(fn_ir.contains("call i32 @fseek"), "{}", fn_ir);
+    assert!(fn_ir.contains("call i8* @star_rc_alloc"), "{}", fn_ir);
+    assert!(fn_ir.contains("call i64 @fread"), "{}", fn_ir);
+}
+
+/// `file_read_line` reads from the given handle via `@fgetc`, not the
+/// stdin-only `@getchar` `read_line()` uses.
+#[test]
+fn codegen_file_read_line_uses_fgetc_not_getchar() {
+    let src = "fn t() -> str:\n    let h = file_open(\"x.txt\", \"r\")\n    file_read_line(h)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i8* @t(");
+    assert!(fn_ir.contains("call i32 @fgetc"), "{}", fn_ir);
+    assert!(!fn_ir.contains("@getchar"), "file_read_line must not read from stdin: {}", fn_ir);
+}
+
+/// `file_close` on a possibly-null handle checks for null and aborts (`exit`
+/// + `unreachable`) before ever calling `@fclose`, matching the frame
+/// overflow / division-by-zero abort shape elsewhere in this codegen.
+#[test]
+fn codegen_file_close_aborts_on_null_handle() {
+    let src = "fn t():\n    let h = file_open(\"x.txt\", \"r\")\n    file_close(h)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define void @t(");
+    assert!(fn_ir.contains("icmp eq i8* "), "should compare the handle against null: {}", fn_ir);
+    assert!(fn_ir.contains("call void @exit(i32 1)"), "should abort on a null handle: {}", fn_ir);
+    assert!(fn_ir.contains("unreachable"), "{}", fn_ir);
+    assert!(fn_ir.contains("call i32 @fclose"), "the ok path should still call fclose: {}", fn_ir);
+}
+
+/// Shared helper for the file-I/O runtime tests below: parse/check/codegen
+/// `src`, compile it with clang into a uniquely-named temp `.exe`, run it,
+/// and return its captured output -- mirrors the inline compile-and-run
+/// pattern `runtime_extern_ptr_round_trip_end_to_end` established, extended
+/// with a `name` parameter so concurrently-run tests don't collide on the
+/// same temp `.ll`/`.exe` path.
+fn compile_and_run(name: &str, src: &str) -> std::process::Output {
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let exe = std::env::temp_dir().join(format!("star_test_{}.exe", name));
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    output
+}
+
+/// A scratch data-file path under the OS temp dir, with backslashes
+/// normalized to forward slashes -- `fopen` accepts either on Windows, and
+/// forward slashes sidestep needing to double-escape `\` inside the Star
+/// string literal embedded in each test's generated source.
+fn scratch_file_path(name: &str) -> String {
+    std::env::temp_dir().join(name).to_string_lossy().replace('\\', "/")
+}
+
+/// Opens a file for writing, writes two `file_write` calls, closes it,
+/// reopens for reading, and reads the exact content back via `file_read` --
+/// the basic round trip the whole feature exists for (todo.md: "read config,
+/// save/load game state").
+#[test]
+fn runtime_file_write_then_read_end_to_end() {
+    let path = scratch_file_path("star_test_file_write_then_read.txt");
+    let src = format!(
+        "fn main():\n    let p = \"{p}\"\n    let w = file_open(p, \"w\")\n    file_write(w, \"hello \")\n    file_write(w, \"world\")\n    file_close(w)\n    let r = file_open(p, \"r\")\n    let content = file_read(r)\n    file_close(r)\n    println(content)\n",
+        p = path
+    );
+    let output = compile_and_run("file_write_then_read", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "hello world", "file_read should return exactly what file_write wrote: {}", stdout);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Writes a 3-line file, then reads it back one line at a time with
+/// `file_read_line`; a fourth call past the last line yields an empty `str`
+/// rather than crashing or hanging -- the same EOF convention `read_line()`
+/// already established for stdin.
+#[test]
+fn runtime_file_read_line_end_to_end() {
+    let path = scratch_file_path("star_test_file_read_line.txt");
+    let src = format!(
+        "fn main():\n    let p = \"{p}\"\n    let w = file_open(p, \"w\")\n    file_write(w, \"alpha\\nbeta\\ngamma\\n\")\n    file_close(w)\n    let r = file_open(p, \"r\")\n    println(file_read_line(r))\n    println(file_read_line(r))\n    println(file_read_line(r))\n    let last = file_read_line(r)\n    println(f\"last:{{last}}\")\n    file_close(r)\n",
+        p = path
+    );
+    let output = compile_and_run("file_read_line", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["alpha", "beta", "gamma", "last:"], "{}", stdout);
+}
+
+/// `file_exists` is `true` for a file that was just created and `false` for
+/// a path that was never created.
+#[test]
+fn runtime_file_exists_end_to_end() {
+    let real_path = scratch_file_path("star_test_file_exists_real.txt");
+    let missing_path = scratch_file_path("star_test_file_exists_missing.txt");
+    let _ = std::fs::remove_file(&missing_path);
+    let src = format!(
+        "fn main():\n    let real = \"{real}\"\n    let missing = \"{missing}\"\n    let w = file_open(real, \"w\")\n    file_write(w, \"x\")\n    file_close(w)\n    println(f\"{{file_exists(real)}}\")\n    println(f\"{{file_exists(missing)}}\")\n",
+        real = real_path,
+        missing = missing_path
+    );
+    let output = compile_and_run("file_exists", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "false"], "{}", stdout);
+    let _ = std::fs::remove_file(&real_path);
+}
+
+/// `file_open` on a path that doesn't exist (opened for reading) returns a
+/// null `ptr`, checked with the existing `is_null(..)` builtin -- the exact
+/// convention `getenv` already established for a foreign call that can fail.
+#[test]
+fn runtime_file_open_missing_file_returns_null_end_to_end() {
+    let missing_path = scratch_file_path("star_test_file_open_missing.txt");
+    let _ = std::fs::remove_file(&missing_path);
+    let src = format!(
+        "fn main():\n    let h = file_open(\"{p}\", \"r\")\n    println(f\"{{is_null(h)}}\")\n",
+        p = missing_path
+    );
+    let output = compile_and_run("file_open_missing", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "true", "{}", stdout);
+}
+
+/// `file_write` reports `true` on an ordinary successful write.
+#[test]
+fn runtime_file_write_reports_true_on_success_end_to_end() {
+    let path = scratch_file_path("star_test_file_write_success.txt");
+    let src = format!(
+        "fn main():\n    let w = file_open(\"{p}\", \"w\")\n    let ok = file_write(w, \"data\")\n    file_close(w)\n    println(f\"{{ok}}\")\n",
+        p = path
+    );
+    let output = compile_and_run("file_write_success", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "true", "{}", stdout);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Calling `file_read` on a null handle (from a failed `file_open`, used
+/// without an `is_null(..)` check) aborts loudly with a diagnostic and a
+/// nonzero exit code instead of crashing/segfaulting or hanging -- mirrors
+/// `runtime_frame_overflow_aborts_loudly_instead_of_segfaulting` and
+/// `runtime_int_division_by_zero_aborts_loudly_instead_of_trapping`'s "trap
+/// loudly instead of corrupting/crashing unpredictably" guarantee.
+#[test]
+fn runtime_file_read_aborts_on_null_handle_end_to_end() {
+    let missing_path = scratch_file_path("star_test_file_read_null_handle.txt");
+    let _ = std::fs::remove_file(&missing_path);
+    let src = format!(
+        "fn main():\n    let h = file_open(\"{p}\", \"r\")\n    println(\"before\")\n    let content = file_read(h)\n    println(\"should not reach here\")\n",
+        p = missing_path
+    );
+    let output = compile_and_run("file_read_null_handle", &src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("before"), "{}", stdout);
+    assert!(!stdout.contains("should not reach here"), "must abort before the null handle is ever read: {}", stdout);
+    assert!(stdout.contains("null/closed file handle"), "should print a diagnostic: {}", stdout);
+    assert_eq!(output.status.code(), Some(1), "should exit cleanly with code 1, not crash/segfault: {:?}", output.status);
+}
+
+/// Each file-I/O builtin's own argument-count check (`args.len() < N` inside
+/// `crate::codegen::file_io`) fires as a codegen-time diagnostic -- these
+/// builtins are dispatched by `builtin_return_ty` ahead of the ordinary
+/// function-table arity check (see `extern_fn_call_arity_is_checked`'s doc
+/// comment for the same dispatch-order reasoning applied to extern fns), so
+/// a wrong argument count here type-checks cleanly and is only ever caught
+/// at codegen; this pins down that it *is* still caught, just later.
+#[test]
+fn codegen_file_open_reports_missing_argument() {
+    let src = "fn t():\n    file_open(\"x.txt\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check (arity isn't checked until codegen)");
+    let Err(diags) = Driver::codegen(&typed) else { panic!("file_open with 1 argument should be a codegen error") };
+    assert!(diags.iter().any(|d| d.message.contains("file_open(..) expects 2 arguments")), "{:?}", diags);
+}
+
+/// Same check for `file_write`, which also takes 2 arguments.
+#[test]
+fn codegen_file_write_reports_missing_argument() {
+    let src = "fn t():\n    let h = file_open(\"x.txt\", \"w\")\n    file_write(h)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check (arity isn't checked until codegen)");
+    let Err(diags) = Driver::codegen(&typed) else { panic!("file_write with 1 argument should be a codegen error") };
+    assert!(diags.iter().any(|d| d.message.contains("file_write(..) expects 2 arguments")), "{:?}", diags);
+}
+
+/// `file_write` reports `false` (not a crash, not a thrown exception) when
+/// the underlying `fwrite` genuinely can't write -- here, a handle opened
+/// read-only. Distinguishes this from the null-handle *abort* path: a
+/// non-null but unwritable handle is exactly the "real runtime condition a
+/// program can react to" case `emit_file_write`'s own doc comment describes,
+/// not a programmer error.
+#[test]
+fn runtime_file_write_on_read_only_handle_reports_false_end_to_end() {
+    let path = scratch_file_path("star_test_file_write_read_only.txt");
+    let src = format!(
+        "fn main():\n    let w = file_open(\"{p}\", \"w\")\n    file_write(w, \"seed\")\n    file_close(w)\n    let r = file_open(\"{p}\", \"r\")\n    let ok = file_write(r, \"nope\")\n    println(f\"{{ok}}\")\n    file_close(r)\n",
+        p = path
+    );
+    let output = compile_and_run("file_write_read_only", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "false", "writing through a read-mode handle should report false, not abort: {}", stdout);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A file whose last line has no trailing newline still yields that line's
+/// full content from `file_read_line` (not truncated/lost by the EOF
+/// check) -- a subsequent call past it then yields `""`, same EOF
+/// convention as every other case. Distinguishes "stopped because of `\n`"
+/// from "stopped because of EOF" inside `emit_file_read_line`'s loop, which
+/// share a single `stop` flag (`is_eof or is_nl`).
+#[test]
+fn runtime_file_read_line_without_trailing_newline_end_to_end() {
+    let path = scratch_file_path("star_test_file_read_line_no_trailing_nl.txt");
+    let src = format!(
+        "fn main():\n    let p = \"{p}\"\n    let w = file_open(p, \"w\")\n    file_write(w, \"onlyline\")\n    file_close(w)\n    let r = file_open(p, \"r\")\n    println(f\"a:{{file_read_line(r)}}\")\n    println(f\"b:{{file_read_line(r)}}\")\n    file_close(r)\n",
+        p = path
+    );
+    let output = compile_and_run("file_read_line_no_trailing_nl", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["a:onlyline", "b:"], "{}", stdout);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// `file_read_line`'s fixed 1024-byte buffer truncates an oversized line at
+/// 1023 characters (capacity minus the trailing NUL), leaving the rest
+/// unread on the handle -- mirrors `runtime_read_line_truncates_oversized_input`'s
+/// guarantee for the stdin-only `read_line()`, applied to the file-backed
+/// sibling that reuses the exact same fixed-capacity loop shape (see
+/// `emit_file_read_line`'s doc comment).
+#[test]
+fn runtime_file_read_line_truncates_oversized_line_end_to_end() {
+    let path = scratch_file_path("star_test_file_read_line_truncate.txt");
+    let long_line = "a".repeat(2000);
+    let src = format!(
+        "fn main():\n    let p = \"{p}\"\n    let w = file_open(p, \"w\")\n    file_write(w, \"{long}\\nshort\\n\")\n    file_close(w)\n    let r = file_open(p, \"r\")\n    println(file_read_line(r))\n    file_close(r)\n",
+        p = path,
+        long = long_line
+    );
+    let output = compile_and_run("file_read_line_truncate", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(&"a".repeat(1023)), "truncated line should keep its first 1023 bytes: {}", stdout);
+    assert!(!stdout.contains(&"a".repeat(1024)), "truncated line should not exceed 1023 bytes: {}", stdout);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// `file_read` on a file with zero bytes remaining (opened, then
+/// immediately read again after already consuming everything) returns `""`
+/// rather than a stray byte or a crash -- the `remaining == 0` edge of
+/// `emit_file_read`'s `ftell`/`fseek` buffer sizing (`cap64 = 1`, `fread`
+/// asked for 0 bytes).
+#[test]
+fn runtime_file_read_twice_second_call_returns_empty_end_to_end() {
+    let path = scratch_file_path("star_test_file_read_twice.txt");
+    let src = format!(
+        "fn main():\n    let p = \"{p}\"\n    let w = file_open(p, \"w\")\n    file_write(w, \"all\")\n    file_close(w)\n    let r = file_open(p, \"r\")\n    println(f\"first:{{file_read(r)}}\")\n    println(f\"second:{{file_read(r)}}\")\n    file_close(r)\n",
+        p = path
+    );
+    let output = compile_and_run("file_read_twice", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["first:all", "second:"], "{}", stdout);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Opening a file in append mode (`"a"`) and writing to it adds to the
+/// existing content rather than truncating it -- exercises a third `fopen`
+/// mode beyond the `"r"`/`"w"` combinations every other test uses, since
+/// `file_open` passes its `mode` argument straight through with no
+/// validation or special-casing (see `emit_file_open`'s doc comment).
+#[test]
+fn runtime_file_append_mode_preserves_existing_content_end_to_end() {
+    let path = scratch_file_path("star_test_file_append_mode.txt");
+    let src = format!(
+        "fn main():\n    let p = \"{p}\"\n    let w = file_open(p, \"w\")\n    file_write(w, \"first-\")\n    file_close(w)\n    let a = file_open(p, \"a\")\n    file_write(a, \"second\")\n    file_close(a)\n    let r = file_open(p, \"r\")\n    println(file_read(r))\n    file_close(r)\n",
+        p = path
+    );
+    let output = compile_and_run("file_append_mode", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "first-second", "append mode should add to, not replace, existing content: {}", stdout);
+    let _ = std::fs::remove_file(&path);
+}

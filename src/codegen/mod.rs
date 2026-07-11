@@ -15,6 +15,7 @@ mod arena;
 mod builtins;
 mod closure;
 mod expr;
+mod file_io;
 mod list;
 mod par_pool;
 mod rc;
@@ -256,6 +257,15 @@ impl Codegen {
         self.line("declare i8* @memcpy(i8*, i8*, i64)");
         self.line("declare i8* @strcpy(i8*, i8*)");
         self.line("declare i8* @strcat(i8*, i8*)");
+        // `file_open`/`file_read`/`file_read_line`/`file_write`/
+        // `file_close`/`file_exists` builtins -- see `crate::codegen::file_io`.
+        self.line("declare i8* @fopen(i8*, i8*)");
+        self.line("declare i32 @fclose(i8*)");
+        self.line("declare i64 @fread(i8*, i64, i64, i8*)");
+        self.line("declare i64 @fwrite(i8*, i64, i64, i8*)");
+        self.line("declare i32 @fseek(i8*, i32, i32)");
+        self.line("declare i32 @ftell(i8*)");
+        self.line("declare i32 @fgetc(i8*)");
         self.line("declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)");
         self.line("declare i32 @WaitForSingleObject(i8*, i32)");
         self.line("declare i32 @CloseHandle(i8*)");

@@ -282,12 +282,39 @@ impl Codegen {
             self.line(") {");
             self.line("entry:");
             let fwd_args: Vec<String> = param_llvm.iter().enumerate().map(|(i, ty)| format!("{} %arg_{}", ty, i)).collect();
+            // The call site that produced this closure value (`emit_closure_call`)
+            // retains each `str` argument before the call, on the assumption that
+            // whatever gets called owns it and releases it once done -- true for
+            // an ordinary Star function (its own `emit_fn`-generated body tracks
+            // and releases its params at scope exit) but not for an `extern "C"
+            // fn`: `@name` here is a bodyless `declare`, so nothing on the other
+            // side of this thunk ever calls `star_rc_release`. Release it here
+            // instead, exactly once, after the forwarded call -- the same
+            // retain-then-release-right-back balancing `emit_extern_call` already
+            // does for a *direct* extern call (see its own doc comment); without
+            // this, calling an extern fn through a first-class value (`let g =
+            // some_extern_fn`) leaks one reference per `str` argument per call.
+            let is_extern_target = self.extern_fns.contains(name);
             if ret_llvm == "void" {
                 self.line(&format!("  call void @{}({})", name, fwd_args.join(", ")));
+                if is_extern_target {
+                    for (i, ty) in param_tys.iter().enumerate() {
+                        if *ty == Ty::Str {
+                            self.line(&format!("  call void @star_rc_release(i8* %arg_{})", i));
+                        }
+                    }
+                }
                 self.line("  ret void");
             } else {
                 let reg = self.tmp_name();
                 self.line(&format!("  {} = call {} @{}({})", reg, ret_llvm, name, fwd_args.join(", ")));
+                if is_extern_target {
+                    for (i, ty) in param_tys.iter().enumerate() {
+                        if *ty == Ty::Str {
+                            self.line(&format!("  call void @star_rc_release(i8* %arg_{})", i));
+                        }
+                    }
+                }
                 self.line(&format!("  ret {} {}", ret_llvm, reg));
             }
             self.line("}");

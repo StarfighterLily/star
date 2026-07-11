@@ -132,9 +132,50 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "null_ptr" => Some(Ty::Ptr),
         "is_null" => Some(Ty::Bool),
         "ptr_to_str" => Some(Ty::Str),
+        // File I/O builtins -- see `crate::codegen::file_io`. `file_open`
+        // reuses `Ty::Ptr` as an opaque file handle (null on failure, same
+        // convention as `getenv`); `file_read`/`file_read_line` return an
+        // empty `str` on EOF (same convention as `read_line`).
+        "file_open" => Some(Ty::Ptr),
+        "file_close" => Some(Ty::Named("unknown".into())),
+        "file_read" | "file_read_line" => Some(Ty::Str),
+        "file_write" | "file_exists" => Some(Ty::Bool),
         _ => None,
     }
 }
+
+/// True for any name `builtin_return_ty` recognizes -- shared with
+/// `Checker::check_extern_fn`'s reserved-name check so the two lists can
+/// never drift apart. A real argument list isn't needed to answer "is this
+/// name a builtin at all", so an empty slice is always safe to pass here:
+/// every arm of `builtin_return_ty` only inspects `args` to pick a *type*
+/// (e.g. `abs`'s int-vs-float result), never to decide whether to return
+/// `None` in the first place.
+fn is_builtin_name(name: &str) -> bool {
+    builtin_return_ty(name, &[]).is_some()
+}
+
+/// Every symbol name `Codegen::emit_builtins`/`emit_rc_runtime` unconditionally
+/// `declare`s or `define`s at the top of *every* generated module (the CRT/
+/// Win32 imports backing `print`/math/file-I/O/`par`/`swarm`, plus the RC
+/// runtime's own three functions), and the reserved entry point `main`.
+/// LLVM's textual IR parser (unlike, say, C's own header-guard-tolerant
+/// redeclaration rules) rejects a *second* `declare`/`define` for the same
+/// global name outright -- even one that's byte-for-byte identical to the
+/// first -- so an `extern "C" fn` reusing one of these names always fails at
+/// the clang step with an opaque "invalid redefinition of function" pointing
+/// at generated IR the user never wrote, regardless of whether their
+/// declared signature happens to match. Kept as one flat list (rather than
+/// deriving it from `emit_builtins` itself) since the two are in different
+/// crate modules and the set rarely changes; see `check_extern_fn`.
+const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
+    "main",
+    "printf", "puts", "malloc", "free", "exit", "strlen", "getchar", "memcpy", "strcpy", "strcat",
+    "fopen", "fclose", "fread", "fwrite", "fseek", "ftell", "fgetc",
+    "CreateThread", "WaitForSingleObject", "CloseHandle",
+    "CreateSemaphoreA", "ReleaseSemaphore", "GetCurrentThreadId",
+    "star_rc_alloc", "star_rc_retain", "star_rc_release",
+];
 
 /// The error type for type checking.
 #[derive(Clone, Debug)]
@@ -206,6 +247,13 @@ pub struct Checker {
     ///   bare `return` is fine; `return <value>` is not).
     /// - `Some(Some(ty))`: inside a function declared to return `ty`.
     current_ret_ty: Option<Option<Ty>>,
+    /// Names of every `extern "C" fn` already checked, so a second
+    /// declaration under the same name is caught here with a clear
+    /// diagnostic instead of surfacing as clang's opaque "invalid
+    /// redefinition of function" once the (byte-for-byte identical, in this
+    /// case) duplicate `declare` reaches the LLVM parser -- see
+    /// `check_extern_fn`.
+    extern_fn_names_seen: HashSet<String>,
 }
 
 impl Checker {
@@ -226,6 +274,7 @@ impl Checker {
             loop_depth: 0,
             unsafe_par_fns: HashSet::new(),
             current_ret_ty: None,
+            extern_fn_names_seen: HashSet::new(),
         }
     }
 
@@ -427,6 +476,46 @@ impl Checker {
                     "extern \"C\" fn `{}` starts with an uppercase letter, which Star always parses as a struct-literal constructor at the call site (`Name(args)`); this symbol cannot be called directly under the current grammar",
                     e.sig.name
                 ),
+                e.span,
+            );
+        }
+        // Standard-library builtins are recognized by name ahead of any
+        // user/extern declaration at every call site (see
+        // `Codegen::emit_expr`'s `TypedExpr::Call` arm and
+        // `builtin_return_ty` above) -- so an extern fn named e.g. `abs` or
+        // `len` compiles (its `declare` is emitted) but is never actually
+        // called: every call site silently resolves to the builtin instead,
+        // with no diagnostic and no argument/type checking against the real
+        // foreign signature. An ordinary same-named `fn` has this same
+        // shadowing but its dead body is visible right above the call site;
+        // an extern fn's "body" is a symbol in another library, so there is
+        // nothing for the reader to notice something is wrong. Reject the
+        // collision here instead, matching the uppercase-name check above.
+        if is_builtin_name(&e.sig.name) {
+            self.error(
+                format!(
+                    "extern \"C\" fn `{}` collides with a built-in name; built-ins always take priority over user declarations at the call site, so this symbol could never actually be called",
+                    e.sig.name
+                ),
+                e.span,
+            );
+        }
+        // See `RESERVED_RUNTIME_SYMBOLS`'s own doc comment: reusing one of
+        // these names would emit a second `declare`/`define` for a symbol
+        // this compiler already declares internally, which LLVM's parser
+        // rejects even when the signature matches exactly -- caught here
+        // with a real diagnostic instead of clang's opaque one.
+        if RESERVED_RUNTIME_SYMBOLS.contains(&e.sig.name.as_str()) {
+            self.error(
+                format!(
+                    "extern \"C\" fn `{}` collides with a symbol this compiler always declares internally (CRT/OS import or runtime helper); redeclaring it under the same name would fail to compile regardless of the signature given here",
+                    e.sig.name
+                ),
+                e.span,
+            );
+        } else if !self.extern_fn_names_seen.insert(e.sig.name.clone()) {
+            self.error(
+                format!("extern \"C\" fn `{}` is declared more than once", e.sig.name),
                 e.span,
             );
         }

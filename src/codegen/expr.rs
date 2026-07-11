@@ -337,6 +337,12 @@ impl Codegen {
                     Some("null_ptr") => self.emit_null_ptr(),
                     Some("is_null") => self.emit_is_null(args),
                     Some("ptr_to_str") => self.emit_ptr_to_str(args),
+                    Some("file_open") => self.emit_file_open(args),
+                    Some("file_close") => { self.emit_file_close(args); "%undef".into() }
+                    Some("file_read") => self.emit_file_read(args),
+                    Some("file_read_line") => self.emit_file_read_line(args),
+                    Some("file_write") => self.emit_file_write(args),
+                    Some("file_exists") => self.emit_file_exists(args),
                     Some(name) if self.extern_fns.contains(name) => self.emit_extern_call(name, args, expr),
                     _ => self.emit_call_expr(callee, args, expr),
                 }
