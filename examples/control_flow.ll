@@ -13,6 +13,9 @@ declare i8* @strcat(i8*, i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
+declare i8* @CreateSemaphoreA(i8*, i32, i32, i8*)
+declare i32 @ReleaseSemaphore(i8*, i32, i32*)
+declare i32 @GetCurrentThreadId()
 declare float @llvm.sqrt.f32(float)
 declare float @llvm.pow.f32(float, float)
 declare float @llvm.fabs.f32(float)
@@ -28,6 +31,69 @@ declare float @llvm.maxnum.f32(float, float)
 
 @rng.state = global i32 123456789
 
+define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
+entry:
+  %total = add i64 %size, 16
+  %raw = call i8* @malloc(i64 %total)
+  %hdr = bitcast i8* %raw to i64*
+  store i64 1, i64* %hdr
+  %relfn_slot_i8 = getelementptr inbounds i8, i8* %raw, i64 8
+  %relfn_slot = bitcast i8* %relfn_slot_i8 to i8**
+  store i8* %release_fn, i8** %relfn_slot
+  %data = getelementptr inbounds i8, i8* %raw, i64 16
+  ret i8* %data
+}
+
+define void @star_rc_retain(i8* %p) {
+entry:
+  %isnull = icmp eq i8* %p, null
+  br i1 %isnull, label %done, label %do
+do:
+  %hdr_i8 = getelementptr inbounds i8, i8* %p, i64 -16
+  %hdr = bitcast i8* %hdr_i8 to i64*
+  %rc = load i64, i64* %hdr
+  %is_immortal = icmp eq i64 %rc, -1
+  br i1 %is_immortal, label %done, label %incr
+incr:
+  %rc1 = add i64 %rc, 1
+  store i64 %rc1, i64* %hdr
+  br label %done
+done:
+  ret void
+}
+
+define void @star_rc_release(i8* %p) {
+entry:
+  %isnull = icmp eq i8* %p, null
+  br i1 %isnull, label %done, label %do
+do:
+  %hdr_i8 = getelementptr inbounds i8, i8* %p, i64 -16
+  %hdr = bitcast i8* %hdr_i8 to i64*
+  %rc = load i64, i64* %hdr
+  %is_immortal = icmp eq i64 %rc, -1
+  br i1 %is_immortal, label %done, label %decr
+decr:
+  %rc1 = sub i64 %rc, 1
+  store i64 %rc1, i64* %hdr
+  %iszero = icmp eq i64 %rc1, 0
+  br i1 %iszero, label %free, label %done
+free:
+  %relfn_slot_i8 = getelementptr inbounds i8, i8* %p, i64 -8
+  %relfn_slot = bitcast i8* %relfn_slot_i8 to i8**
+  %relfn = load i8*, i8** %relfn_slot
+  %relfn_isnull = icmp eq i8* %relfn, null
+  br i1 %relfn_isnull, label %dofree, label %callrelfn
+callrelfn:
+  %relfn_typed = bitcast i8* %relfn to void (i8*)*
+  call void %relfn_typed(i8* %p)
+  br label %dofree
+dofree:
+  call void @free(i8* %hdr_i8)
+  br label %done
+done:
+  ret void
+}
+
 define void @print_dir(i32 %d) {
 entry:
   %t0 = alloca i32
@@ -38,7 +104,7 @@ match_scrutinee_3:
   %t4 = icmp eq i32 %t1, 0
   br i1 %t4, label %match_then_0, label %match_next_0
 match_then_0:
-  %t6 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.0, i64 0, i64 0
+  %t6 = getelementptr inbounds { i64, i8*, [11 x i8] }, { i64, i8*, [11 x i8] }* @.str.0, i64 0, i32 2, i64 0
   %t5 = alloca i8*
   store i8* %t6, i8** %t5
   %t7 = load i8*, i8** %t5
@@ -50,7 +116,7 @@ match_next_0:
   %t9 = icmp eq i32 %t1, 1
   br i1 %t9, label %match_then_1, label %match_next_1
 match_then_1:
-  %t11 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.2, i64 0, i64 0
+  %t11 = getelementptr inbounds { i64, i8*, [11 x i8] }, { i64, i8*, [11 x i8] }* @.str.2, i64 0, i32 2, i64 0
   %t10 = alloca i8*
   store i8* %t11, i8** %t10
   %t12 = load i8*, i8** %t10
@@ -62,7 +128,7 @@ match_next_1:
   %t14 = icmp eq i32 %t1, 2
   br i1 %t14, label %match_then_2, label %match_next_2
 match_then_2:
-  %t16 = getelementptr inbounds [10 x i8], [10 x i8]* @.str.4, i64 0, i64 0
+  %t16 = getelementptr inbounds { i64, i8*, [10 x i8] }, { i64, i8*, [10 x i8] }* @.str.4, i64 0, i32 2, i64 0
   %t15 = alloca i8*
   store i8* %t16, i8** %t15
   %t17 = load i8*, i8** %t15
@@ -74,7 +140,7 @@ match_next_2:
   %t19 = icmp eq i32 %t1, 3
   br i1 %t19, label %match_then_3, label %match_next_3
 match_then_3:
-  %t21 = getelementptr inbounds [10 x i8], [10 x i8]* @.str.6, i64 0, i64 0
+  %t21 = getelementptr inbounds { i64, i8*, [10 x i8] }, { i64, i8*, [10 x i8] }* @.str.6, i64 0, i32 2, i64 0
   %t20 = alloca i8*
   store i8* %t21, i8** %t20
   %t22 = load i8*, i8** %t20
@@ -225,13 +291,13 @@ entry:
 
 
 ; Global Constants
-@.str.0 = private unnamed_addr constant [11 x i8] c"dir: north\00"
+@.str.0 = private unnamed_addr constant { i64, i8*, [11 x i8] } { i64 -1, i8* null, [11 x i8] c"dir: north\00" }
 @.str.1 = private unnamed_addr constant [2 x i8] c"\0A\00"
-@.str.2 = private unnamed_addr constant [11 x i8] c"dir: south\00"
+@.str.2 = private unnamed_addr constant { i64, i8*, [11 x i8] } { i64 -1, i8* null, [11 x i8] c"dir: south\00" }
 @.str.3 = private unnamed_addr constant [2 x i8] c"\0A\00"
-@.str.4 = private unnamed_addr constant [10 x i8] c"dir: east\00"
+@.str.4 = private unnamed_addr constant { i64, i8*, [10 x i8] } { i64 -1, i8* null, [10 x i8] c"dir: east\00" }
 @.str.5 = private unnamed_addr constant [2 x i8] c"\0A\00"
-@.str.6 = private unnamed_addr constant [10 x i8] c"dir: west\00"
+@.str.6 = private unnamed_addr constant { i64, i8*, [10 x i8] } { i64 -1, i8* null, [10 x i8] c"dir: west\00" }
 @.str.7 = private unnamed_addr constant [2 x i8] c"\0A\00"
 @.str.8 = private unnamed_addr constant [9 x i8] c"sum: %d\0A\00"
 @.str.9 = private unnamed_addr constant [12 x i8] c"nested: %d\0A\00"

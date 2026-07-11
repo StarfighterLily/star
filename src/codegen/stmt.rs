@@ -85,7 +85,9 @@ impl Codegen {
         self.in_frame = true;
         let saved_off = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @frame.off", saved_off));
+        self.push_scope();
         let val = self.emit_stmts_value(&body.stmts);
+        self.pop_scope(!Self::body_terminates(&body.stmts));
         self.line(&format!("  store i64 {}, i64* @frame.off", saved_off));
         self.in_frame = was_in_frame;
         val
@@ -120,6 +122,8 @@ impl Codegen {
 
     pub(super) fn emit_fn(&mut self, f: &TypedFnDef) {
         self.symbols.clear();
+        self.owned_stack.clear();
+        self.push_scope();
         self.tmp = 0;
 
         // `main` is the process's real C entry point once linked by clang: a
@@ -161,6 +165,16 @@ impl Codegen {
             let alloca = self.tmp_name();
             self.line(&format!("  {} = alloca {}", alloca, ptr_ty));
             self.line(&format!("  store {} %{}, {}* {}", ptr_ty, p.name, ptr_ty, alloca));
+            // `self` is passed *by pointer* (a borrow of the caller's own
+            // struct, see the `is_self` special-casing above), not an
+            // owned copy -- unlike every other parameter, `alloca` here is
+            // one indirection level deeper than `track_owned`/`contains_rc`
+            // assume for an ordinary local of type `p.ty`, so it must not
+            // be tracked (mirrors the same exception in
+            // `crate::codegen::closure::emit_closure_lit`'s capture loop).
+            if !p.is_self {
+                self.track_owned(&alloca, &p.ty);
+            }
             self.symbols.push((p.name.clone(), alloca, p.ty.clone()));
         }
 
@@ -168,6 +182,7 @@ impl Codegen {
         self.in_main = is_main;
         let terminated = Self::body_terminates(&f.body.stmts);
         let trailing_val = self.emit_stmts_value(&f.body.stmts);
+        self.pop_scope(!terminated);
         self.in_main = was_in_main;
 
         if !terminated {
@@ -201,28 +216,31 @@ impl Codegen {
     pub(super) fn emit_stmt(&mut self, stmt: &TypedStmt) {
         match stmt {
             TypedStmt::Let { name, value, .. } => {
-                let ty = self.llvm_ty(&self.expr_ty(value));
+                let vty = self.expr_ty(value);
+                let ty = self.llvm_ty(&vty);
                 if self.in_frame {
                     // Frame allocation: bump-allocate `size` bytes from the
                     // frame buffer (bounds-checked -- see `emit_frame_alloc`),
                     // then bitcast the raw `i8*` slot to the value's actual
                     // pointer type so the subsequent store's operand types
                     // agree with the pointer's declared type.
-                    let size = self.type_size(&self.expr_ty(value));
+                    let size = self.type_size(&vty);
                     let byte_ptr = self.emit_frame_alloc(size);
                     let typed_ptr = self.tmp_name();
                     self.line(&format!("  {} = bitcast i8* {} to {}*", typed_ptr, byte_ptr, ty));
                     let reg = self.emit_expr(value);
                     let clean_val = reg.strip_prefix(&format!("{} ", ty)).unwrap_or(&reg);
                     self.line(&format!("  store {} {}, {}* {}", ty, clean_val, ty, typed_ptr));
-                    self.symbols.push((name.clone(), typed_ptr, self.expr_ty(value)));
+                    self.symbols.push((name.clone(), typed_ptr.clone(), vty.clone()));
+                    self.track_owned(&typed_ptr, &vty);
                 } else {
                     let ptr = self.tmp_name();
                     self.line(&format!("  {} = alloca {}", ptr, ty));
                     let reg = self.emit_expr(value);
                     let clean_val = reg.strip_prefix(&format!("{} ", ty)).unwrap_or(&reg);
                     self.line(&format!("  store {} {}, {}* {}", ty, clean_val, ty, ptr));
-                    self.symbols.push((name.clone(), ptr, self.expr_ty(value)));
+                    self.symbols.push((name.clone(), ptr.clone(), vty.clone()));
+                    self.track_owned(&ptr, &vty);
                 }
             }
             TypedStmt::Assign { target, op, value, .. } => {
@@ -245,6 +263,13 @@ impl Codegen {
                     // their LLVM type (literals) and others bare (loads,
                     // calls); strip any existing tag so it's never doubled.
                     let clean = self.untag(&reg, &ty);
+                    // `emit_expr(v)` above already retained a fresh
+                    // reference if `v` reads an existing owned slot (see
+                    // `rc.rs`); releasing every currently-open scope *now*,
+                    // before the `ret`, nets out to "the caller ends up
+                    // owning exactly one reference" whether `v` is a bare
+                    // local or a fresh construction.
+                    self.emit_releases_for_return();
                     self.line(&format!("  ret {} {}", self.llvm_ty(&ty), clean));
                 } else if self.in_main {
                     // `main` is always forced to `i32 @main(...)` (see
@@ -253,8 +278,10 @@ impl Codegen {
                     // still produce an `i32`-typed terminator -- `ret void`
                     // would disagree with the function's own declared
                     // signature and be rejected as invalid IR.
+                    self.emit_releases_for_return();
                     self.line("  ret i32 0");
                 } else {
+                    self.emit_releases_for_return();
                     self.line("  ret void");
                 }
             }
@@ -278,18 +305,22 @@ impl Codegen {
                 let end_label = self.block_label("if_end");
                 self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, then_label, else_label));
                 self.line(&format!("{}:", then_label));
+                self.push_scope();
                 for stmt in &then_block.stmts {
                     self.emit_stmt(stmt);
                 }
+                self.pop_scope(!then_terminates);
                 if !then_terminates {
                     self.line(&format!("  br label %{}", end_label));
                 }
                 self.line(&format!("{}:", else_label));
+                self.push_scope();
                 if let Some(else_b) = else_block {
                     for stmt in &else_b.stmts {
                         self.emit_stmt(stmt);
                     }
                 }
+                self.pop_scope(!else_terminates);
                 if !else_terminates {
                     self.line(&format!("  br label %{}", end_label));
                 }
@@ -313,21 +344,27 @@ impl Codegen {
                 // targets `end_label` and `continue` targets `cond_label`
                 // directly (re-evaluating the condition has no side effects).
                 self.line(&format!("{}:", body_label));
-                self.loop_stack.push((cond_label.clone(), end_label.clone()));
+                let depth_at_entry = self.owned_stack.len();
+                self.push_scope();
+                self.loop_stack.push((cond_label.clone(), end_label.clone(), depth_at_entry));
                 for stmt in &then_block.stmts {
                     self.emit_stmt(stmt);
                 }
                 self.loop_stack.pop();
-                if !Self::body_terminates(&then_block.stmts) {
+                let body_terminates = Self::body_terminates(&then_block.stmts);
+                self.pop_scope(!body_terminates);
+                if !body_terminates {
                     self.line(&format!("  br label %{}", cond_label));
                 }
                 // Optional else clause runs once after the loop exits, then joins end.
                 self.line(&format!("{}:", else_label));
+                self.push_scope();
                 if let Some(else_b) = else_block {
                     for stmt in &else_b.stmts {
                         self.emit_stmt(stmt);
                     }
                 }
+                self.pop_scope(true);
                 self.line(&format!("  br label %{}", end_label));
                 self.line(&format!("{}:", end_label));
             }
@@ -335,17 +372,25 @@ impl Codegen {
                 self.emit_for_stmt(var, start, end, body);
             }
             TypedStmt::Break { .. } => {
-                let break_label = self.loop_stack.last().map(|(_, b)| b.clone()).unwrap_or_else(|| {
+                let target = self.loop_stack.last().cloned();
+                let break_label = target.as_ref().map(|(_, b, _)| b.clone()).unwrap_or_else(|| {
                     self.err("`break` outside of a loop", Span::dummy());
                     "undef".into()
                 });
+                if let Some((_, _, depth)) = target {
+                    self.emit_releases_since(depth);
+                }
                 self.line(&format!("  br label %{}", break_label));
             }
             TypedStmt::Continue { .. } => {
-                let continue_label = self.loop_stack.last().map(|(c, _)| c.clone()).unwrap_or_else(|| {
+                let target = self.loop_stack.last().cloned();
+                let continue_label = target.as_ref().map(|(c, _, _)| c.clone()).unwrap_or_else(|| {
                     self.err("`continue` outside of a loop", Span::dummy());
                     "undef".into()
                 });
+                if let Some((_, _, depth)) = target {
+                    self.emit_releases_since(depth);
+                }
                 self.line(&format!("  br label %{}", continue_label));
             }
             TypedStmt::Par { var, elem_ty, arena, body, .. } => {
@@ -388,13 +433,17 @@ impl Codegen {
 
         self.line(&format!("{}:", body_label));
         self.symbols.push((var.to_string(), i_ptr.clone(), Ty::Int));
-        self.loop_stack.push((step_label.clone(), end_label.clone()));
+        let depth_at_entry = self.owned_stack.len();
+        self.push_scope();
+        self.loop_stack.push((step_label.clone(), end_label.clone(), depth_at_entry));
         for stmt in &body.stmts {
             self.emit_stmt(stmt);
         }
         self.loop_stack.pop();
         self.symbols.pop();
-        if !Self::body_terminates(&body.stmts) {
+        let body_terminates = Self::body_terminates(&body.stmts);
+        self.pop_scope(!body_terminates);
+        if !body_terminates {
             self.line(&format!("  br label %{}", step_label));
         }
 
@@ -447,6 +496,13 @@ impl Codegen {
                 let ptr = self.sym_ptr(name).unwrap_or_else(|| "%undef".into());
                 let ts = self.llvm_ty(ty);
                 let clean_val = val.strip_prefix(&format!("{} ", ts)).unwrap_or(val);
+                // The new value was already computed (and retained, if it's
+                // a copy -- see `rc.rs`) above; releasing the slot's old
+                // contents *after* that, right before overwriting it, keeps
+                // `x = x` self-assignment safe (the fresh retain balances
+                // the matching release instead of releasing first and
+                // storing a stale, already-freed pointer).
+                self.emit_release_at(&ptr, ty);
                 self.line(&format!("  store {} {}, {}* {}", ts, clean_val, ts, ptr));
             }
             TypedExpr::Field { base, field, ty, .. } => {
@@ -461,6 +517,7 @@ impl Codegen {
                 self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, bty, bty, base_ptr, idx));
                 let ts = self.llvm_ty(ty);
                 let clean_val = val.strip_prefix(&format!("{} ", ts)).unwrap_or(val);
+                self.emit_release_at(&gep, ty);
                 self.line(&format!("  store {} {}, {}* {}", ts, clean_val, ts, gep));
             }
             TypedExpr::ListIndex { base, index, ty, .. } => {

@@ -13,6 +13,9 @@ declare i8* @strcat(i8*, i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
+declare i8* @CreateSemaphoreA(i8*, i32, i32, i8*)
+declare i32 @ReleaseSemaphore(i8*, i32, i32*)
+declare i32 @GetCurrentThreadId()
 declare float @llvm.sqrt.f32(float)
 declare float @llvm.pow.f32(float, float)
 declare float @llvm.fabs.f32(float)
@@ -27,6 +30,69 @@ declare float @llvm.maxnum.f32(float, float)
 @frame.off = global i64 0
 
 @rng.state = global i32 123456789
+
+define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
+entry:
+  %total = add i64 %size, 16
+  %raw = call i8* @malloc(i64 %total)
+  %hdr = bitcast i8* %raw to i64*
+  store i64 1, i64* %hdr
+  %relfn_slot_i8 = getelementptr inbounds i8, i8* %raw, i64 8
+  %relfn_slot = bitcast i8* %relfn_slot_i8 to i8**
+  store i8* %release_fn, i8** %relfn_slot
+  %data = getelementptr inbounds i8, i8* %raw, i64 16
+  ret i8* %data
+}
+
+define void @star_rc_retain(i8* %p) {
+entry:
+  %isnull = icmp eq i8* %p, null
+  br i1 %isnull, label %done, label %do
+do:
+  %hdr_i8 = getelementptr inbounds i8, i8* %p, i64 -16
+  %hdr = bitcast i8* %hdr_i8 to i64*
+  %rc = load i64, i64* %hdr
+  %is_immortal = icmp eq i64 %rc, -1
+  br i1 %is_immortal, label %done, label %incr
+incr:
+  %rc1 = add i64 %rc, 1
+  store i64 %rc1, i64* %hdr
+  br label %done
+done:
+  ret void
+}
+
+define void @star_rc_release(i8* %p) {
+entry:
+  %isnull = icmp eq i8* %p, null
+  br i1 %isnull, label %done, label %do
+do:
+  %hdr_i8 = getelementptr inbounds i8, i8* %p, i64 -16
+  %hdr = bitcast i8* %hdr_i8 to i64*
+  %rc = load i64, i64* %hdr
+  %is_immortal = icmp eq i64 %rc, -1
+  br i1 %is_immortal, label %done, label %decr
+decr:
+  %rc1 = sub i64 %rc, 1
+  store i64 %rc1, i64* %hdr
+  %iszero = icmp eq i64 %rc1, 0
+  br i1 %iszero, label %free, label %done
+free:
+  %relfn_slot_i8 = getelementptr inbounds i8, i8* %p, i64 -8
+  %relfn_slot = bitcast i8* %relfn_slot_i8 to i8**
+  %relfn = load i8*, i8** %relfn_slot
+  %relfn_isnull = icmp eq i8* %relfn, null
+  br i1 %relfn_isnull, label %dofree, label %callrelfn
+callrelfn:
+  %relfn_typed = bitcast i8* %relfn to void (i8*)*
+  call void %relfn_typed(i8* %p)
+  br label %dofree
+dofree:
+  call void @free(i8* %hdr_i8)
+  br label %done
+done:
+  ret void
+}
 
 %Enemy = type { i32 }
 %Enemies = type { %Enemy*, i64 }
@@ -99,7 +165,7 @@ for_step_2:
   store i32 %t27, i32* %t0
   br label %for_cond_0
 for_end_3:
-  %t29 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.1, i64 0, i64 0
+  %t29 = getelementptr inbounds { i64, i8*, [14 x i8] }, { i64, i8*, [14 x i8] }* @.str.1, i64 0, i32 2, i64 0
   %t28 = alloca i8*
   store i8* %t29, i8** %t28
   %t30 = load i8*, i8** %t28
@@ -110,4 +176,4 @@ for_end_3:
 
 ; Global Constants
 @.str.0 = private unnamed_addr constant [85 x i8] c"star runtime warning: arena `Enemies` is full (1024 live elements) -- spawn dropped\0A\00"
-@.str.1 = private unnamed_addr constant [14 x i8] c"done spawning\00"
+@.str.1 = private unnamed_addr constant { i64, i8*, [14 x i8] } { i64 -1, i8* null, [14 x i8] c"done spawning\00" }

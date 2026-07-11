@@ -1,11 +1,67 @@
 # Star Compiler — Next Steps
 
-## Immediate — status as of this pass
+## Immediate
+This needed a larger, riskier redesign than "fix the bug in place," so
+rather than ship a shallow/unsafe partial fix under time pressure it's left
+for a dedicated pass:
 
-11 of the 14 items below are **done**, each with a regression test (type-level
+- **Route `Vec2`/`Vec3` through the same SSA/vector-register path `Vec4`
+  already uses (§4.3).** `Vec2`/`Vec3` are lowered to plain `{ float, float
+  [, float] }` aggregates throughout `src/codegen/vector_math.rs`, and a good
+  chunk of the existing test suite (`codegen_vec3_add_uses_extractvalue_insertvalue`,
+  `codegen_vec2_ctor_uses_anonymous_struct`, `codegen_vec2_swizzle_write_uses_gep_store`,
+  ...) explicitly pins that struct-based codegen shape. Switching to
+  `<2 x float>`/`<3 x float>` is a coordinated rewrite across construction,
+  arithmetic, swizzle read/write, `type_size`/frame allocation, and the
+  matching test updates — a real redesign, not a bug fix.
+
+## Also discovered, not tracked as an "Immediate" item
+
+While verifying #8's runtime test, found that a comment as the very first
+line of an indented block (e.g. right after `fn main():`) breaks indentation
+tracking in the lexer (`error: expected an indented block, found end of
+line`). Pre-existing, unrelated to anything above — worth a follow-up lexer
+fix (`Lexer::handle_line_start`'s comment-only-line handling likely needs to
+not treat that as "no indentation seen yet").
+
+Similarly, `let` bound to a lambda literal with a *block* body, followed by
+another statement at the same indentation level as the `let`, fails to parse
+(`error: expected end of line, found an integer literal`) — reproduced with
+`fn t() -> i32:\n    let c = fn() -> i32:\n        let y = 1\n        y\n    0\n`.
+Also pre-existing and unrelated; likely a `parse_block`/`Stmt::Let`
+line-end-expectation interaction worth a follow-up.
+
+While implementing #13 below, found two more pre-existing, unrelated bugs
+(confirmed present in the last commit before that work, not introduced by
+it) in how a `Str` value's "box" (the `alloca i8*` wrapper every `Str`
+expression's `emit_expr` result points to — see `Codegen::emit_raw_str_ptr`'s
+doc comment) is represented — both are dangling-pointer bugs, not leaks, so
+orthogonal to #13's fix, and out of scope for it:
+- A function that returns a **freshly constructed** `str` (e.g. `fn f() ->
+  str: concat(a, b)`, or even a bare string literal) returns the address of
+  an `alloca` *inside that function's own stack frame* — valid until the
+  function returns, dangling immediately after. Returning an *existing*
+  value (a parameter, a field read) is fine (the box lives in the caller's
+  frame instead); it's specifically returning something built fresh inside
+  the callee that's broken. `Codegen::box_str_ptr`/`TypedExpr::Str`'s
+  literal codegen would need the outer box itself heap-allocated (not just
+  the string bytes) to fix this — a representation change, not a local patch.
+- `println`/`print` (and by extension any bare, non-f-string argument) only
+  works correctly when passed a plain `Ident`/`Field` expression — passing
+  anything whose `emit_expr` result is *tagged* (e.g. `println(list[i])` or
+  `println(closure())`) produces malformed IR (`load i8*, i8** i8* %reg`,
+  a double-tagged operand) that clang rejects. Every existing example
+  routes list/call results through an f-string interpolation instead
+  (`println(f"{list[i]}")`), which takes a different, working code path —
+  so this was never exercised. Likely needs `emit_print_like`'s non-f-string
+  branch to call `Codegen::untag` before using the value, matching the
+  f-string branch's own handling.
+
+Last actions:
+13 of the 15 items below are **done**, each with a regression test (type-level
 tests in `tests/frontend.rs`, plus a dedicated `examples/*.star` program and
 an end-to-end runtime test for anything only observable by actually running a
-compiled binary). 3 items are **deferred** — see "Deferred" below for why.
+compiled binary). 1 item remains in "Immediate" above — see there for why.
 
 1. **DONE — Bounds-check the frame bump buffer (§3.1).** `emit_frame_alloc`
    (`src/codegen/stmt.rs`) now compares the bump pointer against
@@ -91,6 +147,84 @@ compiled binary). 3 items are **deferred** — see "Deferred" below for why.
     instead of an invalid `ret void` inside the synthesized
     `bool`-returning `resume`. See `examples/sequence_early_return.star` /
     `runtime_sequence_early_return_end_to_end`.
+12. **DONE — Give `par`/`swarm` a real persistent thread pool (§3.5).**
+    `Codegen::emit_par_stmt` (`src/codegen/arena.rs`) now hands its
+    per-callsite chunking function off to `par_pool::emit_par_dispatch`
+    (`src/codegen/par_pool.rs`, new) instead of issuing a fresh
+    `CreateThread`/`WaitForSingleObject`/`CloseHandle` cycle on every
+    `par`/`swarm` execution. Four persistent OS worker threads are created
+    once (lazily, `@par.pool.ensure_init`) and reused for the process's
+    lifetime; each has its own dedicated mailbox (`job_fn`/`job_arg` slot
+    plus a `start`/`done` `CreateSemaphoreA` pair) rather than pulling from
+    a shared queue, since every dispatch always fans out to exactly 4
+    chunks. A `par`/`swarm` nested inside another one (allowed by the
+    checker's disjointness proof) can't dispatch to the same fixed pool it's
+    already running on, so it falls back to a serial, full-range pass
+    guarded by a manually-reentrant lock (`serial_lock`/`serial_owner`) —
+    a bare inline fallback would race, since every concurrently-running
+    outer worker hits the nested statement at once. See
+    `examples/par_pool_ticks.star` /
+    `runtime_par_pool_ticks_persists_across_cycles` (proves the pool
+    survives repeated dispatch/join cycles), `examples/par_nested.star` /
+    `runtime_par_nested_serial_fallback_is_race_free` (proves the nested
+    fallback is race-free under real concurrent execution — checked
+    deterministic across 15 manual runs), and the
+    `codegen_par_pool_reused_across_multiple_statements`,
+    `codegen_par_reentrant_dispatch_uses_serial_lock`,
+    `codegen_par_pool_globals_absent_without_par` codegen tests.
+
+13. **DONE — Fix the two unbounded leaks in string `concat` and closure
+    environments (§3.6).** Both now allocate through a shared
+    reference-counting runtime (`Codegen::emit_rc_runtime`, `src/codegen/mod.rs`):
+    a 16-byte `[i64 refcount][i8* release_fn]` header ahead of every
+    `star_rc_alloc`'d block, with `star_rc_retain`/`star_rc_release`
+    incrementing/decrementing it and freeing (calling the optional nested
+    `release_fn` first, for a closure env that itself captured RC-bearing
+    values) at zero. A string literal's global constant is wrapped in the
+    same header shape with the refcount set to a reserved `-1` "immortal"
+    sentinel both retain/release skip, so it's never actually freed despite
+    flowing through the same paths a heap-allocated `str` does. One generic
+    recursive walker (`src/codegen/rc.rs`, new) retains on every read of an
+    existing owned slot (`Ident`/`Field`/`ListIndex`/`GenRefIndex`) and
+    releases at scope exit/`return`/`break`/`continue`/reassignment,
+    recursing through struct fields and `List` elements so a `str`/closure
+    nested inside either is tracked too — this composes automatically
+    through every duplication point (`let`, a call argument, a struct
+    field, ...) without needing a retain at each one individually, since
+    they're all just `emit_expr` evaluating some expression. Arena
+    `spawn`/`despawn`/respawn hook into the same walker. See
+    `examples/rc_strings.star` / `runtime_rc_strings_end_to_end`,
+    `examples/rc_closures.star` / `runtime_rc_closures_end_to_end`, and
+    `examples/rc_stress.star` / `runtime_rc_stress_memory_stays_bounded`
+    (the direct empirical proof: 10,000,000 iterations sampled for Working
+    Set growth while running, not just IR inspection), plus the
+    `codegen_concat_uses_rc_alloc_not_raw_malloc`,
+    `codegen_closure_capturing_str_emits_release_env_thunk`,
+    `codegen_despawn_releases_arena_slot_str_field`, and related
+    `codegen_*`/`runtime_*` tests in `tests/frontend.rs`.
+
+    Three bugs caught while implementing this (all fixed, all covered by a
+    regression test): a method's `self` parameter was being tracked/released
+    as if it were an owned value rather than the borrowed pointer it
+    actually is, corrupting the caller's stack (`codegen_method_self_param_is_not_released_at_scope_exit`);
+    a `Str` value needs *two* loads from its storage to reach the real
+    backing pointer, not one (`Codegen::emit_raw_str_ptr`'s own
+    documented convention), which the retain/release walker initially
+    missed; and reading a `Str`/closure purely to hand it to a transient,
+    non-owning consumer (`len`/`concat`'s internal `strlen`/`strcpy`,
+    `printf` formatting, calling a closure through a bare variable) was
+    retaining a reference that nothing ever released, leaking exactly one
+    reference per such use — fixed by releasing it right back in
+    `emit_raw_str_ptr`, `emit_print_like`, and `emit_closure_call`.
+
+### Bonus fix found while working on #12
+
+`par_analysis.rs`'s nested-`Stmt::Par` disjointness check never added the
+nested loop's own variable to its locals set before recursing, so *any*
+nested `par`/`swarm` whose body mutated its own loop variable's fields (the
+only thing a `par` body is ever meaningfully used for) was unconditionally
+rejected as an unproven capture write. One-line fix in
+`Checker::walk_par_stmt`'s `TypedStmt::Par` arm.
 
 ### Bonus fix found while testing #8
 
@@ -98,52 +232,3 @@ Printing a `bool` via an f-string (`print(f"{a and b}")`) previously hit
 `emit_print_like`'s `_ => "%p"` fallback — formatting a bare `i1` as a
 pointer is undefined behavior. `Ty::Bool` now formats as `%s` against a
 selected `"true"`/`"false"` string constant (`Codegen::emit_bool_str`).
-
-## Deferred (not attempted this pass)
-
-These three needed a larger, riskier redesign than "fix the bug in place,"
-so rather than ship a shallow/unsafe partial fix under time pressure they're
-left for a dedicated pass:
-
-- **Give `par`/`swarm` a real persistent thread pool (§3.5).** Needs an
-  actual lifetime-managed global worker-thread pool with a work queue and
-  synchronization primitives (semaphores/condition variables) built in raw
-  LLVM IR — a real concurrency primitive that's hard to get right (deadlocks,
-  lost wakeups) without iterative runtime debugging, and a correctness bug
-  here is worse than the current (correct, just slow) per-call
-  `CreateThread`/`WaitForSingleObject` cost.
-- **Fix the two unbounded leaks in string `concat` and closure environments
-  (§3.6).** Genuinely fixing this needs an ownership/lifetime or
-  reference-counting story for heap-backed `Str`/`Closure` values, not a
-  local patch. The one "free" idea (route the allocation through the frame
-  bump allocator when created inside a `frame:` block) is actively unsafe:
-  today a `Str`/closure escaping a `frame:` block is safe (its own storage
-  is genuinely heap-permanent), and frame-backing it would turn that into a
-  dangling-pointer bug the escape analysis doesn't track for `Str`/`Closure`
-  values at all — trading a leak for a segfault. Needs a deliberate design
-  decision, not a quick patch.
-- **Route `Vec2`/`Vec3` through the same SSA/vector-register path `Vec4`
-  already uses (§4.3).** `Vec2`/`Vec3` are lowered to plain `{ float, float
-  [, float] }` aggregates throughout `src/codegen/vector_math.rs`, and a good
-  chunk of the existing test suite (`codegen_vec3_add_uses_extractvalue_insertvalue`,
-  `codegen_vec2_ctor_uses_anonymous_struct`, `codegen_vec2_swizzle_write_uses_gep_store`,
-  ...) explicitly pins that struct-based codegen shape. Switching to
-  `<2 x float>`/`<3 x float>` is a coordinated rewrite across construction,
-  arithmetic, swizzle read/write, `type_size`/frame allocation, and the
-  matching test updates — a real redesign, not a bug fix.
-
-## Also discovered, not tracked as an "Immediate" item
-
-While verifying #8's runtime test, found that a comment as the very first
-line of an indented block (e.g. right after `fn main():`) breaks indentation
-tracking in the lexer (`error: expected an indented block, found end of
-line`). Pre-existing, unrelated to anything above — worth a follow-up lexer
-fix (`Lexer::handle_line_start`'s comment-only-line handling likely needs to
-not treat that as "no indentation seen yet").
-
-Similarly, `let` bound to a lambda literal with a *block* body, followed by
-another statement at the same indentation level as the `let`, fails to parse
-(`error: expected end of line, found an integer literal`) — reproduced with
-`fn t() -> i32:\n    let c = fn() -> i32:\n        let y = 1\n        y\n    0\n`.
-Also pre-existing and unrelated; likely a `parse_block`/`Stmt::Let`
-line-end-expectation interaction worth a follow-up.

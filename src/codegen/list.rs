@@ -122,6 +122,12 @@ impl Codegen {
         self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, elem_llvm, elem_llvm, data, idx64));
         let elem_val = self.tmp_name();
         self.line(&format!("  {} = load {}, {}* {}", elem_val, elem_llvm, elem_llvm, elem_ptr));
+        // Reading an element hands out an independent copy while the list
+        // keeps its own reference -- retain (see `rc.rs`; a no-op unless
+        // `elem_ty` is RC-bearing). The out-of-bounds branch below produces
+        // a zero value with no real backing allocation, so there's nothing
+        // to retain there.
+        self.emit_retain_at(&elem_ptr, elem_ty);
         self.line(&format!("  br label %{}", end_label));
 
         self.line(&format!("{}:", oob_label));
@@ -156,6 +162,11 @@ impl Codegen {
         let elem_ptr = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, elem_llvm, elem_llvm, data, idx64));
         let clean_val = self.untag(val, elem_ty);
+        // `val` was already computed (and retained, if it's a copy) by the
+        // caller before calling this; release the old element *after* that,
+        // right before overwriting it -- keeps `list[i] = list[i]` safe, same
+        // reasoning as `Codegen::store_target`'s `Ident`/`Field` arms.
+        self.emit_release_at(&elem_ptr, elem_ty);
         self.line(&format!("  store {} {}, {}* {}", elem_llvm, clean_val, elem_llvm, elem_ptr));
         self.line(&format!("  br label %{}", end_label));
 

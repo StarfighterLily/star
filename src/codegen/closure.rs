@@ -77,6 +77,7 @@ impl Codegen {
         // --- the closure body, as a deferred top-level function ---
         let saved_ir = std::mem::take(&mut self.ir);
         let saved_symbols = std::mem::take(&mut self.symbols);
+        let saved_owned_stack = std::mem::take(&mut self.owned_stack);
         let saved_in_frame = self.in_frame;
         self.in_frame = false; // the frame bump allocator's offset is a single shared global, scoped to the defining call, not a detached closure body
         // A closure literal is its own independent LLVM function with its
@@ -93,6 +94,7 @@ impl Codegen {
         }
         self.line(") {");
         self.line("entry:");
+        self.push_scope();
 
         if !captured.is_empty() {
             let env_ptr = self.tmp_name();
@@ -109,6 +111,14 @@ impl Codegen {
                 let local_ptr = self.tmp_name();
                 self.line(&format!("  {} = alloca {}", local_ptr, field_ty));
                 self.line(&format!("  store {} {}, {}* {}", field_ty, loaded, field_ty, local_ptr));
+                // `self` is captured *by pointer* (a borrow of the caller's
+                // own struct, see `captured_value_llvm_ty`'s doc comment),
+                // not an owned copy, and its `local_ptr` is one indirection
+                // level deeper than `track_owned`/`contains_rc` assume for
+                // an ordinary local of type `cty` -- must not be tracked.
+                if name != "self" {
+                    self.track_owned(&local_ptr, cty);
+                }
                 self.symbols.push((name.clone(), local_ptr, cty.clone()));
             }
         }
@@ -118,11 +128,13 @@ impl Codegen {
             let alloca = self.tmp_name();
             self.line(&format!("  {} = alloca {}", alloca, ptr_ty));
             self.line(&format!("  store {} %arg_{}, {}* {}", ptr_ty, p.name, ptr_ty, alloca));
+            self.track_owned(&alloca, &p.ty);
             self.symbols.push((p.name.clone(), alloca, p.ty.clone()));
         }
 
         let terminated = Self::body_terminates(&body.stmts);
         let trailing_val = self.emit_stmts_value(&body.stmts);
+        self.pop_scope(!terminated);
         if !terminated {
             if ret_llvm == "void" {
                 self.line("  ret void");
@@ -145,6 +157,7 @@ impl Codegen {
         let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
         self.pending_top.push(fn_ir);
         self.symbols = saved_symbols;
+        self.owned_stack = saved_owned_stack;
         self.in_frame = saved_in_frame;
         self.in_main = saved_in_main;
 
@@ -162,8 +175,43 @@ impl Codegen {
             self.line(&format!("  {} = getelementptr inbounds {}, {}* null, i32 1", size_gep, env_ty, env_ty));
             let size = self.tmp_name();
             self.line(&format!("  {} = ptrtoint {}* {} to i64", size, env_ty, size_gep));
+            // If any captured field owns RC content of its own (e.g. a `str`
+            // captured by value), that reference would otherwise leak
+            // forever once this environment block is finally released --
+            // `self` is excluded, it's captured *by pointer* (a borrow, see
+            // `captured_value_llvm_ty`), not an owned copy. Generate a
+            // dedicated per-closure-literal thunk that releases just those
+            // fields, and hand it to `star_rc_alloc` as this block's nested
+            // cleanup callback (see `Codegen::emit_rc_runtime`).
+            let rc_fields: Vec<(usize, Ty)> = captured.iter().enumerate()
+                .filter(|(_, (name, _, cty))| name != "self" && self.contains_rc(cty))
+                .map(|(i, (_, _, cty))| (i, cty.clone()))
+                .collect();
+            let release_fn_operand = if rc_fields.is_empty() {
+                "null".to_string()
+            } else {
+                let release_fn_name = format!("closure_{}_release_env", id);
+                let saved_ir2 = std::mem::take(&mut self.ir);
+                self.line(&format!("define void @{}(i8* %envp) {{", release_fn_name));
+                self.line("entry:");
+                let env_ptr2 = self.tmp_name();
+                self.line(&format!("  {} = bitcast i8* %envp to {}*", env_ptr2, env_ty));
+                for (i, fty) in &rc_fields {
+                    let gep = self.tmp_name();
+                    self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, env_ty, env_ty, env_ptr2, i));
+                    self.emit_release_at(&gep, fty);
+                }
+                self.line("  ret void");
+                self.line("}");
+                self.line("");
+                let fn_ir2 = std::mem::replace(&mut self.ir, saved_ir2);
+                self.pending_top.push(fn_ir2);
+                let reg = self.tmp_name();
+                self.line(&format!("  {} = bitcast void (i8*)* @{} to i8*", reg, release_fn_name));
+                reg
+            };
             let raw = self.tmp_name();
-            self.line(&format!("  {} = call i8* @malloc(i64 {})", raw, size));
+            self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* {})", raw, size, release_fn_operand));
             let env_ptr = self.tmp_name();
             self.line(&format!("  {} = bitcast i8* {} to {}*", env_ptr, raw, env_ty));
             for (i, (name, _, cty)) in captured.iter().enumerate() {
@@ -282,6 +330,17 @@ impl Codegen {
         self.line(&format!("  {} = extractvalue {{ i8*, i8* }} {}, 0", fnptr_i8, bare));
         let envptr = self.tmp_name();
         self.line(&format!("  {} = extractvalue {{ i8*, i8* }} {}, 1", envptr, bare));
+        // If `callee` reads an existing owned slot, `emit_expr` above
+        // already retained a fresh reference to the closure's environment
+        // on its behalf (see `rc.rs`) -- but *calling* a closure is a
+        // transient use (unpack `fn_ptr`/`env_ptr`, call through, done),
+        // not a new persistent owner, so that retain must be released
+        // right back or every call through a bare closure variable would
+        // leak one reference to its environment (same reasoning as
+        // `crate::codegen::builtins::emit_raw_str_ptr`).
+        if Self::is_rc_borrowing_read(callee) {
+            self.line(&format!("  call void @star_rc_release(i8* {})", envptr));
+        }
 
         let ret_llvm = self.closure_ret_llvm(ret_ty);
         let param_llvm: Vec<String> = param_tys.iter().map(|t| self.llvm_ty(t)).collect();

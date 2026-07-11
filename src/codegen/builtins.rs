@@ -49,6 +49,16 @@ impl Codegen {
                         let arg_val = if matches!(ty, Ty::Str) {
                             let loaded = self.tmp_name();
                             self.line(&format!("  {} = load i8*, i8** {}", loaded, bare_val));
+                            // Same reasoning as `emit_raw_str_ptr`: balance
+                            // back out whatever retain `emit_expr(e)` above
+                            // did on `e`'s behalf (a no-op if `e` was a
+                            // fresh construction, since nothing was
+                            // retained) -- this f-string hole only formats
+                            // the bytes for `printf`, it doesn't keep the
+                            // pointer around.
+                            if Self::is_rc_borrowing_read(e) {
+                                self.line(&format!("  call void @star_rc_release(i8* {})", loaded));
+                            }
                             loaded
                         } else if matches!(ty, Ty::Bool) {
                             self.emit_bool_str(&bare_val)
@@ -90,6 +100,12 @@ impl Codegen {
             let fmt_ptr = self.emit_expr(arg);
             let loaded = self.tmp_name();
             self.line(&format!("  {} = load i8*, i8** {}", loaded, fmt_ptr));
+            // Same reasoning as `emit_raw_str_ptr`/the f-string branch
+            // above: balance back out whatever retain `emit_expr(arg)`
+            // did on `arg`'s behalf.
+            if matches!(self.expr_ty(arg), Ty::Str) && Self::is_rc_borrowing_read(arg) {
+                self.line(&format!("  call void @star_rc_release(i8* {})", loaded));
+            }
             self.line(&format!("  call i32 (i8*, ...) @printf(i8* {})", loaded));
             if println {
                 let g = self.global_name();
@@ -216,6 +232,16 @@ impl Codegen {
         let bare = self.untag(&val, &Ty::Str);
         let reg = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** {}", reg, bare));
+        // If `e` reads an existing owned slot, `emit_expr` above already
+        // retained a fresh reference on its behalf (see `rc.rs`) -- but
+        // this function only extracts the raw bytes for a synchronous
+        // library call (`strlen`/`strcpy`/...) and never keeps the pointer
+        // around, so that retain must be released right back or `s`'s
+        // refcount would grow by one on every `len(s)`/`concat(s, ..)`
+        // call, never balanced by a matching release.
+        if Self::is_rc_borrowing_read(e) {
+            self.line(&format!("  call void @star_rc_release(i8* {})", reg));
+        }
         reg
     }
 
@@ -262,7 +288,7 @@ impl Codegen {
         let total64 = self.tmp_name();
         self.line(&format!("  {} = sext i32 {} to i64", total64, total_plus_nul));
         let buf = self.tmp_name();
-        self.line(&format!("  {} = call i8* @malloc(i64 {})", buf, total64));
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", buf, total64));
         self.line(&format!("  call i8* @strcpy(i8* {}, i8* {})", buf, a));
         self.line(&format!("  call i8* @strcat(i8* {}, i8* {})", buf, b));
         self.box_str_ptr(&buf)

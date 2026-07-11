@@ -9,6 +9,20 @@ use star::driver::Driver;
 use star::lexer::TokenKind;
 use star::types::{Ty, TypedExpr, TypedItem, TypedStmt};
 
+/// Slice out just one `define ... @name(...` function's body from a full
+/// module's emitted IR, so a test asserting "this function never emits X"
+/// isn't tripped up by an unrelated occurrence of `X` elsewhere in the
+/// module -- e.g. the fixed `star_rc_alloc`/`retain`/`release` runtime
+/// prelude (see `Codegen::emit_rc_runtime`) legitimately contains its own
+/// `ret void`/`icmp`/`call i8* @malloc`, which has nothing to do with
+/// whether the function under test emits them.
+fn extract_fn_body<'a>(ir: &'a str, define_prefix: &str) -> &'a str {
+    let start = ir.find(define_prefix).unwrap_or_else(|| panic!("`{}` not found in IR:\n{}", define_prefix, ir));
+    let rest = &ir[start..];
+    let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
+    &rest[..end]
+}
+
 /// Lexing a struct should emit INDENT/DEDENT around the field block.
 #[test]
 fn lexes_indentation_markers() {
@@ -841,9 +855,13 @@ fn rejects_par_undefined_arena() {
     assert!(Driver::check(&module).is_err(), "par over an undefined arena should be a type error");
 }
 
-/// Codegen for `par` dispatches across real OS threads: `CreateThread` is
-/// called from a loop-chunking worker function, and the caller joins every
-/// handle via `WaitForSingleObject`/`CloseHandle` before continuing.
+/// Codegen for `par` dispatches to the persistent worker-thread pool: the
+/// pool's static machinery (`par.pool.worker_main`/`par.pool.ensure_init`,
+/// created via `CreateThread`/`CreateSemaphoreA` exactly once) is emitted
+/// alongside this callsite's own `par_worker_` chunking function, and the
+/// dispatcher joins via `WaitForSingleObject` on the pool's per-worker
+/// "done" semaphores before continuing -- no `CloseHandle` anywhere, since
+/// pool threads are persistent, not per-call.
 #[test]
 fn codegen_par_dispatches_threads() {
     let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
@@ -853,10 +871,66 @@ fn codegen_par_dispatches_threads() {
     assert!(ir.contains("declare i8* @CreateThread"), "{}", ir);
     assert!(ir.contains("call i8* @CreateThread("), "{}", ir);
     assert!(ir.contains("call i32 @WaitForSingleObject("), "{}", ir);
-    assert!(ir.contains("call i32 @CloseHandle("), "{}", ir);
     assert!(ir.contains("define i32 @par_worker_"), "a worker function should be emitted: {}", ir);
-    // Exactly 4 threads are spawned per `par`/`swarm` statement.
+    assert!(ir.contains("define i32 @par.pool.worker_main"), "the pool's generic worker entry point should be emitted: {}", ir);
+    assert!(ir.contains("define void @par.pool.ensure_init"), "the pool's lazy-init function should be emitted: {}", ir);
+    assert!(ir.contains("call i32 @GetCurrentThreadId"), "{}", ir);
+    assert!(ir.contains("call i8* @CreateSemaphoreA"), "{}", ir);
+    assert!(ir.contains("call i32 @ReleaseSemaphore"), "{}", ir);
+    // The pool's `ensure_init` creates all 4 persistent worker threads (once,
+    // from this single statement's lazy-init call) -- not one CreateThread
+    // per `par`/`swarm` statement execution as the old per-call design did.
     assert_eq!(ir.matches("call i8* @CreateThread(").count(), 4, "{}", ir);
+}
+
+/// A program with **two** separate `par`/`swarm` statements still only
+/// creates the pool's 4 worker threads once -- the second statement's
+/// `ensure_init` call sees the pool already initialized and skips straight
+/// to dispatch, proving the pool is genuinely reused rather than recreated
+/// per statement.
+#[test]
+fn codegen_par_pool_reused_across_multiple_statements() {
+    let src = format!(
+        "{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n    swarm e in Enemies:\n        e.hp = 0\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert_eq!(ir.matches("call i8* @CreateThread(").count(), 4, "pool threads should be created once, not once per statement: {}", ir);
+    assert_eq!(ir.matches("define i32 @par.pool.worker_main").count(), 1, "{}", ir);
+    assert_eq!(ir.matches("define void @par.pool.ensure_init").count(), 1, "{}", ir);
+    assert_eq!(ir.matches("define i32 @par_worker_").count(), 2, "each callsite still gets its own chunking function: {}", ir);
+}
+
+/// A `par`/`swarm` statement nested inside another `par`/`swarm` body
+/// dispatches through the manually-reentrant serial lock (rather than
+/// trying to re-enter the fixed 4-worker pool from a thread that's already
+/// one of its own workers) -- see `par_pool`'s module doc comment for why a
+/// bare inline fallback would race.
+#[test]
+fn codegen_par_reentrant_dispatch_uses_serial_lock() {
+    let src = format!(
+        "{}fn t():\n    par e in Enemies:\n        par e2 in Enemies:\n            e2.hp -= 1\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("@par.pool.serial_lock"), "{}", ir);
+    assert!(ir.contains("@par.pool.serial_owner"), "{}", ir);
+}
+
+/// A program that never uses `par`/`swarm` never pays for the pool's
+/// machinery -- it stays fully lazy, gated behind
+/// `Codegen::ensure_par_pool_emitted`.
+#[test]
+fn codegen_par_pool_globals_absent_without_par() {
+    let src = "fn t() -> i32:\n    1 + 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(!ir.contains("@par.pool."), "no par/swarm pool globals should be emitted for a program that never uses par/swarm: {}", ir);
 }
 
 /// Runtime test: the compiled `swarm.exe` spawns and joins real worker
@@ -869,6 +943,45 @@ fn runtime_swarm_end_to_end() {
     let output = Command::new("examples/swarm.exe").output().expect("failed to execute swarm.exe");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("swarm done"), "worker threads should run to completion: {}", stdout);
+}
+
+/// Runtime test: the persistent worker-thread pool correctly serves 5
+/// sequential `par` dispatch/join cycles in a row, not just a single one --
+/// the actual "is it really persistent" regression check (a correct
+/// single-shot `par` would also pass under the old per-call-`CreateThread`
+/// design). See `examples/par_pool_ticks.star`.
+#[test]
+fn runtime_par_pool_ticks_persists_across_cycles() {
+    use std::process::Command;
+
+    let output = Command::new("examples/par_pool_ticks.exe").output().expect("failed to execute par_pool_ticks.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.matches("hp: 95").count(),
+        3,
+        "all 3 enemies should show hp 95 (100 - 5 ticks) after 5 sequential par/swarm cycles: {}",
+        stdout
+    );
+}
+
+/// Runtime test: a `par`/`swarm` statement nested inside another one is
+/// race-free under real concurrent execution -- every `Bullet` ends up
+/// incremented exactly once per live `Enemy`, deterministically, every run.
+/// Without the manually-reentrant serial lock this would be flaky (lost
+/// updates from multiple outer workers concurrently running overlapping
+/// passes over the same nested arena). See `examples/par_nested.star`.
+#[test]
+fn runtime_par_nested_serial_fallback_is_race_free() {
+    use std::process::Command;
+
+    let output = Command::new("examples/par_nested.exe").output().expect("failed to execute par_nested.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.matches("dmg: 3").count(),
+        4,
+        "all 4 bullets should show dmg 3 (one increment per live enemy, no lost updates): {}",
+        stdout
+    );
 }
 
 // --- `spawn` (arena population) -------------------------------------------
@@ -1922,15 +2035,16 @@ fn codegen_match_struct_pattern_binds_field_via_gep() {
     let module = Driver::parse(&src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i32 @t(");
     assert_eq!(
-        ir.matches("getelementptr inbounds %Point, %Point* %t0, i32 0, i32").count(),
+        fn_ir.matches("getelementptr inbounds %Point, %Point* %t0, i32 0, i32").count(),
         2,
         "one GEP per destructured field: {}",
-        ir
+        fn_ir
     );
     // The arm always matches (no tag to test), so it falls straight through
     // to its body with no conditional branch guarding it.
-    assert!(!ir.contains("icmp"), "a struct pattern should not emit a tag comparison: {}", ir);
+    assert!(!fn_ir.contains("icmp"), "a struct pattern should not emit a tag comparison: {}", fn_ir);
 }
 
 /// Runtime test: `examples/struct_destructure.exe` exercises struct
@@ -2509,7 +2623,8 @@ fn codegen_closure_literal_emits_deferred_function_and_fat_pointer() {
     let ir = Driver::codegen(&typed).expect("should codegen");
     assert!(ir.contains("define i32 @closure_0(i8* %envp, i32 %arg_x)"), "{}", ir);
     assert!(ir.contains("insertvalue { i8*, i8* } undef, i8*"), "{}", ir);
-    assert!(!ir.contains("call i8* @malloc"), "a capture-free closure should not allocate an environment: {}", ir);
+    let fn_ir = extract_fn_body(&ir, "define i32 @t(");
+    assert!(!fn_ir.contains("call i8* @malloc") && !fn_ir.contains("call i8* @star_rc_alloc"), "a capture-free closure should not allocate an environment: {}", fn_ir);
 }
 
 /// Codegen for a closure that captures an outer local: a `malloc`'d
@@ -3058,8 +3173,9 @@ fn codegen_bare_return_inside_main_returns_i32_zero() {
     let module = Driver::parse("fn main():\n    if true:\n        return\n    print(\"after\")\n").expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    assert!(!ir.contains("ret void"), "main must never emit `ret void`: {}", ir);
-    assert_eq!(ir.matches("ret i32 0").count(), 2, "both the early bare return and the implicit fallthrough should return i32 0: {}", ir);
+    let main_ir = extract_fn_body(&ir, "define i32 @main(");
+    assert!(!main_ir.contains("ret void"), "main must never emit `ret void`: {}", main_ir);
+    assert_eq!(main_ir.matches("ret i32 0").count(), 2, "both the early bare return and the implicit fallthrough should return i32 0: {}", main_ir);
 }
 
 // --- §3.1: frame bump-allocator capacity bounds check -----------------------
@@ -3535,8 +3651,9 @@ fn codegen_sequence_early_return_becomes_ret_false() {
     let module = Driver::parse(src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    assert!(ir.contains("ret i1 false"), "early return should lower to ret i1 false: {}", ir);
-    assert!(!ir.contains("ret void"), "resume() must never contain a ret void: {}", ir);
+    let resume_ir = extract_fn_body(&ir, "define i1 @resume(");
+    assert!(resume_ir.contains("ret i1 false"), "early return should lower to ret i1 false: {}", resume_ir);
+    assert!(!resume_ir.contains("ret void"), "resume() must never contain a ret void: {}", resume_ir);
 }
 
 /// Runtime test: a `sequence` that ticks normally to completion, and a
@@ -3553,4 +3670,314 @@ fn runtime_sequence_early_return_end_to_end() {
     assert!(stdout.contains("ticks: 3"), "normal countdown should tick 3 times: {}", stdout);
     assert!(stdout.contains("early return reports done: false"), "an aborted sequence should report done: {}", stdout);
     assert_eq!(output.status.code(), Some(0));
+}
+
+// --- §3.6: reference-counted `Str`/`Closure` heap values ---------------------
+//
+// `concat` and a closure literal's captured environment used to `malloc` and
+// never `free`, leaking unboundedly (every call/every closure creation grew
+// the process's heap forever). Both now allocate through a shared
+// `star_rc_alloc`/`star_rc_retain`/`star_rc_release` runtime (see
+// `Codegen::emit_rc_runtime` in `src/codegen/mod.rs`), with retain/release
+// calls threaded through variable reads, scope exits, reassignment, structs,
+// lists, closures, and arena spawn/despawn (`src/codegen/rc.rs`).
+
+/// `concat`'s buffer is allocated through `star_rc_alloc` (which frees it once
+/// the last reference is released), not directly through `@malloc`.
+#[test]
+fn codegen_concat_uses_rc_alloc_not_raw_malloc() {
+    let src = "fn t(a: str, b: str) -> str:\n    concat(a, b)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i8* @t(");
+    assert!(fn_ir.contains("call i8* @star_rc_alloc"), "concat should allocate via star_rc_alloc: {}", fn_ir);
+    assert!(!fn_ir.contains("call i8* @malloc"), "concat should not call @malloc directly: {}", fn_ir);
+}
+
+/// A closure literal that captures an outer local allocates its environment
+/// through `star_rc_alloc`, not directly through `@malloc`.
+#[test]
+fn codegen_closure_capturing_local_uses_rc_alloc() {
+    let src = "fn t() -> i32:\n    let base = 10\n    let f = fn(x: i32) -> i32: x + base\n    f(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i32 @t(");
+    assert!(fn_ir.contains("call i8* @star_rc_alloc"), "closure env should allocate via star_rc_alloc: {}", fn_ir);
+    assert!(!fn_ir.contains("call i8* @malloc"), "closure env should not call @malloc directly: {}", fn_ir);
+}
+
+/// A `let`-bound `str` local that's never returned is released before the
+/// function's own implicit-fallthrough `ret`, closing the leak for the
+/// common case (a `concat` result that goes out of scope normally).
+#[test]
+fn codegen_unused_let_bound_str_is_released_before_fn_exit() {
+    let src = "fn t(a: str, b: str) -> i32:\n    let s = concat(a, b)\n    1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i32 @t(");
+    let release_pos = fn_ir.find("call void @star_rc_release").expect("should release the unused local");
+    let ret_pos = fn_ir.find("ret i32 1").expect("should return 1");
+    assert!(release_pos < ret_pos, "release must happen before the fallthrough ret: {}", fn_ir);
+}
+
+/// Reassigning a `mut str` local releases the old value before storing the
+/// new one (rather than only ever releasing at scope exit, which would leak
+/// every value a variable held before its *last* assignment).
+#[test]
+fn codegen_str_reassignment_releases_old_value_before_store() {
+    let src = "fn t() -> str:\n    let mut s = concat(\"a\", \"b\")\n    s = concat(\"c\", \"d\")\n    s\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i8* @t(");
+    // The new value is computed first (the second concat's own
+    // `star_rc_alloc`), then the reassignment releases `s`'s old value,
+    // then stores the new one -- a release immediately followed by a
+    // `store` is exactly that release-before-overwrite sequencing, and
+    // register numbers aren't stable across incidental codegen changes so
+    // this checks the *shape* rather than exact register names.
+    let lines: Vec<&str> = fn_ir.lines().map(|l| l.trim()).collect();
+    let release_then_store = lines.windows(2).any(|w| w[0].contains("call void @star_rc_release") && w[1].starts_with("store i8*"));
+    assert!(release_then_store, "a release must immediately precede the reassignment's store: {}", fn_ir);
+    assert_eq!(fn_ir.matches("call i8* @star_rc_alloc").count(), 2, "both concat calls should allocate: {}", fn_ir);
+}
+
+/// An explicit `return` from inside a nested `if` still releases an
+/// RC-owning local declared in an *outer* scope (the function root), not
+/// just the immediately-enclosing block.
+#[test]
+fn codegen_early_return_releases_outer_scope_str_local() {
+    let src = "fn t(cond: bool) -> i32:\n    let s = concat(\"a\", \"b\")\n    if cond:\n        return 1\n    0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i32 @t(");
+    let ret1_pos = fn_ir.find("ret i32 1").expect("should have the early return");
+    let release_before_ret1 = fn_ir[..ret1_pos].contains("call void @star_rc_release");
+    assert!(release_before_ret1, "the early return must release `s`, declared in the outer (function-root) scope: {}", fn_ir);
+}
+
+/// `break` only releases the scopes opened *since* the loop was entered --
+/// an RC-owning local declared before the loop must still be alive (and
+/// therefore only released once, at the function's own scope exit), not
+/// released a second time by every `break` inside the loop.
+#[test]
+fn codegen_break_does_not_release_outer_scope_str_local() {
+    let src = "fn t() -> i32:\n    let s = concat(\"a\", \"b\")\n    let mut i = 0\n    while i < 10:\n        if i == 5:\n            break\n        i += 1\n    1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i32 @t(");
+    // Exactly one release of `s`: at the function's own fallthrough exit.
+    // If `break` also released it, this would be 2 (or more, once per loop
+    // iteration's worth of `break` sites).
+    assert_eq!(fn_ir.matches("call void @star_rc_release").count(), 1, "`s` should be released exactly once, at function exit, not by `break`: {}", fn_ir);
+}
+
+/// Copying a struct that has a `str` field (`let p2 = p1`) retains the
+/// nested field -- both `p1` and `p2` now alias the same backing buffer,
+/// and releasing one must not invalidate the other's reference.
+#[test]
+fn codegen_struct_copy_retains_nested_str_field() {
+    let src = "struct P:\n    name: str\n\nfn t(p1: P) -> i32:\n    let p2 = p1\n    1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i32 @t(");
+    assert!(fn_ir.contains("call void @star_rc_retain"), "copying a struct with a str field should retain that field: {}", fn_ir);
+}
+
+/// A `List<str>` local's release walks its elements via a runtime loop
+/// (element count isn't known at compile time), not a fixed unrolled
+/// sequence of releases.
+#[test]
+fn codegen_list_of_str_release_uses_runtime_loop() {
+    let src = "fn t(words: List<str>) -> i32:\n    1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i32 @t(");
+    assert!(fn_ir.contains("rc_walk_cond"), "releasing a List<str> parameter should lower to a runtime loop: {}", fn_ir);
+    assert!(fn_ir.contains("call void @star_rc_release"), "{}", fn_ir);
+}
+
+/// A closure that captures a `str` local by value gets its own dedicated
+/// `_release_env` thunk (passed to `star_rc_alloc` as the environment
+/// block's nested-cleanup callback), so that captured string is actually
+/// freed once the closure itself is released -- otherwise it would leak
+/// forever even after fixing the top-level environment block's own leak.
+#[test]
+fn codegen_closure_capturing_str_emits_release_env_thunk() {
+    let src = "fn t(name: str) -> str:\n    let f = fn() -> str: name\n    f()\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("_release_env"), "a closure capturing a str should emit its own release-env thunk: {}", ir);
+    let thunk_ir = extract_fn_body(&ir, "define void @closure_0_release_env(");
+    assert!(thunk_ir.contains("call void @star_rc_release"), "{}", thunk_ir);
+}
+
+/// A closure capturing only non-RC locals (e.g. `i32`) passes `null` as its
+/// nested-cleanup callback -- no `_release_env` thunk is generated at all.
+#[test]
+fn codegen_closure_capturing_non_rc_local_has_no_release_env_thunk() {
+    let src = "fn t() -> i32:\n    let base = 10\n    let f = fn(x: i32) -> i32: x + base\n    f(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(!ir.contains("_release_env"), "a capture-free-of-RC-content closure needs no release-env thunk: {}", ir);
+}
+
+/// `despawn`ing an arena slot whose element struct has a `str` field
+/// releases that field, so a spawn/despawn cycle doesn't leak the spawned
+/// element's string content.
+#[test]
+fn codegen_despawn_releases_arena_slot_str_field() {
+    let src = "struct Entity:\n    name: str\n\narena Entities: Entity\n\nfn t(idx: i32):\n    despawn Entities[idx]\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define void @t(");
+    assert!(fn_ir.contains("call void @star_rc_release"), "despawn should release the slot's str field: {}", fn_ir);
+}
+
+/// Regression test for a bug caught while implementing §3.6: `self` is
+/// passed *by pointer* (a borrow of the caller's own struct -- see
+/// `Codegen::captured_value_llvm_ty`'s doc comment), not an owned copy, so
+/// a method on a struct with a `str` field must never release `self` at its
+/// own scope exit -- doing so corrupted memory (retaining/releasing the
+/// caller's raw struct pointer as if it were a `star_rc_alloc`'d block).
+#[test]
+fn codegen_method_self_param_is_not_released_at_scope_exit() {
+    let src = "struct P:\n    name: str\n\nimpl P:\n    fn greet(self) -> i32:\n        42\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i32 @greet(");
+    assert!(!fn_ir.contains("star_rc_release"), "a method must never release its own `self` pointer: {}", fn_ir);
+}
+
+/// A string literal's backing global constant is wrapped in the same
+/// 16-byte `[i64 refcount][i8* release_fn]` header every `star_rc_alloc`
+/// allocation gets, with the refcount set to the reserved `-1` "immortal"
+/// sentinel `star_rc_retain`/`release` skip -- a literal is a permanent
+/// global, not a heap block, and must never actually be freed even though
+/// it flows through the same retain/release paths a heap-allocated `str`
+/// does (e.g. when copied into a struct field or `let`-bound variable).
+#[test]
+fn codegen_string_literal_uses_immortal_rc_header() {
+    let src = "fn t() -> str:\n    \"hi\"\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("{ i64, i8*, ["), "a string literal's global should carry the RC header shape: {}", ir);
+    assert!(ir.contains("{ i64 -1, i8* null,"), "a string literal's refcount should be the immortal sentinel: {}", ir);
+}
+
+/// Runtime test: `examples/rc_strings.exe` exercises `concat`, reassignment,
+/// struct fields, list elements, and passing a `str` into a function all
+/// together, end to end through a real compiled binary. The regression risk
+/// this guards against is retain/release firing at the wrong point and
+/// corrupting/truncating/use-after-freeing a string still in use -- every
+/// value below must still print exactly right despite the reference
+/// counting inserted around it.
+#[test]
+fn runtime_rc_strings_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/rc_strings.exe").output().expect("failed to execute rc_strings.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("foobar"), "{}", stdout);
+    assert!(stdout.contains("foobarbaz"), "{}", stdout);
+    assert!(stdout.contains("hello world"), "struct field and its copy should both print correctly: {}", stdout);
+    assert!(stdout.contains("alpha-1"), "{}", stdout);
+    assert!(stdout.contains("beta-2"), "{}", stdout);
+    assert!(stdout.contains("gamma-3"), "list literal + pushed element should all survive: {}", stdout);
+    assert!(stdout.contains("words len = 3"), "{}", stdout);
+    assert!(stdout.contains("shout_len(go) = 5"), "a str passed into a function and used there should still be valid: {}", stdout);
+    assert!(stdout.contains("start-x-x-x-x-x"), "repeated reassignment should never corrupt the accumulator: {}", stdout);
+    assert_eq!(output.status.code(), Some(0));
+}
+
+/// Runtime test: `examples/rc_closures.exe` exercises a closure capturing a
+/// `str` by value and escaping its defining function, stored in a struct
+/// field and in a `List`, called long after the local binding that created
+/// it went out of scope, plus a closure capturing another closure. The
+/// regression risk this guards against: a captured value released too
+/// early would read corrupted/freed memory when the closure is finally
+/// called; never releasing it is the leak todo.md flags in the first place.
+#[test]
+fn runtime_rc_closures_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/rc_closures.exe").output().expect("failed to execute rc_closures.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Alice"), "a closure capturing a str param, called after its own function returned: {}", stdout);
+    assert!(stdout.contains("Bob"), "same, called through a struct field: {}", stdout);
+    assert!(stdout.contains("Carol"), "{}", stdout);
+    assert!(stdout.contains("Dave"), "closures stored in a List and called by index: {}", stdout);
+    assert!(stdout.contains("apply_add5(10) = 15"), "a closure capturing another closure: {}", stdout);
+    assert!(stdout.contains("tick 0: Alice"), "{}", stdout);
+    assert!(stdout.contains("tick 1: Alice"), "{}", stdout);
+    assert!(stdout.contains("tick 2: Alice"), "calling the same escaped closure repeatedly should keep working: {}", stdout);
+    assert_eq!(output.status.code(), Some(0));
+}
+
+/// Runtime test: `examples/rc_stress.exe` runs 10,000,000 iterations, each
+/// creating a fresh `concat` result and a closure capturing it that
+/// immediately go out of scope -- before the fix, every single iteration
+/// permanently leaked both allocations. This is the direct empirical proof
+/// the "unbounded" leak todo.md describes is now bounded: while the process
+/// runs, its Working Set is sampled every ~120ms via a single PowerShell
+/// `Get-Process` polling loop (one PowerShell startup, not one per sample --
+/// that alone would dominate the sampling interval), and the samples must
+/// stay flat across the run rather than growing with iteration count.
+#[test]
+fn runtime_rc_stress_memory_stays_bounded() {
+    use std::process::Command;
+
+    let exe = std::env::current_dir().unwrap().join("examples/rc_stress.exe");
+    let stdout_file = std::env::temp_dir().join("rc_stress_stdout.txt");
+    let script = format!(
+        "$p = Start-Process -FilePath '{}' -PassThru -RedirectStandardOutput '{}'; \
+         $samples = New-Object System.Collections.ArrayList; \
+         while (-not $p.HasExited) {{ try {{ $p.Refresh(); [void]$samples.Add($p.WorkingSet64) }} catch {{}}; Start-Sleep -Milliseconds 120 }}; \
+         $samples -join ','",
+        exe.display(),
+        stdout_file.display()
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .expect("failed to run the PowerShell memory-sampling script");
+    assert!(output.status.success(), "sampling script failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    let program_stdout = std::fs::read_to_string(&stdout_file).unwrap_or_default();
+    assert!(program_stdout.contains("done, total ="), "rc_stress.exe should finish normally: {}", program_stdout);
+
+    let samples_raw = String::from_utf8_lossy(&output.stdout);
+    let samples: Vec<i64> = samples_raw.trim().split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    assert!(samples.len() >= 3, "expected several Working Set samples over the run, got {}: {:?}", samples.len(), samples_raw);
+
+    // Skip the first sample (process/DLL-load startup transient) and compare
+    // the rest: an unbounded leak growing by ~70 bytes/iteration over
+    // 10,000,000 iterations would add hundreds of megabytes over the run,
+    // dwarfing any legitimate one-time startup cost -- a bounded run stays
+    // within a small, flat band throughout.
+    let settled = &samples[1..];
+    let min = *settled.iter().min().unwrap();
+    let max = *settled.iter().max().unwrap();
+    const CAP_BYTES: i64 = 50 * 1024 * 1024;
+    assert!(max < CAP_BYTES, "Working Set exceeded the 50MB bound (samples: {:?}) -- looks like a real leak", samples);
+    assert!(
+        (max - min) < 20 * 1024 * 1024,
+        "Working Set grew by {}MB across the run (samples: {:?}) -- looks like a leak, not noise",
+        (max - min) / (1024 * 1024),
+        samples
+    );
+
+    let _ = std::fs::remove_file(&stdout_file);
 }

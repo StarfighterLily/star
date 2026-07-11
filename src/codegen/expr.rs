@@ -202,9 +202,24 @@ impl Codegen {
                 let var = self.tmp_name();
                 let escaped = s.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
                 let g = self.global_name();
-                self.global_defs.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", g, s.len() + 1, escaped));
+                let n = s.len() + 1;
+                // Wrapped in the exact same 16-byte `[i64 refcount][i8*
+                // release_fn]` header `star_rc_alloc` gives every heap
+                // allocation (see `Codegen::emit_rc_runtime`), with the
+                // refcount field set to the reserved `-1` sentinel
+                // `star_rc_retain`/`release` treat as "immortal, never
+                // free" -- a literal is backed by a permanent global, not a
+                // heap block, so it must never actually be retained/freed,
+                // but still needs to *look* like a valid RC'd allocation to
+                // whatever generically retains/releases a `Str` value that
+                // happens to hold this literal (see `rc.rs`).
+                let struct_ty = format!("{{ i64, i8*, [{} x i8] }}", n);
+                self.global_defs.push(format!(
+                    "{} = private unnamed_addr constant {} {{ i64 -1, i8* null, [{} x i8] c\"{}\\00\" }}",
+                    g, struct_ty, n, escaped
+                ));
                 let gep = self.tmp_name();
-                self.line(&format!("  {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0", gep, s.len() + 1, s.len() + 1, g));
+                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 0, i32 2, i64 0", gep, struct_ty, struct_ty, g));
                 self.line(&format!("  {} = alloca i8*", var));
                 self.line(&format!("  store i8* {}, i8** {}", gep, var));
                 var
@@ -223,6 +238,11 @@ impl Codegen {
                 let reg = self.tmp_name();
                 let ts = self.llvm_ty(ty);
                 self.line(&format!("  {} = load {}, {}* {}", reg, ts, ts, ptr));
+                // Reading a variable hands the caller an independent copy of
+                // whatever it holds while `name`'s own slot keeps its
+                // reference -- retain so the duplicate is properly owned
+                // (see `rc.rs`; a no-op unless `ty` is RC-bearing).
+                self.emit_retain_at(&ptr, ty);
                 reg
             }
             TypedExpr::SelfExpr(ty, _) => {
@@ -247,6 +267,9 @@ impl Codegen {
                 let reg = self.tmp_name();
                 let ts = self.llvm_ty(ty);
                 self.line(&format!("  {} = load {}, {}* {}", reg, ts, ts, gep));
+                // Same reasoning as `Ident` above: reading a field hands out
+                // an independent copy of its value.
+                self.emit_retain_at(&gep, ty);
                 reg
             }
             TypedExpr::Call { callee, args, .. } => {
@@ -393,8 +416,11 @@ impl Codegen {
                             self.line(&format!("  {} = {} i32 {}, {}", cmp, llvm_op, scrut_val, rhs_val_clean));
                             self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, then_label, next_label));
                             self.line(&format!("{}:", then_label));
+                            self.push_scope();
                             let val = self.emit_stmts_value(&arm.body.stmts);
-                            if !Self::body_terminates(&arm.body.stmts) {
+                            let arm_terminates = Self::body_terminates(&arm.body.stmts);
+                            self.pop_scope(!arm_terminates);
+                            if !arm_terminates {
                                 if produces_value {
                                     let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
                                     arm_values.push((reg, then_label.clone()));
@@ -441,11 +467,14 @@ impl Codegen {
                                     bound += 1;
                                 }
                             }
+                            self.push_scope();
                             let val = self.emit_stmts_value(&arm.body.stmts);
                             for _ in 0..bound {
                                 self.symbols.pop();
                             }
-                            if !Self::body_terminates(&arm.body.stmts) {
+                            let arm_terminates = Self::body_terminates(&arm.body.stmts);
+                            self.pop_scope(!arm_terminates);
+                            if !arm_terminates {
                                 if produces_value {
                                     let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
                                     arm_values.push((reg, then_label.clone()));
@@ -475,11 +504,14 @@ impl Codegen {
                                 self.symbols.push((bind_name.clone(), field_gep, fty));
                                 bound += 1;
                             }
+                            self.push_scope();
                             let val = self.emit_stmts_value(&arm.body.stmts);
                             for _ in 0..bound {
                                 self.symbols.pop();
                             }
-                            if !Self::body_terminates(&arm.body.stmts) {
+                            let arm_terminates = Self::body_terminates(&arm.body.stmts);
+                            self.pop_scope(!arm_terminates);
+                            if !arm_terminates {
                                 if produces_value {
                                     let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
                                     arm_values.push((reg, current_label.clone()));
@@ -488,8 +520,11 @@ impl Codegen {
                             }
                         }
                         Pattern::Wildcard => {
+                            self.push_scope();
                             let val = self.emit_stmts_value(&arm.body.stmts);
-                            if !Self::body_terminates(&arm.body.stmts) {
+                            let arm_terminates = Self::body_terminates(&arm.body.stmts);
+                            self.pop_scope(!arm_terminates);
+                            if !arm_terminates {
                                 if produces_value {
                                     let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
                                     arm_values.push((reg, current_label.clone()));

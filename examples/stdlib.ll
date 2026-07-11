@@ -13,6 +13,9 @@ declare i8* @strcat(i8*, i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
+declare i8* @CreateSemaphoreA(i8*, i32, i32, i8*)
+declare i32 @ReleaseSemaphore(i8*, i32, i32*)
+declare i32 @GetCurrentThreadId()
 declare float @llvm.sqrt.f32(float)
 declare float @llvm.pow.f32(float, float)
 declare float @llvm.fabs.f32(float)
@@ -27,6 +30,69 @@ declare float @llvm.maxnum.f32(float, float)
 @frame.off = global i64 0
 
 @rng.state = global i32 123456789
+
+define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
+entry:
+  %total = add i64 %size, 16
+  %raw = call i8* @malloc(i64 %total)
+  %hdr = bitcast i8* %raw to i64*
+  store i64 1, i64* %hdr
+  %relfn_slot_i8 = getelementptr inbounds i8, i8* %raw, i64 8
+  %relfn_slot = bitcast i8* %relfn_slot_i8 to i8**
+  store i8* %release_fn, i8** %relfn_slot
+  %data = getelementptr inbounds i8, i8* %raw, i64 16
+  ret i8* %data
+}
+
+define void @star_rc_retain(i8* %p) {
+entry:
+  %isnull = icmp eq i8* %p, null
+  br i1 %isnull, label %done, label %do
+do:
+  %hdr_i8 = getelementptr inbounds i8, i8* %p, i64 -16
+  %hdr = bitcast i8* %hdr_i8 to i64*
+  %rc = load i64, i64* %hdr
+  %is_immortal = icmp eq i64 %rc, -1
+  br i1 %is_immortal, label %done, label %incr
+incr:
+  %rc1 = add i64 %rc, 1
+  store i64 %rc1, i64* %hdr
+  br label %done
+done:
+  ret void
+}
+
+define void @star_rc_release(i8* %p) {
+entry:
+  %isnull = icmp eq i8* %p, null
+  br i1 %isnull, label %done, label %do
+do:
+  %hdr_i8 = getelementptr inbounds i8, i8* %p, i64 -16
+  %hdr = bitcast i8* %hdr_i8 to i64*
+  %rc = load i64, i64* %hdr
+  %is_immortal = icmp eq i64 %rc, -1
+  br i1 %is_immortal, label %done, label %decr
+decr:
+  %rc1 = sub i64 %rc, 1
+  store i64 %rc1, i64* %hdr
+  %iszero = icmp eq i64 %rc1, 0
+  br i1 %iszero, label %free, label %done
+free:
+  %relfn_slot_i8 = getelementptr inbounds i8, i8* %p, i64 -8
+  %relfn_slot = bitcast i8* %relfn_slot_i8 to i8**
+  %relfn = load i8*, i8** %relfn_slot
+  %relfn_isnull = icmp eq i8* %relfn, null
+  br i1 %relfn_isnull, label %dofree, label %callrelfn
+callrelfn:
+  %relfn_typed = bitcast i8* %relfn to void (i8*)*
+  call void %relfn_typed(i8* %p)
+  br label %dofree
+dofree:
+  call void @free(i8* %hdr_i8)
+  br label %done
+done:
+  ret void
+}
 
 %Player = type { i32, float, i8* }
 define i32 @add(i32 %a, i32 %b) {
@@ -89,37 +155,55 @@ entry:
   %t24 = getelementptr inbounds [13 x i8], [13 x i8]* @.str.7, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t24, i32 %t23)
   %t25 = alloca i8*
-  %t27 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.8, i64 0, i64 0
+  %t27 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.8, i64 0, i32 2, i64 0
   %t26 = alloca i8*
   store i8* %t27, i8** %t26
   store i8* %t26, i8** %t25
   %t28 = load i8*, i8** %t25
-  %t29 = load i8*, i8** %t28
-  %t30 = call i32 @strlen(i8* %t29)
-  %t31 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.9, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t31, i32 %t30)
-  %t32 = alloca i8*
-  %t34 = getelementptr inbounds [8 x i8], [8 x i8]* @.str.10, i64 0, i64 0
-  %t33 = alloca i8*
-  store i8* %t34, i8** %t33
-  %t35 = load i8*, i8** %t33
-  %t36 = load i8*, i8** %t25
-  %t37 = load i8*, i8** %t36
-  %t38 = call i32 @strlen(i8* %t35)
-  %t39 = call i32 @strlen(i8* %t37)
-  %t40 = add i32 %t38, %t39
-  %t41 = add i32 %t40, 1
-  %t42 = sext i32 %t41 to i64
-  %t43 = call i8* @malloc(i64 %t42)
-  call i8* @strcpy(i8* %t43, i8* %t35)
-  call i8* @strcat(i8* %t43, i8* %t37)
-  %t44 = alloca i8*
-  store i8* %t43, i8** %t44
-  store i8* %t44, i8** %t32
-  %t45 = load i8*, i8** %t32
-  %t46 = load i8*, i8** %t45
-  %t47 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.11, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t47, i8* %t46)
+  %t29 = load i8*, i8** %t25
+  %t30 = load i8*, i8** %t29
+  call void @star_rc_retain(i8* %t30)
+  %t31 = load i8*, i8** %t28
+  call void @star_rc_release(i8* %t31)
+  %t32 = call i32 @strlen(i8* %t31)
+  %t33 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.9, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t33, i32 %t32)
+  %t34 = alloca i8*
+  %t36 = getelementptr inbounds { i64, i8*, [8 x i8] }, { i64, i8*, [8 x i8] }* @.str.10, i64 0, i32 2, i64 0
+  %t35 = alloca i8*
+  store i8* %t36, i8** %t35
+  %t37 = load i8*, i8** %t35
+  %t38 = load i8*, i8** %t25
+  %t39 = load i8*, i8** %t25
+  %t40 = load i8*, i8** %t39
+  call void @star_rc_retain(i8* %t40)
+  %t41 = load i8*, i8** %t38
+  call void @star_rc_release(i8* %t41)
+  %t42 = call i32 @strlen(i8* %t37)
+  %t43 = call i32 @strlen(i8* %t41)
+  %t44 = add i32 %t42, %t43
+  %t45 = add i32 %t44, 1
+  %t46 = sext i32 %t45 to i64
+  %t47 = call i8* @star_rc_alloc(i64 %t46, i8* null)
+  call i8* @strcpy(i8* %t47, i8* %t37)
+  call i8* @strcat(i8* %t47, i8* %t41)
+  %t48 = alloca i8*
+  store i8* %t47, i8** %t48
+  store i8* %t48, i8** %t34
+  %t49 = load i8*, i8** %t34
+  %t50 = load i8*, i8** %t34
+  %t51 = load i8*, i8** %t50
+  call void @star_rc_retain(i8* %t51)
+  %t52 = load i8*, i8** %t49
+  call void @star_rc_release(i8* %t52)
+  %t53 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.11, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t53, i8* %t52)
+  %t54 = load i8*, i8** %t34
+  %t55 = load i8*, i8** %t54
+  call void @star_rc_release(i8* %t55)
+  %t56 = load i8*, i8** %t25
+  %t57 = load i8*, i8** %t56
+  call void @star_rc_release(i8* %t57)
   ret i32 0
 }
 
@@ -134,7 +218,7 @@ entry:
 @.str.5 = private unnamed_addr constant [11 x i8] c"floor: %f\0A\00"
 @.str.6 = private unnamed_addr constant [10 x i8] c"ceil: %f\0A\00"
 @.str.7 = private unnamed_addr constant [13 x i8] c"clamped: %d\0A\00"
-@.str.8 = private unnamed_addr constant [5 x i8] c"Hero\00"
+@.str.8 = private unnamed_addr constant { i64, i8*, [5 x i8] } { i64 -1, i8* null, [5 x i8] c"Hero\00" }
 @.str.9 = private unnamed_addr constant [14 x i8] c"name len: %d\0A\00"
-@.str.10 = private unnamed_addr constant [8 x i8] c"hello, \00"
+@.str.10 = private unnamed_addr constant { i64, i8*, [8 x i8] } { i64 -1, i8* null, [8 x i8] c"hello, \00" }
 @.str.11 = private unnamed_addr constant [14 x i8] c"greeting: %s\0A\00"

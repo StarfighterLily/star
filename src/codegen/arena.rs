@@ -49,21 +49,21 @@ impl Codegen {
         }
     }
 
-    /// Emit a `par`/`swarm item in ArenaName: <body>` statement: a fixed
-    /// pool of worker threads, each processing a contiguous chunk of the
-    /// arena's live elements. The checker has already proven the body only
-    /// mutates `item` (or its own locals), so handing each thread a disjoint
+    /// Emit a `par`/`swarm item in ArenaName: <body>` statement: builds this
+    /// callsite's own `par_worker_N` function (walking a `[start, end)`
+    /// chunk of the arena's live elements), then hands it off to the
+    /// persistent worker-thread pool (`par_pool::emit_par_dispatch`) for
+    /// dispatch. The checker has already proven the body only mutates
+    /// `item` (or its own locals), so handing each pool worker a disjoint
     /// `[start, end)` range is safe.
     ///
     /// Everything currently in scope (locals, `self`) is captured by
-    /// pointer into a small per-call argument struct and handed to
-    /// `CreateThread`; the parent thread blocks on all of them via
-    /// `WaitForSingleObject` before continuing, so the outer stack frame
-    /// backing those captured pointers is guaranteed to outlive the threads
-    /// that reference it.
+    /// pointer into a small per-call argument struct; the dispatcher blocks
+    /// on every pool worker finishing before continuing (see
+    /// `emit_par_dispatch`), so the outer stack frame backing those
+    /// captured pointers is guaranteed to outlive the workers that
+    /// reference it.
     pub(super) fn emit_par_stmt(&mut self, var: &str, elem_ty: &Ty, arena: &str, body: &TypedBlock) {
-        const NUM_THREADS: u32 = 4;
-
         let id = self.block_id;
         self.block_id += 1;
         let worker_name = format!("par_worker_{}", id);
@@ -161,66 +161,8 @@ impl Codegen {
         self.in_frame = saved_in_frame;
         self.in_main = saved_in_main;
 
-        // --- back in the caller: divide the arena's live count into NUM_THREADS chunks ---
-        let count_reg = self.tmp_name();
-        self.line(&format!("  {} = load i64, i64* @arena.{}.count", count_reg, arena));
-        let handles = self.tmp_name();
-        self.line(&format!("  {} = alloca [{} x i8*]", handles, NUM_THREADS));
-        for t in 0..NUM_THREADS {
-            let start_mul = self.tmp_name();
-            self.line(&format!("  {} = mul i64 {}, {}", start_mul, count_reg, t));
-            let start_div = self.tmp_name();
-            self.line(&format!("  {} = sdiv i64 {}, {}", start_div, start_mul, NUM_THREADS));
-            let end_mul = self.tmp_name();
-            self.line(&format!("  {} = mul i64 {}, {}", end_mul, count_reg, t + 1));
-            let end_div = self.tmp_name();
-            self.line(&format!("  {} = sdiv i64 {}, {}", end_div, end_mul, NUM_THREADS));
-
-            let args_ptr = self.tmp_name();
-            self.line(&format!("  {} = alloca {}", args_ptr, args_ty));
-            let sfield = self.tmp_name();
-            self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0", sfield, args_ty, args_ty, args_ptr));
-            self.line(&format!("  store i64 {}, i64* {}", start_div, sfield));
-            let efield = self.tmp_name();
-            self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 1", efield, args_ty, args_ty, args_ptr));
-            self.line(&format!("  store i64 {}, i64* {}", end_div, efield));
-            for (i, (name, _, ty)) in captured.iter().enumerate() {
-                let cfield = self.tmp_name();
-                self.line(&format!(
-                    "  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}",
-                    cfield, args_ty, args_ty, args_ptr, i + 2
-                ));
-                let ptr_ty = self.sym_ptr_llvm_ty(name, ty);
-                let src_ptr = self.sym_ptr(name).unwrap_or_else(|| "%undef".into());
-                self.line(&format!("  store {} {}, {}* {}", ptr_ty, src_ptr, ptr_ty, cfield));
-            }
-            let args_i8 = self.tmp_name();
-            self.line(&format!("  {} = bitcast {}* {} to i8*", args_i8, args_ty, args_ptr));
-            let handle = self.tmp_name();
-            self.line(&format!(
-                "  {} = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @{} to i8*), i8* {}, i32 0, i32* null)",
-                handle, worker_name, args_i8
-            ));
-            let hslot = self.tmp_name();
-            self.line(&format!(
-                "  {} = getelementptr inbounds [{} x i8*], [{} x i8*]* {}, i32 0, i32 {}",
-                hslot, NUM_THREADS, NUM_THREADS, handles, t
-            ));
-            self.line(&format!("  store i8* {}, i8** {}", handle, hslot));
-        }
-        for t in 0..NUM_THREADS {
-            let hslot = self.tmp_name();
-            self.line(&format!(
-                "  {} = getelementptr inbounds [{} x i8*], [{} x i8*]* {}, i32 0, i32 {}",
-                hslot, NUM_THREADS, NUM_THREADS, handles, t
-            ));
-            let handle = self.tmp_name();
-            self.line(&format!("  {} = load i8*, i8** {}", handle, hslot));
-            let wait = self.tmp_name();
-            self.line(&format!("  {} = call i32 @WaitForSingleObject(i8* {}, i32 -1)", wait, handle));
-            let close = self.tmp_name();
-            self.line(&format!("  {} = call i32 @CloseHandle(i8* {})", close, handle));
-        }
+        // --- back in the caller: hand off to the persistent worker pool ---
+        self.emit_par_dispatch(&worker_name, &args_ty, &captured, arena);
     }
 
     /// Emit `spawn ArenaName(args...)`. Arenas start out empty (`data` is
@@ -284,6 +226,20 @@ impl Codegen {
         ));
         let reused_idx = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", reused_idx, free_slot_ptr));
+        if self.contains_rc(&elem_ty) {
+            // A reused slot's previous contents are a validly-constructed
+            // element from before its `despawn` (unlike a brand-new slot
+            // from the `grow` path below, whose backing memory is
+            // uninitialized `malloc` garbage, never safe to walk) --
+            // release them before this spawn overwrites the slot, or any
+            // RC-bearing field they held would leak forever.
+            let old_slot_ptr = self.tmp_name();
+            self.line(&format!(
+                "  {} = getelementptr inbounds {}, {}* {}, i64 {}",
+                old_slot_ptr, elem_llvm_ty, elem_llvm_ty, data_ready, reused_idx
+            ));
+            self.emit_release_at(&old_slot_ptr, &elem_ty);
+        }
         let store_label = self.block_label("spawn_store");
         let end_label = self.block_label("spawn_end");
         self.line(&format!("  br label %{}", store_label));
@@ -393,6 +349,24 @@ impl Codegen {
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_live, live_label, end_label));
 
         self.line(&format!("{}:", live_label));
+        // Releases the slot's own RC-bearing content (if any) now that it's
+        // being marked dead -- otherwise a struct field/element spawned in
+        // and later despawned without ever being overwritten by a later
+        // respawn (the only other release point, in `emit_spawn_stmt`)
+        // would leak for the rest of the process's lifetime.
+        if let Some(elem_ty) = self.arena_by_elem.iter().find(|(_, n)| n == arena).map(|(t, _)| t.clone()) {
+            if self.contains_rc(&elem_ty) {
+                let elem_llvm_ty = self.llvm_ty(&elem_ty);
+                let data_ptr = self.tmp_name();
+                self.line(&format!("  {} = load {}*, {}** @arena.{}.data", data_ptr, elem_llvm_ty, elem_llvm_ty, arena));
+                let slot_ptr = self.tmp_name();
+                self.line(&format!(
+                    "  {} = getelementptr inbounds {}, {}* {}, i64 {}",
+                    slot_ptr, elem_llvm_ty, elem_llvm_ty, data_ptr, idx64
+                ));
+                self.emit_release_at(&slot_ptr, &elem_ty);
+            }
+        }
         let next_gen = self.tmp_name();
         self.line(&format!("  {} = add i32 {}, 1", next_gen, gen_val));
         self.line(&format!("  store i32 {}, i32* {}", next_gen, gen_ptr));
@@ -542,6 +516,10 @@ impl Codegen {
         ));
         let elem_val = self.tmp_name();
         self.line(&format!("  {} = load {}, {}* {}", elem_val, elem_llvm_ty, elem_llvm_ty, elem_ptr));
+        // Same reasoning as `Ident`/`Field`/`ListIndex` reads: this hands
+        // out an independent copy while the arena slot keeps its own
+        // reference (see `rc.rs`; a no-op unless `elem_ty` is RC-bearing).
+        self.emit_retain_at(&elem_ptr, &elem_ty);
         self.line(&format!("  br label %{}", end_label));
 
         // Both failure paths (out-of-bounds, stale generation) funnel

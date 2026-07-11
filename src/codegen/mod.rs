@@ -16,6 +16,8 @@ mod builtins;
 mod closure;
 mod expr;
 mod list;
+mod par_pool;
+mod rc;
 mod reflect;
 mod stmt;
 mod vector_math;
@@ -89,16 +91,34 @@ pub struct Codegen {
     /// (see `llvm_ty`), otherwise to a tagged-union struct (see
     /// `emit_enum_decl`).
     enum_variant_fields: std::collections::HashMap<String, Vec<Vec<Ty>>>,
-    /// Stack of `(continue_label, break_label)` pairs for the innermost
-    /// enclosing loops, so `break`/`continue` codegen can jump to the right
-    /// block without threading loop context through every statement emitter.
-    loop_stack: Vec<(String, String)>,
+    /// Stack of `(continue_label, break_label, owned_stack depth at loop
+    /// entry)` for the innermost enclosing loops, so `break`/`continue`
+    /// codegen can jump to the right block (without threading loop context
+    /// through every statement emitter) and release exactly the RC-owning
+    /// locals declared since the loop was entered -- see `rc.rs`.
+    loop_stack: Vec<(String, String, usize)>,
+    /// Stack of scope frames, one per currently-open lexical block (function
+    /// body, closure body, `if`/`while`/`for`/`frame` body, `match` arm
+    /// body), each holding the `(sym_ptr, Ty)` of every RC-owning local
+    /// (`Str`/`Closure`, or a struct/`List` transitively containing one)
+    /// `let`-bound or parameter-bound directly in that block. Consumed by
+    /// `rc.rs`'s `push_scope`/`pop_scope`/`track_owned` to emit a matching
+    /// `star_rc_release` when each scope ends (normally or via an early
+    /// `return`/`break`/`continue`), closing the leaks documented in
+    /// todo.md §3.6.
+    owned_stack: Vec<Vec<(String, Ty)>>,
     /// Maps a top-level function name -> the name of the no-capture,
     /// envp-ignoring thunk generated the first time that function is used as
     /// a first-class value (see `Codegen::emit_fn_value`), so referencing the
     /// same function as a value more than once reuses one thunk instead of
     /// emitting a duplicate `define`.
     fn_value_thunks: std::collections::HashMap<String, String>,
+    /// True once the persistent `par`/`swarm` worker-thread pool's static
+    /// machinery (globals, `@par.pool.worker_main`, `@par.pool.ensure_init`)
+    /// has been pushed to `pending_top`. Guards against re-emitting it for a
+    /// program with more than one `par`/`swarm` statement -- see
+    /// `par_pool::ensure_par_pool_emitted`.
+    par_pool_emitted: bool,
 }
 
 impl Codegen {
@@ -129,7 +149,9 @@ impl Codegen {
             enum_variants: std::collections::HashMap::new(),
             enum_variant_fields: std::collections::HashMap::new(),
             loop_stack: Vec::new(),
+            owned_stack: Vec::new(),
             fn_value_thunks: std::collections::HashMap::new(),
+            par_pool_emitted: false,
         }
     }
 
@@ -216,6 +238,11 @@ impl Codegen {
         self.line("declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)");
         self.line("declare i32 @WaitForSingleObject(i8*, i32)");
         self.line("declare i32 @CloseHandle(i8*)");
+        // Synchronization primitives backing the persistent `par`/`swarm`
+        // worker-thread pool -- see `par_pool.rs`.
+        self.line("declare i8* @CreateSemaphoreA(i8*, i32, i32, i8*)");
+        self.line("declare i32 @ReleaseSemaphore(i8*, i32, i32*)");
+        self.line("declare i32 @GetCurrentThreadId()");
         // `math` builtins: lowered to LLVM's target-independent float
         // intrinsics rather than libm symbols, so no extra linker flags are
         // needed to resolve them.
@@ -237,6 +264,95 @@ impl Codegen {
         // (matters for a tick-based engine's replay/debugging story) unless
         // explicitly reseeded via `rand_seed(..)`.
         self.line("@rng.state = global i32 123456789");
+        self.line("");
+        self.emit_rc_runtime();
+    }
+
+    /// Emit the reference-counting runtime `concat`/closure environments
+    /// (and, transitively, struct fields / list elements that hold either)
+    /// use to be freed once their last owner goes away instead of leaking
+    /// unboundedly -- see `todo.md` §3.6 and `crate::codegen::rc`.
+    ///
+    /// Every allocation gets a fixed 16-byte header
+    /// `[i64 refcount][i8* release_fn]` immediately before the pointer the
+    /// rest of the codegen treats as "the value" (so no *use* site of a
+    /// `Str`/closure-env pointer needs to change, only creation/destruction).
+    /// `release_fn` is an optional callback invoked just before the block is
+    /// freed, given the same data pointer, to release any RC-bearing content
+    /// nested *inside* the block (e.g. a closure's captured `str` fields) --
+    /// `null` for an allocation with no such content (e.g. a plain `concat`
+    /// result).
+    fn emit_rc_runtime(&mut self) {
+        self.line("define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {");
+        self.line("entry:");
+        self.line("  %total = add i64 %size, 16");
+        self.line("  %raw = call i8* @malloc(i64 %total)");
+        self.line("  %hdr = bitcast i8* %raw to i64*");
+        self.line("  store i64 1, i64* %hdr");
+        self.line("  %relfn_slot_i8 = getelementptr inbounds i8, i8* %raw, i64 8");
+        self.line("  %relfn_slot = bitcast i8* %relfn_slot_i8 to i8**");
+        self.line("  store i8* %release_fn, i8** %relfn_slot");
+        self.line("  %data = getelementptr inbounds i8, i8* %raw, i64 16");
+        self.line("  ret i8* %data");
+        self.line("}");
+        self.line("");
+
+        self.line("define void @star_rc_retain(i8* %p) {");
+        self.line("entry:");
+        self.line("  %isnull = icmp eq i8* %p, null");
+        self.line("  br i1 %isnull, label %done, label %do");
+        self.line("do:");
+        self.line("  %hdr_i8 = getelementptr inbounds i8, i8* %p, i64 -16");
+        self.line("  %hdr = bitcast i8* %hdr_i8 to i64*");
+        self.line("  %rc = load i64, i64* %hdr");
+        // `-1` is the reserved "immortal" sentinel a string literal's
+        // permanent global constant is given instead of a real refcount
+        // (see `TypedExpr::Str`'s codegen) -- it must never be incremented
+        // (or it would stop being distinguishable from a real count).
+        self.line("  %is_immortal = icmp eq i64 %rc, -1");
+        self.line("  br i1 %is_immortal, label %done, label %incr");
+        self.line("incr:");
+        self.line("  %rc1 = add i64 %rc, 1");
+        self.line("  store i64 %rc1, i64* %hdr");
+        self.line("  br label %done");
+        self.line("done:");
+        self.line("  ret void");
+        self.line("}");
+        self.line("");
+
+        self.line("define void @star_rc_release(i8* %p) {");
+        self.line("entry:");
+        self.line("  %isnull = icmp eq i8* %p, null");
+        self.line("  br i1 %isnull, label %done, label %do");
+        self.line("do:");
+        self.line("  %hdr_i8 = getelementptr inbounds i8, i8* %p, i64 -16");
+        self.line("  %hdr = bitcast i8* %hdr_i8 to i64*");
+        self.line("  %rc = load i64, i64* %hdr");
+        // Same immortal sentinel as `star_rc_retain` -- must never be
+        // decremented or (worse) freed once it hits some unrelated value.
+        self.line("  %is_immortal = icmp eq i64 %rc, -1");
+        self.line("  br i1 %is_immortal, label %done, label %decr");
+        self.line("decr:");
+        self.line("  %rc1 = sub i64 %rc, 1");
+        self.line("  store i64 %rc1, i64* %hdr");
+        self.line("  %iszero = icmp eq i64 %rc1, 0");
+        self.line("  br i1 %iszero, label %free, label %done");
+        self.line("free:");
+        self.line("  %relfn_slot_i8 = getelementptr inbounds i8, i8* %p, i64 -8");
+        self.line("  %relfn_slot = bitcast i8* %relfn_slot_i8 to i8**");
+        self.line("  %relfn = load i8*, i8** %relfn_slot");
+        self.line("  %relfn_isnull = icmp eq i8* %relfn, null");
+        self.line("  br i1 %relfn_isnull, label %dofree, label %callrelfn");
+        self.line("callrelfn:");
+        self.line("  %relfn_typed = bitcast i8* %relfn to void (i8*)*");
+        self.line("  call void %relfn_typed(i8* %p)");
+        self.line("  br label %dofree");
+        self.line("dofree:");
+        self.line("  call void @free(i8* %hdr_i8)");
+        self.line("  br label %done");
+        self.line("done:");
+        self.line("  ret void");
+        self.line("}");
         self.line("");
     }
 

@@ -84,10 +84,20 @@ impl Checker {
                 let mut l = locals.clone();
                 self.walk_par_stmts(&body.stmts, &mut l);
             }
-            TypedStmt::Par { body, .. } => {
-                // A nested par loop gets its own fresh disjointness proof;
-                // just recurse for any captures it makes of the outer scope.
+            TypedStmt::Par { var, body, .. } => {
+                // A nested par loop gets its own fresh disjointness proof
+                // (via its own `Stmt::Par` check_par_disjoint call, triggered
+                // separately when `check_block_inner` type-checked it); this
+                // walk just recurses for any captures the nested body makes
+                // of the *outer* scope. The nested loop's own variable must
+                // still be added to `locals` here -- it's per-iteration
+                // state of the nested loop, not a shared/captured outer
+                // name, so mutating its own fields is exactly as safe as any
+                // other body-local, and without this the nested body's own
+                // (already-proven-safe) mutation of its own loop variable
+                // would incorrectly be flagged as an outer-scope capture.
                 let mut l = locals.clone();
+                l.insert(var.clone());
                 self.walk_par_stmts(&body.stmts, &mut l);
             }
             TypedStmt::Spawn { span, .. } => {
