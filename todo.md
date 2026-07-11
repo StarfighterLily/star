@@ -1,28 +1,9 @@
 # Star Compiler — Next Steps
 
 ## Immediate
-This needed a larger, riskier redesign than "fix the bug in place," so
-rather than ship a shallow/unsafe partial fix under time pressure it's left
-for a dedicated pass:
 
-- **Route `Vec2`/`Vec3` through the same SSA/vector-register path `Vec4`
-  already uses (§4.3).** `Vec2`/`Vec3` are lowered to plain `{ float, float
-  [, float] }` aggregates throughout `src/codegen/vector_math.rs`, and a good
-  chunk of the existing test suite (`codegen_vec3_add_uses_extractvalue_insertvalue`,
-  `codegen_vec2_ctor_uses_anonymous_struct`, `codegen_vec2_swizzle_write_uses_gep_store`,
-  ...) explicitly pins that struct-based codegen shape. Switching to
-  `<2 x float>`/`<3 x float>` is a coordinated rewrite across construction,
-  arithmetic, swizzle read/write, `type_size`/frame allocation, and the
-  matching test updates — a real redesign, not a bug fix.
-
-## Also discovered, not tracked as an "Immediate" item
-
-While verifying #8's runtime test, found that a comment as the very first
-line of an indented block (e.g. right after `fn main():`) breaks indentation
-tracking in the lexer (`error: expected an indented block, found end of
-line`). Pre-existing, unrelated to anything above — worth a follow-up lexer
-fix (`Lexer::handle_line_start`'s comment-only-line handling likely needs to
-not treat that as "no indentation seen yet").
+a comment as the very first line of an indented block (e.g. right after `fn main():`) breaks indentation
+tracking in the lexer (`error: expected an indented block, found end of line`).
 
 Similarly, `let` bound to a lambda literal with a *block* body, followed by
 another statement at the same indentation level as the `let`, fails to parse
@@ -58,10 +39,10 @@ orthogonal to #13's fix, and out of scope for it:
   f-string branch's own handling.
 
 Last actions:
-13 of the 15 items below are **done**, each with a regression test (type-level
+All 14 items below are **done**, each with a regression test (type-level
 tests in `tests/frontend.rs`, plus a dedicated `examples/*.star` program and
 an end-to-end runtime test for anything only observable by actually running a
-compiled binary). 1 item remains in "Immediate" above — see there for why.
+compiled binary).
 
 1. **DONE — Bounds-check the frame bump buffer (§3.1).** `emit_frame_alloc`
    (`src/codegen/stmt.rs`) now compares the bump pointer against
@@ -216,6 +197,50 @@ compiled binary). 1 item remains in "Immediate" above — see there for why.
     retaining a reference that nothing ever released, leaking exactly one
     reference per such use — fixed by releasing it right back in
     `emit_raw_str_ptr`, `emit_print_like`, and `emit_closure_call`.
+
+14. **DONE — Route `Vec2`/`Vec3` through the same SSA/vector-register path
+    `Vec4` already uses (§4.3).** `llvm_ty` (`src/codegen/mod.rs`) now lowers
+    `Vec2`/`Vec3` to native `<2 x float>`/`<3 x float>` instead of anonymous
+    `{ float, float [, float] }` structs; `extract_component`/`insert_component`
+    dispatch on `Ty::is_vec()` (all three arities) rather than singling out
+    `Vec4`, which alone made `emit_lerp`'s already-arity-generic implementation
+    correct for Vec2/Vec3 with zero changes to that function. The former
+    struct-shaped code paths were deleted outright rather than kept
+    alongside the vector path: `emit_vec_struct_binop`/`emit_vec4_binop`
+    merged into one `emit_vec_binop` (a single native `fadd`/`fsub`/`fmul`/
+    `fdiv` per arity), `emit_vec_scalar_binop`'s two branches collapsed into
+    one arity-generic broadcast-then-multiply, `emit_dot4`/`emit_dot_bare`'s
+    struct arm merged into one `emit_dot_vec`, `StructLit`'s Vec2/Vec3
+    `alloca`+GEP+store+load arm merged into Vec4's pure-SSA
+    `insertelement`-chain arm, and `emit_swizzle_read`/`emit_swizzle_write`'s
+    `Ty::Vec4`-only guards widened to `is_vec()` (the now-unreachable
+    `extractvalue`/`insertvalue`/GEP-store fallback branches replaced with
+    `unreachable!()` rather than silently deleted). Single-lane swizzle
+    writes on Vec2/Vec3 now go through the same load-whole-vector/
+    `insertelement`/store-whole-vector shape Vec4 already used, rather than
+    a separate direct-GEP fast path — a deliberate consistency call, since
+    `star build`'s default `-O2` erases the extra-instruction cost anyway.
+    `arena.rs`/`list.rs`/`closure.rs`/`par_analysis.rs`/`frame_analysis.rs`
+    needed no changes at all, confirmed representation-agnostic via
+    `llvm_ty`/`type_size` alone. See the rewritten
+    `codegen_vec3_add_uses_vector_fadd`,
+    `codegen_vec2_swizzle_write_uses_insertelement_store`,
+    `codegen_vec2_ctor_uses_insertelement_no_alloca`,
+    `codegen_compound_assign_vec3_uses_vector_fadd` tests (former
+    struct-shape pins), the new arity-2/3 counterparts of every existing
+    Vec4 codegen test, `codegen_vec2_dot_uses_vector_fmul_and_extractelement`/
+    `codegen_vec2_length_uses_sqrt`/`codegen_vec2_lerp_uses_extractelement_insertelement`
+    (dot/length/lerp specifically at arity 2, untested by the Vec4-only
+    suite), and the new
+    `codegen_struct_field_of_vec2_type_uses_native_vector`/
+    `codegen_list_of_vec2_uses_native_vector_element`/
+    `codegen_arena_of_vec3_uses_native_vector`/
+    `codegen_closure_capturing_vec2_local_uses_native_vector` tests locking
+    in the representation-agnostic paths. `examples/vecmath.star`,
+    `examples/math_builtins.star`, and `examples/player.star` (the three
+    examples using Vec2/Vec3) were all rebuilt through the new codegen and
+    their stdout verified byte-identical to the pre-redesign output before
+    refreshing the checked-in `.ll`/`.exe` artifacts.
 
 ### Bonus fix found while working on #12
 

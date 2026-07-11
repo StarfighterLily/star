@@ -570,13 +570,19 @@ fn codegen_float_binop_uses_fadd() {
 }
 
 #[test]
-fn codegen_vec3_add_uses_extractvalue_insertvalue() {
+fn codegen_vec2_add_uses_vector_fadd() {
+    let module = Driver::parse("fn t(a: Vec2, b: Vec2) -> Vec2:\n    a + b\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("fadd <2 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec3_add_uses_vector_fadd() {
     let module = Driver::parse("fn t(a: Vec3, b: Vec3) -> Vec3:\n    a + b\n").expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    assert!(ir.contains("extractvalue { float, float, float }"), "{}", ir);
-    assert!(ir.contains("insertvalue { float, float, float }"), "{}", ir);
-    assert!(ir.contains("fadd float"), "{}", ir);
+    assert!(ir.contains("fadd <3 x float>"), "{}", ir);
 }
 
 #[test]
@@ -588,11 +594,51 @@ fn codegen_vec4_add_uses_vector_fadd() {
 }
 
 #[test]
+fn codegen_vec2_scalar_mul_uses_vector_fmul() {
+    let module = Driver::parse("fn t(a: Vec2) -> Vec2:\n    a * 2.0\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("fmul <2 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec3_scalar_mul_uses_vector_fmul() {
+    let module = Driver::parse("fn t(a: Vec3) -> Vec3:\n    2.0 * a\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("fmul <3 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec2_multi_swizzle_read_uses_shufflevector() {
+    let module = Driver::parse("fn t(v: Vec2) -> Vec2:\n    v.yx\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("shufflevector <2 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec3_multi_swizzle_read_uses_shufflevector() {
+    let module = Driver::parse("fn t(v: Vec3) -> Vec3:\n    v.zyx\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("shufflevector <3 x float>"), "{}", ir);
+}
+
+#[test]
 fn codegen_vec4_multi_swizzle_read_uses_shufflevector() {
     let module = Driver::parse("fn t(v: Vec4) -> Vec3:\n    v.xyz\n").expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
     assert!(ir.contains("shufflevector <4 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec2_single_swizzle_uses_extractelement() {
+    let module = Driver::parse("fn t(v: Vec2) -> f32:\n    v.x\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("extractelement <2 x float>"), "{}", ir);
 }
 
 #[test]
@@ -604,12 +650,21 @@ fn codegen_vec4_single_swizzle_uses_extractelement() {
 }
 
 #[test]
-fn codegen_vec2_swizzle_write_uses_gep_store() {
+fn codegen_vec2_swizzle_write_uses_insertelement_store() {
     let module = Driver::parse("fn t(mut v: Vec2):\n    v.x = 1.0\n").expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    assert!(ir.contains("getelementptr"), "{}", ir);
-    assert!(ir.contains("store float"), "{}", ir);
+    assert!(ir.contains("insertelement <2 x float>"), "{}", ir);
+    assert!(ir.contains("store <2 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec3_swizzle_write_uses_insertelement_store() {
+    let module = Driver::parse("fn t(mut v: Vec3):\n    v.y = 1.0\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("insertelement <3 x float>"), "{}", ir);
+    assert!(ir.contains("store <3 x float>"), "{}", ir);
 }
 
 #[test]
@@ -633,11 +688,21 @@ fn codegen_mat4_vec4_mul_uses_dot_pattern() {
 }
 
 #[test]
-fn codegen_vec2_ctor_uses_anonymous_struct() {
+fn codegen_vec2_ctor_uses_insertelement_no_alloca() {
     let module = Driver::parse("fn t() -> Vec2:\n    Vec2(1.0, 2.0)\n").expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    assert!(ir.contains("alloca { float, float }"), "{}", ir);
+    assert!(ir.contains("insertelement <2 x float> undef"), "{}", ir);
+    assert!(!ir.contains("alloca <2 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec3_ctor_uses_insertelement_no_alloca() {
+    let module = Driver::parse("fn t() -> Vec3:\n    Vec3(1.0, 2.0, 3.0)\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("insertelement <3 x float> undef"), "{}", ir);
+    assert!(!ir.contains("alloca <3 x float>"), "{}", ir);
 }
 
 #[test]
@@ -650,11 +715,85 @@ fn codegen_vec4_ctor_uses_insertelement_no_alloca() {
 }
 
 #[test]
-fn codegen_compound_assign_vec_uses_fadd() {
+fn codegen_compound_assign_vec2_uses_vector_fadd() {
+    let module = Driver::parse("fn t(mut v: Vec2, o: Vec2):\n    v += o\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("fadd <2 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_compound_assign_vec3_uses_vector_fadd() {
     let module = Driver::parse("fn t(mut v: Vec3, o: Vec3):\n    v += o\n").expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    assert!(ir.contains("fadd float"), "{}", ir);
+    assert!(ir.contains("fadd <3 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec2_dot_uses_vector_fmul_and_extractelement() {
+    let module = Driver::parse("fn t(a: Vec2, b: Vec2) -> f32:\n    dot(a, b)\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("fmul <2 x float>"), "{}", ir);
+    assert!(ir.contains("extractelement <2 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec2_length_uses_sqrt() {
+    let module = Driver::parse("fn t(a: Vec2) -> f32:\n    length(a)\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("call float @llvm.sqrt.f32"), "{}", ir);
+    assert!(ir.contains("fmul <2 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_vec2_lerp_uses_extractelement_insertelement() {
+    let module = Driver::parse("fn t(a: Vec2, b: Vec2, t: f32) -> Vec2:\n    lerp(a, b, t)\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("extractelement <2 x float>"), "{}", ir);
+    assert!(ir.contains("insertelement <2 x float>"), "{}", ir);
+    assert!(!ir.contains("extractvalue"), "{}", ir);
+}
+
+#[test]
+fn codegen_struct_field_of_vec2_type_uses_native_vector() {
+    let src = "struct Marker:\n    pos: Vec2\n    id: i32\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("%Marker = type"), "{}", ir);
+    assert!(ir.contains("<2 x float>"), "{}", ir);
+    assert!(!ir.contains("{ float, float }"), "{}", ir);
+}
+
+#[test]
+fn codegen_list_of_vec2_uses_native_vector_element() {
+    let module = Driver::parse("fn t() -> List<Vec2>:\n    List<Vec2>()\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("<2 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_arena_of_vec3_uses_native_vector() {
+    let src = "arena Particles: Vec3\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("<3 x float>"), "{}", ir);
+}
+
+#[test]
+fn codegen_closure_capturing_vec2_local_uses_native_vector() {
+    let module = Driver::parse(
+        "fn t() -> f32:\n    let p = Vec2(1.0, 2.0)\n    let f = fn() -> f32: p.x + p.y\n    f()\n"
+    ).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("<2 x float>"), "{}", ir);
 }
 
 /// Runtime test: compiled `vecmath.exe` exercises vec3/vec4 arithmetic,

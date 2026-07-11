@@ -95,7 +95,7 @@ done:
 }
 
 %Vec3 = type { float, float, float }
-%Player = type { i32, { float, float, float }, i8* }
+%Player = type { i32, <3 x float>, i8* }
 define void @take_damage(%Player* %self, i32 %amount) {
 entry:
   %t0 = alloca %Player*
@@ -156,34 +156,29 @@ entry:
   %t1 = alloca %Player
   %t2 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 0
   store i32 100, i32* %t2
-  %t3 = alloca { float, float, float }
-  %t4 = sitofp i32 0 to float
-  %t5 = getelementptr inbounds { float, float, float }, { float, float, float }* %t3, i32 0, i32 0
-  store float %t4, float* %t5
-  %t6 = sitofp i32 0 to float
-  %t7 = getelementptr inbounds { float, float, float }, { float, float, float }* %t3, i32 0, i32 1
-  store float %t6, float* %t7
-  %t8 = sitofp i32 0 to float
-  %t9 = getelementptr inbounds { float, float, float }, { float, float, float }* %t3, i32 0, i32 2
-  store float %t8, float* %t9
-  %t10 = load { float, float, float }, { float, float, float }* %t3
-  %t11 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 1
-  store { float, float, float } %t10, { float, float, float }* %t11
-  %t13 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.2, i64 0, i32 2, i64 0
-  %t12 = alloca i8*
-  store i8* %t13, i8** %t12
-  %t14 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 2
-  store i8* %t12, i8** %t14
-  %t15 = load %Player, %Player* %t1
-  store %Player %t15, %Player* %t0
-  %t16 = call i32 @remaining_health(%Player* %t0)
-  %t17 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.3, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t17, i32 %t16)
+  %t3 = sitofp i32 0 to float
+  %t4 = insertelement <3 x float> undef, float %t3, i32 0
+  %t5 = sitofp i32 0 to float
+  %t6 = insertelement <3 x float> %t4, float %t5, i32 1
+  %t7 = sitofp i32 0 to float
+  %t8 = insertelement <3 x float> %t6, float %t7, i32 2
+  %t9 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 1
+  store <3 x float> %t8, <3 x float>* %t9
+  %t11 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.2, i64 0, i32 2, i64 0
+  %t10 = alloca i8*
+  store i8* %t11, i8** %t10
+  %t12 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 2
+  store i8* %t10, i8** %t12
+  %t13 = load %Player, %Player* %t1
+  store %Player %t13, %Player* %t0
+  %t14 = call i32 @remaining_health(%Player* %t0)
+  %t15 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.3, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t15, i32 %t14)
   call void @take_damage(%Player* %t0, i32 150)
-  %t19 = getelementptr inbounds %Player, %Player* %t0, i32 0, i32 2
-  %t20 = load i8*, i8** %t19
-  %t21 = load i8*, i8** %t20
-  call void @star_rc_release(i8* %t21)
+  %t17 = getelementptr inbounds %Player, %Player* %t0, i32 0, i32 2
+  %t18 = load i8*, i8** %t17
+  %t19 = load i8*, i8** %t18
+  call void @star_rc_release(i8* %t19)
   ret i32 0
 }
 

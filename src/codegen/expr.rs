@@ -11,9 +11,9 @@ impl Codegen {
     /// Read a GLSL-style swizzle access (`.x`, `.xyz`, `.zyx`, ...) off a
     /// vector base, producing a scalar `float` (single component) or a
     /// smaller/reordered vector value (multiple components). Loads the base
-    /// once, then extracts via `extractvalue` (Vec2/Vec3) or
-    /// `extractelement`/`shufflevector` (Vec4) as appropriate — no GEP is
-    /// used since a swizzle result isn't a contiguous sub-object in general.
+    /// once, then extracts via `extractelement` (single component) or
+    /// `shufflevector` (multiple) -- no GEP is used since a swizzle result
+    /// isn't a contiguous sub-object in general.
     pub(super) fn emit_swizzle_read(&mut self, base: &TypedExpr, field: &str) -> String {
         let base_ty = self.expr_ty(base);
         let base_val = self.emit_expr(base);
@@ -25,24 +25,19 @@ impl Codegen {
             return format!("float {}", reg);
         }
 
-        if matches!(base_ty, Ty::Vec4) {
+        if base_ty.is_vec() {
+            let base_t = self.llvm_ty(&base_ty);
             let reg = self.tmp_name();
             let mask: Vec<String> = indices.iter().map(|i| format!("i32 {}", i)).collect();
             self.line(&format!(
-                "  {} = shufflevector <4 x float> {}, <4 x float> undef, <{} x i32> <{}>",
-                reg, bare, indices.len(), mask.join(", ")
+                "  {} = shufflevector {} {}, {} undef, <{} x i32> <{}>",
+                reg, base_t, bare, base_t, indices.len(), mask.join(", ")
             ));
             let result_ty = Ty::vec_of_arity(indices.len() as u8).unwrap();
             return format!("{} {}", self.llvm_ty(&result_ty), reg);
         }
 
-        let result_ty = Ty::vec_of_arity(indices.len() as u8).unwrap();
-        let mut acc = "undef".to_string();
-        for (i, idx) in indices.iter().enumerate() {
-            let comp = self.extract_component(&bare, &base_ty, *idx);
-            acc = self.insert_component(&acc, &result_ty, i as u32, &comp);
-        }
-        format!("{} {}", self.llvm_ty(&result_ty), acc)
+        unreachable!("emit_swizzle_read is only reachable for vector base types")
     }
 
     /// Write to a GLSL-style swizzle target on a vector base
@@ -56,23 +51,18 @@ impl Codegen {
         let indices: Vec<u32> = field.chars().map(|c| self.swizzle_index(c)).collect();
         let base_ptr = self.emit_place(base);
 
-        if matches!(base_ty, Ty::Vec4) {
+        if base_ty.is_vec() {
+            let t = self.llvm_ty(&base_ty);
             let loaded = self.tmp_name();
-            self.line(&format!("  {} = load <4 x float>, <4 x float>* {}", loaded, base_ptr));
+            self.line(&format!("  {} = load {}, {}* {}", loaded, t, t, base_ptr));
             let mut acc = loaded;
             for (i, dest_idx) in indices.iter().enumerate() {
                 let src = if indices.len() == 1 { val_bare.clone() } else { self.extract_component(&val_bare, val_ty, i as u32) };
-                acc = self.insert_component(&acc, &Ty::Vec4, *dest_idx, &src);
+                acc = self.insert_component(&acc, &base_ty, *dest_idx, &src);
             }
-            self.line(&format!("  store <4 x float> {}, <4 x float>* {}", acc, base_ptr));
+            self.line(&format!("  store {} {}, {}* {}", t, acc, t, base_ptr));
         } else {
-            let bty = self.llvm_ty(&base_ty);
-            for (i, dest_idx) in indices.iter().enumerate() {
-                let src = if indices.len() == 1 { val_bare.clone() } else { self.extract_component(&val_bare, val_ty, i as u32) };
-                let gep = self.tmp_name();
-                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, bty, bty, base_ptr, dest_idx));
-                self.line(&format!("  store float {}, float* {}", src, gep));
-            }
+            unreachable!("emit_swizzle_write is only reachable for vector base types");
         }
     }
 
@@ -577,35 +567,16 @@ impl Codegen {
             }
             TypedExpr::StructLit { name, args, ty, .. } => {
                 match ty {
-                    Ty::Vec2 | Ty::Vec3 => {
-                        // Same alloca+GEP+store+load shape as a named struct, but
-                        // using the anonymous LLVM struct type directly (no
-                        // `%Name =` declaration exists or is needed for these).
-                        let t = self.llvm_ty(ty);
-                        let ptr = self.tmp_name();
-                        self.line(&format!("  {} = alloca {}", ptr, t));
-                        for (i, a) in args.iter().enumerate() {
-                            let av = self.emit_expr(a);
-                            let aty = self.expr_ty(a);
-                            let bare = self.promote_to_float(&av, &aty);
-                            let gep = self.tmp_name();
-                            self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, t, t, ptr, i as u32));
-                            self.line(&format!("  store float {}, float* {}", bare, gep));
-                        }
-                        let loaded = self.tmp_name();
-                        self.line(&format!("  {} = load {}, {}* {}", loaded, t, t, ptr));
-                        format!("{} {}", t, loaded)
-                    }
-                    Ty::Vec4 => {
+                    Ty::Vec2 | Ty::Vec3 | Ty::Vec4 => {
                         // No memory needed: build directly as an SSA vector value.
                         let mut acc = "undef".to_string();
                         for (i, a) in args.iter().enumerate() {
                             let av = self.emit_expr(a);
                             let aty = self.expr_ty(a);
                             let bare = self.promote_to_float(&av, &aty);
-                            acc = self.insert_component(&acc, &Ty::Vec4, i as u32, &bare);
+                            acc = self.insert_component(&acc, ty, i as u32, &bare);
                         }
-                        format!("<4 x float> {}", acc)
+                        format!("{} {}", self.llvm_ty(ty), acc)
                     }
                     Ty::Mat4 => {
                         // Args are 4 Vec4-typed row expressions; pack each row into

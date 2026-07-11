@@ -38,7 +38,7 @@ impl Codegen {
     /// Resolve the arena backing `GenRef<ty>`. The checker has already
     /// proven exactly one exists (`Checker::require_backing_arena`); this is
     /// a defensive fallback only, matching the codebase's existing
-    /// defensive-error convention (e.g. `emit_float_op`).
+    /// defensive-error convention (e.g. `emit_scalar_binop`'s `&&`/`||` arm).
     fn arena_for_elem_ty(&mut self, ty: &Ty, span: Span) -> String {
         match self.arena_by_elem.iter().find(|(t, _)| t == ty) {
             Some((_, name)) => name.clone(),

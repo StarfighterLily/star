@@ -7,22 +7,6 @@ use crate::types::*;
 use super::{format_f32_literal, Codegen};
 
 impl Codegen {
-    /// Apply a scalar float arithmetic op to two bare `float` registers,
-    /// returning a bare result register.
-    fn emit_float_op(&mut self, l: &str, r: &str, op: BinOp) -> String {
-        let reg = self.tmp_name();
-        let opcode = match op {
-            BinOp::Add => "fadd float",
-            BinOp::Sub => "fsub float",
-            BinOp::Mul => "fmul float",
-            BinOp::Div => "fdiv float",
-            BinOp::Rem => "frem float",
-            _ => { self.err("unsupported component operator", Span::dummy()); "fadd float" }
-        };
-        self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
-        reg
-    }
-
     /// Plain scalar (Int/Float, possibly mixed) binary op — this is where the
     /// pre-existing i32-only bug is fixed: Float operands now get `f`-opcodes,
     /// and mixed Int/Float operands are promoted to Float first.
@@ -62,65 +46,38 @@ impl Codegen {
         format!("{} {}", if is_cmp { "i1" } else { "float" }, reg)
     }
 
-    /// Componentwise op between two same-arity Vec2/Vec3 struct values.
-    fn emit_vec_struct_binop(&mut self, lhs: &str, rhs: &str, ty: &Ty, op: BinOp) -> String {
-        let arity = ty.vec_arity().unwrap();
+    /// Native-vector op between two same-arity Vec2/Vec3/Vec4 values.
+    fn emit_vec_binop(&mut self, lhs: &str, rhs: &str, ty: &Ty, op: BinOp) -> String {
         let l = self.untag(lhs, ty);
         let r = self.untag(rhs, ty);
-        let mut acc = "undef".to_string();
-        for i in 0..arity as u32 {
-            let lc = self.extract_component(&l, ty, i);
-            let rc = self.extract_component(&r, ty, i);
-            let oc = self.emit_float_op(&lc, &rc, op);
-            acc = self.insert_component(&acc, ty, i, &oc);
-        }
-        format!("{} {}", self.llvm_ty(ty), acc)
-    }
-
-    /// Native-vector op between two Vec4 values.
-    fn emit_vec4_binop(&mut self, lhs: &str, rhs: &str, op: BinOp) -> String {
-        let l = self.untag(lhs, &Ty::Vec4);
-        let r = self.untag(rhs, &Ty::Vec4);
+        let t = self.llvm_ty(ty);
         let reg = self.tmp_name();
         let opcode = match op {
-            BinOp::Add => "fadd <4 x float>",
-            BinOp::Sub => "fsub <4 x float>",
-            BinOp::Mul => "fmul <4 x float>",
-            BinOp::Div => "fdiv <4 x float>",
-            _ => { self.err("unsupported vec4 operator", Span::dummy()); "fadd <4 x float>" }
+            BinOp::Add => format!("fadd {}", t),
+            BinOp::Sub => format!("fsub {}", t),
+            BinOp::Mul => format!("fmul {}", t),
+            BinOp::Div => format!("fdiv {}", t),
+            _ => { self.err("unsupported vector operator", Span::dummy()); format!("fadd {}", t) }
         };
         self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
-        format!("<4 x float> {}", reg)
+        format!("{} {}", t, reg)
     }
 
     /// Vector (Vec2/Vec3/Vec4) `*`/`/` scalar (either operand order).
     fn emit_vec_scalar_binop(&mut self, vec_val: &str, vec_ty: &Ty, scalar_val: &str, scalar_ty: &Ty, op: BinOp, scalar_on_left: bool) -> String {
         let scalar = self.promote_to_float(scalar_val, scalar_ty);
         let vec_bare = self.untag(vec_val, vec_ty);
-        match vec_ty {
-            Ty::Vec4 => {
-                let mut b = "undef".to_string();
-                for i in 0..4u32 {
-                    b = self.insert_component(&b, &Ty::Vec4, i, &scalar);
-                }
-                let reg = self.tmp_name();
-                let opcode = match op { BinOp::Mul => "fmul <4 x float>", BinOp::Div => "fdiv <4 x float>", _ => unreachable!() };
-                let (a, c) = if scalar_on_left { (b.clone(), vec_bare.clone()) } else { (vec_bare.clone(), b.clone()) };
-                self.line(&format!("  {} = {} {}, {}", reg, opcode, a, c));
-                format!("<4 x float> {}", reg)
-            }
-            _ => {
-                let arity = vec_ty.vec_arity().unwrap();
-                let mut acc = "undef".to_string();
-                for i in 0..arity as u32 {
-                    let vc = self.extract_component(&vec_bare, vec_ty, i);
-                    let (a, b) = if scalar_on_left { (scalar.clone(), vc) } else { (vc, scalar.clone()) };
-                    let oc = self.emit_float_op(&a, &b, op);
-                    acc = self.insert_component(&acc, vec_ty, i, &oc);
-                }
-                format!("{} {}", self.llvm_ty(vec_ty), acc)
-            }
+        let arity = vec_ty.vec_arity().unwrap();
+        let mut b = "undef".to_string();
+        for i in 0..arity as u32 {
+            b = self.insert_component(&b, vec_ty, i, &scalar);
         }
+        let t = self.llvm_ty(vec_ty);
+        let reg = self.tmp_name();
+        let opcode = match op { BinOp::Mul => format!("fmul {}", t), BinOp::Div => format!("fdiv {}", t), _ => unreachable!() };
+        let (a, c) = if scalar_on_left { (b.clone(), vec_bare.clone()) } else { (vec_bare.clone(), b.clone()) };
+        self.line(&format!("  {} = {} {}, {}", reg, opcode, a, c));
+        format!("{} {}", t, reg)
     }
 
     /// Elementwise `+`/`-` between two Mat4 values (row-by-row vector op).
@@ -144,26 +101,28 @@ impl Codegen {
         format!("{} {}", mat_t, acc)
     }
 
-    /// Dot product of two already-loaded `<4 x float>` registers via
-    /// elementwise multiply + horizontal add (straight-line, no loop).
-    fn emit_dot4(&mut self, a: &str, b: &str) -> String {
+    /// Dot product of two already-untagged same-arity vector registers via
+    /// elementwise multiply + horizontal add (straight-line, no loop over
+    /// scalar registers -- one native vector `fmul` regardless of arity).
+    fn emit_dot_vec(&mut self, a: &str, b: &str, ty: &Ty) -> String {
+        let t = self.llvm_ty(ty);
+        let arity = ty.vec_arity().unwrap();
         let p = self.tmp_name();
-        self.line(&format!("  {} = fmul <4 x float> {}, {}", p, a, b));
-        let p0 = self.tmp_name();
-        self.line(&format!("  {} = extractelement <4 x float> {}, i32 0", p0, p));
-        let p1 = self.tmp_name();
-        self.line(&format!("  {} = extractelement <4 x float> {}, i32 1", p1, p));
-        let s01 = self.tmp_name();
-        self.line(&format!("  {} = fadd float {}, {}", s01, p0, p1));
-        let p2 = self.tmp_name();
-        self.line(&format!("  {} = extractelement <4 x float> {}, i32 2", p2, p));
-        let s012 = self.tmp_name();
-        self.line(&format!("  {} = fadd float {}, {}", s012, s01, p2));
-        let p3 = self.tmp_name();
-        self.line(&format!("  {} = extractelement <4 x float> {}, i32 3", p3, p));
-        let dot = self.tmp_name();
-        self.line(&format!("  {} = fadd float {}, {}", dot, s012, p3));
-        dot
+        self.line(&format!("  {} = fmul {} {}, {}", p, t, a, b));
+        let mut sum: Option<String> = None;
+        for i in 0..arity as u32 {
+            let lane = self.tmp_name();
+            self.line(&format!("  {} = extractelement {} {}, i32 {}", lane, t, p, i));
+            sum = Some(match sum {
+                None => lane,
+                Some(s) => {
+                    let r = self.tmp_name();
+                    self.line(&format!("  {} = fadd float {}, {}", r, s, lane));
+                    r
+                }
+            });
+        }
+        sum.unwrap()
     }
 
     /// Matrix-vector multiply: `result[i] = dot(row_i, v)`.
@@ -175,7 +134,7 @@ impl Codegen {
         for i in 0..4u32 {
             let row = self.tmp_name();
             self.line(&format!("  {} = extractvalue {} {}, {}", row, mat_t, m, i));
-            elems.push(self.emit_dot4(&row, &v));
+            elems.push(self.emit_dot_vec(&row, &v, &Ty::Vec4));
         }
         let mut acc = "undef".to_string();
         for (i, e) in elems.iter().enumerate() {
@@ -215,7 +174,7 @@ impl Codegen {
         for (i, a_row) in a_rows.iter().enumerate() {
             let mut row_acc = "undef".to_string();
             for (j, b_col) in b_cols.iter().enumerate() {
-                let dot = self.emit_dot4(a_row, b_col);
+                let dot = self.emit_dot_vec(a_row, b_col, &Ty::Vec4);
                 row_acc = self.insert_component(&row_acc, &Ty::Vec4, j as u32, &dot);
             }
             let next_mat = self.tmp_name();
@@ -234,8 +193,7 @@ impl Codegen {
             return "%undef".into();
         }
         match (lty, rty) {
-            (Ty::Vec2, Ty::Vec2) | (Ty::Vec3, Ty::Vec3) => self.emit_vec_struct_binop(lhs, rhs, lty, op),
-            (Ty::Vec4, Ty::Vec4) => self.emit_vec4_binop(lhs, rhs, op),
+            (Ty::Vec2, Ty::Vec2) | (Ty::Vec3, Ty::Vec3) | (Ty::Vec4, Ty::Vec4) => self.emit_vec_binop(lhs, rhs, lty, op),
             (Ty::Mat4, Ty::Mat4) => match op {
                 BinOp::Add | BinOp::Sub => self.emit_mat4_addsub(lhs, rhs, op),
                 BinOp::Mul => self.emit_mat4_mul(lhs, rhs),
@@ -259,31 +217,11 @@ impl Codegen {
     /// same type, returning a bare `float` register. Shared by the `dot`
     /// builtin and `length` (`length(v) == sqrt(dot(v, v))`).
     fn emit_dot_bare(&mut self, a_bare: &str, b_bare: &str, ty: &Ty) -> String {
-        match ty {
-            Ty::Vec4 => self.emit_dot4(a_bare, b_bare),
-            Ty::Vec2 | Ty::Vec3 => {
-                let arity = ty.vec_arity().unwrap();
-                let mut sum: Option<String> = None;
-                for i in 0..arity as u32 {
-                    let ac = self.extract_component(a_bare, ty, i);
-                    let bc = self.extract_component(b_bare, ty, i);
-                    let p = self.tmp_name();
-                    self.line(&format!("  {} = fmul float {}, {}", p, ac, bc));
-                    sum = Some(match sum {
-                        None => p,
-                        Some(s) => {
-                            let r = self.tmp_name();
-                            self.line(&format!("  {} = fadd float {}, {}", r, s, p));
-                            r
-                        }
-                    });
-                }
-                sum.unwrap_or_else(|| "0.0".to_string())
-            }
-            _ => {
-                self.err("dot(..)/length(..) expect a Vec2/Vec3/Vec4 argument", Span::dummy());
-                "0.0".to_string()
-            }
+        if ty.is_vec() {
+            self.emit_dot_vec(a_bare, b_bare, ty)
+        } else {
+            self.err("dot(..)/length(..) expect a Vec2/Vec3/Vec4 argument", Span::dummy());
+            "0.0".to_string()
         }
     }
 

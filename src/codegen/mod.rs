@@ -397,8 +397,8 @@ impl Codegen {
             Ty::Float => "float".into(),
             Ty::Str => "i8*".into(),
             Ty::Bool => "i1".into(),
-            Ty::Vec2 => "{ float, float }".into(),
-            Ty::Vec3 => "{ float, float, float }".into(),
+            Ty::Vec2 => "<2 x float>".into(),
+            Ty::Vec3 => "<3 x float>".into(),
             Ty::Vec4 => "<4 x float>".into(),
             Ty::Mat4 => "[4 x <4 x float>]".into(),
             Ty::Named(n) => format!("%{}", n),
@@ -655,12 +655,11 @@ impl Codegen {
     /// type `ty`, returning a bare `float` register.
     fn extract_component(&mut self, val: &str, ty: &Ty, i: u32) -> String {
         let reg = self.tmp_name();
-        match ty {
-            Ty::Vec4 => self.line(&format!("  {} = extractelement <4 x float> {}, i32 {}", reg, val, i)),
-            _ => {
-                let t = self.llvm_ty(ty);
-                self.line(&format!("  {} = extractvalue {} {}, {}", reg, t, val, i));
-            }
+        let t = self.llvm_ty(ty);
+        if ty.is_vec() {
+            self.line(&format!("  {} = extractelement {} {}, i32 {}", reg, t, val, i));
+        } else {
+            self.line(&format!("  {} = extractvalue {} {}, {}", reg, t, val, i));
         }
         reg
     }
@@ -670,12 +669,11 @@ impl Codegen {
     /// updated aggregate register.
     fn insert_component(&mut self, acc: &str, ty: &Ty, i: u32, scalar: &str) -> String {
         let reg = self.tmp_name();
-        match ty {
-            Ty::Vec4 => self.line(&format!("  {} = insertelement <4 x float> {}, float {}, i32 {}", reg, acc, scalar, i)),
-            _ => {
-                let t = self.llvm_ty(ty);
-                self.line(&format!("  {} = insertvalue {} {}, float {}, {}", reg, t, acc, scalar, i));
-            }
+        let t = self.llvm_ty(ty);
+        if ty.is_vec() {
+            self.line(&format!("  {} = insertelement {} {}, float {}, i32 {}", reg, t, acc, scalar, i));
+        } else {
+            self.line(&format!("  {} = insertvalue {} {}, float {}, {}", reg, t, acc, scalar, i));
         }
         reg
     }
