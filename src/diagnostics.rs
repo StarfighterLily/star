@@ -129,10 +129,15 @@ fn line_col(source: &str, offset: usize) -> (usize, usize) {
 
 /// Extracts the full source line containing `offset`.
 fn line_text(source: &str, offset: usize) -> &str {
-    let start = source[..offset.min(source.len())]
-        .rfind('\n')
-        .map(|i| i + 1)
-        .unwrap_or(0);
+    // Defensive: a `Span` should always land on a char boundary, but this is
+    // the last line of defense against a rendering panic if some future
+    // span-producing bug slips one through -- clamp down to the nearest
+    // boundary rather than trusting the incoming offset.
+    let mut offset = offset.min(source.len());
+    while offset > 0 && !source.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    let start = source[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
     let end = source[start..]
         .find('\n')
         .map(|i| start + i)

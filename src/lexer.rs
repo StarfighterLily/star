@@ -390,7 +390,33 @@ impl<'src> Lexer<'src> {
         let kind = if is_float {
             TokenKind::Float(text.parse().unwrap_or(0.0))
         } else {
-            TokenKind::Int(text.parse().unwrap_or(0))
+            // Star's `Ty::Int` lowers to a 32-bit LLVM `i32` everywhere (see
+            // `Checker::resolve_type`/`Codegen::llvm_ty`); `i64` here is only
+            // this token's Rust-side storage width. Parsing straight into
+            // `i64` and defaulting failures to `0` let any literal in
+            // `(i32::MAX, i64::MAX]` silently reinterpret as a negative
+            // `i32` at codegen with no diagnostic at all, and let anything
+            // past `i64::MAX` silently become `0`.
+            match text.parse::<i64>() {
+                Ok(v) if v >= i32::MIN as i64 && v <= i32::MAX as i64 => TokenKind::Int(v),
+                // The one magnitude allowed to exceed `i32::MAX`: writing
+                // `i32::MIN` requires typing its positive magnitude (the
+                // sign comes from a separate, preceding unary `-` token) --
+                // codegen's wrapping `i32` negation of `i32::MIN` round-trips
+                // back to `i32::MIN`, so this is exactly the value a `-`
+                // in front of this literal is meant to produce.
+                Ok(v) if v == (i32::MAX as i64) + 1 => TokenKind::Int(i32::MIN as i64),
+                _ => {
+                    self.errors.push(Diagnostic::error(
+                        format!(
+                            "integer literal `{}` is too large for a 32-bit integer (max 2147483647)",
+                            text
+                        ),
+                        Span::new(start, self.pos),
+                    ));
+                    TokenKind::Int(0)
+                }
+            }
         };
         self.push(kind, start, self.pos);
     }
@@ -498,16 +524,27 @@ impl<'src> Lexer<'src> {
         if self.pos >= self.bytes.len() {
             return None;
         }
-        let c = self.bytes[self.pos];
-        self.pos += 1;
-        Some(match c {
-            b'n' => '\n',
-            b't' => '\t',
-            b'r' => '\r',
-            b'\\' => '\\',
-            b'"' => '"',
-            b'0' => '\0',
-            other => other as char,
+        // The escaped byte may be a multi-byte UTF-8 lead byte, so decode a
+        // full codepoint (as elsewhere in the lexer) rather than a raw byte
+        // -- otherwise `self.pos` desyncs from the byte stream and a later
+        // `current_char()` call panics mid-codepoint.
+        let esc_start = self.pos - 1; // the backslash itself
+        let ch = self.current_char();
+        self.pos += self.current_char_len();
+        Some(match ch {
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            '\\' => '\\',
+            '"' => '"',
+            '0' => '\0',
+            other => {
+                self.errors.push(Diagnostic::error(
+                    format!("unknown escape sequence '\\{}'", other),
+                    Span::new(esc_start, self.pos),
+                ));
+                other
+            }
         })
     }
 
@@ -578,10 +615,17 @@ impl<'src> Lexer<'src> {
             b'>' => TokenKind::Gt,
             b'!' => TokenKind::Not,
             b'@' => TokenKind::At,
-            other => {
-                self.pos += 1;
+            _ => {
+                // `c` may be the lead byte of a multi-byte UTF-8 codepoint
+                // (e.g. an accented identifier or stray symbol); consuming
+                // only this one raw byte would leave `self.pos` mid-codepoint,
+                // producing a `Span` that isn't a valid `str` slice boundary
+                // and panics later when `diagnostics::line_text` slices the
+                // source with it.
+                let ch = self.current_char();
+                self.pos += self.current_char_len().max(1);
                 self.errors.push(Diagnostic::error(
-                    format!("unexpected character '{}'", other as char),
+                    format!("unexpected character '{}'", ch),
                     Span::new(start, self.pos),
                 ));
                 return;

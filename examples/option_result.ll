@@ -51,12 +51,11 @@ entry:
 do:
   %hdr_i8 = getelementptr inbounds i8, i8* %p, i64 -16
   %hdr = bitcast i8* %hdr_i8 to i64*
-  %rc = load i64, i64* %hdr
+  %rc = load atomic i64, i64* %hdr seq_cst, align 8
   %is_immortal = icmp eq i64 %rc, -1
   br i1 %is_immortal, label %done, label %incr
 incr:
-  %rc1 = add i64 %rc, 1
-  store i64 %rc1, i64* %hdr
+  %rc1 = atomicrmw add i64* %hdr, i64 1 seq_cst
   br label %done
 done:
   ret void
@@ -69,13 +68,12 @@ entry:
 do:
   %hdr_i8 = getelementptr inbounds i8, i8* %p, i64 -16
   %hdr = bitcast i8* %hdr_i8 to i64*
-  %rc = load i64, i64* %hdr
+  %rc = load atomic i64, i64* %hdr seq_cst, align 8
   %is_immortal = icmp eq i64 %rc, -1
   br i1 %is_immortal, label %done, label %decr
 decr:
-  %rc1 = sub i64 %rc, 1
-  store i64 %rc1, i64* %hdr
-  %iszero = icmp eq i64 %rc1, 0
+  %rc_old = atomicrmw sub i64* %hdr, i64 1 seq_cst
+  %iszero = icmp eq i64 %rc_old, 1
   br i1 %iszero, label %free, label %done
 free:
   %relfn_slot_i8 = getelementptr inbounds i8, i8* %p, i64 -8
@@ -126,11 +124,23 @@ if_end_2:
   %t13 = bitcast [1 x i64]* %t12 to { i32 }*
   %t14 = load i32, i32* %t0
   %t15 = load i32, i32* %t1
-  %t16 = sdiv i32 %t14, %t15
-  %t17 = getelementptr inbounds { i32 }, { i32 }* %t13, i32 0, i32 0
-  store i32 %t16, i32* %t17
-  %t18 = load %DivResult, %DivResult* %t10
-  ret %DivResult %t18
+  %t16 = icmp eq i32 %t15, 0
+  %t17 = icmp eq i32 %t14, -2147483648
+  %t18 = icmp eq i32 %t15, -1
+  %t19 = and i1 %t17, %t18
+  %t20 = or i1 %t16, %t19
+  br i1 %t20, label %int_div_fail_3, label %int_div_ok_4
+int_div_fail_3:
+  %t21 = getelementptr inbounds [71 x i8], [71 x i8]* @.str.0, i64 0, i64 0
+  call i32 @puts(i8* %t21)
+  call void @exit(i32 1)
+  unreachable
+int_div_ok_4:
+  %t22 = sdiv i32 %t14, %t15
+  %t23 = getelementptr inbounds { i32 }, { i32 }* %t13, i32 0, i32 0
+  store i32 %t22, i32* %t23
+  %t24 = load %DivResult, %DivResult* %t10
+  ret %DivResult %t24
 }
 
 define %IntOption @first_even(i32 %a, i32 %b, i32 %c) {
@@ -142,64 +152,100 @@ entry:
   %t2 = alloca i32
   store i32 %c, i32* %t2
   %t3 = load i32, i32* %t0
-  %t4 = srem i32 %t3, 2
-  %t5 = icmp eq i32 %t4, 0
-  br i1 %t5, label %if_then_3, label %if_else_4
-if_then_3:
-  %t6 = alloca %IntOption
-  %t7 = getelementptr inbounds %IntOption, %IntOption* %t6, i32 0, i32 0
-  store i32 1, i32* %t7
-  %t8 = getelementptr inbounds %IntOption, %IntOption* %t6, i32 0, i32 1
-  %t9 = bitcast [1 x i64]* %t8 to { i32 }*
-  %t10 = load i32, i32* %t0
-  %t11 = getelementptr inbounds { i32 }, { i32 }* %t9, i32 0, i32 0
-  store i32 %t10, i32* %t11
-  %t12 = load %IntOption, %IntOption* %t6
-  ret %IntOption %t12
-if_else_4:
-  br label %if_end_5
-if_end_5:
-  %t13 = load i32, i32* %t1
-  %t14 = srem i32 %t13, 2
-  %t15 = icmp eq i32 %t14, 0
-  br i1 %t15, label %if_then_6, label %if_else_7
-if_then_6:
-  %t16 = alloca %IntOption
-  %t17 = getelementptr inbounds %IntOption, %IntOption* %t16, i32 0, i32 0
-  store i32 1, i32* %t17
-  %t18 = getelementptr inbounds %IntOption, %IntOption* %t16, i32 0, i32 1
-  %t19 = bitcast [1 x i64]* %t18 to { i32 }*
-  %t20 = load i32, i32* %t1
-  %t21 = getelementptr inbounds { i32 }, { i32 }* %t19, i32 0, i32 0
-  store i32 %t20, i32* %t21
-  %t22 = load %IntOption, %IntOption* %t16
-  ret %IntOption %t22
-if_else_7:
-  br label %if_end_8
-if_end_8:
-  %t23 = load i32, i32* %t2
-  %t24 = srem i32 %t23, 2
-  %t25 = icmp eq i32 %t24, 0
-  br i1 %t25, label %if_then_9, label %if_else_10
-if_then_9:
-  %t26 = alloca %IntOption
-  %t27 = getelementptr inbounds %IntOption, %IntOption* %t26, i32 0, i32 0
-  store i32 1, i32* %t27
-  %t28 = getelementptr inbounds %IntOption, %IntOption* %t26, i32 0, i32 1
-  %t29 = bitcast [1 x i64]* %t28 to { i32 }*
-  %t30 = load i32, i32* %t2
-  %t31 = getelementptr inbounds { i32 }, { i32 }* %t29, i32 0, i32 0
-  store i32 %t30, i32* %t31
-  %t32 = load %IntOption, %IntOption* %t26
-  ret %IntOption %t32
-if_else_10:
-  br label %if_end_11
-if_end_11:
-  %t33 = alloca %IntOption
-  %t34 = getelementptr inbounds %IntOption, %IntOption* %t33, i32 0, i32 0
-  store i32 0, i32* %t34
-  %t35 = load %IntOption, %IntOption* %t33
-  ret %IntOption %t35
+  %t4 = icmp eq i32 2, 0
+  %t5 = icmp eq i32 %t3, -2147483648
+  %t6 = icmp eq i32 2, -1
+  %t7 = and i1 %t5, %t6
+  %t8 = or i1 %t4, %t7
+  br i1 %t8, label %int_div_fail_5, label %int_div_ok_6
+int_div_fail_5:
+  %t9 = getelementptr inbounds [71 x i8], [71 x i8]* @.str.1, i64 0, i64 0
+  call i32 @puts(i8* %t9)
+  call void @exit(i32 1)
+  unreachable
+int_div_ok_6:
+  %t10 = srem i32 %t3, 2
+  %t11 = icmp eq i32 %t10, 0
+  br i1 %t11, label %if_then_7, label %if_else_8
+if_then_7:
+  %t12 = alloca %IntOption
+  %t13 = getelementptr inbounds %IntOption, %IntOption* %t12, i32 0, i32 0
+  store i32 1, i32* %t13
+  %t14 = getelementptr inbounds %IntOption, %IntOption* %t12, i32 0, i32 1
+  %t15 = bitcast [1 x i64]* %t14 to { i32 }*
+  %t16 = load i32, i32* %t0
+  %t17 = getelementptr inbounds { i32 }, { i32 }* %t15, i32 0, i32 0
+  store i32 %t16, i32* %t17
+  %t18 = load %IntOption, %IntOption* %t12
+  ret %IntOption %t18
+if_else_8:
+  br label %if_end_9
+if_end_9:
+  %t19 = load i32, i32* %t1
+  %t20 = icmp eq i32 2, 0
+  %t21 = icmp eq i32 %t19, -2147483648
+  %t22 = icmp eq i32 2, -1
+  %t23 = and i1 %t21, %t22
+  %t24 = or i1 %t20, %t23
+  br i1 %t24, label %int_div_fail_10, label %int_div_ok_11
+int_div_fail_10:
+  %t25 = getelementptr inbounds [71 x i8], [71 x i8]* @.str.2, i64 0, i64 0
+  call i32 @puts(i8* %t25)
+  call void @exit(i32 1)
+  unreachable
+int_div_ok_11:
+  %t26 = srem i32 %t19, 2
+  %t27 = icmp eq i32 %t26, 0
+  br i1 %t27, label %if_then_12, label %if_else_13
+if_then_12:
+  %t28 = alloca %IntOption
+  %t29 = getelementptr inbounds %IntOption, %IntOption* %t28, i32 0, i32 0
+  store i32 1, i32* %t29
+  %t30 = getelementptr inbounds %IntOption, %IntOption* %t28, i32 0, i32 1
+  %t31 = bitcast [1 x i64]* %t30 to { i32 }*
+  %t32 = load i32, i32* %t1
+  %t33 = getelementptr inbounds { i32 }, { i32 }* %t31, i32 0, i32 0
+  store i32 %t32, i32* %t33
+  %t34 = load %IntOption, %IntOption* %t28
+  ret %IntOption %t34
+if_else_13:
+  br label %if_end_14
+if_end_14:
+  %t35 = load i32, i32* %t2
+  %t36 = icmp eq i32 2, 0
+  %t37 = icmp eq i32 %t35, -2147483648
+  %t38 = icmp eq i32 2, -1
+  %t39 = and i1 %t37, %t38
+  %t40 = or i1 %t36, %t39
+  br i1 %t40, label %int_div_fail_15, label %int_div_ok_16
+int_div_fail_15:
+  %t41 = getelementptr inbounds [71 x i8], [71 x i8]* @.str.3, i64 0, i64 0
+  call i32 @puts(i8* %t41)
+  call void @exit(i32 1)
+  unreachable
+int_div_ok_16:
+  %t42 = srem i32 %t35, 2
+  %t43 = icmp eq i32 %t42, 0
+  br i1 %t43, label %if_then_17, label %if_else_18
+if_then_17:
+  %t44 = alloca %IntOption
+  %t45 = getelementptr inbounds %IntOption, %IntOption* %t44, i32 0, i32 0
+  store i32 1, i32* %t45
+  %t46 = getelementptr inbounds %IntOption, %IntOption* %t44, i32 0, i32 1
+  %t47 = bitcast [1 x i64]* %t46 to { i32 }*
+  %t48 = load i32, i32* %t2
+  %t49 = getelementptr inbounds { i32 }, { i32 }* %t47, i32 0, i32 0
+  store i32 %t48, i32* %t49
+  %t50 = load %IntOption, %IntOption* %t44
+  ret %IntOption %t50
+if_else_18:
+  br label %if_end_19
+if_end_19:
+  %t51 = alloca %IntOption
+  %t52 = getelementptr inbounds %IntOption, %IntOption* %t51, i32 0, i32 0
+  store i32 0, i32* %t52
+  %t53 = load %IntOption, %IntOption* %t51
+  ret %IntOption %t53
 }
 
 define i32 @describe_option(%IntOption %o) {
@@ -275,21 +321,21 @@ match_scrutinee_3:
   %t4 = icmp sle i32 %t1, 0
   br i1 %t4, label %match_then_0, label %match_next_0
 match_then_0:
-  %t5 = getelementptr inbounds { i64, i8*, [13 x i8] }, { i64, i8*, [13 x i8] }* @.str.0, i64 0, i32 2, i64 0
+  %t5 = getelementptr inbounds { i64, i8*, [13 x i8] }, { i64, i8*, [13 x i8] }* @.str.4, i64 0, i32 2, i64 0
   call i32 (i8*, ...) @printf(i8* %t5)
-  %t6 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.1, i64 0, i64 0
+  %t6 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.5, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t6)
   br label %match_end_2
 match_next_0:
-  %t7 = getelementptr inbounds { i64, i8*, [9 x i8] }, { i64, i8*, [9 x i8] }* @.str.2, i64 0, i32 2, i64 0
+  %t7 = getelementptr inbounds { i64, i8*, [9 x i8] }, { i64, i8*, [9 x i8] }* @.str.6, i64 0, i32 2, i64 0
   call i32 (i8*, ...) @printf(i8* %t7)
-  %t8 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.3, i64 0, i64 0
+  %t8 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.7, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t8)
   br label %match_end_2
 match_end_2:
-  %t9 = getelementptr inbounds { i64, i8*, [16 x i8] }, { i64, i8*, [16 x i8] }* @.str.4, i64 0, i32 2, i64 0
+  %t9 = getelementptr inbounds { i64, i8*, [16 x i8] }, { i64, i8*, [16 x i8] }* @.str.8, i64 0, i32 2, i64 0
   call i32 (i8*, ...) @printf(i8* %t9)
-  %t10 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.5, i64 0, i64 0
+  %t10 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.9, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t10)
   ret void
 }
@@ -309,7 +355,7 @@ match_then_0:
   %t7 = bitcast [1 x i64]* %t6 to { i32 }*
   %t8 = getelementptr inbounds { i32 }, { i32 }* %t7, i32 0, i32 0
   %t9 = load i32, i32* %t8
-  %t10 = getelementptr inbounds [8 x i8], [8 x i8]* @.str.6, i64 0, i64 0
+  %t10 = getelementptr inbounds [8 x i8], [8 x i8]* @.str.10, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t10, i32 %t9)
   br label %match_end_1
 match_next_0:
@@ -322,7 +368,7 @@ match_then_1:
   %t15 = bitcast [1 x i64]* %t14 to { i32 }*
   %t16 = getelementptr inbounds { i32 }, { i32 }* %t15, i32 0, i32 0
   %t17 = load i32, i32* %t16
-  %t18 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.7, i64 0, i64 0
+  %t18 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.11, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t18, i32 %t17)
   br label %match_end_1
 match_next_1:
@@ -378,11 +424,11 @@ entry:
   call void @print_div(%DivResult %t1)
   %t2 = call %IntOption @first_even(i32 1, i32 3, i32 4)
   %t3 = call i32 @describe_option(%IntOption %t2)
-  %t4 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.8, i64 0, i64 0
+  %t4 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.12, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t4, i32 %t3)
   %t5 = call %IntOption @first_even(i32 1, i32 3, i32 5)
   %t6 = call i32 @describe_option(%IntOption %t5)
-  %t7 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.9, i64 0, i64 0
+  %t7 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.13, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t7, i32 %t6)
   %t8 = alloca %Shape
   %t9 = getelementptr inbounds %Shape, %Shape* %t8, i32 0, i32 0
@@ -393,7 +439,7 @@ entry:
   store i32 2, i32* %t12
   %t13 = load %Shape, %Shape* %t8
   %t14 = call i32 @area(%Shape %t13)
-  %t15 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.10, i64 0, i64 0
+  %t15 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.14, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t15, i32 %t14)
   %t16 = alloca %Shape
   %t17 = getelementptr inbounds %Shape, %Shape* %t16, i32 0, i32 0
@@ -406,7 +452,7 @@ entry:
   store i32 4, i32* %t21
   %t22 = load %Shape, %Shape* %t16
   %t23 = call i32 @area(%Shape %t22)
-  %t24 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.11, i64 0, i64 0
+  %t24 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.15, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t24, i32 %t23)
   %t25 = alloca %IntOption
   %t26 = getelementptr inbounds %IntOption, %IntOption* %t25, i32 0, i32 0
@@ -418,7 +464,7 @@ entry:
   %t30 = load %IntOption, %IntOption* %t25
   %t31 = sub i32 0, 1
   %t32 = call i32 @unwrap_or(%IntOption %t30, i32 %t31)
-  %t33 = getelementptr inbounds [29 x i8], [29 x i8]* @.str.12, i64 0, i64 0
+  %t33 = getelementptr inbounds [29 x i8], [29 x i8]* @.str.16, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t33, i32 %t32)
   %t34 = alloca %IntOption
   %t35 = getelementptr inbounds %IntOption, %IntOption* %t34, i32 0, i32 0
@@ -426,7 +472,7 @@ entry:
   %t36 = load %IntOption, %IntOption* %t34
   %t37 = sub i32 0, 1
   %t38 = call i32 @unwrap_or(%IntOption %t36, i32 %t37)
-  %t39 = getelementptr inbounds [26 x i8], [26 x i8]* @.str.13, i64 0, i64 0
+  %t39 = getelementptr inbounds [26 x i8], [26 x i8]* @.str.17, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t39, i32 %t38)
   %t40 = sub i32 0, 3
   call void @describe_sign(i32 %t40)
@@ -436,17 +482,21 @@ entry:
 
 
 ; Global Constants
-@.str.0 = private unnamed_addr constant { i64, i8*, [13 x i8] } { i64 -1, i8* null, [13 x i8] c"non-positive\00" }
-@.str.1 = private unnamed_addr constant [2 x i8] c"\0A\00"
-@.str.2 = private unnamed_addr constant { i64, i8*, [9 x i8] } { i64 -1, i8* null, [9 x i8] c"positive\00" }
-@.str.3 = private unnamed_addr constant [2 x i8] c"\0A\00"
-@.str.4 = private unnamed_addr constant { i64, i8*, [16 x i8] } { i64 -1, i8* null, [16 x i8] c"done describing\00" }
+@.str.0 = private unnamed_addr constant [71 x i8] c"star runtime error: integer `/` by zero (or `i32::MIN / -1` overflow)\0A\00"
+@.str.1 = private unnamed_addr constant [71 x i8] c"star runtime error: integer `%` by zero (or `i32::MIN % -1` overflow)\0A\00"
+@.str.2 = private unnamed_addr constant [71 x i8] c"star runtime error: integer `%` by zero (or `i32::MIN % -1` overflow)\0A\00"
+@.str.3 = private unnamed_addr constant [71 x i8] c"star runtime error: integer `%` by zero (or `i32::MIN % -1` overflow)\0A\00"
+@.str.4 = private unnamed_addr constant { i64, i8*, [13 x i8] } { i64 -1, i8* null, [13 x i8] c"non-positive\00" }
 @.str.5 = private unnamed_addr constant [2 x i8] c"\0A\00"
-@.str.6 = private unnamed_addr constant [8 x i8] c"ok: %d\0A\00"
-@.str.7 = private unnamed_addr constant [9 x i8] c"err: %d\0A\00"
-@.str.8 = private unnamed_addr constant [11 x i8] c"found: %d\0A\00"
-@.str.9 = private unnamed_addr constant [11 x i8] c"found: %d\0A\00"
-@.str.10 = private unnamed_addr constant [17 x i8] c"circle area: %d\0A\00"
-@.str.11 = private unnamed_addr constant [15 x i8] c"rect area: %d\0A\00"
-@.str.12 = private unnamed_addr constant [29 x i8] c"unwrap_or(Some(7), -1) = %d\0A\00"
-@.str.13 = private unnamed_addr constant [26 x i8] c"unwrap_or(None, -1) = %d\0A\00"
+@.str.6 = private unnamed_addr constant { i64, i8*, [9 x i8] } { i64 -1, i8* null, [9 x i8] c"positive\00" }
+@.str.7 = private unnamed_addr constant [2 x i8] c"\0A\00"
+@.str.8 = private unnamed_addr constant { i64, i8*, [16 x i8] } { i64 -1, i8* null, [16 x i8] c"done describing\00" }
+@.str.9 = private unnamed_addr constant [2 x i8] c"\0A\00"
+@.str.10 = private unnamed_addr constant [8 x i8] c"ok: %d\0A\00"
+@.str.11 = private unnamed_addr constant [9 x i8] c"err: %d\0A\00"
+@.str.12 = private unnamed_addr constant [11 x i8] c"found: %d\0A\00"
+@.str.13 = private unnamed_addr constant [11 x i8] c"found: %d\0A\00"
+@.str.14 = private unnamed_addr constant [17 x i8] c"circle area: %d\0A\00"
+@.str.15 = private unnamed_addr constant [15 x i8] c"rect area: %d\0A\00"
+@.str.16 = private unnamed_addr constant [29 x i8] c"unwrap_or(Some(7), -1) = %d\0A\00"
+@.str.17 = private unnamed_addr constant [26 x i8] c"unwrap_or(None, -1) = %d\0A\00"

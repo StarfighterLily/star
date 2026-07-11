@@ -2,7 +2,6 @@
 //! chains, `match`, and the `if` expression form.
 
 use crate::ast::*;
-use crate::diagnostics::Span;
 use crate::lexer::{FStrPart, Lexer, TokenKind};
 
 use super::{starts_uppercase, Parser};
@@ -91,19 +90,14 @@ impl Parser {
                     expr = Expr::Field { base: Box::new(expr), field, span };
                 }
                 TokenKind::LParen => {
-                    // Check if this is GenRef followed by < (generic type args)
-                    // If we're at LParen and expr is GenRef, we check if <T> was before
-                    // But in GenRef<T>(value), the <T> comes before (
-                    // So we handle GenRef<i32>(value) in the Lt case above
-                    // This handles GenRef(value) without type args
-                    if let Expr::Ident(name, _) = &expr {
-                        if name == "GenRef" {
-                            let args = self.parse_call_args()?;
-                            let value = args.into_iter().next().unwrap_or(Expr::Int(0, Span::dummy()));
-                            let span = expr.span().to(self.prev_span());
-                            return Some(Expr::GenRefCreate { inner_ty: Type::Named("i32".into()), value: Box::new(value), span });
-                        }
-                    }
+                    // `GenRef(value)` (no type args) can never reach here:
+                    // `parse_primary`'s `Ident` arm already intercepts any
+                    // capitalized-identifier-followed-by-`(` (including
+                    // `GenRef`) as a struct-literal call and returns before
+                    // `parse_postfix`'s loop ever runs; that call site
+                    // separately rejects a bare `GenRef(` with a clear error
+                    // requiring `GenRef<T>(value)`. `GenRef<T>(value)` (with
+                    // type args) is handled below, in the `Lt` arm.
                     let args = self.parse_call_args()?;
                     let span = expr.span().to(self.prev_span());
                     expr = Expr::Call { callee: Box::new(expr), args, span };
@@ -122,11 +116,27 @@ impl Parser {
                                     break;
                                 }
                             }
+                            let args_span = expr.span().to(self.peek_span());
                             self.expect(&TokenKind::Gt)?;
-                            let inner_ty = type_args.into_iter().next().unwrap_or(Type::Named("unknown".into()));
+                            if type_args.len() != 1 {
+                                self.error(
+                                    format!("`GenRef` expects exactly one type argument, found {}", type_args.len()),
+                                    args_span,
+                                );
+                                return None;
+                            }
+                            let inner_ty = type_args.into_iter().next().unwrap();
                             // Now parse the call args (value)
                             let args = self.parse_call_args()?;
-                            let value = args.into_iter().next().unwrap_or(Expr::Int(0, Span::dummy()));
+                            let call_span = expr.span().to(self.prev_span());
+                            if args.len() != 1 {
+                                self.error(
+                                    format!("`GenRef<T>(..)` expects exactly one argument, found {}", args.len()),
+                                    call_span,
+                                );
+                                return None;
+                            }
+                            let value = args.into_iter().next().unwrap();
                             let span = expr.span().to(self.prev_span());
                             return Some(Expr::GenRefCreate { inner_ty, value: Box::new(value), span });
                         }
@@ -163,6 +173,29 @@ impl Parser {
         }
         self.expect(&TokenKind::Gt)?;
         Some(args)
+    }
+
+    /// Speculatively parse a turbofish the way [`parse_type_args`] does, but
+    /// only commit to it when it's immediately followed by `(` or `::` -- the
+    /// only two continuations a real turbofish can have (`Box<i32>(...)`,
+    /// `Option<i32>::Some(...)`). Star doesn't restrict identifier casing, so
+    /// a capitalized identifier followed by `<` is just as often a real
+    /// comparison (`if Foo < Bar:`) as a generic construction; backtracking
+    /// on failure (restoring both the cursor and any diagnostics raised
+    /// during the failed attempt) lets that `<` fall through to
+    /// `peek_binop`'s ordinary comparison handling instead of cascading into
+    /// unrelated parse errors.
+    fn try_parse_type_args(&mut self) -> Vec<Type> {
+        let checkpoint = self.pos;
+        let err_checkpoint = self.errors.len();
+        match self.parse_type_args() {
+            Some(args) if self.at(&TokenKind::LParen) || self.at(&TokenKind::ColonColon) => args,
+            _ => {
+                self.pos = checkpoint;
+                self.errors.truncate(err_checkpoint);
+                Vec::new()
+            }
+        }
     }
 
     pub(super) fn parse_call_args(&mut self) -> Option<Vec<Expr>> {
@@ -252,11 +285,20 @@ impl Parser {
                 // handled entirely by `parse_postfix` below, and must see the
                 // `<` untouched.
                 let type_args = if name != "GenRef" && starts_uppercase(&name) && self.at(&TokenKind::Lt) {
-                    self.parse_type_args()?
+                    self.try_parse_type_args()
                 } else {
                     Vec::new()
                 };
                 if self.at(&TokenKind::LParen) && starts_uppercase(&name) {
+                    // `GenRef` always requires an explicit type argument;
+                    // without one this would otherwise fall through to the
+                    // generic `StructLit` case below and construct a
+                    // nonexistent `GenRef` struct, only failing later with a
+                    // confusing, unrelated error at its first use.
+                    if name == "GenRef" {
+                        self.error("`GenRef` requires an explicit type argument: `GenRef<T>(value)`", span);
+                        return None;
+                    }
                     let args = self.parse_call_args()?;
                     let full = span.to(self.prev_span());
                     return Some(Expr::StructLit { name, type_args, args, span: full });
@@ -306,10 +348,12 @@ impl Parser {
                     let full = span.to(self.prev_span());
                     return Some(Expr::EnumVariant { enum_name: name, type_args, variant, args, span: full });
                 }
-                if !type_args.is_empty() {
-                    self.error("expected `(` or `::` after generic type arguments", span);
-                    return None;
-                }
+                // Unreachable with an empty `type_args`: `try_parse_type_args`
+                // only returns a non-empty `Vec` when it already confirmed
+                // the turbofish is immediately followed by `(` or `::`, both
+                // of which are handled above/below before control ever
+                // reaches here.
+                debug_assert!(type_args.is_empty());
                 Some(Expr::Ident(name, span))
             }
             other => {

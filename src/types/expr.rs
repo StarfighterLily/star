@@ -120,6 +120,31 @@ impl Checker {
                 // here before falling back to the function table.
                 if let TypedExpr::Ident { name, .. } = &callee_expr {
                     if let Some(ty) = builtin_return_ty(name, &arg_exprs) {
+                        // `print`/`println`'s non-f-string form passes its
+                        // argument straight through as `printf`'s format
+                        // string (see `Codegen::emit_print_like`) -- it's
+                        // never a `%s`-substituted value, so anything but a
+                        // `str` reaches codegen as a raw non-pointer value
+                        // (an `i32`, a bare `i1`, ...) where an `i8*` format
+                        // string is required, producing invalid LLVM IR that
+                        // only fails later at the `clang` step with a
+                        // confusing, mislocated error instead of a clean
+                        // diagnostic here.
+                        if matches!(name.as_str(), "print" | "println") {
+                            if let Some(arg) = arg_exprs.first() {
+                                let is_fstr = matches!(arg, TypedExpr::FStr(..));
+                                let arg_ty = arg.clone().into_ty();
+                                if !is_fstr && !matches!(arg_ty, Ty::Str) {
+                                    self.error(
+                                        format!(
+                                            "`{}` expects a `str` argument, found `{:?}` -- use an f-string to print other types, e.g. `f\"{{x}}\"`",
+                                            name, arg_ty
+                                        ),
+                                        *span,
+                                    );
+                                }
+                            }
+                        }
                         return Ok(TypedExpr::Call { callee: Box::new(callee_expr), args: arg_exprs, ty, span: *span });
                     }
                 }

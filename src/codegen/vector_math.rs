@@ -13,12 +13,23 @@ impl Codegen {
     fn emit_scalar_binop(&mut self, lhs: &str, lty: &Ty, rhs: &str, rty: &Ty, op: BinOp) -> String {
         let is_cmp = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge);
         if matches!(lty, Ty::Int) && matches!(rty, Ty::Int) {
-            let reg = self.tmp_name();
             let l = self.untag(lhs, lty);
             let r = self.untag(rhs, rty);
+            // `sdiv`/`srem` on `i32` are the one pair of opcodes here that
+            // can trap the whole process (a hardware `#DE` exception, surfaced
+            // as SIGFPE) instead of just producing a value: both a zero
+            // divisor and the single overflow case `i32::MIN / -1` (its
+            // mathematical result, `2147483648`, doesn't fit in `i32`) are
+            // undefined behavior in LLVM and crash outright at runtime with
+            // no diagnostic. Guarded the same way `emit_frame_alloc` guards
+            // its bump allocator: check first, abort with a message instead
+            // of letting the trap happen.
+            if matches!(op, BinOp::Div | BinOp::Rem) {
+                return self.emit_checked_int_div(&l, &r, op);
+            }
+            let reg = self.tmp_name();
             let opcode = match op {
                 BinOp::Add => "add i32", BinOp::Sub => "sub i32", BinOp::Mul => "mul i32",
-                BinOp::Div => "sdiv i32", BinOp::Rem => "srem i32",
                 BinOp::Eq => "icmp eq i32", BinOp::Ne => "icmp ne i32",
                 BinOp::Lt => "icmp slt i32", BinOp::Gt => "icmp sgt i32",
                 BinOp::Le => "icmp sle i32", BinOp::Ge => "icmp sge i32",
@@ -27,6 +38,7 @@ impl Codegen {
                 // branch-based lowering, not a plain opcode) and never
                 // reach this generic scalar path.
                 BinOp::And | BinOp::Or => { self.err("internal error: `&&`/`||` should be short-circuit lowered, not reach emit_scalar_binop", Span::dummy()); "add i32" }
+                BinOp::Div | BinOp::Rem => unreachable!("handled above"),
             };
             self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
             return format!("{} {}", if is_cmp { "i1" } else { "i32" }, reg);
@@ -44,6 +56,51 @@ impl Codegen {
         };
         self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
         format!("{} {}", if is_cmp { "i1" } else { "float" }, reg)
+    }
+
+    /// `l / r` or `l % r` on bare (untagged) `i32` registers/literals, with
+    /// a runtime guard against the two inputs that make `sdiv`/`srem i32`
+    /// undefined behavior -- a zero divisor, and the lone overflowing case
+    /// `i32::MIN / -1` (its true result, `2147483648`, doesn't fit in
+    /// `i32`) -- both of which trap the process outright (SIGFPE) with no
+    /// diagnostic if left unchecked. Mirrors `emit_frame_alloc`'s
+    /// check-then-abort-with-a-message shape.
+    fn emit_checked_int_div(&mut self, l: &str, r: &str, op: BinOp) -> String {
+        let is_zero = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, 0", is_zero, r));
+        let is_min = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, -2147483648", is_min, l));
+        let is_neg1 = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, -1", is_neg1, r));
+        let is_overflow = self.tmp_name();
+        self.line(&format!("  {} = and i1 {}, {}", is_overflow, is_min, is_neg1));
+        let is_bad = self.tmp_name();
+        self.line(&format!("  {} = or i1 {}, {}", is_bad, is_zero, is_overflow));
+
+        let fail_label = self.block_label("int_div_fail");
+        let ok_label = self.block_label("int_div_ok");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_bad, fail_label, ok_label));
+
+        self.line(&format!("{}:", fail_label));
+        let opname = if op == BinOp::Div { "/" } else { "%" };
+        let msg = format!(
+            "star runtime error: integer `{}` by zero (or `i32::MIN {} -1` overflow)\n",
+            opname, opname
+        );
+        let g = self.global_name();
+        let escaped = msg.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
+        self.global_defs.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", g, msg.len() + 1, escaped));
+        let msg_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0", msg_ptr, msg.len() + 1, msg.len() + 1, g));
+        self.line(&format!("  call i32 @puts(i8* {})", msg_ptr));
+        self.line("  call void @exit(i32 1)");
+        self.line("  unreachable");
+
+        self.line(&format!("{}:", ok_label));
+        let reg = self.tmp_name();
+        let opcode = if op == BinOp::Div { "sdiv i32" } else { "srem i32" };
+        self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
+        format!("i32 {}", reg)
     }
 
     /// Native-vector op between two same-arity Vec2/Vec3/Vec4 values.

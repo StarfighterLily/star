@@ -2,72 +2,6 @@
 
 ## Immediate
 
-All four items below (found as pre-existing, unrelated bugs while doing
-earlier work) are now **done**, each with a regression test.
-
-15. **DONE — A comment as the very first line of an indented block broke
-    lexer indentation tracking.** `Lexer::handle_line_start` (`src/lexer.rs`)
-    measured a blank/comment-only line's indentation, discarded it, and
-    returned *without* consuming the line's own trailing `\n` — left for
-    `scan_line_content` to turn into a spurious `Newline` token, which broke
-    `parse_block`'s bare `expect(Newline); expect(Indent)` whenever a
-    block's first line was a comment (`error: expected an indented block,
-    found end of line`). Fixed by turning the blank/comment skip into a loop
-    that consumes each such line (including its `\n`) and re-checks the next
-    physical line before falling through to measure real indentation, so
-    `scan_line_content` is still called exactly once per real line. See
-    `ignores_blank_and_comment_lines`, `parses_comment_as_first_line_of_block`,
-    `parses_consecutive_comments_as_first_lines_of_block`.
-16. **DONE — `let` bound to a block-bodied lambda, followed by a sibling
-    statement at the same indentation, failed to parse.** A value
-    expression ending in an indented block (a block-bodied lambda, an
-    `if`-expression, a `match`-expression) already consumes, via its own
-    nested `parse_block`, the `Newline`/`Dedent` that re-syncs with the
-    *enclosing* block — the same one `parse_let` (and the generic
-    bare-expression/assign arm) then tried to consume again via
-    `expect_line_end()`, choking on the next statement's first token instead
-    (`error: expected end of line, found an integer literal`). Fixed
-    generically rather than per-expression-kind: a new `Parser::
-    block_just_closed` flag (`src/parser/mod.rs`) is set right after
-    `parse_block`/`parse_match` consume their closing `Dedent`, cleared at
-    the top of every `advance()`, and accepted by `expect_line_end()` as an
-    already-satisfied terminator. See
-    `parses_let_bound_block_lambda_followed_by_sibling_statement`,
-    `parses_let_bound_if_expr_followed_by_sibling_statement`.
-17. **DONE — A function returning a freshly-constructed `str` dangled.**
-    Every `Str`-typed value's `emit_expr` result used to be a pointer to a
-    "box" (an `alloca i8*` wrapper) rather than the raw `i8*` bytes pointer
-    itself; returning a value built fresh in the current function (a
-    literal, a `concat` result) returned that box's address, an `alloca` in
-    the current function's own dead stack frame. Fixed by eliminating the
-    box indirection entirely rather than heap-allocating it (which would
-    have needed its own cascading refcount/release-fn machinery to avoid
-    leaking one box per `Str` production, risking a regression against
-    `runtime_rc_stress_memory_stays_bounded`): a `Str` value is now just the
-    raw `i8*` pointer directly, matching `Int`/`Float`/`Bool`. Touched
-    `TypedExpr::Str` (`src/codegen/expr.rs`), `emit_raw_str_ptr`/
-    `emit_str_concat`/`emit_print_like` (`src/codegen/builtins.rs`, and
-    removed `box_str_ptr` outright), and `emit_rc_walk`'s `Str` arm
-    (`src/codegen/rc.rs`, now one load instead of two) — retain/release
-    already targeted the real bytes pointer, so this changes where that
-    pointer comes from, not what gets retained/released. See
-    `examples/str_fixes.star` /
-    `codegen_fn_returning_fresh_str_does_not_box_on_stack`,
-    `runtime_str_return_fresh_value_end_to_end`.
-18. **DONE — `println`/`print` double-tagged a non-`Ident`/`Field`
-    argument.** `emit_print_like`'s non-f-string branch used `emit_expr`'s
-    result directly as an untagged register, which works for `Ident`/
-    `Field`/`Str`-literal arguments but broke for a `ListIndex` or
-    closure-call result (both return a *tagged* register), producing
-    malformed IR (`load i8*, i8** i8* %reg`) that clang rejected. Every
-    existing example had routed list/call results through an f-string
-    interpolation instead, so this path was never exercised. Fixed by
-    calling `Codegen::untag` on the argument before use, matching the
-    f-string branch's own handling (and, with item 17's box removed, the
-    branch no longer needs a `load` at all). See `examples/str_fixes.star` /
-    `codegen_println_of_list_index_does_not_double_tag`,
-    `runtime_println_of_list_index_and_closure_call_end_to_end`.
-
 Last actions:
 All 18 items below are **done**, each with a regression test (type-level
 tests in `tests/frontend.rs`, plus a dedicated `examples/*.star` program and
@@ -287,3 +221,178 @@ Printing a `bool` via an f-string (`print(f"{a and b}")`) previously hit
 `emit_print_like`'s `_ => "%p"` fallback — formatting a bare `i1` as a
 pointer is undefined behavior. `Ty::Bool` now formats as `%s` against a
 selected `"true"`/`"false"` string constant (`Codegen::emit_bool_str`).
+
+All four items below (found as pre-existing, unrelated bugs while doing
+earlier work) are now **done**, each with a regression test.
+
+15. **DONE — A comment as the very first line of an indented block broke
+    lexer indentation tracking.** `Lexer::handle_line_start` (`src/lexer.rs`)
+    measured a blank/comment-only line's indentation, discarded it, and
+    returned *without* consuming the line's own trailing `\n` — left for
+    `scan_line_content` to turn into a spurious `Newline` token, which broke
+    `parse_block`'s bare `expect(Newline); expect(Indent)` whenever a
+    block's first line was a comment (`error: expected an indented block,
+    found end of line`). Fixed by turning the blank/comment skip into a loop
+    that consumes each such line (including its `\n`) and re-checks the next
+    physical line before falling through to measure real indentation, so
+    `scan_line_content` is still called exactly once per real line. See
+    `ignores_blank_and_comment_lines`, `parses_comment_as_first_line_of_block`,
+    `parses_consecutive_comments_as_first_lines_of_block`.
+16. **DONE — `let` bound to a block-bodied lambda, followed by a sibling
+    statement at the same indentation, failed to parse.** A value
+    expression ending in an indented block (a block-bodied lambda, an
+    `if`-expression, a `match`-expression) already consumes, via its own
+    nested `parse_block`, the `Newline`/`Dedent` that re-syncs with the
+    *enclosing* block — the same one `parse_let` (and the generic
+    bare-expression/assign arm) then tried to consume again via
+    `expect_line_end()`, choking on the next statement's first token instead
+    (`error: expected end of line, found an integer literal`). Fixed
+    generically rather than per-expression-kind: a new `Parser::
+    block_just_closed` flag (`src/parser/mod.rs`) is set right after
+    `parse_block`/`parse_match` consume their closing `Dedent`, cleared at
+    the top of every `advance()`, and accepted by `expect_line_end()` as an
+    already-satisfied terminator. See
+    `parses_let_bound_block_lambda_followed_by_sibling_statement`,
+    `parses_let_bound_if_expr_followed_by_sibling_statement`.
+17. **DONE — A function returning a freshly-constructed `str` dangled.**
+    Every `Str`-typed value's `emit_expr` result used to be a pointer to a
+    "box" (an `alloca i8*` wrapper) rather than the raw `i8*` bytes pointer
+    itself; returning a value built fresh in the current function (a
+    literal, a `concat` result) returned that box's address, an `alloca` in
+    the current function's own dead stack frame. Fixed by eliminating the
+    box indirection entirely rather than heap-allocating it (which would
+    have needed its own cascading refcount/release-fn machinery to avoid
+    leaking one box per `Str` production, risking a regression against
+    `runtime_rc_stress_memory_stays_bounded`): a `Str` value is now just the
+    raw `i8*` pointer directly, matching `Int`/`Float`/`Bool`. Touched
+    `TypedExpr::Str` (`src/codegen/expr.rs`), `emit_raw_str_ptr`/
+    `emit_str_concat`/`emit_print_like` (`src/codegen/builtins.rs`, and
+    removed `box_str_ptr` outright), and `emit_rc_walk`'s `Str` arm
+    (`src/codegen/rc.rs`, now one load instead of two) — retain/release
+    already targeted the real bytes pointer, so this changes where that
+    pointer comes from, not what gets retained/released. See
+    `examples/str_fixes.star` /
+    `codegen_fn_returning_fresh_str_does_not_box_on_stack`,
+    `runtime_str_return_fresh_value_end_to_end`.
+18. **DONE — `println`/`print` double-tagged a non-`Ident`/`Field`
+    argument.** `emit_print_like`'s non-f-string branch used `emit_expr`'s
+    result directly as an untagged register, which works for `Ident`/
+    `Field`/`Str`-literal arguments but broke for a `ListIndex` or
+    closure-call result (both return a *tagged* register), producing
+    malformed IR (`load i8*, i8** i8* %reg`) that clang rejected. Every
+    existing example had routed list/call results through an f-string
+    interpolation instead, so this path was never exercised. Fixed by
+    calling `Codegen::untag` on the argument before use, matching the
+    f-string branch's own handling (and, with item 17's box removed, the
+    branch no longer needs a `load` at all). See `examples/str_fixes.star` /
+    `codegen_println_of_list_index_does_not_double_tag`,
+    `runtime_println_of_list_index_and_closure_call_end_to_end`.
+
+## Full lexer/parser/checker/codegen audit (item 19)
+
+**DONE.** A dedicated pass over the whole pipeline (not triggered by a
+specific bug report) turned up nine issues, each fixed with a regression
+test in `tests/frontend.rs`:
+
+- **RC retain/release raced under `par`/`swarm` (correctness, codegen).**
+  `star_rc_retain`/`star_rc_release` (`src/codegen/mod.rs`) did a plain
+  (non-atomic) load/add-or-sub/store on the shared 16-byte refcount header.
+  `par`/`swarm`'s disjointness proof only restricts *writes* to captured
+  state (`crate::types::par_analysis`), so a `Str`/closure merely *read*
+  inside a worker body still retains/releases the same header from up to 4
+  concurrent OS threads with no synchronization — a lost-update race that
+  can free a still-live block (use-after-free) or leak it. Fixed with
+  `load atomic ... seq_cst` and `atomicrmw add`/`atomicrmw sub` (the latter
+  compared against its *pre*-decrement return value, since `atomicrmw sub`
+  doesn't hand back the post-decrement result the old code's local `%rc1`
+  did). See `examples/par_rc_race.star` /
+  `runtime_par_rc_race_reads_captured_str_without_corruption`.
+- **Two lexer panics on non-ASCII bytes outside a string/comment
+  (correctness, robustness).** `scan_operator`'s fallback arm and
+  `scan_escape` both advanced by exactly one raw byte on an unrecognized
+  byte, splitting a multi-byte UTF-8 codepoint across two tokens and
+  producing a `Span` that isn't a valid `str` slice boundary — panicking
+  later in `diagnostics::line_text` (or, for the escape case, in
+  `current_char()` while rescanning). Both now decode the full codepoint via
+  `current_char`/`current_char_len` before advancing. See
+  `rejects_non_ascii_source_does_not_panic`,
+  `rejects_non_ascii_escape_does_not_panic`.
+- **Unrecognized escape sequences were silently accepted (correctness).**
+  `"bad\qescape"` silently became `"badqescape"` with zero diagnostics
+  (`scan_escape`'s catch-all just returned the raw byte). Now a clean lexer
+  error. See `rejects_unknown_escape_sequence`.
+- **Integer literals outside `i32`'s range silently corrupted
+  (correctness).** `scan_number` parsed straight into `i64` and defaulted
+  any parse failure to `0`; since `Ty::Int` is a 32-bit `i32` everywhere in
+  codegen, anything in `(i32::MAX, i64::MAX]` silently reinterpreted as a
+  negative `i32` and anything past `i64::MAX` silently became `0`, both with
+  no diagnostic. Now a clean lexer error, with a magnitude special-case so
+  `-2147483648` (`i32::MIN`, whose positive magnitude alone exceeds
+  `i32::MAX`) still parses. See `rejects_oversized_integer_literal`,
+  `accepts_i32_min_literal`.
+- **A real `<` comparison between two capitalized identifiers misparsed
+  (correctness, parser).** `if Foo < Bar:` eagerly committed to a turbofish
+  parse on seeing a capitalized identifier followed by `<`, cascading into
+  unrelated parse errors when it turned out to just be a comparison. Fixed
+  with `Parser::try_parse_type_args`, which speculatively parses the
+  turbofish and backtracks (cursor and diagnostics both) unless it's
+  immediately followed by `(` or `::`, the only two continuations a real
+  turbofish can have. See `accepts_comparison_between_capitalized_identifiers`,
+  `accepts_turbofish_generic_constructions_after_backtracking_fix`.
+- **`GenRef` construction silently defaulted malformed input instead of
+  erroring (correctness, parser).** `GenRef(value)` with no type argument
+  fell through to construct a nonexistent `GenRef` struct literal;
+  `GenRef<T>()`/`GenRef<>(0)` (missing value/type argument) silently
+  synthesized a placeholder `Int(0)`/`Type::Named("unknown")` instead of
+  reporting the mistake. All three are now clean parse errors. See
+  `rejects_genref_without_type_args`, `rejects_genref_missing_value_arg`,
+  `rejects_genref_missing_type_arg`.
+- **A struct recursive by value had no cycle detection (correctness,
+  checker).** `struct Node: next: Node` (directly, or transitively through
+  a by-value generic wrapper like `struct Box<T>: value: T`) has no finite
+  size; left unchecked this either stack-overflowed the compiler in
+  `Codegen::type_size`'s unbounded recursion or reached `clang` as
+  unrepresentable LLVM IR. `Checker::check_no_recursive_structs`
+  (`src/types/mod.rs`) now DFS-walks every struct's by-value fields (a
+  `GenRef<T>`/`List<T>`/`Closure`/primitive field is a fixed-size handle,
+  not an inclusion edge, so `GenRef<Self>` — the language's actual
+  self-reference pattern — is unaffected) and reports any cycle. See
+  `rejects_directly_recursive_struct`,
+  `rejects_struct_recursive_through_generic_wrapper`,
+  `accepts_struct_with_genref_self_reference`.
+- **`print`/`println`'s non-f-string form accepted non-`str` arguments
+  (correctness, checker).** This form passes its argument straight through
+  as `printf`'s raw format string (`Codegen::emit_print_like`), never doing
+  `%s` substitution; `print(5)` type-checked cleanly and only failed later
+  at the `clang` step with a confusing, mislocated backend error (a raw
+  `i32` reaching an `i8*` parameter). Now a clean checker error pointing at
+  the call. See `rejects_print_of_non_str_argument`.
+- **`diagnostics::line_text` trusted its `Span` offset to be a char
+  boundary (robustness).** A defensive fix alongside the lexer panics above:
+  even though every `Span` should already land on a boundary, `line_text`
+  now clamps backward to the nearest one before slicing, so a future
+  span-producing bug degrades to a slightly-off error location instead of a
+  panic.
+
+## Item 20: integer division/modulo by zero trapped the process
+
+**DONE.** `emit_scalar_binop` (`src/codegen/vector_math.rs`) emitted a bare
+`sdiv i32`/`srem i32` for `/`/`%` on `i32` operands. Both are undefined
+behavior in LLVM on a zero divisor, *and* on the one non-zero case that still
+overflows, `i32::MIN / -1` (its true result, `2147483648`, doesn't fit in
+`i32`) — on x86 both trap the whole process with a hardware `#DE` exception
+(SIGFPE) and no diagnostic whatsoever, strictly worse than the silent-corruption
+bugs item 19 fixed (at least those produced a wrong value instead of killing
+the process). `f32` division/modulo needed no change: IEEE 754 defines
+`x / 0.0` as `inf`/`nan`/no trap, so only the integer path was affected.
+Fixed with a new `Codegen::emit_checked_int_div`, following
+`emit_frame_alloc`'s check-then-abort-with-a-message shape: a runtime branch
+compares the divisor against `0` and the `(dividend == i32::MIN) & (divisor
+== -1)` overflow case, aborting via `puts`+`@exit(1)` on either before the
+`sdiv`/`srem` would otherwise execute. See `examples/int_div_by_zero.star` /
+`runtime_int_division_by_zero_aborts_loudly_instead_of_trapping`,
+`runtime_int_modulo_by_zero_aborts_loudly_instead_of_trapping`,
+`runtime_int_min_divided_by_negative_one_aborts_loudly_instead_of_trapping`,
+`codegen_ordinary_int_division_still_computes_correct_values` (the
+not-just-crashing-on-the-happy-path regression guard),
+`codegen_int_division_includes_zero_and_overflow_guard`.

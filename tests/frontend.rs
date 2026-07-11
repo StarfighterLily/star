@@ -4242,3 +4242,384 @@ fn runtime_rc_stress_memory_stays_bounded() {
 
     let _ = std::fs::remove_file(&stdout_file);
 }
+
+// ===== Compiler-audit regression tests ======================================
+//
+// One test per bug found and fixed in a full lexer/parser/checker/codegen
+// audit: two lexer panics on non-ASCII bytes outside a string/comment (one
+// in `scan_operator`'s fallback, one in `scan_escape`'s), a silent-corruption
+// bug in unrecognized escape sequences, a silent-corruption bug in oversized
+// integer literals, a turbofish-heuristic misparse of a real `<` comparison
+// between two capitalized identifiers, dead/silently-defaulting code in the
+// `GenRef` constructor's parsing, and a compiler crash (or invalid LLVM IR)
+// on a struct that's recursive by value with no cycle detection.
+
+/// A stray non-ASCII byte outside a string/comment (e.g. an accented
+/// identifier) must be a clean lexer error, not a panic -- previously
+/// `scan_operator`'s fallback arm advanced by exactly one raw byte, splitting
+/// a multi-byte UTF-8 codepoint across two tokens and producing a `Span` that
+/// crashed `diagnostics::line_text`'s slicing with "byte index is not a char
+/// boundary". If the fix regresses, this test fails via an unwinding panic
+/// rather than a normal assertion failure.
+#[test]
+fn rejects_non_ascii_source_does_not_panic() {
+    let src = "fn main():\n    let café = 1\n";
+    let result = Driver::parse(src);
+    assert!(result.is_err(), "a stray non-ASCII byte should be a clean parse error");
+}
+
+/// The same class of bug one level deeper: a non-ASCII byte immediately
+/// after a `\` inside a string literal used to desync `scan_escape`'s
+/// position tracking and panic inside `current_char()` while scanning the
+/// rest of the string, at a different crash site than the bare-source case
+/// above.
+#[test]
+fn rejects_non_ascii_escape_does_not_panic() {
+    let src = "fn main():\n    let x = \"\\é\"\n";
+    let result = Driver::lex(src);
+    assert!(result.is_err(), "a non-ASCII escaped byte should be a clean lexer error");
+}
+
+/// An escape sequence the lexer doesn't recognize must be reported, not
+/// silently accepted by dropping the backslash -- previously `"bad\qescape"`
+/// silently became the string `"badqescape"` with zero diagnostics.
+#[test]
+fn rejects_unknown_escape_sequence() {
+    let src = "fn main():\n    let x = \"bad\\qescape\"\n";
+    let result = Driver::lex(src);
+    let Err(diags) = result else { panic!("unknown escape sequence should be a lexer error") };
+    assert!(
+        diags.iter().any(|d| d.message.contains("unknown escape sequence")),
+        "expected an 'unknown escape sequence' diagnostic, got: {:?}",
+        diags
+    );
+}
+
+/// An integer literal outside `i32`'s range must be a clean error --
+/// previously `text.parse::<i64>().unwrap_or(0)` let anything in
+/// `(i32::MAX, i64::MAX]` parse successfully and then silently reinterpret
+/// as a negative `i32` at codegen with zero diagnostics anywhere.
+#[test]
+fn rejects_oversized_integer_literal() {
+    let src = "fn main():\n    let x = 3000000000\n";
+    let result = Driver::lex(src);
+    let Err(diags) = result else { panic!("an out-of-i32-range literal should be a lexer error") };
+    assert!(
+        diags.iter().any(|d| d.message.contains("too large for a 32-bit integer")),
+        "expected a 'too large' diagnostic, got: {:?}",
+        diags
+    );
+}
+
+/// `i32::MIN` written as a unary-minus literal must still parse and
+/// type-check cleanly (regression guard for the magnitude special-case added
+/// alongside the overflow fix above: the lexer stores the bare magnitude
+/// `2147483648` as `i32::MIN`'s bit pattern, and codegen's wrapping negation
+/// of that value round-trips back to `i32::MIN`).
+#[test]
+fn accepts_i32_min_literal() {
+    let module = Driver::parse("fn main():\n    let x = -2147483648\n").expect("should parse");
+    Driver::check(&module).expect("i32::MIN literal should type-check");
+}
+
+/// `if Foo < Bar:` -- both real (capitalized) local variables -- must parse
+/// as an ordinary comparison, not cascade into parse errors from an eager,
+/// non-backtracking turbofish attempt on the capitalized `Foo`.
+#[test]
+fn accepts_comparison_between_capitalized_identifiers() {
+    let src = "fn main():\n    let Foo = 1\n    let Bar = 2\n    if Foo < Bar:\n        println(\"yes\")\n";
+    let module = Driver::parse(src).expect("a real `<` comparison between capitalized idents should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::If { cond, .. } = &f.body.stmts[2] else { panic!("expected If") };
+    match cond {
+        Expr::Binary { op: BinOp::Lt, lhs, rhs, .. } => {
+            assert!(matches!(lhs.as_ref(), Expr::Ident(name, _) if name == "Foo"));
+            assert!(matches!(rhs.as_ref(), Expr::Ident(name, _) if name == "Bar"));
+        }
+        other => panic!("expected a `<` comparison, got {:?}", other),
+    }
+}
+
+/// Regression guard alongside the turbofish backtracking change: legitimate
+/// turbofish generic construction must still work.
+#[test]
+fn accepts_turbofish_generic_constructions_after_backtracking_fix() {
+    let src = include_str!("../examples/generics.star");
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("Box<T>/Option<T>::Variant turbofish forms should still type-check");
+}
+
+/// `GenRef(value)` with no explicit type argument must be a clear parse
+/// error -- previously it silently fell through to an incorrect `StructLit`
+/// for a nonexistent `GenRef` struct, surfacing a confusing, unrelated error
+/// far from the actual mistake.
+#[test]
+fn rejects_genref_without_type_args() {
+    let src = "arena Entities: i32\nfn main():\n    let g = GenRef(0)\n";
+    let module = Driver::parse(src);
+    let Err(diags) = module else { panic!("bare GenRef(..) should be a parse error") };
+    assert!(
+        diags.iter().any(|d| d.message.contains("requires an explicit type argument")),
+        "got: {:?}",
+        diags
+    );
+}
+
+/// `GenRef<i32>()` (missing the value argument) must be a clear parse error
+/// instead of silently synthesizing a placeholder `Int(0)` value with a
+/// dummy span.
+#[test]
+fn rejects_genref_missing_value_arg() {
+    let src = "arena Entities: i32\nfn main():\n    let g = GenRef<i32>()\n";
+    let module = Driver::parse(src);
+    let Err(diags) = module else { panic!("GenRef<T>() with no value should be a parse error") };
+    assert!(
+        diags.iter().any(|d| d.message.contains("expects exactly one argument")),
+        "got: {:?}",
+        diags
+    );
+}
+
+/// `GenRef<>(0)` (missing the type argument) must be a clear parse error
+/// instead of silently synthesizing a placeholder `Type::Named("unknown")`.
+#[test]
+fn rejects_genref_missing_type_arg() {
+    let src = "arena Entities: i32\nfn main():\n    let g = GenRef<>(0)\n";
+    let module = Driver::parse(src);
+    let Err(diags) = module else { panic!("GenRef<>(..) with no type arg should be a parse error") };
+    assert!(
+        diags.iter().any(|d| d.message.contains("expects exactly one type argument")),
+        "got: {:?}",
+        diags
+    );
+}
+
+/// A struct that's directly recursive by value has no finite size and must
+/// be rejected at type-check time -- previously this either crashed the
+/// compiler with a stack overflow (via `Codegen::type_size`'s unbounded
+/// recursion, when a reflection decorator touched the field) or reached
+/// `clang` as invalid, unrepresentable LLVM IR.
+#[test]
+fn rejects_directly_recursive_struct() {
+    let src = "struct Node:\n    val: i32\n    next: Node\nfn main():\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("a directly self-referential struct should be rejected") };
+    assert!(
+        errs.iter().any(|d| d.message.contains("recursive struct layout")),
+        "got: {:?}",
+        errs
+    );
+}
+
+/// A struct that's recursive only through a generic by-value wrapper must
+/// also be rejected -- `struct Box<T>: value: T` is a plain by-value
+/// wrapper in this language, not a heap indirection, so `Box<Node>` used as
+/// a field is just as much an infinite-size cycle as direct self-reference.
+#[test]
+fn rejects_struct_recursive_through_generic_wrapper() {
+    let src = "struct Box<T>:\n    value: T\nstruct Node:\n    next: Box<Node>\nfn main():\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("a struct recursive through a monomorphized generic wrapper should be rejected")
+    };
+    assert!(
+        errs.iter().any(|d| d.message.contains("recursive struct layout")),
+        "got: {:?}",
+        errs
+    );
+}
+
+/// Runtime test for the RC atomicity fix: `examples/par_rc_race.exe` spawns
+/// 16 arena entries, captures a heap-backed `Str` (`tag`), then reads it
+/// from inside a `par` body dispatched across the persistent 4-worker pool
+/// for 400 ticks (6400 concurrent reads total), and reads it once more
+/// afterward. Before the fix, `star_rc_retain`/`star_rc_release` mutated the
+/// shared refcount header with a plain (non-atomic) load/add-or-sub/store,
+/// so concurrent retains/releases from different worker threads could lose
+/// an update and free the block while a worker still held it live -- the
+/// final read would then be a use-after-free (typically a crash or garbled
+/// output). This can't deterministically *prove* the race is gone (it's
+/// inherently timing-dependent), but running it several times multiplies the
+/// chances of hitting the lost-update window, the same stress-testing
+/// approach `runtime_rc_stress_memory_stays_bounded` uses for leaks.
+#[test]
+fn runtime_par_rc_race_reads_captured_str_without_corruption() {
+    use std::process::Command;
+
+    for _ in 0..5 {
+        let output = Command::new("examples/par_rc_race.exe").output().expect("failed to run par_rc_race.exe");
+        assert!(output.status.success(), "par_rc_race.exe should exit cleanly, not crash from a use-after-free");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.trim_end().ends_with("final: swarm-tag"),
+            "expected the captured Str to still read correctly after the par loop, got tail: {:?}",
+            &stdout[stdout.len().saturating_sub(80)..]
+        );
+        // Every retain/release pair inside the loop operates on the same
+        // "swarm-tag" bytes; a corrupted refcount that freed the block
+        // early (but didn't crash outright) would typically show up as a
+        // truncated/garbled repetition somewhere in the middle instead of a
+        // clean, uniform repeat -- a stronger check than only looking at the
+        // very end.
+        assert!(
+            !stdout.contains('\0') && stdout.matches("swarm-tag").count() >= 6400,
+            "expected 6400 clean repetitions of the captured Str, got {} (len {})",
+            stdout.matches("swarm-tag").count(),
+            stdout.len()
+        );
+    }
+}
+
+/// `print`/`println`'s non-f-string form passes its argument straight
+/// through as `printf`'s format string (see `Codegen::emit_print_like`),
+/// with no `%s` substitution -- previously the checker never validated this
+/// argument's type at all, so `print(5)` (or `print(len(s))`, or any other
+/// non-`str` argument) type-checked cleanly and only failed later at the
+/// `clang` step with a confusing, mislocated backend error (a raw `i32`
+/// value reaching an `i8*` format-string parameter).
+#[test]
+fn rejects_print_of_non_str_argument() {
+    let module = Driver::parse("fn main():\n    print(5)\n").expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("print(5) should be a type error") };
+    assert!(
+        errs.iter().any(|d| d.message.contains("expects a `str` argument")),
+        "got: {:?}",
+        errs
+    );
+}
+
+/// Regression guard for the cycle-detection fix: a struct referencing itself
+/// through `GenRef<T>` (a fixed-size arena handle, not an inlined value)
+/// must still type-check -- this is the language's actual intended pattern
+/// for self-referential data structures.
+#[test]
+fn accepts_struct_with_genref_self_reference() {
+    let src = "struct Node:\n    val: i32\n    next: GenRef<Node>\narena Nodes: Node\nfn main():\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("GenRef<Self> should break the cycle and type-check cleanly");
+}
+
+// --- item 20: integer division/modulo by zero traps the process -----------
+//
+// `sdiv`/`srem i32` are undefined behavior in LLVM on a zero divisor, and
+// on the lone overflowing case `i32::MIN / -1` (its true result doesn't fit
+// in `i32`) -- both trap the whole process with SIGFPE and no diagnostic on
+// x86 if emitted unchecked, exactly the "silently crash instead of erroring"
+// failure mode item 1 (frame overflow) and item 9 (arena capacity) already
+// fixed for other operations. `Codegen::emit_checked_int_div`
+// (`src/codegen/vector_math.rs`) now guards both cases and aborts with a
+// message, mirroring `emit_frame_alloc`'s check-then-abort shape.
+
+/// `10 / e.hp` where `e.hp` is a runtime-computed `0` (not a literal, so the
+/// checker's lack of constant folding can't be accused of catching this
+/// statically) must abort loudly with a diagnostic instead of crashing the
+/// process with an unexplained SIGFPE.
+#[test]
+fn runtime_int_division_by_zero_aborts_loudly_instead_of_trapping() {
+    use std::process::Command;
+
+    let output = Command::new("examples/int_div_by_zero.exe").output().expect("failed to execute int_div_by_zero.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("integer `/` by zero"), "should print a diagnostic: {}", stdout);
+    assert!(!stdout.contains("should not reach here"), "the division must abort before its value is used: {}", stdout);
+    assert_eq!(output.status.code(), Some(1), "should exit cleanly with code 1, not crash/trap: {:?}", output.status);
+}
+
+/// Same guard, `%` instead of `/`, and reached at the very edge of `i32`.
+#[test]
+fn runtime_int_modulo_by_zero_aborts_loudly_instead_of_trapping() {
+    let src = "struct Enemy:\n    mut hp: i32\nfn main():\n    let e = Enemy(0)\n    println(\"before\")\n    let x = 2147483647 % e.hp\n    println(f\"unreachable {x}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_int_mod_by_zero.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+
+    let output = std::process::Command::new(&exe).output().expect("failed to execute int_mod_by_zero.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("integer `%` by zero"), "should print a diagnostic: {}", stdout);
+    assert!(!stdout.contains("unreachable"), "the modulo must abort before its value is used: {}", stdout);
+    assert_eq!(output.status.code(), Some(1), "should exit cleanly with code 1, not crash/trap: {:?}", output.status);
+
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+}
+
+/// `i32::MIN / -1` is the one *non-zero*-divisor input that's still
+/// undefined behavior for `sdiv` (the mathematical result, `2147483648`,
+/// overflows `i32`) -- must be caught by the same guard, not just the
+/// zero-divisor case.
+#[test]
+fn runtime_int_min_divided_by_negative_one_aborts_loudly_instead_of_trapping() {
+    let src = "struct Enemy:\n    mut hp: i32\nfn main():\n    let e = Enemy(-1)\n    println(\"before\")\n    let x = -2147483648 / e.hp\n    println(f\"unreachable {x}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_int_min_div_neg1.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+
+    let output = std::process::Command::new(&exe).output().expect("failed to execute int_min_div_neg1.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("integer `/` by zero"), "should print a diagnostic: {}", stdout);
+    assert!(!stdout.contains("unreachable"), "the division must abort before its value is used: {}", stdout);
+    assert_eq!(output.status.code(), Some(1), "should exit cleanly with code 1, not crash/trap: {:?}", output.status);
+
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+}
+
+/// Ordinary division/modulo (including negative operands, where `srem`'s
+/// sign convention matters) must still compute the correct value through
+/// the new checked path -- the guard must not perturb the common case.
+#[test]
+fn codegen_ordinary_int_division_still_computes_correct_values() {
+    let src = "fn main():\n    println(f\"{10 / 3}\")\n    println(f\"{-10 / 3}\")\n    println(f\"{10 % 3}\")\n    println(f\"{-10 % 3}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_ordinary_div.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+
+    let output = std::process::Command::new(&exe).output().expect("failed to execute ordinary_div.exe");
+    assert!(output.status.success(), "should exit cleanly");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["3", "-3", "1", "-1"], "LLVM's sdiv/srem truncate toward zero, matching Star's semantics");
+
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+}
+
+/// Codegen for `/`/`%` on `i32` operands includes the zero/overflow guard
+/// before the `sdiv`/`srem` instruction, with a call to `@exit` on the trap
+/// path -- the direct IR-shape pin, alongside the end-to-end runtime tests
+/// above.
+#[test]
+fn codegen_int_division_includes_zero_and_overflow_guard() {
+    let src = "fn div(a: i32, b: i32) -> i32:\n    a / b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("icmp eq i32 %"), "should compare the divisor against zero: {}", ir);
+    assert!(ir.contains("-2147483648"), "should compare the dividend against i32::MIN for the overflow case: {}", ir);
+    assert!(ir.contains("call void @exit(i32 1)"), "should abort on the trap path: {}", ir);
+    assert!(ir.contains("sdiv i32"), "should still emit sdiv on the ok path: {}", ir);
+}

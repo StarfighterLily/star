@@ -301,6 +301,13 @@ impl Checker {
         // *declaration* text never appears anywhere in the source module.
         typed_items.append(&mut self.mono_items);
 
+        // Must run after monomorphized structs are appended above -- a
+        // cycle can run entirely through a generic wrapper's instantiation
+        // (e.g. `Box<Node>`, since `struct Box<T>: value: T` is a plain
+        // by-value wrapper in this language, not a heap indirection) and
+        // codegen never monomorphizes anything further after this point.
+        self.check_no_recursive_structs(&typed_items);
+
         if self.errors.is_empty() {
             Ok(TypedModule { items: typed_items })
         } else {
@@ -386,6 +393,77 @@ impl Checker {
             }).collect(),
             span: s.span,
         }
+    }
+
+    /// Reject a struct whose layout directly or transitively contains itself
+    /// by value (e.g. `struct Node: next: Node`), which has no finite size.
+    /// Left unchecked, this either crashes the compiler with a stack
+    /// overflow in `Codegen::type_size`'s unbounded recursion (if a
+    /// reflection decorator touches the field) or reaches `clang` as
+    /// unrepresentable LLVM IR with a confusing, mislocated error. A struct
+    /// wanting self-reference needs an indirection that doesn't inline the
+    /// referenced value -- `GenRef<T>` (a fixed-size arena handle) rather
+    /// than nesting the struct directly or via another by-value wrapper
+    /// like `Box<T>`.
+    fn check_no_recursive_structs(&mut self, items: &[TypedItem]) {
+        let mut fields_of: HashMap<String, Vec<(Ty, Span)>> = HashMap::new();
+        for item in items {
+            if let TypedItem::Struct(s) = item {
+                fields_of.insert(s.name.clone(), s.fields.iter().map(|f| (f.ty.clone(), f.span)).collect());
+            }
+        }
+        let names: Vec<String> = fields_of.keys().cloned().collect();
+        let mut state: HashMap<String, u8> = HashMap::new();
+        for name in &names {
+            if state.get(name).copied().unwrap_or(0) == 0 {
+                let mut stack = Vec::new();
+                self.visit_struct_cycle(name, &fields_of, &mut state, &mut stack);
+            }
+        }
+    }
+
+    /// DFS helper for [`check_no_recursive_structs`]: `0` = unvisited, `1` =
+    /// on the current path (in progress), `2` = fully explored, no cycle.
+    fn visit_struct_cycle(
+        &mut self,
+        name: &str,
+        fields_of: &HashMap<String, Vec<(Ty, Span)>>,
+        state: &mut HashMap<String, u8>,
+        stack: &mut Vec<String>,
+    ) {
+        state.insert(name.to_string(), 1);
+        stack.push(name.to_string());
+        if let Some(fields) = fields_of.get(name) {
+            for (ty, span) in fields.clone() {
+                // Only a by-value struct field is an inclusion edge --
+                // `GenRef<T>`/`List<T>`/`Closure`/primitives are all
+                // fixed-size handles regardless of the type they name, so
+                // they can't themselves cause unbounded size.
+                let Ty::Named(other) = &ty else { continue };
+                if !fields_of.contains_key(other) {
+                    continue;
+                }
+                match state.get(other).copied().unwrap_or(0) {
+                    0 => self.visit_struct_cycle(other, fields_of, state, stack),
+                    1 => {
+                        let mut cycle: Vec<String> =
+                            stack.iter().skip_while(|s| *s != other).cloned().collect();
+                        cycle.push(other.clone());
+                        self.error(
+                            format!(
+                                "recursive struct layout `{}` has infinite size -- use `GenRef<{}>` instead of nesting by value",
+                                cycle.join(" -> "),
+                                other
+                            ),
+                            span,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+        stack.pop();
+        state.insert(name.to_string(), 2);
     }
 
     fn check_impl(&mut self, impl_blk: &ImplBlock) -> Option<TypedImplBlock> {

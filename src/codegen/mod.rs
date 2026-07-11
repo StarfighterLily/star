@@ -304,7 +304,15 @@ impl Codegen {
         self.line("do:");
         self.line("  %hdr_i8 = getelementptr inbounds i8, i8* %p, i64 -16");
         self.line("  %hdr = bitcast i8* %hdr_i8 to i64*");
-        self.line("  %rc = load i64, i64* %hdr");
+        // `par`/`swarm` dispatches the same generated code across several
+        // real OS threads (see `crate::codegen::par_pool`), and its
+        // disjointness proof only restricts *writes* to captured state (see
+        // `crate::types::par_analysis`) -- a captured `Str`/closure merely
+        // *read* inside a worker body still retains/releases this same
+        // header concurrently, so every access here must be atomic to avoid
+        // a lost-update race that can free a still-referenced block or leak
+        // it.
+        self.line("  %rc = load atomic i64, i64* %hdr seq_cst, align 8");
         // `-1` is the reserved "immortal" sentinel a string literal's
         // permanent global constant is given instead of a real refcount
         // (see `TypedExpr::Str`'s codegen) -- it must never be incremented
@@ -312,8 +320,7 @@ impl Codegen {
         self.line("  %is_immortal = icmp eq i64 %rc, -1");
         self.line("  br i1 %is_immortal, label %done, label %incr");
         self.line("incr:");
-        self.line("  %rc1 = add i64 %rc, 1");
-        self.line("  store i64 %rc1, i64* %hdr");
+        self.line("  %rc1 = atomicrmw add i64* %hdr, i64 1 seq_cst");
         self.line("  br label %done");
         self.line("done:");
         self.line("  ret void");
@@ -327,15 +334,16 @@ impl Codegen {
         self.line("do:");
         self.line("  %hdr_i8 = getelementptr inbounds i8, i8* %p, i64 -16");
         self.line("  %hdr = bitcast i8* %hdr_i8 to i64*");
-        self.line("  %rc = load i64, i64* %hdr");
+        self.line("  %rc = load atomic i64, i64* %hdr seq_cst, align 8");
         // Same immortal sentinel as `star_rc_retain` -- must never be
         // decremented or (worse) freed once it hits some unrelated value.
         self.line("  %is_immortal = icmp eq i64 %rc, -1");
         self.line("  br i1 %is_immortal, label %done, label %decr");
         self.line("decr:");
-        self.line("  %rc1 = sub i64 %rc, 1");
-        self.line("  store i64 %rc1, i64* %hdr");
-        self.line("  %iszero = icmp eq i64 %rc1, 0");
+        // `atomicrmw sub` returns the *pre*-decrement value, so the block
+        // becomes the last owner exactly when that value was `1`.
+        self.line("  %rc_old = atomicrmw sub i64* %hdr, i64 1 seq_cst");
+        self.line("  %iszero = icmp eq i64 %rc_old, 1");
         self.line("  br i1 %iszero, label %free, label %done");
         self.line("free:");
         self.line("  %relfn_slot_i8 = getelementptr inbounds i8, i8* %p, i64 -8");

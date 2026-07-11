@@ -92,86 +92,42 @@ done:
   ret void
 }
 
-%Point = type { i32, i32 }
-%Shape = type { i32, [1 x i64] }
-define i32 @length_sq(%Point* %self) {
+%Enemy = type { i32 }
+define i32 @main() {
 entry:
-  %t0 = alloca %Point*
-  store %Point* %self, %Point** %t0
-  %t1 = load %Point*, %Point** %t0
-  %t2 = getelementptr inbounds %Point, %Point* %t1, i32 0, i32 0
-  %t3 = load i32, i32* %t2
-  %t4 = load %Point*, %Point** %t0
-  %t5 = getelementptr inbounds %Point, %Point* %t4, i32 0, i32 0
-  %t6 = load i32, i32* %t5
-  %t7 = mul i32 %t3, %t6
-  %t8 = load %Point*, %Point** %t0
-  %t9 = getelementptr inbounds %Point, %Point* %t8, i32 0, i32 1
-  %t10 = load i32, i32* %t9
-  %t11 = load %Point*, %Point** %t0
-  %t12 = getelementptr inbounds %Point, %Point* %t11, i32 0, i32 1
-  %t13 = load i32, i32* %t12
-  %t14 = mul i32 %t10, %t13
-  %t15 = add i32 %t7, %t14
-  ret i32 %t15
-}
-
-define i32 @dot(%Point %a, %Point %b) {
-entry:
-  %t0 = alloca %Point
-  store %Point %a, %Point* %t0
-  %t1 = alloca %Point
-  store %Point %b, %Point* %t1
-  %t2 = getelementptr inbounds %Point, %Point* %t0, i32 0, i32 0
-  %t3 = load i32, i32* %t2
-  %t4 = getelementptr inbounds %Point, %Point* %t1, i32 0, i32 0
-  %t5 = load i32, i32* %t4
-  %t6 = mul i32 %t3, %t5
-  %t7 = getelementptr inbounds %Point, %Point* %t0, i32 0, i32 1
-  %t8 = load i32, i32* %t7
-  %t9 = getelementptr inbounds %Point, %Point* %t1, i32 0, i32 1
-  %t10 = load i32, i32* %t9
-  %t11 = mul i32 %t8, %t10
-  %t12 = add i32 %t6, %t11
-  ret i32 %t12
-}
-
-define i32 @area(%Shape %s) {
-entry:
-  %t0 = alloca %Shape
-  store %Shape %s, %Shape* %t0
-  br label %match_scrutinee_2
-match_scrutinee_2:
-  %t4 = getelementptr inbounds %Shape, %Shape* %t0, i32 0, i32 0
-  %t5 = load i32, i32* %t4
-  %t3 = icmp eq i32 %t5, 0
-  br i1 %t3, label %match_then_0, label %match_next_0
-match_then_0:
-  %t6 = getelementptr inbounds %Shape, %Shape* %t0, i32 0, i32 1
-  %t7 = bitcast [1 x i64]* %t6 to { i32 }*
-  %t8 = getelementptr inbounds { i32 }, { i32 }* %t7, i32 0, i32 0
-  %t9 = load i32, i32* %t8
-  %t10 = mul i32 3, %t9
-  %t11 = load i32, i32* %t8
-  %t12 = mul i32 %t10, %t11
-  ret i32 %t12
-match_next_0:
-  %t14 = getelementptr inbounds %Shape, %Shape* %t0, i32 0, i32 0
-  %t15 = load i32, i32* %t14
-  %t13 = icmp eq i32 %t15, 1
-  br i1 %t13, label %match_then_1, label %match_next_1
-match_then_1:
-  %t16 = getelementptr inbounds %Shape, %Shape* %t0, i32 0, i32 1
-  %t17 = bitcast [1 x i64]* %t16 to { i32, i32 }*
-  %t18 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t17, i32 0, i32 0
-  %t19 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t17, i32 0, i32 1
-  %t20 = load i32, i32* %t18
-  %t21 = load i32, i32* %t19
-  %t22 = mul i32 %t20, %t21
-  ret i32 %t22
-match_next_1:
-  br label %match_end_1
-match_end_1:
+  %t0 = alloca %Enemy
+  %t1 = alloca %Enemy
+  %t2 = getelementptr inbounds %Enemy, %Enemy* %t1, i32 0, i32 0
+  store i32 0, i32* %t2
+  %t3 = load %Enemy, %Enemy* %t1
+  store %Enemy %t3, %Enemy* %t0
+  %t4 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.0, i64 0, i32 2, i64 0
+  call i32 (i8*, ...) @printf(i8* %t4)
+  %t5 = alloca i32
+  %t6 = getelementptr inbounds %Enemy, %Enemy* %t0, i32 0, i32 0
+  %t7 = load i32, i32* %t6
+  %t8 = icmp eq i32 %t7, 0
+  %t9 = icmp eq i32 10, -2147483648
+  %t10 = icmp eq i32 %t7, -1
+  %t11 = and i1 %t9, %t10
+  %t12 = or i1 %t8, %t11
+  br i1 %t12, label %int_div_fail_0, label %int_div_ok_1
+int_div_fail_0:
+  %t13 = getelementptr inbounds [71 x i8], [71 x i8]* @.str.1, i64 0, i64 0
+  call i32 @puts(i8* %t13)
+  call void @exit(i32 1)
   unreachable
+int_div_ok_1:
+  %t14 = sdiv i32 10, %t7
+  store i32 %t14, i32* %t5
+  %t15 = load i32, i32* %t5
+  %t16 = getelementptr inbounds [36 x i8], [36 x i8]* @.str.2, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t16, i32 %t15)
+  ret i32 0
 }
 
+
+; Global Constants
+@.str.0 = private unnamed_addr constant { i64, i8*, [7 x i8] } { i64 -1, i8* null, [7 x i8] c"before\00" }
+@.str.1 = private unnamed_addr constant [71 x i8] c"star runtime error: integer `/` by zero (or `i32::MIN / -1` overflow)\0A\00"
+@.str.2 = private unnamed_addr constant [36 x i8] c"should not reach here: 10 / 0 = %d\0A\00"
