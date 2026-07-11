@@ -287,6 +287,7 @@ impl Codegen {
                     Some("max") => self.emit_minmax(args, false),
                     Some("len") => self.emit_str_len(args),
                     Some("concat") => self.emit_str_concat(args),
+                    Some("read_line") => self.emit_read_line(),
                     Some("dot") => self.emit_dot(args),
                     Some("length") => self.emit_length(args),
                     Some("lerp") => self.emit_lerp(args),

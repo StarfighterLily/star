@@ -232,6 +232,8 @@ impl Codegen {
         // `Codegen::emit_frame_alloc`.
         self.line("declare void @exit(i32) noreturn");
         self.line("declare i32 @strlen(i8*)");
+        // `read_line` builtin -- see `crate::codegen::builtins::emit_read_line`.
+        self.line("declare i32 @getchar()");
         self.line("declare i8* @memcpy(i8*, i8*, i64)");
         self.line("declare i8* @strcpy(i8*, i8*)");
         self.line("declare i8* @strcat(i8*, i8*)");

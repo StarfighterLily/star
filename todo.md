@@ -1,8 +1,6 @@
 # Star Compiler — Next Steps
 
-## Immediate
-
-Last actions:
+## Last actions:
 All 18 items below are **done**, each with a regression test (type-level
 tests in `tests/frontend.rs`, plus a dedicated `examples/*.star` program and
 an end-to-end runtime test for anything only observable by actually running a
@@ -396,3 +394,22 @@ compares the divisor against `0` and the `(dividend == i32::MIN) & (divisor
 `codegen_ordinary_int_division_still_computes_correct_values` (the
 not-just-crashing-on-the-happy-path regression guard),
 `codegen_int_division_includes_zero_and_overflow_guard`.
+
+## Item 21: reading from standard input
+
+**DONE.** Added a `read_line() -> str` builtin (`src/codegen/builtins.rs`'s
+`emit_read_line`, dispatched in `expr.rs` and type-checked via
+`builtin_return_ty` in `src/types/mod.rs`), reading one line from stdin a
+character at a time via `@getchar` into a fixed 1024-byte buffer allocated
+through `star_rc_alloc` -- the same fixed-capacity-buffer trade-off
+`ARENA_CAPACITY`/`FRAME_BUF_SIZE` already make elsewhere, and character-at-a-
+time via `getchar` rather than `fgets`/a `stdin` `FILE*` global specifically
+to sidestep that global's representation varying across CRT versions on
+Windows (`msvcrt` vs `ucrtbase`). The trailing `\n` is stripped and not
+copied into the buffer; EOF (before or after partial input) stops the read
+and yields whatever was read so far, possibly an empty `str`, rather than
+hanging or crashing. A line longer than the buffer's 1023-character capacity
+is truncated (the unread remainder stays on stdin for the next call, same as
+a short read from a real OS pipe). See `examples/stdin.star` /
+`checks_read_line_return_type`, `codegen_read_line_uses_rc_alloc_and_getchar`,
+`runtime_read_line_end_to_end`, `runtime_read_line_truncates_oversized_input`.

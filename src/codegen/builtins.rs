@@ -247,6 +247,72 @@ impl Codegen {
         reg
     }
 
+    /// `read_line() -> str`: reads one line from stdin a character at a time
+    /// via `getchar`, stopping at `\n` (discarded) or EOF, into a
+    /// fixed-capacity buffer -- the same fixed-capacity-buffer convention
+    /// `ARENA_CAPACITY`/`FRAME_BUF_SIZE` already use elsewhere in this
+    /// codegen, chosen over a `realloc`-growable buffer for the same reason:
+    /// no dynamic growth machinery to get wrong. The buffer is allocated via
+    /// `star_rc_alloc` (refcount 1, no release callback) so it's a fresh,
+    /// already-owned `Str` value exactly like `emit_str_concat`'s result --
+    /// no extra retain needed at this call site, only a release once its
+    /// owner goes out of scope (see `rc.rs`).
+    pub(super) fn emit_read_line(&mut self) -> String {
+        // Capacity includes the trailing NUL, so at most `CAP - 1` characters
+        // of input are kept; anything beyond that is left unread on stdin
+        // (matches `frame:`'s bounded-buffer-over-unbounded-growth choice).
+        const CAP: u64 = 1024;
+        let buf = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", buf, CAP));
+        let i_ptr = self.tmp_name();
+        self.line(&format!("  {} = alloca i64", i_ptr));
+        self.line(&format!("  store i64 0, i64* {}", i_ptr));
+
+        let cond_label = self.block_label("read_line_cond");
+        let body_label = self.block_label("read_line_body");
+        let store_label = self.block_label("read_line_store");
+        let end_label = self.block_label("read_line_end");
+
+        self.line(&format!("  br label %{}", cond_label));
+        self.line(&format!("{}:", cond_label));
+        let i_reg = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", i_reg, i_ptr));
+        let has_room = self.tmp_name();
+        self.line(&format!("  {} = icmp ult i64 {}, {}", has_room, i_reg, CAP - 1));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", has_room, body_label, end_label));
+
+        self.line(&format!("{}:", body_label));
+        let c = self.tmp_name();
+        self.line(&format!("  {} = call i32 @getchar()", c));
+        let is_eof = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, -1", is_eof, c));
+        let is_nl = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, 10", is_nl, c));
+        let stop = self.tmp_name();
+        self.line(&format!("  {} = or i1 {}, {}", stop, is_eof, is_nl));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", stop, end_label, store_label));
+
+        self.line(&format!("{}:", store_label));
+        let dest = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", dest, buf, i_reg));
+        let c8 = self.tmp_name();
+        self.line(&format!("  {} = trunc i32 {} to i8", c8, c));
+        self.line(&format!("  store i8 {}, i8* {}", c8, dest));
+        let i_next = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", i_next, i_reg));
+        self.line(&format!("  store i64 {}, i64* {}", i_next, i_ptr));
+        self.line(&format!("  br label %{}", cond_label));
+
+        self.line(&format!("{}:", end_label));
+        let final_i = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", final_i, i_ptr));
+        let nul = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", nul, buf, final_i));
+        self.line(&format!("  store i8 0, i8* {}", nul));
+
+        buf
+    }
+
     /// `len(s) -> i32`.
     pub(super) fn emit_str_len(&mut self, args: &[TypedExpr]) -> String {
         let Some(arg) = args.first() else {

@@ -102,6 +102,10 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "abs" | "min" | "max" => Some(args.first().map(|a| a.clone().into_ty()).unwrap_or(Ty::Float)),
         "len" => Some(Ty::Int),
         "concat" => Some(Ty::Str),
+        // Reads one line of text from stdin (trailing newline stripped, EOF
+        // yielding whatever was read so far -- possibly empty). See
+        // `crate::codegen::builtins::emit_read_line`.
+        "read_line" => Some(Ty::Str),
         // `dot`/`length`: Vec2/Vec3/Vec4 math the codegen already had the
         // primitives for (`emit_dot4` existed internally to implement
         // `Mat4 * Vec4`) but exposed to no user-callable builtin.

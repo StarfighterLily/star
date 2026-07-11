@@ -1448,6 +1448,18 @@ fn checks_builtin_return_types() {
     assert_eq!(get_value_ty(3), Ty::Str);
 }
 
+/// `read_line()` (no arguments) resolves to `str` through the checker, same
+/// as `concat`'s return type.
+#[test]
+fn checks_read_line_return_type() {
+    let src = "fn t():\n    let line: str = read_line()\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let TypedItem::Fn(f) = &typed.items[0] else { panic!("expected fn") };
+    let TypedStmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected let") };
+    assert_eq!(value.clone().into_ty(), Ty::Str);
+}
+
 /// `abs`/`min`/`max` preserve the numeric type of their arguments (Int stays
 /// Int) rather than always widening to Float.
 #[test]
@@ -1503,6 +1515,63 @@ fn runtime_stdlib_end_to_end() {
     assert!(stdout.contains("clamped: 100"), "min/max clamp result: {}", stdout);
     assert!(stdout.contains("name len: 4"), "{}", stdout);
     assert!(stdout.contains("greeting: hello, Hero"), "concat result: {}", stdout);
+}
+
+/// Runtime test: `examples/stdin.exe` exercises `read_line()` end to end
+/// through a real compiled binary fed piped stdin, including reading past
+/// the last available line (EOF), which should yield an empty `str` rather
+/// than crashing or hanging.
+#[test]
+fn runtime_read_line_end_to_end() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("examples/stdin.exe")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn stdin.exe");
+    child
+        .stdin
+        .take()
+        .expect("child stdin should be piped")
+        .write_all(b"Alice\nBob\n")
+        .expect("failed to write to child stdin");
+    let output = child.wait_with_output().expect("failed to wait on stdin.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("hello, Alice"), "first read_line() call: {}", stdout);
+    assert!(stdout.contains("again: Bob"), "second read_line() call: {}", stdout);
+    assert!(stdout.contains("last: "), "read_line() past EOF should yield an empty str, not crash: {}", stdout);
+    assert_eq!(output.status.code(), Some(0));
+}
+
+/// A `read_line()` call whose input line is longer than the builtin's fixed
+/// 1024-byte capacity is truncated rather than overflowing the buffer or
+/// crashing -- same bounded-buffer trade-off `frame:` blocks already make
+/// (see `Codegen::emit_read_line`).
+#[test]
+fn runtime_read_line_truncates_oversized_input() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("examples/stdin.exe")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn stdin.exe");
+    let long_line = "a".repeat(2000);
+    let input = format!("{}\nshort\n", long_line);
+    child
+        .stdin
+        .take()
+        .expect("child stdin should be piped")
+        .write_all(input.as_bytes())
+        .expect("failed to write to child stdin");
+    let output = child.wait_with_output().expect("failed to wait on stdin.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(&"a".repeat(1023)), "truncated line should keep its first 1023 bytes: {}", stdout);
+    assert!(!stdout.contains(&"a".repeat(1024)), "truncated line should not exceed 1023 bytes: {}", stdout);
+    assert_eq!(output.status.code(), Some(0));
 }
 
 // ===== M8 Error messages ====================================================
@@ -3886,6 +3955,23 @@ fn codegen_concat_uses_rc_alloc_not_raw_malloc() {
     let fn_ir = extract_fn_body(&ir, "define i8* @t(");
     assert!(fn_ir.contains("call i8* @star_rc_alloc"), "concat should allocate via star_rc_alloc: {}", fn_ir);
     assert!(!fn_ir.contains("call i8* @malloc"), "concat should not call @malloc directly: {}", fn_ir);
+}
+
+/// `read_line`'s line buffer is allocated through `star_rc_alloc` (freed once
+/// the last reference is released), not directly through `@malloc`, and reads
+/// characters one at a time via `@getchar` rather than assuming a `stdin`
+/// `FILE*` symbol is resolvable (its representation varies across CRT
+/// versions on Windows).
+#[test]
+fn codegen_read_line_uses_rc_alloc_and_getchar() {
+    let src = "fn t() -> str:\n    read_line()\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i8* @t(");
+    assert!(fn_ir.contains("call i8* @star_rc_alloc"), "read_line should allocate via star_rc_alloc: {}", fn_ir);
+    assert!(!fn_ir.contains("call i8* @malloc"), "read_line should not call @malloc directly: {}", fn_ir);
+    assert!(fn_ir.contains("call i32 @getchar()"), "read_line should read via @getchar: {}", fn_ir);
 }
 
 /// A closure literal that captures an outer local allocates its environment
