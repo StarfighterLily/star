@@ -2,6 +2,7 @@
 target triple = "x86_64-w64-windows-gnu"
 
 declare i32 @printf(i8*, ...)
+declare i32 @snprintf(i8*, i64, i8*, ...)
 declare i32 @puts(i8*)
 declare noalias i8* @malloc(i64)
 declare void @free(i8*)
@@ -131,43 +132,43 @@ entry:
   %t15 = add i32 %t13, %t14
   store i32 %t15, i32* %t10
   %t16 = alloca { i8*, i8* }
-  %t31 = getelementptr inbounds { i32, i8*, i32 }, { i32, i8*, i32 }* null, i32 1
-  %t32 = ptrtoint { i32, i8*, i32 }* %t31 to i64
-  %t36 = bitcast void (i8*)* @closure_0_release_env to i8*
-  %t37 = call i8* @star_rc_alloc(i64 %t32, i8* %t36)
-  %t38 = bitcast i8* %t37 to { i32, i8*, i32 }*
-  %t39 = load i32, i32* %t0
-  %t40 = getelementptr inbounds { i32, i8*, i32 }, { i32, i8*, i32 }* %t38, i32 0, i32 0
-  store i32 %t39, i32* %t40
+  %t30 = getelementptr inbounds { i32, i8*, i32 }, { i32, i8*, i32 }* null, i32 1
+  %t31 = ptrtoint { i32, i8*, i32 }* %t30 to i64
+  %t35 = bitcast void (i8*)* @closure_0_release_env to i8*
+  %t36 = call i8* @star_rc_alloc(i64 %t31, i8* %t35)
+  %t37 = bitcast i8* %t36 to { i32, i8*, i32 }*
+  %t38 = load i32, i32* %t0
+  %t39 = getelementptr inbounds { i32, i8*, i32 }, { i32, i8*, i32 }* %t37, i32 0, i32 0
+  store i32 %t38, i32* %t39
+  %t40 = load i8*, i8** %t1
   %t41 = load i8*, i8** %t1
-  %t42 = load i8*, i8** %t1
-  call void @star_rc_retain(i8* %t42)
-  %t43 = getelementptr inbounds { i32, i8*, i32 }, { i32, i8*, i32 }* %t38, i32 0, i32 1
-  store i8* %t41, i8** %t43
-  %t44 = load i32, i32* %t10
-  %t45 = getelementptr inbounds { i32, i8*, i32 }, { i32, i8*, i32 }* %t38, i32 0, i32 2
-  store i32 %t44, i32* %t45
-  %t46 = bitcast i32 (i8*)* @closure_0 to i8*
-  %t47 = insertvalue { i8*, i8* } undef, i8* %t46, 0
-  %t48 = insertvalue { i8*, i8* } %t47, i8* %t37, 1
-  store { i8*, i8* } %t48, { i8*, i8* }* %t16
-  %t49 = load i32, i32* %t10
+  call void @star_rc_retain(i8* %t41)
+  %t42 = getelementptr inbounds { i32, i8*, i32 }, { i32, i8*, i32 }* %t37, i32 0, i32 1
+  store i8* %t40, i8** %t42
+  %t43 = load i32, i32* %t10
+  %t44 = getelementptr inbounds { i32, i8*, i32 }, { i32, i8*, i32 }* %t37, i32 0, i32 2
+  store i32 %t43, i32* %t44
+  %t45 = bitcast i32 (i8*)* @closure_0 to i8*
+  %t46 = insertvalue { i8*, i8* } undef, i8* %t45, 0
+  %t47 = insertvalue { i8*, i8* } %t46, i8* %t36, 1
+  store { i8*, i8* } %t47, { i8*, i8* }* %t16
+  %t48 = load i32, i32* %t10
+  %t49 = load { i8*, i8* }, { i8*, i8* }* %t16
   %t50 = load { i8*, i8* }, { i8*, i8* }* %t16
-  %t51 = load { i8*, i8* }, { i8*, i8* }* %t16
-  %t52 = extractvalue { i8*, i8* } %t51, 1
-  call void @star_rc_retain(i8* %t52)
-  %t53 = extractvalue { i8*, i8* } %t50, 0
-  %t54 = extractvalue { i8*, i8* } %t50, 1
-  call void @star_rc_release(i8* %t54)
-  %t55 = bitcast i8* %t53 to i32 (i8*)*
-  %t56 = call i32 %t55(i8* %t54)
-  %t57 = add i32 %t49, %t56
-  %t58 = load { i8*, i8* }, { i8*, i8* }* %t16
-  %t59 = extractvalue { i8*, i8* } %t58, 1
+  %t51 = extractvalue { i8*, i8* } %t50, 1
+  call void @star_rc_retain(i8* %t51)
+  %t52 = extractvalue { i8*, i8* } %t49, 0
+  %t53 = extractvalue { i8*, i8* } %t49, 1
+  call void @star_rc_release(i8* %t53)
+  %t54 = bitcast i8* %t52 to i32 (i8*)*
+  %t55 = call i32 %t54(i8* %t53)
+  %t56 = add i32 %t48, %t55
+  %t57 = load { i8*, i8* }, { i8*, i8* }* %t16
+  %t58 = extractvalue { i8*, i8* } %t57, 1
+  call void @star_rc_release(i8* %t58)
+  %t59 = load i8*, i8** %t1
   call void @star_rc_release(i8* %t59)
-  %t60 = load i8*, i8** %t1
-  call void @star_rc_release(i8* %t60)
-  ret i32 %t57
+  ret i32 %t56
 }
 
 define i32 @main(i32 %.argc, i8** %.argv) {
@@ -224,18 +225,16 @@ entry:
   call void @star_rc_retain(i8* %t28)
   call void @star_rc_release(i8* %t27)
   %t29 = call i32 @strlen(i8* %t27)
-  %t30 = load i8*, i8** %t23
-  call void @star_rc_release(i8* %t30)
   ret i32 %t29
 }
 
 
 define void @closure_0_release_env(i8* %envp) {
 entry:
-  %t33 = bitcast i8* %envp to { i32, i8*, i32 }*
-  %t34 = getelementptr inbounds { i32, i8*, i32 }, { i32, i8*, i32 }* %t33, i32 0, i32 1
-  %t35 = load i8*, i8** %t34
-  call void @star_rc_release(i8* %t35)
+  %t32 = bitcast i8* %envp to { i32, i8*, i32 }*
+  %t33 = getelementptr inbounds { i32, i8*, i32 }, { i32, i8*, i32 }* %t32, i32 0, i32 1
+  %t34 = load i8*, i8** %t33
+  call void @star_rc_release(i8* %t34)
   ret void
 }
 

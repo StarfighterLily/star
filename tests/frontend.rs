@@ -918,6 +918,29 @@ fn rejects_untyped_sequence_local() {
     assert!(Driver::check(&module).is_err(), "untyped hoisted local should be a type error");
 }
 
+/// A hoisted sequence local named `state` must be rejected -- `state: i32`
+/// is unconditionally appended as the desugared struct's own resume-dispatch
+/// counter field (`Sequence::desugar_sequence`), so a user-declared local of
+/// the same name previously shared that one struct field with no renaming:
+/// the coroutine's own "advance to next segment" write silently clobbered
+/// whatever value the user's `state` local held, and vice versa, with no
+/// diagnostic anywhere.
+#[test]
+fn rejects_sequence_local_named_state() {
+    let module = Driver::parse("sequence S(x: i32):\n    let mut state: i32 = 5\n    yield\n    state += 1\n    yield\n").expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("a sequence local named `state` should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("reserved field name")), "{:?}", diags);
+}
+
+/// Same fix, parameter side: a sequence parameter named `state` collides
+/// with the same reserved dispatch field.
+#[test]
+fn rejects_sequence_param_named_state() {
+    let module = Driver::parse("sequence S(state: i32):\n    yield\n    println(f\"{state}\")\n").expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("a sequence parameter named `state` should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("reserved parameter name")), "{:?}", diags);
+}
+
 /// Codegen for the desugared `resume` uses a nested `if`/`else` chain that
 /// compares against `state` and returns a bool per segment.
 #[test]
@@ -1494,6 +1517,67 @@ fn codegen_omits_reflect_metadata_when_undecorated() {
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
     assert!(!ir.contains("__star_reflect"), "no reflect metadata expected: {}", ir);
+}
+
+/// Reflect metadata offsets must account for real struct field alignment/
+/// padding, not just naively sum each field's size -- previously
+/// `emit_reflect_metadata` did exactly that naive sum, so any struct mixing
+/// a sub-8-byte field (`bool`/`i32`/`float`) with an 8-byte-aligned one
+/// (`str`/`List<T>`/a named struct/`ptr`) reported an offset that didn't
+/// match the field's actual position in the compiled `%Player` LLVM struct
+/// (confirmed against real LLVM layout: `{ i1, i32, i8*, float }` places
+/// `flag` at 0, `health` at 4, `name` at 8, `speed` at 16 -- not the naive
+/// sum's 0/1/5/13).
+#[test]
+fn codegen_reflect_metadata_offsets_account_for_field_alignment() {
+    let src = "struct Player:\n    @export flag: bool = true\n    @export health: i32 = 100\n    @export name: str = \"Hero\"\n    @export speed: float = 5.0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("flag:0:bool:export"), "{}", ir);
+    assert!(ir.contains("health:4:i32:export"), "i32 needs 4-byte alignment after a 1-byte bool: {}", ir);
+    assert!(ir.contains("name:8:str:export"), "str (pointer) needs 8-byte alignment: {}", ir);
+    assert!(ir.contains("speed:16:float:export"), "{}", ir);
+}
+
+/// Spawning many instances of a struct whose fields need internal padding
+/// (a `bool` followed by a `str`, real LLVM layout `{ i1, i8* }` = 16 bytes,
+/// not the naive-sum 9 bytes) into an arena must not corrupt data or crash --
+/// previously `emit_spawn_stmt` sized the backing `malloc` via
+/// `Codegen::type_size`'s naive per-field sum (no alignment padding), while
+/// every read/write through the buffer indexes it via `getelementptr`
+/// against the real (larger) LLVM struct type, so the `malloc`'d buffer was
+/// silently undersized relative to what `getelementptr` addressing actually
+/// reached once enough elements were spawned -- a real, confirmed heap
+/// buffer overflow (reproduced as a segfault against the pre-fix compiler
+/// with exactly this struct shape and element count). Fixed by asking LLVM
+/// itself for the real element size at codegen time
+/// (`Codegen::emit_sizeof_llvm_ty`) rather than trusting a Rust-side
+/// estimate.
+#[test]
+fn runtime_arena_of_padded_struct_spawns_past_naive_size_boundary_end_to_end() {
+    let src = "struct Mixed:\n    flag: bool\n    tag: str\n\narena Items: Mixed\n\nfn main():\n    for i in 0..700:\n        spawn Items(true, f\"tag{i}\")\n    let r1 = GenRef<Mixed>(650)\n    println(r1[0].tag)\n    let r2 = GenRef<Mixed>(699)\n    println(r2[0].tag)\n    let r3 = GenRef<Mixed>(0)\n    println(r3[0].tag)\n";
+    let output = compile_and_run("arena_padded_struct", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["tag650", "tag699", "tag0"], "{}", stdout);
+}
+
+/// Same fix, `List<T>` side: pushing many instances of a padding-needing
+/// struct element type must not corrupt data (the grow path's `malloc`
+/// sizing *and* its `memcpy` byte count both previously used the same
+/// undersized `type_size` estimate, so growing would both under-allocate
+/// the new buffer and under-copy -- silently truncating -- the existing
+/// elements).
+#[test]
+fn runtime_list_of_padded_struct_push_past_growth_end_to_end() {
+    let src = "struct Mixed:\n    flag: bool\n    tag: str\n\nfn main():\n    let mut xs: List<Mixed> = List<Mixed>()\n    for i in 0..200:\n        xs.push(Mixed(true, f\"tag{i}\"))\n    println(xs[150].tag)\n    println(xs[199].tag)\n    println(xs[0].tag)\n";
+    let output = compile_and_run("list_padded_struct", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["tag150", "tag199", "tag0"], "{}", stdout);
 }
 
 // ===== M8 Free functions ====================================================
@@ -2342,6 +2426,94 @@ fn rejects_undefined_struct_pattern() {
     let module = Driver::parse(&src).expect("should parse");
     let Err(diags) = Driver::check(&module) else { panic!("undefined struct pattern should be a type error") };
     assert!(diags.iter().any(|d| d.message.contains("undefined struct")), "{:?}", diags);
+}
+
+/// A struct pattern matched against a scrutinee whose type isn't `Ty::Named`
+/// at all (an `i32` here) must still be rejected -- previously
+/// `check_match_arm`'s mismatch check only ever fired inside an `if let
+/// Ty::Named(..) = scrutinee_ty`, so any non-`Named` scrutinee shape (`i32`,
+/// `bool`, `Ty::Enum`, `List<T>`, a vector, ...) skipped the check entirely
+/// and this type-checked cleanly, only failing later at the `clang` step
+/// (a GEP into a struct type the scrutinee was never laid out as).
+#[test]
+fn rejects_struct_pattern_against_non_named_scrutinee() {
+    let src = format!("{}fn main() -> i32:\n    let n = 5\n    match n:\n        Point(a, b) -> a + b\n        _ -> 0\n    return 0\n", POINT_STRUCT_SRC);
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("struct pattern against a non-struct scrutinee should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("does not match scrutinee type")), "{:?}", diags);
+}
+
+/// Same fix, enum-pattern side: an enum pattern matched against a scrutinee
+/// whose type isn't `Ty::Enum` at all must also be rejected rather than
+/// silently skipping the mismatch check.
+#[test]
+fn rejects_enum_pattern_against_non_enum_scrutinee() {
+    let src = "enum Color:\n    Red\n    Blue\n\nfn main() -> i32:\n    let n = 5\n    match n:\n        Color::Red -> 1\n        _ -> 0\n    return 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("enum pattern against a non-enum scrutinee should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("does not match scrutinee type")), "{:?}", diags);
+}
+
+/// A bare reference to an identifier that names no local variable, no
+/// declared top-level function, and no builtin must be a type error --
+/// previously `Checker::infer_expr`'s `Expr::Ident` arm fell back to the
+/// `unknown` placeholder type with zero diagnostics for any unrecognized
+/// name, so a typo'd variable/function name type-checked cleanly and only
+/// broke at the `clang` step against generated IR referencing `%unknown`.
+#[test]
+fn rejects_undefined_identifier() {
+    let src = "fn main() -> i32:\n    let x = totally_undefined_function(1, 2)\n    return 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("undefined identifier should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("undefined name")), "{:?}", diags);
+}
+
+/// Same fix as above, exercised through an f-string interpolation hole
+/// rather than a direct call -- confirms the check applies uniformly
+/// regardless of where the identifier is read from.
+#[test]
+fn rejects_undefined_identifier_in_fstring_interpolation() {
+    let src = "fn main() -> i32:\n    println(f\"{undefined_var}\")\n    return 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("undefined identifier in an f-string hole should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("undefined name")), "{:?}", diags);
+}
+
+/// `self` used outside of any method with a `self` parameter (a bare
+/// top-level `fn`) must be a type error -- previously it silently fell back
+/// to the `Self` placeholder type and only failed at the `clang` step
+/// ("unknown struct `Self`") once codegen tried to resolve a receiver type
+/// that never existed.
+#[test]
+fn rejects_self_outside_method() {
+    let src = "fn main() -> i32:\n    return self.x\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("`self` outside a method should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("`self` is not valid outside of a method")), "{:?}", diags);
+}
+
+/// An ordinary, valid call to a declared top-level function is unaffected by
+/// the new undefined-identifier check (a regression guard against the fix
+/// above being too aggressive).
+#[test]
+fn accepts_call_to_declared_function() {
+    let src = "fn helper(x: i32) -> i32:\n    return x + 1\n\nfn main() -> i32:\n    return helper(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("a call to a declared function should type-check");
+}
+
+/// A bare, un-negated integer literal whose magnitude is exactly
+/// `i32::MAX + 1` (`2147483648`) must be rejected -- previously the lexer
+/// unconditionally reinterpreted this exact magnitude as `i32::MIN`'s bit
+/// pattern regardless of whether a unary `-` preceded it, so `let x =
+/// 2147483648` (with no negation at all) type-checked cleanly and silently
+/// produced the value `-2147483648` at runtime with zero diagnostics.
+#[test]
+fn rejects_bare_i32_max_plus_one_literal() {
+    let src = "fn main():\n    let x = 2147483648\n    println(f\"{x}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("a bare, un-negated `2147483648` literal should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("too large for a 32-bit integer")), "{:?}", diags);
 }
 
 /// Matching a struct pattern destructures its fields by GEP-ing directly
@@ -3389,7 +3561,14 @@ fn codegen_list_literal_allocates_and_stores() {
     let module = Driver::parse("fn t() -> List<i32>:\n    [1, 2, 3]\n").expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    assert!(ir.contains("call i8* @malloc(i64 12)"), "3 x i32 = 12 bytes: {}", ir);
+    // The element size is asked of LLVM itself at codegen time (`getelementptr
+    // i32, i32* null, i32 1` + `ptrtoint`) rather than baked in as a Rust-side
+    // constant -- see `Codegen::emit_sizeof_llvm_ty`'s doc comment (a
+    // Rust-side estimate previously undersized any struct element type
+    // needing internal padding, silently overflowing this buffer).
+    assert!(ir.contains("getelementptr i32, i32* null, i32 1"), "element size should be computed via LLVM's own sizeof idiom: {}", ir);
+    assert!(ir.contains("ptrtoint i32* ") && ir.contains(" to i64"), "{}", ir);
+    assert!(ir.contains("call i8* @malloc(i64 "), "{}", ir);
     assert!(ir.contains("store i32 1,") && ir.contains("store i32 2,") && ir.contains("store i32 3,"), "{}", ir);
 }
 
@@ -4637,6 +4816,54 @@ fn runtime_rc_closures_end_to_end() {
     assert_eq!(output.status.code(), Some(0));
 }
 
+/// A closure capturing another RC-bearing closure (`Ty::Closure` is itself
+/// `contains_rc`) and then actually *called* -- as opposed to merely
+/// constructed and released unused -- must not corrupt the heap.
+///
+/// Root cause (found via a real Windows `STATUS_HEAP_CORRUPTION`
+/// (`0xC0000374`) crash reproduced from `examples/closures.star`, confirmed
+/// gone once fixed): `Codegen::emit_closure_lit`'s body-reconstruction loop
+/// `track_owned`'d every captured variable *except* `self`, so a captured
+/// RC-bearing value (a `str`, or -- as here -- another closure) was treated
+/// as a fresh owned local that `pop_scope` released at the end of *every
+/// call* to the closure. But the environment holds exactly one retained
+/// reference per RC-bearing capture, taken once at construction and meant to
+/// be released exactly once (via the generated `..._release_env` thunk) when
+/// the environment's own refcount reaches zero -- not once per call. Calling
+/// a closure that captured another closure even a single time over-released
+/// that captured closure's environment by one, so it hit zero and was freed
+/// while its original binding (or another closure that also captured it)
+/// still held a live reference to it, corrupting the heap the moment that
+/// other owner was later released in turn. This didn't corrupt *stdout* --
+/// the printed output was entirely correct -- only the process's exit
+/// status, which is exactly why this needs an explicit `status.success()`
+/// check rather than only asserting on `stdout` (the pre-existing
+/// `runtime_rc_closures_end_to_end` test above already does check exit
+/// status, but its specific call pattern happened not to trip this bug).
+#[test]
+fn runtime_closure_capturing_another_closure_called_once_does_not_corrupt_heap_end_to_end() {
+    let src = "fn make_adder(n: i32) -> Fn(i32) -> i32:\n    fn(x: i32) -> i32: x + n\nfn main():\n    let adder = make_adder(100)\n    let bump = fn() -> i32: adder(1)\n    println(f\"{bump()}\")\n";
+    let output = compile_and_run("closure_capturing_closure_called_once", src);
+    assert!(output.status.success(), "heap corruption / abnormal exit: {:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "101", "{}", stdout);
+}
+
+/// Same fix, exercised via the exact multi-closure shape (`add1`/`adder`/
+/// `bump`/`say_hi`) that was first found to crash in `examples/closures.star`
+/// -- a closure (`say_hi`) capturing several prior locals including two
+/// other RC-bearing closures (`adder`, `bump`), with every closure actually
+/// called at least once before the whole set is released at scope exit.
+#[test]
+fn runtime_multiple_closures_capturing_each_other_called_then_released_end_to_end() {
+    let src = "fn make_adder(n: i32) -> Fn(i32) -> i32:\n    fn(x: i32) -> i32: x + n\nfn main():\n    let add1 = fn(x: i32) -> i32: x + 1\n    println(f\"{add1(5)}\")\n    let adder = make_adder(100)\n    println(f\"{adder(5)}\")\n    let mut counter = 0\n    let bump = fn() -> i32: counter + 1\n    counter = 50\n    println(f\"{bump()}\")\n    let say_hi = fn(): println(\"hi\")\n    say_hi()\n";
+    let output = compile_and_run("multiple_closures_capturing_each_other", src);
+    assert!(output.status.success(), "heap corruption / abnormal exit: {:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["6", "105", "1", "hi"], "{}", stdout);
+}
+
 /// Runtime test: `examples/rc_stress.exe` runs 10,000,000 iterations, each
 /// creating a fresh `concat` result and a closure capturing it that
 /// immediately go out of scope -- before the fix, every single iteration
@@ -4770,6 +4997,45 @@ fn rejects_oversized_integer_literal() {
 fn accepts_i32_min_literal() {
     let module = Driver::parse("fn main():\n    let x = -2147483648\n").expect("should parse");
     Driver::check(&module).expect("i32::MIN literal should type-check");
+}
+
+/// Deeply nested parenthesized groups must be a clean parse error, not a
+/// Rust stack overflow -- previously `Parser::parse_unary`/`parse_postfix`/
+/// `parse_primary` recursed one Rust stack frame per nesting level with no
+/// depth limit at all; ~500 levels of nested parens reliably overflowed the
+/// real call stack with a bare process abort ("thread 'main' has overflowed
+/// its stack") and no diagnostic anywhere, the parser-side counterpart of
+/// the same class of bug `Checker::mono_depth` already guards against for
+/// generic monomorphization.
+#[test]
+fn rejects_deeply_nested_parens_does_not_overflow_stack() {
+    let src = format!("fn main():\n    let x = {}1{}\n", "(".repeat(500), ")".repeat(500));
+    let result = Driver::parse(&src);
+    assert!(result.is_err(), "500 levels of nested parens should be a clean parse error, not succeed or crash");
+}
+
+/// Same fix, unary-chain side: a long chain of unary `-` also recurses
+/// through `parse_unary` with no depth limit (this path never goes through
+/// `parse_primary`'s paren-recursion at all, so it exercises the depth guard
+/// independently of the nested-parens case above).
+#[test]
+fn rejects_deeply_nested_unary_minus_does_not_overflow_stack() {
+    let src = format!("fn main():\n    let x = {}1\n", "-".repeat(200000));
+    let result = Driver::parse(&src);
+    assert!(result.is_err(), "200000 levels of unary `-` should be a clean parse error, not succeed or crash");
+}
+
+/// A reasonably (but not adversarially) nested expression -- well under the
+/// depth guard's threshold -- must still parse and run correctly (a
+/// regression guard against the depth guard being so aggressive it rejects
+/// sound, if unusual, code).
+#[test]
+fn runtime_moderately_nested_parens_end_to_end() {
+    let src = format!("fn main():\n    let x = {}1{}\n    println(f\"{{x}}\")\n", "(".repeat(50), ")".repeat(50));
+    let output = compile_and_run("moderately_nested_parens", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "1", "{}", stdout);
 }
 
 /// `if Foo < Bar:` -- both real (capitalized) local variables -- must parse
@@ -6415,4 +6681,75 @@ fn runtime_env_set_overwrites_existing_value_end_to_end() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines, vec!["true", "new value"], "{}", stdout);
+}
+
+/// An f-string used as an ordinary value (bound to a `let`, not passed
+/// directly as `print`/`println`'s sole argument) must actually substitute
+/// its interpolated values, not just return the raw, unformatted
+/// `"...%d...\0"`-style template pointer. Before this was fixed,
+/// `Codegen::emit_expr`'s `TypedExpr::FStr` arm built the format string and
+/// evaluated each hole's expression into `arg_vals` but never consumed
+/// `arg_vals` at all -- it returned the bare format-string pointer, so `s`
+/// held literal `%d` bytes and printing it later fed `printf` a format
+/// string with unsupplied varargs, segfaulting. This only affected the
+/// non-print-argument path; `println(f"...")`/`print(f"...")` directly had
+/// their own separate, correct codegen in `emit_print_like` all along.
+#[test]
+fn runtime_fstring_bound_to_let_then_printed_end_to_end() {
+    let src = "fn main():\n    let x = 42\n    let s = f\"x is {x}!\"\n    print(s)\n";
+    let output = compile_and_run("fstring_let_then_print", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout, "x is 42!", "f-string bound to a `let` must substitute its hole and add no extra newline: {}", stdout);
+}
+
+/// The same bug, reached via a function return instead of a `let` --
+/// confirms the fix isn't specific to one particular non-print consumer of
+/// an f-string value.
+#[test]
+fn runtime_fstring_returned_from_function_end_to_end() {
+    let src = "fn make_msg(x: i32) -> str:\n    return f\"value={x}\"\n\nfn main():\n    let s = make_msg(7)\n    println(s)\n";
+    let output = compile_and_run("fstring_returned_from_fn", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "value=7", "{}", stdout);
+}
+
+/// Every interpolation-hole type this codegen path supports (`i32`, `float`,
+/// `bool`, `str`) substitutes correctly when the f-string is materialized as
+/// a value rather than printed directly -- `bool` in particular needs
+/// `emit_bool_str`'s "true"/"false" conversion, not a raw `%p`-formatted `i1`.
+#[test]
+fn runtime_fstring_value_all_hole_types_end_to_end() {
+    let src = "fn main():\n    let b = true\n    let f = 3.5\n    let name = \"star\"\n    let s = f\"b={b} f={f} name={name}\"\n    println(s)\n";
+    let output = compile_and_run("fstring_value_all_hole_types", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "b=true f=3.500000 name=star", "{}", stdout);
+}
+
+/// An f-string value built from a `str` binding (a borrowing read, not a
+/// fresh construction) must not corrupt or prematurely release the original
+/// binding -- the interpolation hole only reads the bytes for `snprintf`.
+#[test]
+fn runtime_fstring_value_borrowing_str_read_does_not_corrupt_original_end_to_end() {
+    let src = "fn main():\n    let name = \"world\"\n    let s = f\"hello {name}\"\n    println(s)\n    println(name)\n";
+    let output = compile_and_run("fstring_value_borrowing_read", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["hello world", "world"], "{}", stdout);
+}
+
+/// A non-print f-string value can be built from another non-print f-string
+/// value's result (nested interpolation) and passed through `concat` --
+/// confirms the materialized buffer is an ordinary, fully-usable `str`.
+#[test]
+fn runtime_fstring_value_nested_and_concat_end_to_end() {
+    let src = "fn main():\n    let name = \"star\"\n    let s2 = f\"nested: {f\"{name}!\"}\"\n    println(s2)\n    let s3 = concat(f\"a{1}\", f\"b{2}\")\n    println(s3)\n";
+    let output = compile_and_run("fstring_value_nested_concat", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["nested: star!", "a1b2"], "{}", stdout);
 }

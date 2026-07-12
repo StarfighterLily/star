@@ -262,6 +262,9 @@ impl Codegen {
 
     fn emit_builtins(&mut self) {
         self.line("declare i32 @printf(i8*, ...)");
+        // Materializes a non-print f-string value into an owned `str`
+        // buffer -- see `Codegen::emit_expr`'s `TypedExpr::FStr` arm.
+        self.line("declare i32 @snprintf(i8*, i64, i8*, ...)");
         self.line("declare i32 @puts(i8*)");
         self.line("declare noalias i8* @malloc(i64)");
         self.line("declare void @free(i8*)");
@@ -428,8 +431,53 @@ impl Codegen {
         self.line("");
     }
 
-    /// Byte size of a type, used to advance the frame bump allocator's
-    /// offset by the right amount for each allocation.
+    /// The LLVM ABI alignment (bytes) of a type on this compiler's sole
+    /// `x86_64-w64-windows-gnu` target -- empirically confirmed via a
+    /// standalone `.ll` probe (`getelementptr`+`ptrtoint` against a synthetic
+    /// struct pairing each candidate type with a trailing `i64`, compiled
+    /// and run for real) rather than assumed, since a wrong guess here would
+    /// silently reproduce the exact padding bug this function exists to fix.
+    /// Confirmed: `<2 x float>` aligns to 8 (its own size); `<3 x float>` and
+    /// `<4 x float>` both align to 16 (LLVM stores a 3-wide float vector
+    /// padded to a 4-wide vector's footprint); `[4 x <4 x float>]` (`Mat4`)
+    /// inherits its element's 16-byte alignment; `{ i32, i32 }` (`GenRef`)
+    /// aligns to 4, same as its widest field.
+    fn type_align(&self, ty: &Ty) -> u32 {
+        match ty {
+            Ty::Int | Ty::Float => 4,
+            Ty::Bool => 1,
+            Ty::Str | Ty::Ptr | Ty::List(_) | Ty::Closure(..) => 8,
+            Ty::GenRef(_) => 4,
+            Ty::Vec2 => 8,
+            Ty::Vec3 | Ty::Vec4 | Ty::Mat4 => 16,
+            Ty::Named(n) => self
+                .struct_field_types
+                .get(n)
+                .map(|fields| fields.iter().map(|f| self.type_align(f)).max().unwrap_or(1))
+                .unwrap_or(8),
+            Ty::Enum(_) => 8,
+        }
+    }
+
+    /// Byte size of a type -- used both by `emit_reflect_metadata` (which
+    /// needs a real, alignment-correct *compile-time* offset for its
+    /// baked-in metadata string, so there's no way around modeling LLVM's
+    /// struct layout algorithm here) and as a fallback estimate elsewhere.
+    /// Any call site where getting this wrong would mean memory corruption
+    /// rather than just cosmetically-wrong metadata (arena/list buffer
+    /// sizing, the frame bump allocator) instead asks LLVM itself for the
+    /// real size at codegen time via `emit_sizeof_llvm_ty`'s
+    /// `getelementptr`-on-`null`-plus-`ptrtoint` trick, rather than trusting
+    /// this Rust-side model to have anticipated every nested-type shape.
+    ///
+    /// Correctly pads each field to its own alignment and the whole struct's
+    /// final size up to its widest field's alignment (matching real LLVM
+    /// struct layout) -- previously this naively summed each field's size
+    /// with no padding at all, silently *undersizing* any struct mixing a
+    /// sub-8-byte field (`bool`/`i32`/`float`) with an 8-or-16-byte-aligned
+    /// one (`str`/`List<T>`/a named struct/`ptr`/a vector), corrupting
+    /// reflection metadata offsets for every field after the first such
+    /// mismatch.
     fn type_size(&self, ty: &Ty) -> u32 {
         match ty {
             Ty::Int | Ty::Float => 4,
@@ -437,14 +485,25 @@ impl Codegen {
             Ty::Str => 8,
             Ty::GenRef(_) => 8, // { i32, i32 }
             Ty::Vec2 => 8,
-            Ty::Vec3 => 12,
+            // `<3 x float>`/`<4 x float>` both occupy 16 bytes of struct
+            // layout space on this target (see `type_align`'s doc comment).
+            Ty::Vec3 => 16,
             Ty::Vec4 => 16,
             Ty::Mat4 => 64,
-            Ty::Named(n) => self
-                .struct_field_types
-                .get(n)
-                .map(|fields| fields.iter().map(|f| self.type_size(f)).sum())
-                .unwrap_or(8),
+            Ty::Named(n) => match self.struct_field_types.get(n) {
+                Some(fields) => {
+                    let mut offset: u32 = 0;
+                    let mut max_align: u32 = 1;
+                    for f in fields {
+                        let align = self.type_align(f);
+                        max_align = max_align.max(align);
+                        offset = offset.div_ceil(align) * align;
+                        offset += self.type_size(f);
+                    }
+                    offset.div_ceil(max_align) * max_align
+                }
+                None => 8,
+            },
             // A reference-counted object pointer, same as `Ty::Str` -- the
             // `{ T*, i64, i64 }` payload lives on the heap, not inline (see
             // `crate::codegen::list`).
@@ -463,6 +522,24 @@ impl Codegen {
             Ty::Closure(..) => 16,
             Ty::Ptr => 8,
         }
+    }
+
+    /// The real byte size of `llvm_ty` (an already-formatted LLVM type
+    /// string, e.g. `"%Player"` or `"<3 x float>"`), computed by LLVM's own
+    /// layout rules at codegen time via the standard `getelementptr`-on-a-
+    /// `null`-pointer-plus-`ptrtoint` idiom, rather than a Rust-side model
+    /// that would need to keep re-deriving LLVM's ABI alignment/padding
+    /// rules by hand (see `type_size`'s doc comment on why that's fragile).
+    /// Used at every allocation site where an undersized buffer would be a
+    /// real memory-safety bug (arena spawn, `List<T>` malloc/`memcpy`
+    /// sizing, the frame bump allocator) rather than just cosmetically-wrong
+    /// metadata.
+    pub(super) fn emit_sizeof_llvm_ty(&mut self, llvm_ty: &str) -> String {
+        let gep = self.tmp_name();
+        self.line(&format!("  {} = getelementptr {}, {}* null, i32 1", gep, llvm_ty, llvm_ty));
+        let sz = self.tmp_name();
+        self.line(&format!("  {} = ptrtoint {}* {} to i64", sz, llvm_ty, gep));
+        sz
     }
 
     fn llvm_ty(&self, ty: &Ty) -> String {

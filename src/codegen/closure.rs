@@ -111,14 +111,28 @@ impl Codegen {
                 let local_ptr = self.tmp_name();
                 self.line(&format!("  {} = alloca {}", local_ptr, field_ty));
                 self.line(&format!("  store {} {}, {}* {}", field_ty, loaded, field_ty, local_ptr));
-                // `self` is captured *by pointer* (a borrow of the caller's
-                // own struct, see `captured_value_llvm_ty`'s doc comment),
-                // not an owned copy, and its `local_ptr` is one indirection
-                // level deeper than `track_owned`/`contains_rc` assume for
-                // an ordinary local of type `cty` -- must not be tracked.
-                if name != "self" {
-                    self.track_owned(&local_ptr, cty);
-                }
+                // Deliberately never `track_owned` here, for *every* captured
+                // variable, not just `self`: the environment already holds
+                // exactly one retained reference per RC-bearing capture (see
+                // `emit_closure_lit`'s env-population loop below), released
+                // exactly once -- via the generated `..._release_env` thunk
+                // -- when the environment's own refcount reaches zero. This
+                // reconstructed `local_ptr` is only a *borrowed* view into
+                // that single owned reference for the duration of one call,
+                // not a fresh owner of its own; nothing here retained a new
+                // reference on this call's behalf. Previously every captured
+                // field *other than* `self` was `track_owned`'d exactly like
+                // an ordinary local, so `pop_scope`'s normal end-of-body
+                // release ran on it too -- over-releasing the *same* single
+                // reference once per call to the closure (not once total),
+                // hitting zero and freeing the environment while other
+                // owners (the original binding, another closure that also
+                // captured it, ...) still held it, then double-freeing (or
+                // corrupting the heap) once those other owners were released
+                // in turn. Confirmed as a real Windows STATUS_HEAP_CORRUPTION
+                // crash: a closure capturing another RC-bearing closure,
+                // called even once, corrupted the heap the moment either
+                // one's last reference was later released.
                 self.symbols.push((name.clone(), local_ptr, cty.clone()));
             }
         }

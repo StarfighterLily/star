@@ -75,6 +75,14 @@ impl Codegen {
         let mut entries = Vec::new();
         let mut offset: u32 = 0;
         for f in &s.fields {
+            // Pad up to this field's own alignment before recording its
+            // offset -- matching real LLVM struct layout (see
+            // `Codegen::type_size`'s doc comment). Previously this summed
+            // each field's size with no padding at all, so any struct mixing
+            // a sub-8-byte field with a pointer-or-wider one reported wrong
+            // offsets for every field after the first mismatch.
+            let align = self.type_align(&f.ty);
+            offset = offset.div_ceil(align) * align;
             if !f.decorators.is_empty() {
                 entries.push(format!(
                     "{}:{}:{}:{}",

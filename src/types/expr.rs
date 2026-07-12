@@ -15,7 +15,24 @@ impl Checker {
 
     pub(super) fn infer_expr(&mut self, expr: &Expr, vars: &mut HashMap<String, Ty>) -> Result<TypedExpr, ()> {
         match expr {
-            Expr::Int(v, s) => Ok(TypedExpr::Int(*v, Ty::Int, *s)),
+            Expr::Int(v, s) => {
+                if *v == i32::MIN as i64 {
+                    // The lexer stores the literal magnitude `2147483648`
+                    // pre-negated to `i32::MIN`'s bit pattern (its positive
+                    // value doesn't fit `i32` on its own -- `-2147483648` is
+                    // the only legal spelling of `i32::MIN`), since normal
+                    // digit scanning never otherwise produces a negative
+                    // token value. A directly enclosing unary `-` sanctions
+                    // that reinterpretation (see the `Expr::Unary` arm below,
+                    // which intercepts this exact shape before recursing
+                    // here); reaching here un-sanctioned means the source
+                    // wrote the bare literal `2147483648` with no negation at
+                    // all, which previously type-checked cleanly and
+                    // silently became `-2147483648` with zero diagnostics.
+                    self.error("integer literal `2147483648` is too large for a 32-bit integer (max 2147483647)", *s);
+                }
+                Ok(TypedExpr::Int(*v, Ty::Int, *s))
+            }
             Expr::Float(v, s) => Ok(TypedExpr::Float(*v, Ty::Float, *s)),
             Expr::Str(s, sp) => Ok(TypedExpr::Str(s.clone(), Ty::Str, *sp)),
             Expr::Bool(v, s) => Ok(TypedExpr::Bool(*v, Ty::Bool, *s)),
@@ -33,11 +50,50 @@ impl Checker {
                 Ok(TypedExpr::FStr(typed_parts, Ty::Str, *s))
             }
             Expr::Ident(name, s) => {
-                let ty = vars.get(name).cloned().unwrap_or_else(|| self.fn_value_ty(name));
+                let ty = if let Some(t) = vars.get(name) {
+                    t.clone()
+                } else if self.functions.contains_key(name) || self.generic_fns.contains_key(name) || is_builtin_name(name) {
+                    self.fn_value_ty(name)
+                } else {
+                    // No local binding, no declared top-level function/generic
+                    // function, and not a recognized builtin name -- this is a
+                    // genuinely undefined identifier. Previously this fell
+                    // through to the `unknown` placeholder type silently (no
+                    // diagnostic at all), so a typo'd variable or function
+                    // name type-checked cleanly and only broke much later at
+                    // the `clang` step against generated IR referencing
+                    // `%unknown`/`%undef` the user never wrote.
+                    let candidates: Vec<&str> = vars.keys().map(String::as_str)
+                        .chain(self.functions.keys().map(String::as_str))
+                        .collect();
+                    match suggest(name, candidates) {
+                        Some(close) => self.error_note(
+                            format!("undefined name `{}`", name),
+                            *s,
+                            format!("did you mean `{}`?", close),
+                        ),
+                        None => self.error(format!("undefined name `{}`", name), *s),
+                    }
+                    Ty::Named("unknown".into())
+                };
                 Ok(TypedExpr::Ident { name: name.clone(), ty, span: *s })
             }
             Expr::SelfExpr(s) => {
-                let ty = vars.get("self").cloned().unwrap_or(Ty::Named("Self".into()));
+                let ty = match vars.get("self") {
+                    Some(t) => t.clone(),
+                    None => {
+                        // No `self` param in scope: this function/closure isn't
+                        // a method with a receiver at all. Previously this
+                        // silently fell back to the `Self` placeholder type
+                        // (one of `is_placeholder`'s recognized sentinels), so
+                        // `self` used inside a bare top-level `fn` type-checked
+                        // cleanly and only failed at the `clang` step
+                        // ("unknown struct `Self`") once codegen tried to
+                        // resolve a concrete receiver type that never existed.
+                        self.error("`self` is not valid outside of a method with a `self` parameter", *s);
+                        Ty::Named("Self".into())
+                    }
+                };
                 Ok(TypedExpr::SelfExpr(ty, *s))
             }
             Expr::Field { base, field, span } => {
@@ -208,6 +264,19 @@ impl Checker {
                 Ok(TypedExpr::Binary { op: *op, lhs: Box::new(lhs_expr), rhs: Box::new(rhs_expr), ty, span: *span })
             }
             Expr::Unary { op, operand, span } => {
+                // `-2147483648` is the only legal way to spell `i32::MIN`
+                // (see the `Expr::Int` arm's doc comment above): intercept
+                // this exact raw-AST shape -- a unary `-` directly over the
+                // literal -- before generically recursing into `operand`,
+                // which would otherwise hit that arm's bounds check and
+                // reject its own sanctioned case.
+                if matches!(op, UnOp::Neg) {
+                    if let Expr::Int(v, _) = operand.as_ref() {
+                        if *v == i32::MIN as i64 {
+                            return Ok(TypedExpr::Int(i32::MIN as i64, Ty::Int, *span));
+                        }
+                    }
+                }
                 let operand_expr = self.infer_expr(operand, vars)?;
                 // `-x` preserves the operand's own numeric type (Int stays
                 // Int, Float stays Float) rather than always widening to Int.
@@ -973,13 +1042,26 @@ impl Checker {
             // from, so the same generic pattern syntax matches any
             // instantiation (mirrors the `Pattern::EnumVariant` case below).
             let resolved_name = self.resolve_pattern_struct_name(struct_name, scrutinee_expr);
-            if let Ty::Named(scrutinee_struct) = scrutinee_expr.clone().into_ty() {
-                if scrutinee_struct != resolved_name {
+            let scrutinee_ty = scrutinee_expr.clone().into_ty();
+            if let Ty::Named(scrutinee_struct) = &scrutinee_ty {
+                if scrutinee_struct != &resolved_name {
                     self.error(
                         format!("pattern `{}(..)` does not match scrutinee type `{}`", struct_name, scrutinee_struct),
                         arm.span,
                     );
                 }
+            } else {
+                // The scrutinee's type isn't `Ty::Named` at all (`i32`,
+                // `bool`, `Ty::Enum`, `List<T>`, a vector type, ...) --
+                // previously this whole mismatch check was skipped whenever
+                // the `if let` above simply didn't match, so a struct pattern
+                // against a non-struct scrutinee type-checked cleanly and
+                // only failed at the `clang` step (a GEP into a struct type
+                // the scrutinee was never laid out as).
+                self.error(
+                    format!("pattern `{}(..)` does not match scrutinee type `{:?}`", struct_name, scrutinee_ty),
+                    arm.span,
+                );
             }
             match self.structs.get(&resolved_name).cloned() {
                 Some(sdef) => {
@@ -1014,13 +1096,22 @@ impl Checker {
         if let Pattern::EnumVariant(enum_name, variant, bindings) = &arm.pattern {
             let resolved_name = self.resolve_pattern_enum_name(enum_name, scrutinee_expr);
             self.check_enum_variant_name(&resolved_name, variant, arm.span);
-            if let Ty::Enum(scrutinee_enum) = scrutinee_expr.clone().into_ty() {
-                if scrutinee_enum != resolved_name {
+            let scrutinee_ty = scrutinee_expr.clone().into_ty();
+            if let Ty::Enum(scrutinee_enum) = &scrutinee_ty {
+                if scrutinee_enum != &resolved_name {
                     self.error(
                         format!("pattern `{}::{}` does not match scrutinee type `{}`", enum_name, variant, scrutinee_enum),
                         arm.span,
                     );
                 }
+            } else {
+                // Same fix as the struct-pattern arm above: the scrutinee's
+                // type isn't `Ty::Enum` at all, so this mismatch check used
+                // to be silently skipped rather than flagged.
+                self.error(
+                    format!("pattern `{}::{}` does not match scrutinee type `{:?}`", enum_name, variant, scrutinee_ty),
+                    arm.span,
+                );
             }
             // A payload pattern's bindings destructure the variant's fields
             // in declaration order; bind each name to its field's resolved

@@ -135,8 +135,14 @@ impl Codegen {
     pub(super) fn emit_list_lit(&mut self, elems: &[TypedExpr], elem_ty: &Ty) -> String {
         let elem_llvm = self.llvm_ty(elem_ty);
         let n = elems.len() as u64;
-        let elem_size = self.type_size(elem_ty) as u64;
-        let bytes = elem_size * n;
+        // Real, LLVM-computed element size (see `Codegen::emit_sizeof_llvm_ty`'s
+        // doc comment) -- this buffer is indexed via `getelementptr` against
+        // `elem_llvm` below, so its allocated size must match that stride
+        // exactly, not a Rust-side estimate that could undersize it for a
+        // struct element type needing internal padding.
+        let elem_size = self.emit_sizeof_llvm_ty(&elem_llvm);
+        let bytes = self.tmp_name();
+        self.line(&format!("  {} = mul i64 {}, {}", bytes, elem_size, n));
 
         let raw = self.tmp_name();
         self.line(&format!("  {} = call i8* @malloc(i64 {})", raw, bytes));
@@ -267,7 +273,13 @@ impl Codegen {
     /// other alias.
     fn emit_list_ensure_unique(&mut self, slot_ptr: &str, elem_ty: &Ty) {
         let elem_llvm = self.llvm_ty(elem_ty);
-        let elem_size = self.type_size(elem_ty) as u64;
+        // Real, LLVM-computed element size (see `Codegen::emit_sizeof_llvm_ty`'s
+        // doc comment) -- both the clone buffer's `malloc` and the `memcpy`
+        // byte count below index/stride by `elem_llvm` via `getelementptr`,
+        // so an undersized Rust-side estimate would both under-allocate the
+        // new buffer *and* under-copy the live prefix for a struct element
+        // type needing internal padding.
+        let elem_size = self.emit_sizeof_llvm_ty(&elem_llvm);
         let payload_ty = self.list_payload_llvm_ty(elem_ty);
 
         let obj = self.tmp_name();
@@ -622,7 +634,6 @@ impl Codegen {
     /// `list.push(v)` / `list.pop()` / `list.len()`.
     pub(super) fn emit_list_method(&mut self, base: &TypedExpr, method: ListMethod, args: &[TypedExpr], elem_ty: &Ty) -> String {
         let elem_llvm = self.llvm_ty(elem_ty);
-        let elem_size = self.type_size(elem_ty) as u64;
 
         match method {
             ListMethod::Len => {
@@ -655,6 +666,15 @@ impl Codegen {
                 self.line(&format!("  {} = icmp sgt i64 {}, 0", has_cap, doubled));
                 let new_cap = self.tmp_name();
                 self.line(&format!("  {} = select i1 {}, i64 {}, i64 1", new_cap, has_cap, doubled));
+                // Real, LLVM-computed element size -- see
+                // `Codegen::emit_sizeof_llvm_ty`'s doc comment. Both the new
+                // buffer's `malloc` and the old buffer's `memcpy` byte count
+                // below must agree with the `getelementptr`-computed stride
+                // `elem_llvm` indexing actually uses; a Rust-side estimate
+                // that undersizes a padded struct element type would both
+                // under-allocate the grown buffer *and* under-copy (silently
+                // truncating) the existing elements being carried over.
+                let elem_size = self.emit_sizeof_llvm_ty(&elem_llvm);
                 let new_bytes = self.tmp_name();
                 self.line(&format!("  {} = mul i64 {}, {}", new_bytes, new_cap, elem_size));
                 let new_raw = self.tmp_name();

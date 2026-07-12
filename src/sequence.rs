@@ -71,8 +71,28 @@ fn desugar_sequence(seq: &SequenceDef) -> Result<(StructDef, ImplBlock), Vec<Dia
                     *span,
                 ));
             }
+            // `state: i32` is unconditionally appended as this sequence's own
+            // resume-dispatch counter field below -- a param or hoisted local
+            // also named `state` would silently share that one struct field
+            // with the coroutine's own dispatch machinery (both a param and
+            // a hoisted local become plain struct fields with no renaming),
+            // corrupting control flow the moment either one writes to it.
+            if name == "state" {
+                errors.push(Diagnostic::error(
+                    "`state` is a reserved field name in a `sequence` (used internally for \
+                     resume-dispatch state) -- rename this local",
+                    *span,
+                ));
+            }
             hoist.insert(name.clone());
         }
+    }
+    if let Some(p) = seq.params.iter().find(|p| p.name == "state") {
+        errors.push(Diagnostic::error(
+            "`state` is a reserved parameter name in a `sequence` (used internally for \
+             resume-dispatch state) -- rename this parameter",
+            p.span,
+        ));
     }
     if !errors.is_empty() {
         return Err(errors);

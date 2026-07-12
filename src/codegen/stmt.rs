@@ -45,7 +45,7 @@ impl Codegen {
     /// process aborts with a diagnostic message instead of silently
     /// producing an out-of-bounds `getelementptr` that segfaults or
     /// corrupts whatever global data happens to sit right after the buffer.
-    fn emit_frame_alloc(&mut self, size: u32) -> String {
+    fn emit_frame_alloc(&mut self, size: &str) -> String {
         let off = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @frame.off", off));
         let new_off = self.tmp_name();
@@ -258,9 +258,15 @@ impl Codegen {
                     // frame buffer (bounds-checked -- see `emit_frame_alloc`),
                     // then bitcast the raw `i8*` slot to the value's actual
                     // pointer type so the subsequent store's operand types
-                    // agree with the pointer's declared type.
-                    let size = self.type_size(&vty);
-                    let byte_ptr = self.emit_frame_alloc(size);
+                    // agree with the pointer's declared type. `size` is
+                    // LLVM's own real (alignment-padded) size for `ty`, not
+                    // a Rust-side estimate -- the `store` below writes a
+                    // full `ty`-typed aggregate, so an undersized estimate
+                    // for a struct needing internal padding would silently
+                    // corrupt whatever the *next* frame-allocated value
+                    // occupies, without ever tripping the bounds check above.
+                    let size = self.emit_sizeof_llvm_ty(&ty);
+                    let byte_ptr = self.emit_frame_alloc(&size);
                     let typed_ptr = self.tmp_name();
                     self.line(&format!("  {} = bitcast i8* {} to {}*", typed_ptr, byte_ptr, ty));
                     let reg = self.emit_expr(value);

@@ -58,7 +58,29 @@ impl Parser {
         Some(op)
     }
 
+    /// A generous bound on nested expression parsing -- see
+    /// `Parser::expr_depth`'s doc comment. High enough that no real,
+    /// hand-written expression should ever hit it, but low enough to fail
+    /// fast with a clean diagnostic well before exhausting the real Rust
+    /// call stack.
+    const MAX_EXPR_DEPTH: u32 = 200;
+
     fn parse_unary(&mut self) -> Option<Expr> {
+        if self.expr_depth >= Self::MAX_EXPR_DEPTH {
+            let span = self.peek_span();
+            self.error(
+                "expression nested too deeply (over 200 levels of parentheses/unary operators/nested brackets) -- likely a runaway generated expression",
+                span,
+            );
+            return None;
+        }
+        self.expr_depth += 1;
+        let result = self.parse_unary_inner();
+        self.expr_depth -= 1;
+        result
+    }
+
+    fn parse_unary_inner(&mut self) -> Option<Expr> {
         let start = self.peek_span();
         match self.peek_kind() {
             TokenKind::Minus => {

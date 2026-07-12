@@ -2,6 +2,7 @@
 target triple = "x86_64-w64-windows-gnu"
 
 declare i32 @printf(i8*, ...)
+declare i32 @snprintf(i8*, i64, i8*, ...)
 declare i32 @puts(i8*)
 declare noalias i8* @malloc(i64)
 declare void @free(i8*)
@@ -129,57 +130,60 @@ for_body_1:
   %t4 = icmp eq %Enemy* %t3, null
   br i1 %t4, label %spawn_init_4, label %spawn_ready_5
 spawn_init_4:
-  %t5 = call i8* @malloc(i64 4096)
-  %t6 = bitcast i8* %t5 to %Enemy*
-  store %Enemy* %t6, %Enemy** @arena.Enemies.data
+  %t5 = getelementptr %Enemy, %Enemy* null, i32 1
+  %t6 = ptrtoint %Enemy* %t5 to i64
+  %t7 = mul i64 %t6, 1024
+  %t8 = call i8* @malloc(i64 %t7)
+  %t9 = bitcast i8* %t8 to %Enemy*
+  store %Enemy* %t9, %Enemy** @arena.Enemies.data
   br label %spawn_ready_5
 spawn_ready_5:
-  %t7 = load %Enemy*, %Enemy** @arena.Enemies.data
-  %t8 = load i64, i64* @arena.Enemies.free_top
-  %t9 = icmp sgt i64 %t8, 0
-  br i1 %t9, label %spawn_reuse_6, label %spawn_grow_7
+  %t10 = load %Enemy*, %Enemy** @arena.Enemies.data
+  %t11 = load i64, i64* @arena.Enemies.free_top
+  %t12 = icmp sgt i64 %t11, 0
+  br i1 %t12, label %spawn_reuse_6, label %spawn_grow_7
 spawn_reuse_6:
-  %t10 = sub i64 %t8, 1
-  store i64 %t10, i64* @arena.Enemies.free_top
-  %t11 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.Enemies.free, i64 0, i64 %t10
-  %t12 = load i64, i64* %t11
+  %t13 = sub i64 %t11, 1
+  store i64 %t13, i64* @arena.Enemies.free_top
+  %t14 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.Enemies.free, i64 0, i64 %t13
+  %t15 = load i64, i64* %t14
   br label %spawn_store_8
 spawn_grow_7:
-  %t13 = load i64, i64* @arena.Enemies.count
-  %t14 = icmp slt i64 %t13, 1024
-  br i1 %t14, label %spawn_grow_ok_10, label %spawn_capacity_warn_11
+  %t16 = load i64, i64* @arena.Enemies.count
+  %t17 = icmp slt i64 %t16, 1024
+  br i1 %t17, label %spawn_grow_ok_10, label %spawn_capacity_warn_11
 spawn_capacity_warn_11:
-  %t15 = getelementptr inbounds [85 x i8], [85 x i8]* @.str.0, i64 0, i64 0
-  call i32 @puts(i8* %t15)
+  %t18 = getelementptr inbounds [85 x i8], [85 x i8]* @.str.0, i64 0, i64 0
+  call i32 @puts(i8* %t18)
   br label %spawn_end_9
 spawn_grow_ok_10:
-  %t16 = add i64 %t13, 1
-  store i64 %t16, i64* @arena.Enemies.count
+  %t19 = add i64 %t16, 1
+  store i64 %t19, i64* @arena.Enemies.count
   br label %spawn_store_8
 spawn_store_8:
-  %t17 = phi i64 [ %t12, %spawn_reuse_6 ], [ %t13, %spawn_grow_ok_10 ]
-  %t18 = alloca %Enemy
-  %t19 = load i32, i32* %t0
-  %t20 = getelementptr inbounds %Enemy, %Enemy* %t18, i32 0, i32 0
-  store i32 %t19, i32* %t20
-  %t21 = load %Enemy, %Enemy* %t18
-  %t22 = getelementptr inbounds %Enemy, %Enemy* %t7, i64 %t17
-  store %Enemy %t21, %Enemy* %t22
-  %t23 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Enemies.gen, i64 0, i64 %t17
-  %t24 = load i32, i32* %t23
-  %t25 = add i32 %t24, 1
-  store i32 %t25, i32* %t23
+  %t20 = phi i64 [ %t15, %spawn_reuse_6 ], [ %t16, %spawn_grow_ok_10 ]
+  %t21 = alloca %Enemy
+  %t22 = load i32, i32* %t0
+  %t23 = getelementptr inbounds %Enemy, %Enemy* %t21, i32 0, i32 0
+  store i32 %t22, i32* %t23
+  %t24 = load %Enemy, %Enemy* %t21
+  %t25 = getelementptr inbounds %Enemy, %Enemy* %t10, i64 %t20
+  store %Enemy %t24, %Enemy* %t25
+  %t26 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Enemies.gen, i64 0, i64 %t20
+  %t27 = load i32, i32* %t26
+  %t28 = add i32 %t27, 1
+  store i32 %t28, i32* %t26
   br label %spawn_end_9
 spawn_end_9:
   br label %for_step_2
 for_step_2:
-  %t26 = load i32, i32* %t0
-  %t27 = add i32 %t26, 1
-  store i32 %t27, i32* %t0
+  %t29 = load i32, i32* %t0
+  %t30 = add i32 %t29, 1
+  store i32 %t30, i32* %t0
   br label %for_cond_0
 for_end_3:
-  %t28 = getelementptr inbounds { i64, i8*, [14 x i8] }, { i64, i8*, [14 x i8] }* @.str.1, i64 0, i32 2, i64 0
-  call i32 (i8*, ...) @printf(i8* %t28)
+  %t31 = getelementptr inbounds { i64, i8*, [14 x i8] }, { i64, i8*, [14 x i8] }* @.str.1, i64 0, i32 2, i64 0
+  call i32 (i8*, ...) @printf(i8* %t31)
   ret i32 0
 }
 

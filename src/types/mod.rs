@@ -193,6 +193,9 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     "star_rc_alloc", "star_rc_retain", "star_rc_release",
     // `env_get`/`env_set` builtins -- see `crate::codegen::os`.
     "getenv", "_putenv",
+    // Materializes a non-print f-string value (`let s = f"..."`) into an
+    // owned `str` buffer -- see `Codegen::emit_expr`'s `TypedExpr::FStr` arm.
+    "snprintf",
 ];
 
 /// The error type for type checking.

@@ -44,11 +44,22 @@ pub struct Parser {
     /// terminator instead of erroring on whatever token starts the next
     /// statement.
     block_just_closed: bool,
+    /// Nesting depth of `Parser::parse_unary` calls -- every layer of
+    /// parenthesized grouping, unary chaining (`-`/`not`), or a nested
+    /// `[...]`/call argument re-entering expression parsing goes through
+    /// this one shared entry point, so bounding it here bounds all of them.
+    /// Previously unguarded: a few hundred levels of nested parens or a long
+    /// unary-minus chain overflowed the real Rust call stack with a bare
+    /// process abort ("thread 'main' has overflowed its stack") and no
+    /// diagnostic at all, the parser-side counterpart of the same class of
+    /// bug `Checker::mono_depth` already guards against on the generic-
+    /// monomorphization side.
+    expr_depth: u32,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, errors: Vec::new(), import_aliases: HashSet::new(), block_just_closed: false }
+        Self { tokens, pos: 0, errors: Vec::new(), import_aliases: HashSet::new(), block_just_closed: false, expr_depth: 0 }
     }
 
     /// Parse a complete module from source, running the lexer first.

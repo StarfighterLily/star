@@ -244,7 +244,18 @@ impl Codegen {
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, init_label, ready_label));
 
         self.line(&format!("{}:", init_label));
-        let bytes = self.type_size(&elem_ty) as u64 * Self::ARENA_CAPACITY;
+        // Ask LLVM itself for `elem_llvm_ty`'s real (alignment-padded) size
+        // rather than trusting a Rust-side estimate -- this buffer is later
+        // indexed via `getelementptr` against `elem_llvm_ty` directly (see
+        // `emit_genref_index`/`emit_despawn_stmt`), so its allocated size
+        // must agree byte-for-byte with whatever stride LLVM's own GEP
+        // arithmetic uses, or a struct type needing internal padding
+        // (mixing a sub-8-byte field with an 8-or-16-byte-aligned one)
+        // would silently overflow this `malloc`'d buffer once enough
+        // elements are spawned.
+        let elem_size = self.emit_sizeof_llvm_ty(&elem_llvm_ty);
+        let bytes = self.tmp_name();
+        self.line(&format!("  {} = mul i64 {}, {}", bytes, elem_size, Self::ARENA_CAPACITY));
         let raw = self.tmp_name();
         self.line(&format!("  {} = call i8* @malloc(i64 {})", raw, bytes));
         let casted = self.tmp_name();

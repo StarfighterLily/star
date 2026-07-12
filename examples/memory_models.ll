@@ -2,6 +2,7 @@
 target triple = "x86_64-w64-windows-gnu"
 
 declare i32 @printf(i8*, ...)
+declare i32 @snprintf(i8*, i64, i8*, ...)
 declare i32 @puts(i8*)
 declare noalias i8* @malloc(i64)
 declare void @free(i8*)
@@ -128,57 +129,61 @@ entry:
   %t1 = alloca i32
   store i32 %start_y, i32* %t1
   %t2 = load i64, i64* @frame.off
-  %t3 = load i64, i64* @frame.off
-  %t4 = add i64 %t3, 8
-  %t5 = icmp ugt i64 %t4, 4096
-  br i1 %t5, label %frame_alloc_fail_0, label %frame_alloc_ok_1
+  %t3 = getelementptr %Point, %Point* null, i32 1
+  %t4 = ptrtoint %Point* %t3 to i64
+  %t5 = load i64, i64* @frame.off
+  %t6 = add i64 %t5, %t4
+  %t7 = icmp ugt i64 %t6, 4096
+  br i1 %t7, label %frame_alloc_fail_0, label %frame_alloc_ok_1
 frame_alloc_fail_0:
-  %t6 = getelementptr inbounds [70 x i8], [70 x i8]* @.str.0, i64 0, i64 0
-  call i32 @puts(i8* %t6)
+  %t8 = getelementptr inbounds [70 x i8], [70 x i8]* @.str.0, i64 0, i64 0
+  call i32 @puts(i8* %t8)
   call void @exit(i32 1)
   unreachable
 frame_alloc_ok_1:
-  store i64 %t4, i64* @frame.off
-  %t7 = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0
-  %t8 = getelementptr inbounds i8, i8* %t7, i64 %t3
-  %t9 = bitcast i8* %t8 to %Point*
-  %t10 = alloca %Point
-  %t11 = getelementptr inbounds %Point, %Point* %t10, i32 0, i32 0
-  store i32 0, i32* %t11
-  %t12 = getelementptr inbounds %Point, %Point* %t10, i32 0, i32 1
-  store i32 0, i32* %t12
-  %t13 = load %Point, %Point* %t10
-  store %Point %t13, %Point* %t9
-  %t14 = load i64, i64* @frame.off
-  %t15 = add i64 %t14, 8
-  %t16 = icmp ugt i64 %t15, 4096
-  br i1 %t16, label %frame_alloc_fail_2, label %frame_alloc_ok_3
+  store i64 %t6, i64* @frame.off
+  %t9 = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0
+  %t10 = getelementptr inbounds i8, i8* %t9, i64 %t5
+  %t11 = bitcast i8* %t10 to %Point*
+  %t12 = alloca %Point
+  %t13 = getelementptr inbounds %Point, %Point* %t12, i32 0, i32 0
+  store i32 0, i32* %t13
+  %t14 = getelementptr inbounds %Point, %Point* %t12, i32 0, i32 1
+  store i32 0, i32* %t14
+  %t15 = load %Point, %Point* %t12
+  store %Point %t15, %Point* %t11
+  %t16 = getelementptr %Point, %Point* null, i32 1
+  %t17 = ptrtoint %Point* %t16 to i64
+  %t18 = load i64, i64* @frame.off
+  %t19 = add i64 %t18, %t17
+  %t20 = icmp ugt i64 %t19, 4096
+  br i1 %t20, label %frame_alloc_fail_2, label %frame_alloc_ok_3
 frame_alloc_fail_2:
-  %t17 = getelementptr inbounds [70 x i8], [70 x i8]* @.str.1, i64 0, i64 0
-  call i32 @puts(i8* %t17)
+  %t21 = getelementptr inbounds [70 x i8], [70 x i8]* @.str.1, i64 0, i64 0
+  call i32 @puts(i8* %t21)
   call void @exit(i32 1)
   unreachable
 frame_alloc_ok_3:
-  store i64 %t15, i64* @frame.off
-  %t18 = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0
-  %t19 = getelementptr inbounds i8, i8* %t18, i64 %t14
-  %t20 = bitcast i8* %t19 to %Point*
-  %t21 = alloca %Point
-  %t22 = load i32, i32* %t0
-  %t23 = getelementptr inbounds %Point, %Point* %t21, i32 0, i32 0
-  store i32 %t22, i32* %t23
-  %t24 = load i32, i32* %t1
-  %t25 = getelementptr inbounds %Point, %Point* %t21, i32 0, i32 1
-  store i32 %t24, i32* %t25
-  %t26 = load %Point, %Point* %t21
-  store %Point %t26, %Point* %t20
-  %t27 = getelementptr inbounds %Point, %Point* %t9, i32 0, i32 0
-  %t28 = load i32, i32* %t27
-  %t29 = getelementptr inbounds %Point, %Point* %t20, i32 0, i32 1
-  %t30 = load i32, i32* %t29
-  %t31 = add i32 %t28, %t30
+  store i64 %t19, i64* @frame.off
+  %t22 = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0
+  %t23 = getelementptr inbounds i8, i8* %t22, i64 %t18
+  %t24 = bitcast i8* %t23 to %Point*
+  %t25 = alloca %Point
+  %t26 = load i32, i32* %t0
+  %t27 = getelementptr inbounds %Point, %Point* %t25, i32 0, i32 0
+  store i32 %t26, i32* %t27
+  %t28 = load i32, i32* %t1
+  %t29 = getelementptr inbounds %Point, %Point* %t25, i32 0, i32 1
+  store i32 %t28, i32* %t29
+  %t30 = load %Point, %Point* %t25
+  store %Point %t30, %Point* %t24
+  %t31 = getelementptr inbounds %Point, %Point* %t11, i32 0, i32 0
+  %t32 = load i32, i32* %t31
+  %t33 = getelementptr inbounds %Point, %Point* %t24, i32 0, i32 1
+  %t34 = load i32, i32* %t33
+  %t35 = add i32 %t32, %t34
   store i64 %t2, i64* @frame.off
-  ret i32 %t31
+  ret i32 %t35
 }
 
 define i32 @spawn_enemy(i32 %x, i32 %y) {
@@ -267,84 +272,91 @@ entry:
   %t2 = icmp eq %Point* %t1, null
   br i1 %t2, label %spawn_init_11, label %spawn_ready_12
 spawn_init_11:
-  %t3 = call i8* @malloc(i64 8192)
-  %t4 = bitcast i8* %t3 to %Point*
-  store %Point* %t4, %Point** @arena.EnemyArena.data
+  %t3 = getelementptr %Point, %Point* null, i32 1
+  %t4 = ptrtoint %Point* %t3 to i64
+  %t5 = mul i64 %t4, 1024
+  %t6 = call i8* @malloc(i64 %t5)
+  %t7 = bitcast i8* %t6 to %Point*
+  store %Point* %t7, %Point** @arena.EnemyArena.data
   br label %spawn_ready_12
 spawn_ready_12:
-  %t5 = load %Point*, %Point** @arena.EnemyArena.data
-  %t6 = load i64, i64* @arena.EnemyArena.free_top
-  %t7 = icmp sgt i64 %t6, 0
-  br i1 %t7, label %spawn_reuse_13, label %spawn_grow_14
+  %t8 = load %Point*, %Point** @arena.EnemyArena.data
+  %t9 = load i64, i64* @arena.EnemyArena.free_top
+  %t10 = icmp sgt i64 %t9, 0
+  br i1 %t10, label %spawn_reuse_13, label %spawn_grow_14
 spawn_reuse_13:
-  %t8 = sub i64 %t6, 1
-  store i64 %t8, i64* @arena.EnemyArena.free_top
-  %t9 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.EnemyArena.free, i64 0, i64 %t8
-  %t10 = load i64, i64* %t9
+  %t11 = sub i64 %t9, 1
+  store i64 %t11, i64* @arena.EnemyArena.free_top
+  %t12 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.EnemyArena.free, i64 0, i64 %t11
+  %t13 = load i64, i64* %t12
   br label %spawn_store_15
 spawn_grow_14:
-  %t11 = load i64, i64* @arena.EnemyArena.count
-  %t12 = icmp slt i64 %t11, 1024
-  br i1 %t12, label %spawn_grow_ok_17, label %spawn_capacity_warn_18
+  %t14 = load i64, i64* @arena.EnemyArena.count
+  %t15 = icmp slt i64 %t14, 1024
+  br i1 %t15, label %spawn_grow_ok_17, label %spawn_capacity_warn_18
 spawn_capacity_warn_18:
-  %t13 = getelementptr inbounds [88 x i8], [88 x i8]* @.str.2, i64 0, i64 0
-  call i32 @puts(i8* %t13)
+  %t16 = getelementptr inbounds [88 x i8], [88 x i8]* @.str.2, i64 0, i64 0
+  call i32 @puts(i8* %t16)
   br label %spawn_end_16
 spawn_grow_ok_17:
-  %t14 = add i64 %t11, 1
-  store i64 %t14, i64* @arena.EnemyArena.count
+  %t17 = add i64 %t14, 1
+  store i64 %t17, i64* @arena.EnemyArena.count
   br label %spawn_store_15
 spawn_store_15:
-  %t15 = phi i64 [ %t10, %spawn_reuse_13 ], [ %t11, %spawn_grow_ok_17 ]
-  %t16 = alloca %Point
-  %t17 = getelementptr inbounds %Point, %Point* %t16, i32 0, i32 0
-  store i32 42, i32* %t17
-  %t18 = getelementptr inbounds %Point, %Point* %t16, i32 0, i32 1
-  store i32 0, i32* %t18
-  %t19 = load %Point, %Point* %t16
-  %t20 = getelementptr inbounds %Point, %Point* %t5, i64 %t15
-  store %Point %t19, %Point* %t20
-  %t21 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.EnemyArena.gen, i64 0, i64 %t15
-  %t22 = load i32, i32* %t21
-  %t23 = add i32 %t22, 1
-  store i32 %t23, i32* %t21
+  %t18 = phi i64 [ %t13, %spawn_reuse_13 ], [ %t14, %spawn_grow_ok_17 ]
+  %t19 = alloca %Point
+  %t20 = getelementptr inbounds %Point, %Point* %t19, i32 0, i32 0
+  store i32 42, i32* %t20
+  %t21 = getelementptr inbounds %Point, %Point* %t19, i32 0, i32 1
+  store i32 0, i32* %t21
+  %t22 = load %Point, %Point* %t19
+  %t23 = getelementptr inbounds %Point, %Point* %t8, i64 %t18
+  store %Point %t22, %Point* %t23
+  %t24 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.EnemyArena.gen, i64 0, i64 %t18
+  %t25 = load i32, i32* %t24
+  %t26 = add i32 %t25, 1
+  store i32 %t26, i32* %t24
   br label %spawn_end_16
 spawn_end_16:
-  %t24 = load i64, i64* @frame.off
-  %t25 = add i64 %t24, 4
-  %t26 = icmp ugt i64 %t25, 4096
-  br i1 %t26, label %frame_alloc_fail_19, label %frame_alloc_ok_20
+  %t27 = getelementptr i32, i32* null, i32 1
+  %t28 = ptrtoint i32* %t27 to i64
+  %t29 = load i64, i64* @frame.off
+  %t30 = add i64 %t29, %t28
+  %t31 = icmp ugt i64 %t30, 4096
+  br i1 %t31, label %frame_alloc_fail_19, label %frame_alloc_ok_20
 frame_alloc_fail_19:
-  %t27 = getelementptr inbounds [70 x i8], [70 x i8]* @.str.3, i64 0, i64 0
-  call i32 @puts(i8* %t27)
+  %t32 = getelementptr inbounds [70 x i8], [70 x i8]* @.str.3, i64 0, i64 0
+  call i32 @puts(i8* %t32)
   call void @exit(i32 1)
   unreachable
 frame_alloc_ok_20:
-  store i64 %t25, i64* @frame.off
-  %t28 = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0
-  %t29 = getelementptr inbounds i8, i8* %t28, i64 %t24
-  %t30 = bitcast i8* %t29 to i32*
-  store i32 0, i32* %t30
-  %t31 = load i64, i64* @frame.off
-  %t32 = add i64 %t31, 8
-  %t33 = icmp ugt i64 %t32, 4096
-  br i1 %t33, label %frame_alloc_fail_21, label %frame_alloc_ok_22
+  store i64 %t30, i64* @frame.off
+  %t33 = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0
+  %t34 = getelementptr inbounds i8, i8* %t33, i64 %t29
+  %t35 = bitcast i8* %t34 to i32*
+  store i32 0, i32* %t35
+  %t36 = getelementptr %GenRef, %GenRef* null, i32 1
+  %t37 = ptrtoint %GenRef* %t36 to i64
+  %t38 = load i64, i64* @frame.off
+  %t39 = add i64 %t38, %t37
+  %t40 = icmp ugt i64 %t39, 4096
+  br i1 %t40, label %frame_alloc_fail_21, label %frame_alloc_ok_22
 frame_alloc_fail_21:
-  %t34 = getelementptr inbounds [70 x i8], [70 x i8]* @.str.4, i64 0, i64 0
-  call i32 @puts(i8* %t34)
+  %t41 = getelementptr inbounds [70 x i8], [70 x i8]* @.str.4, i64 0, i64 0
+  call i32 @puts(i8* %t41)
   call void @exit(i32 1)
   unreachable
 frame_alloc_ok_22:
-  store i64 %t32, i64* @frame.off
-  %t35 = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0
-  %t36 = getelementptr inbounds i8, i8* %t35, i64 %t31
-  %t37 = bitcast i8* %t36 to %GenRef*
-  %t38 = call %GenRef @create_entity_reference(i32 0)
-  store %GenRef %t38, %GenRef* %t37
-  %t39 = load i32, i32* %t30
-  %t40 = load %GenRef, %GenRef* %t37
-  %t41 = call i32 @follow_reference(%GenRef %t40)
-  %t42 = add i32 %t39, %t41
+  store i64 %t39, i64* @frame.off
+  %t42 = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0
+  %t43 = getelementptr inbounds i8, i8* %t42, i64 %t38
+  %t44 = bitcast i8* %t43 to %GenRef*
+  %t45 = call %GenRef @create_entity_reference(i32 0)
+  store %GenRef %t45, %GenRef* %t44
+  %t46 = load i32, i32* %t35
+  %t47 = load %GenRef, %GenRef* %t44
+  %t48 = call i32 @follow_reference(%GenRef %t47)
+  %t49 = add i32 %t46, %t48
   store i64 %t0, i64* @frame.off
   ret void
 }

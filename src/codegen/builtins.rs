@@ -123,7 +123,7 @@ impl Codegen {
 
     /// Select between `"true"`/`"false"` string constants based on a bare
     /// `i1` register, returning an `i8*` suitable for a `%s` format hole.
-    fn emit_bool_str(&mut self, bare_bool: &str) -> String {
+    pub(super) fn emit_bool_str(&mut self, bare_bool: &str) -> String {
         let true_g = self.global_name();
         self.global_defs.push(format!("{} = private unnamed_addr constant [5 x i8] c\"true\\00\"", true_g));
         let false_g = self.global_name();

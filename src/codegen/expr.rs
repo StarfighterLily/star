@@ -692,8 +692,19 @@ impl Codegen {
                 }
             }
             TypedExpr::FStr(parts, _, _) => {
+                // Unlike `emit_print_like`'s special case for an f-string
+                // passed directly as `print`/`println`'s sole argument (which
+                // streams straight to `printf` and bakes in a trailing
+                // newline), this is the general path for an f-string used as
+                // an ordinary `str` value -- assigned, returned, passed to a
+                // function, concatenated, nested inside another f-string,
+                // etc. It must materialize an actual, fully-substituted,
+                // owned `str` buffer (no trailing newline -- that's a
+                // print/println-specific convention, not this value's).
                 let mut fmt_str = String::new();
-                let mut arg_vals: Vec<(String, Ty)> = Vec::new();
+                // (value, llvm-type-for-the-vararg-slot) after any
+                // widening/conversion `snprintf`'s varargs need.
+                let mut call_args: Vec<String> = Vec::new();
                 for part in parts {
                     match part {
                         TypedFStrExpr::Literal(lit) => {
@@ -702,24 +713,68 @@ impl Codegen {
                         TypedFStrExpr::Expr(e) => {
                             let val = self.emit_expr(e);
                             let ty = self.expr_ty(e);
-                            arg_vals.push((val, ty.clone()));
+                            let bare_val = self.untag(&val, &ty);
                             match ty {
-                                Ty::Int => { fmt_str.push_str("%d"); }
-                                Ty::Float => { fmt_str.push_str("%f"); }
-                                Ty::Str => { fmt_str.push_str("%s"); }
-                                _ => { fmt_str.push_str("%p"); }
+                                Ty::Int => {
+                                    fmt_str.push_str("%d");
+                                    call_args.push(format!("i32 {}", bare_val));
+                                }
+                                Ty::Float => {
+                                    fmt_str.push_str("%f");
+                                    // Variadic calls always promote `float` to `double`.
+                                    let widened = self.tmp_name();
+                                    self.line(&format!("  {} = fpext float {} to double", widened, bare_val));
+                                    call_args.push(format!("double {}", widened));
+                                }
+                                Ty::Str => {
+                                    fmt_str.push_str("%s");
+                                    // This hole only reads the bytes for
+                                    // `snprintf`, it doesn't keep the
+                                    // pointer around -- balance back out
+                                    // whatever retain `emit_expr(e)` did on
+                                    // `e`'s behalf (a no-op if `e` was a
+                                    // fresh construction), same reasoning as
+                                    // `emit_print_like`/`emit_raw_str_ptr`.
+                                    if Self::is_rc_borrowing_read(e) {
+                                        self.line(&format!("  call void @star_rc_release(i8* {})", bare_val));
+                                    }
+                                    call_args.push(format!("i8* {}", bare_val));
+                                }
+                                Ty::Bool => {
+                                    fmt_str.push_str("%s");
+                                    let bool_str = self.emit_bool_str(&bare_val);
+                                    call_args.push(format!("i8* {}", bool_str));
+                                }
+                                _ => {
+                                    fmt_str.push_str("%p");
+                                    call_args.push(format!("i8* {}", bare_val));
+                                }
                             }
                         }
                     }
                 }
-                fmt_str.push('\n');
                 let g = self.global_name();
                 let escaped = fmt_str.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
                 self.global_defs.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", g, fmt_str.len() + 1, escaped));
 
                 let fmt_reg = self.tmp_name();
                 self.line(&format!("  {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0", fmt_reg, fmt_str.len() + 1, fmt_str.len() + 1, g));
-                fmt_reg
+
+                let args_suffix = if call_args.is_empty() { String::new() } else { format!(", {}", call_args.join(", ")) };
+                // First pass: `snprintf(null, 0, fmt, ...)` returns the
+                // number of bytes the fully-substituted string would need
+                // (excluding the NUL), per C99 -- sizes the real buffer
+                // without guessing or growing.
+                let needed = self.tmp_name();
+                self.line(&format!("  {} = call i32 (i8*, i64, i8*, ...) @snprintf(i8* null, i64 0, i8* {}{})", needed, fmt_reg, args_suffix));
+                let total = self.tmp_name();
+                self.line(&format!("  {} = add i32 {}, 1", total, needed));
+                let total64 = self.tmp_name();
+                self.line(&format!("  {} = sext i32 {} to i64", total64, total));
+                let buf = self.tmp_name();
+                self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", buf, total64));
+                self.line(&format!("  call i32 (i8*, i64, i8*, ...) @snprintf(i8* {}, i64 {}, i8* {}{})", buf, total64, fmt_reg, args_suffix));
+                buf
             }
             TypedExpr::If { cond, then_block, else_block, ty, .. } => {
                 let ty_str = self.llvm_ty(ty);
