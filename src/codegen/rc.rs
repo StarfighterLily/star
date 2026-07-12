@@ -38,19 +38,25 @@ impl Codegen {
     }
 
     /// True if a value of this type owns, directly or transitively (through
-    /// struct fields / list elements), a `star_rc_alloc`'d heap block that
-    /// needs a matching retain/release. Everything else (`Int`, `Float`,
-    /// `Bool`, vectors, `GenRef`, a non-payload `Enum`) is copied by
-    /// ordinary value semantics and needs no tracking.
+    /// struct fields), a `star_rc_alloc`'d heap block that needs a matching
+    /// retain/release. Everything else (`Int`, `Float`, `Bool`, vectors,
+    /// `GenRef`, a non-payload `Enum`) is copied by ordinary value semantics
+    /// and needs no tracking.
+    ///
+    /// `List<T>` is always `true`, regardless of `T` -- unlike a struct
+    /// field, a list's own backing buffer is *always* a heap allocation that
+    /// needs releasing, even when `T` itself carries no RC content (e.g.
+    /// `List<i32>`). Whether the buffer's *elements* also need releasing is
+    /// decided separately, inside the generated release thunk (see
+    /// `Codegen::list_release_thunk_operand`), not here.
     pub(super) fn contains_rc(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Str | Ty::Closure(..) => true,
+            Ty::Str | Ty::Closure(..) | Ty::List(_) => true,
             Ty::Named(n) => self
                 .struct_field_types
                 .get(n)
                 .map(|fields| fields.iter().any(|f| self.contains_rc(f)))
                 .unwrap_or(false),
-            Ty::List(elem) => self.contains_rc(elem),
             _ => false,
         }
     }
@@ -107,43 +113,18 @@ impl Codegen {
                     self.emit_rc_walk(&gep, fty, retain);
                 }
             }
-            Ty::List(elem) => {
-                let elem_llvm = self.llvm_ty(elem);
-                let list_ty = self.llvm_ty(ty);
-                let data_field = self.tmp_name();
-                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0", data_field, list_ty, list_ty, ptr));
-                let data = self.tmp_name();
-                self.line(&format!("  {} = load {}*, {}** {}", data, elem_llvm, elem_llvm, data_field));
-                let len_field = self.tmp_name();
-                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 1", len_field, list_ty, list_ty, ptr));
-                let len = self.tmp_name();
-                self.line(&format!("  {} = load i64, i64* {}", len, len_field));
-
-                let i_ptr = self.tmp_name();
-                self.line(&format!("  {} = alloca i64", i_ptr));
-                self.line(&format!("  store i64 0, i64* {}", i_ptr));
-
-                let cond_label = self.block_label("rc_walk_cond");
-                let body_label = self.block_label("rc_walk_body");
-                let end_label = self.block_label("rc_walk_end");
-                self.line(&format!("  br label %{}", cond_label));
-                self.line(&format!("{}:", cond_label));
-                let i_reg = self.tmp_name();
-                self.line(&format!("  {} = load i64, i64* {}", i_reg, i_ptr));
-                let cmp = self.tmp_name();
-                self.line(&format!("  {} = icmp slt i64 {}, {}", cmp, i_reg, len));
-                self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, body_label, end_label));
-
-                self.line(&format!("{}:", body_label));
-                let elem_ptr = self.tmp_name();
-                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, elem_llvm, elem_llvm, data, i_reg));
-                self.emit_rc_walk(&elem_ptr, elem, retain);
-                let i_next = self.tmp_name();
-                self.line(&format!("  {} = add i64 {}, 1", i_next, i_reg));
-                self.line(&format!("  store i64 {}, i64* {}", i_next, i_ptr));
-                self.line(&format!("  br label %{}", cond_label));
-
-                self.line(&format!("{}:", end_label));
+            Ty::List(_) => {
+                // Same shape as `Ty::Str`: `ptr` is a storage address
+                // holding the object pointer directly, no extra boxing.
+                // Releasing the elements *inside* the buffer (when the last
+                // reference goes away) is the generated release thunk's job
+                // (`Codegen::list_release_thunk_operand`), not this walker's
+                // -- that keeps retain/release here O(1) regardless of list
+                // length, since only the object pointer's own refcount
+                // changes on every read/scope-exit.
+                let real = self.tmp_name();
+                self.line(&format!("  {} = load i8*, i8** {}", real, ptr));
+                self.line(&format!("  call void {}(i8* {})", helper, real));
             }
             _ => {}
         }

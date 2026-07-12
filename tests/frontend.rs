@@ -798,7 +798,11 @@ fn codegen_struct_field_of_vec2_type_uses_native_vector() {
 
 #[test]
 fn codegen_list_of_vec2_uses_native_vector_element() {
-    let module = Driver::parse("fn t() -> List<Vec2>:\n    List<Vec2>()\n").expect("should parse");
+    // `List<Vec2>()` alone is just `null` -- no allocation, so no
+    // element-typed payload struct is ever spelled out. A literal forces
+    // the payload/release-thunk machinery to actually mention the element
+    // type.
+    let module = Driver::parse("fn t() -> List<Vec2>:\n    [Vec2(1.0, 2.0)]\n").expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
     assert!(ir.contains("<2 x float>"), "{}", ir);
@@ -3285,14 +3289,15 @@ fn accepts_par_len_on_captured_list() {
     assert!(Driver::check(&module).is_ok(), "reading a captured list's len() should be allowed");
 }
 
-/// `List<T>()` (the empty list) lowers to the struct type's zero value --
-/// no instructions needed, just a `zeroinitializer` constant.
+/// `List<T>()` (the empty list) lowers to `null` -- no allocation needed
+/// up front; a real, uniquely-owned empty object is only lazily allocated
+/// by the copy-on-write gate the first time the list is actually mutated.
 #[test]
-fn codegen_list_new_is_zeroinitializer() {
+fn codegen_list_new_is_null() {
     let module = Driver::parse("fn t() -> List<i32>:\n    List<i32>()\n").expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    assert!(ir.contains("{ i32*, i64, i64 } zeroinitializer"), "{}", ir);
+    assert!(ir.contains("ret i8* null"), "{}", ir);
 }
 
 /// A non-empty list literal `malloc`s a tightly-sized buffer and stores
@@ -3381,6 +3386,111 @@ fn runtime_lists_end_to_end() {
     assert!(stdout.contains("words len = 3"), "List<String>: {}", stdout);
     assert!(stdout.contains("words[1] = beta"), "{}", stdout);
     assert!(stdout.contains("points[1] = (3, 4)"), "List<Point> (struct element type): {}", stdout);
+}
+
+// ===== List<T> copy-on-write ownership (todo.md's memory-ownership fix) ===
+
+/// The use-after-free `todo.md` originally flagged, "confirmed empirically":
+/// `let b = a` used to alias the same buffer, and growing `b` past `a`'s
+/// original capacity would `free` that buffer and repoint only `b`'s own
+/// fields, leaving `a` holding a dangling pointer. Under copy-on-write,
+/// growing `b` first clones the (now-shared) buffer, so `a`'s original
+/// elements must still read back correctly -- and, since this is
+/// copy-on-write (value semantics), `a`'s length must NOT have grown along
+/// with `b`'s.
+#[test]
+fn runtime_list_cow_push_does_not_corrupt_alias_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let a: List<i32> = [1, 2, 3]\n",
+        "    let mut b = a\n",
+        "    let mut i: i32 = 0\n",
+        "    while i < 20:\n",
+        "        b.push(i)\n",
+        "        i += 1\n",
+        "    println(f\"a0={a[0]} a1={a[1]} a2={a[2]} alen={a.len()} blen={b.len()}\")\n",
+    );
+    let output = compile_and_run("list_cow_push", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "a0=1 a1=2 a2=3 alen=3 blen=23", "{}", stdout);
+}
+
+/// `let b = a; b[i] = v` (index-assignment) must not be visible through
+/// `a` -- covers the copy-on-write gate on `store_list_index` specifically,
+/// distinct from `push`'s grow path above.
+#[test]
+fn runtime_list_cow_index_assignment_diverges_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let a: List<i32> = [1, 2, 3]\n",
+        "    let mut b = a\n",
+        "    b[0] = 99\n",
+        "    println(f\"a0={a[0]} b0={b[0]}\")\n",
+    );
+    let output = compile_and_run("list_cow_index_assign", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "a0=1 b0=99", "{}", stdout);
+}
+
+/// `let b = a; b.pop()` must not be visible through `a` -- the case most
+/// likely to be missed by a copy-on-write implementation, since `pop` only
+/// mutates `len` and never touches `data`, so it's easy to assume (wrongly)
+/// that it needs no uniqueness check.
+#[test]
+fn runtime_list_cow_pop_diverges_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let a: List<i32> = [1, 2, 3]\n",
+        "    let mut b = a\n",
+        "    let popped = b.pop()\n",
+        "    println(f\"alen={a.len()} blen={b.len()} popped={popped} a2={a[2]}\")\n",
+    );
+    let output = compile_and_run("list_cow_pop", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "alen=3 blen=2 popped=3 a2=3", "{}", stdout);
+}
+
+/// A `List<i32>` (a non-RC element type) local used to leak unconditionally
+/// -- `contains_rc(List(elem))` only recursed into the element type, so a
+/// list of non-RC elements was never `track_owned` and nothing but `push`'s
+/// realloc ever freed its buffer. `contains_rc(List(_))` is now
+/// unconditionally `true`, so this parameter should now be released (and,
+/// transitively, its buffer freed by the generated `list_release_i32`
+/// thunk) at scope exit, same as a `List<str>` already was.
+#[test]
+fn codegen_list_of_int_is_released_at_scope_exit() {
+    let src = "fn t(nums: List<i32>) -> i32:\n    1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i32 @t(");
+    assert!(fn_ir.contains("call void @star_rc_release"), "a List<i32> parameter should now be released at scope exit: {}", fn_ir);
+}
+
+/// A copy-on-write clone (triggered here by `push` on a shared `List<str>`)
+/// must retain each copied element -- otherwise the original and the clone
+/// would both believe they solely own the same string, and whichever is
+/// released last would read already-freed memory. Both aliases' string
+/// elements must still print correctly after the clone.
+#[test]
+fn runtime_list_cow_clone_retains_str_elements_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let a: List<str> = [\"alpha\", \"beta\"]\n",
+        "    let mut b = a\n",
+        "    b.push(\"gamma\")\n",
+        "    println(f\"a0={a[0]} a1={a[1]} alen={a.len()}\")\n",
+        "    println(f\"b0={b[0]} b1={b[1]} b2={b[2]} blen={b.len()}\")\n",
+    );
+    let output = compile_and_run("list_cow_clone_str", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines();
+    assert_eq!(lines.next(), Some("a0=alpha a1=beta alen=2"), "{}", stdout);
+    assert_eq!(lines.next(), Some("b0=alpha b1=beta b2=gamma blen=3"), "{}", stdout);
 }
 
 // ===== LANGUAGE_ANALYSIS.md fixes =========================================
@@ -4069,18 +4179,31 @@ fn codegen_struct_copy_retains_nested_str_field() {
     assert!(fn_ir.contains("call void @star_rc_retain"), "copying a struct with a str field should retain that field: {}", fn_ir);
 }
 
-/// A `List<str>` local's release walks its elements via a runtime loop
-/// (element count isn't known at compile time), not a fixed unrolled
-/// sequence of releases.
+/// A `List<str>` local's release is a single `star_rc_release` call on the
+/// list's object pointer (O(1) regardless of length, like `Ty::Str`) --
+/// element release only happens once, inside the generated
+/// `list_release_str` thunk (`Codegen::list_release_thunk_operand`), which
+/// walks the elements via a runtime loop (element count isn't known at
+/// compile time), not a fixed unrolled sequence of releases.
 #[test]
 fn codegen_list_of_str_release_uses_runtime_loop() {
-    let src = "fn t(words: List<str>) -> i32:\n    1\n";
+    // `make` actually allocates a `List<str>` (a literal), which is what
+    // triggers the `list_release_str` thunk to be generated at all; `t`
+    // merely accepts one as a parameter and drops it, to check the release
+    // call site itself stays O(1).
+    let src = "fn make() -> List<str>:\n    [\"a\", \"b\"]\n\nfn t(words: List<str>) -> i32:\n    1\n";
     let module = Driver::parse(src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
+
     let fn_ir = extract_fn_body(&ir, "define i32 @t(");
-    assert!(fn_ir.contains("rc_walk_cond"), "releasing a List<str> parameter should lower to a runtime loop: {}", fn_ir);
+    assert!(!fn_ir.contains("rc_walk_cond"), "the call site itself should not inline an element loop: {}", fn_ir);
     assert!(fn_ir.contains("call void @star_rc_release"), "{}", fn_ir);
+
+    let thunk_ir = extract_fn_body(&ir, "define void @list_release_str(");
+    assert!(thunk_ir.contains("list_release_cond"), "the release thunk should walk elements via a runtime loop: {}", thunk_ir);
+    assert!(thunk_ir.contains("call void @star_rc_release"), "each str element should itself be released: {}", thunk_ir);
+    assert!(thunk_ir.contains("call void @free"), "the thunk should free the list's own data buffer: {}", thunk_ir);
 }
 
 /// A closure that captures a `str` local by value gets its own dedicated
@@ -5371,30 +5494,30 @@ fn runtime_file_read_aborts_on_null_handle_end_to_end() {
     assert_eq!(output.status.code(), Some(1), "should exit cleanly with code 1, not crash/segfault: {:?}", output.status);
 }
 
-/// Each file-I/O builtin's own argument-count check (`args.len() < N` inside
-/// `crate::codegen::file_io`) fires as a codegen-time diagnostic -- these
-/// builtins are dispatched by `builtin_return_ty` ahead of the ordinary
-/// function-table arity check (see `extern_fn_call_arity_is_checked`'s doc
-/// comment for the same dispatch-order reasoning applied to extern fns), so
-/// a wrong argument count here type-checks cleanly and is only ever caught
-/// at codegen; this pins down that it *is* still caught, just later.
+/// Every builtin call (not just ordinary/extern-fn calls) now has its
+/// argument count and types validated by `Checker::check_builtin_call_args`,
+/// ahead of `crate::codegen::file_io`'s own `args.len() < N` codegen-time
+/// checks -- so a wrong argument count is now caught cleanly at type-check
+/// time instead of surfacing only once codegen runs (previously the only
+/// place this was caught at all; see `checker_rejects_file_open_wrong_arg_count`
+/// for the same case one stage earlier, and `checker_rejects_file_open_wrong_arg_types`
+/// for the argument-type checks this also added). `file_io.rs`'s own
+/// `args.len() < N` guards stay in place as a defense-in-depth fallback.
 #[test]
-fn codegen_file_open_reports_missing_argument() {
+fn checker_rejects_file_open_wrong_arg_count() {
     let src = "fn t():\n    file_open(\"x.txt\")\n";
     let module = Driver::parse(src).expect("should parse");
-    let typed = Driver::check(&module).expect("should type-check (arity isn't checked until codegen)");
-    let Err(diags) = Driver::codegen(&typed) else { panic!("file_open with 1 argument should be a codegen error") };
-    assert!(diags.iter().any(|d| d.message.contains("file_open(..) expects 2 arguments")), "{:?}", diags);
+    let Err(diags) = Driver::check(&module) else { panic!("file_open with 1 argument should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`file_open` expects 2 argument(s)")), "{:?}", diags);
 }
 
 /// Same check for `file_write`, which also takes 2 arguments.
 #[test]
-fn codegen_file_write_reports_missing_argument() {
+fn checker_rejects_file_write_wrong_arg_count() {
     let src = "fn t():\n    let h = file_open(\"x.txt\", \"w\")\n    file_write(h)\n";
     let module = Driver::parse(src).expect("should parse");
-    let typed = Driver::check(&module).expect("should type-check (arity isn't checked until codegen)");
-    let Err(diags) = Driver::codegen(&typed) else { panic!("file_write with 1 argument should be a codegen error") };
-    assert!(diags.iter().any(|d| d.message.contains("file_write(..) expects 2 arguments")), "{:?}", diags);
+    let Err(diags) = Driver::check(&module) else { panic!("file_write with 1 argument should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`file_write` expects 2 argument(s)")), "{:?}", diags);
 }
 
 /// `file_write` reports `false` (not a crash, not a thrown exception) when
@@ -5498,4 +5621,202 @@ fn runtime_file_append_mode_preserves_existing_content_end_to_end() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim_end(), "first-second", "append mode should add to, not replace, existing content: {}", stdout);
     let _ = std::fs::remove_file(&path);
+}
+
+// ===== Method-call receiver resolution =====================================
+//
+// `Codegen::emit_call_expr`'s method-call path used to resolve a call's
+// receiver pointer via a bespoke `receiver_name`+`sym_ptr` combo that only
+// recognized a bare local-variable identifier as `base`
+// (`obj.method(args)`) -- any other receiver shape silently fell back to
+// `String::new()` -> `sym_ptr("")` -> `None` -> the literal string
+// `"%undef"` used as the receiver pointer operand, producing invalid LLVM
+// IR ("use of undefined value '%undef'") at the `clang` step. This broke
+// the very ordinary OO idiom of one method calling another through `self`,
+// plus any other non-bare-identifier receiver. Fixed by routing through
+// `Codegen::emit_place`, which already correctly resolves `Ident`, `self`,
+// nested `Field` accesses, and arbitrary rvalues (spilled into a fresh
+// alloca) to a real storage address.
+
+/// A method calling a sibling method through `self` -- the single most
+/// ordinary receiver shape after a bare local, and the one that previously
+/// produced `%undef` and failed to compile at all.
+#[test]
+fn runtime_method_call_through_self_end_to_end() {
+    let src = concat!(
+        "struct Counter:\n",
+        "    val: i32\n",
+        "impl Counter:\n",
+        "    fn bump(self) -> i32:\n",
+        "        self.val + 1\n",
+        "    fn double_bump(self) -> i32:\n",
+        "        self.bump() + self.bump()\n",
+        "fn main():\n",
+        "    let c = Counter(val = 10)\n",
+        "    println(f\"{c.double_bump()}\")\n",
+    );
+    let output = compile_and_run("method_call_through_self", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "22", "self.bump() + self.bump() on val=10 should be 22: {}", stdout);
+}
+
+/// A method call on a nested field access (`obj.inner.method()`) -- another
+/// receiver shape `receiver_name` previously couldn't resolve (a `Field`
+/// base, not a bare `Ident`).
+#[test]
+fn runtime_method_call_on_nested_field_receiver_end_to_end() {
+    let src = concat!(
+        "struct Inner:\n",
+        "    val: i32\n",
+        "struct Outer:\n",
+        "    inner: Inner\n",
+        "impl Inner:\n",
+        "    fn get(self) -> i32:\n",
+        "        self.val\n",
+        "fn main():\n",
+        "    let o = Outer(inner = Inner(val = 42))\n",
+        "    println(f\"{o.inner.get()}\")\n",
+    );
+    let output = compile_and_run("method_call_on_nested_field", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "42", "{}", stdout);
+}
+
+/// A method call chained directly onto a list-index expression
+/// (`list[i].method()`) -- a receiver that is neither a bare `Ident` nor a
+/// `Field`, so it exercises `emit_place`'s fallback arm (spill the rvalue
+/// into a fresh alloca) rather than either of its named-storage arms.
+#[test]
+fn runtime_method_call_on_list_index_receiver_end_to_end() {
+    let src = concat!(
+        "struct Counter:\n",
+        "    val: i32\n",
+        "impl Counter:\n",
+        "    fn get(self) -> i32:\n",
+        "        self.val\n",
+        "fn main():\n",
+        "    let mut list = List<Counter>()\n",
+        "    list.push(Counter(val = 7))\n",
+        "    list.push(Counter(val = 9))\n",
+        "    println(f\"{list[1].get()}\")\n",
+    );
+    let output = compile_and_run("method_call_on_list_index", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "9", "{}", stdout);
+}
+
+// ===== Builtin call argument validation =====================================
+//
+// `Checker::check_builtin_call_args` validates argument count and types for
+// every builtin call -- previously, builtins (dispatched via
+// `builtin_return_ty` ahead of the ordinary function table) had *no*
+// argument validation at all beyond `print`/`println`'s own special case,
+// so a call like `file_open(42, 3.5)` or `clamp("x", 1, 5)` type-checked
+// cleanly and only failed later at the `clang` step with a confusing
+// "expected value token"/"use of undefined value" error pointing at
+// generated IR the user never wrote, since several builtin codegen
+// functions (`emit_abs`/`emit_dot`/`emit_clamp`/`emit_lerp`/
+// `emit_file_open`/...) `untag` an argument's register using *another*
+// argument's inferred type rather than a type of their own choosing.
+
+/// A scalar builtin (`sqrt`) rejects a non-numeric argument at type-check
+/// time instead of producing invalid IR at the `clang` step.
+#[test]
+fn checker_rejects_sqrt_non_numeric_arg() {
+    let src = "fn t():\n    sqrt(\"nope\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("sqrt(\"nope\") should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("sqrt") && d.message.contains("numeric")), "{:?}", diags);
+}
+
+/// `dot`/`length` are the two "own type" `untag` calls `emit_dot`/
+/// `emit_length` make against a single argument's inferred type -- `dot`
+/// additionally assumes both arguments share the very same vector type
+/// (`emit_dot` untags `b` using `a`'s type), so a `Vec2`/`Vec3` mismatch is
+/// exactly the case previously invisible to the checker.
+#[test]
+fn checker_rejects_dot_with_mismatched_vector_types() {
+    let src = "fn t():\n    dot(Vec2(1.0, 2.0), Vec3(1.0, 2.0, 3.0))\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("dot(..) with mismatched vector types should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`dot`") && d.message.contains("same vector type")), "{:?}", diags);
+}
+
+/// `clamp(x, lo, hi)` assumes `lo`/`hi` share `x`'s type (`emit_clamp`
+/// dispatches on `x`'s type alone, then `untag`s all three the same way) --
+/// a `float` bound against an `int` value is exactly the mismatch that
+/// previously slipped through to a codegen-level type mismatch.
+#[test]
+fn checker_rejects_clamp_with_mismatched_bound_types() {
+    let src = "fn t():\n    clamp(3, 1.0, 5.0)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("clamp(..) with mismatched bound types should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`clamp`")), "{:?}", diags);
+}
+
+/// `min`/`max` are the one deliberately-polymorphic case that must stay
+/// permissive: `emit_minmax` promotes whichever operand is `int` to `float`
+/// via each argument's own inferred type (not a shared expected type), so a
+/// mixed `int`/`float` call is valid and must still type-check.
+#[test]
+fn checker_accepts_min_with_mixed_int_and_float_args() {
+    // `min`/`max` preserve the *first* argument's type (see
+    // `builtin_return_ty`), so `min(3, 2.5)` is `int`-typed even though its
+    // second argument is `float` -- that's the pre-existing, deliberate
+    // polymorphism this test guards against becoming over-strict, not a
+    // claim about the result's own type.
+    let src = "fn t() -> i32:\n    min(3, 2.5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("min(int, float) is valid and should type-check");
+}
+
+/// `is_null`/`ptr_to_str`/`file_close`/`file_read`/`file_read_line` all
+/// expect a `ptr` argument -- passing an ordinary `int` is exactly the
+/// misuse `Codegen::untag`'s silent no-op fallback (`unwrap_or(s)`, see its
+/// doc comment) would otherwise smuggle through as invalid IR.
+#[test]
+fn checker_rejects_is_null_non_ptr_arg() {
+    let src = "fn t():\n    is_null(42)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("is_null(42) should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`is_null`") && d.message.contains("ptr")), "{:?}", diags);
+}
+
+/// `file_open(path, mode)` expects both arguments to be `str` -- this is
+/// the concrete repro that motivated adding builtin argument validation at
+/// all: `file_open(42, 3.5)` previously type-checked cleanly and only
+/// failed at the `clang` step with "expected value token" pointing at
+/// `call i8* @fopen(i8* i32 42, i8* float ...)`.
+#[test]
+fn checker_rejects_file_open_wrong_arg_types() {
+    let src = "fn t():\n    file_open(42, 3.5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("file_open(42, 3.5) should fail to type-check") };
+    assert_eq!(diags.iter().filter(|d| d.message.contains("`file_open`")).count(), 2, "both arguments are wrong: {:?}", diags);
+}
+
+/// `file_write(handle, data)` expects `ptr` then `str` -- swapping them
+/// (a plausible mistake, both are single-argument-shaped) should be
+/// rejected rather than silently misdirecting `fwrite`'s buffer/length
+/// operands.
+#[test]
+fn checker_rejects_file_write_swapped_arg_types() {
+    let src = "fn t():\n    let h = file_open(\"x.txt\", \"w\")\n    file_write(\"data\", h)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("file_write with swapped argument types should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`file_write`")), "{:?}", diags);
+}
+
+/// Every valid file-I/O call shape still type-checks cleanly -- a sanity
+/// check that `check_builtin_call_args` didn't become so strict it rejects
+/// legitimate use, run alongside the existing `runtime_file_*_end_to_end`
+/// tests that already exercise these calls end-to-end.
+#[test]
+fn checker_accepts_well_typed_file_io_calls() {
+    let src = "fn t():\n    let h = file_open(\"x.txt\", \"w\")\n    file_write(h, \"data\")\n    file_close(h)\n    let r = file_open(\"x.txt\", \"r\")\n    let a = file_read(r)\n    let b = file_read_line(r)\n    let e = file_exists(\"x.txt\")\n    file_close(r)\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("well-typed file I/O calls should type-check");
 }

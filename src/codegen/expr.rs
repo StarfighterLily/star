@@ -92,10 +92,18 @@ impl Codegen {
                 Some(m) => m.clone(),
                 None => { self.err(&format!("no method `{}` on `{}`", field, struct_name), Span::dummy()); field.clone() }
             };
-            // The receiver is passed by pointer: use the alloca of the base value.
-            let recv_ptr = self.sym_ptr(&self.receiver_name(base));
+            // The receiver is passed by pointer: `emit_place` resolves any
+            // receiver shape (a bare local, `self`, a nested field access, or
+            // an arbitrary rvalue spilled into a fresh alloca) to its storage
+            // address. Previously this used a bespoke `receiver_name`+
+            // `sym_ptr` combo that only recognized a bare local-variable
+            // identifier and silently passed `%undef` as the receiver for
+            // anything else -- breaking `self.other_method()`,
+            // `obj.inner.method()`, and `list[i].method()`/`get_obj().method()`
+            // style chained calls with invalid LLVM IR at the `clang` step.
+            let recv_ptr = self.emit_place(base);
             let recv_ty = self.llvm_ty(&base_ty);
-            let mut call_args = vec![format!("{}* {}", recv_ty, recv_ptr.unwrap_or_else(|| "%undef".into()))];
+            let mut call_args = vec![format!("{}* {}", recv_ty, recv_ptr)];
             for a in args {
                 let reg = self.emit_expr(a);
                 let ats = self.llvm_ty(&self.expr_ty(a));

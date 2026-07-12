@@ -37,11 +37,17 @@ pub enum Ty {
     Named(String),
     /// A generational reference backed by a slot-map: GenRef<T>.
     GenRef(Box<Ty>),
-    /// A growable, heap-allocated dynamic array: `List<T>`. Lowers to
-    /// `{ T* data, i64 len, i64 cap }` -- see `Codegen::llvm_ty`. Unlike
-    /// `GenRef<T>`'s fixed-capacity arena, each `List<T>` value owns an
-    /// independent, individually `malloc`/`realloc`'d buffer (see
-    /// `crate::codegen::list`).
+    /// A growable, heap-allocated dynamic array: `List<T>`. Lowers to a
+    /// reference-counted `i8*` pointing at a heap object holding
+    /// `{ T* data, i64 len, i64 cap }`, the same RC header/allocation scheme
+    /// as `Ty::Str` -- see `Codegen::llvm_ty`/`crate::codegen::list`.
+    /// Storage is shared copy-on-write: `let b = a` is an O(1) refcount
+    /// bump, but any mutation (`push`, `pop`, index-assignment) clones the
+    /// buffer first if it isn't uniquely owned, so mutating one binding
+    /// never affects another -- each `List<T>` *value* still observably owns
+    /// an independent buffer, unlike `GenRef<T>`'s shared fixed-capacity
+    /// arena, even though the underlying storage may be shared under the
+    /// hood until a mutation forces a copy.
     List(Box<Ty>),
     /// A fieldless enum type, lowered to a plain `i32` discriminant.
     Enum(String),

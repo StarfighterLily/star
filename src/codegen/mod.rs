@@ -114,6 +114,14 @@ pub struct Codegen {
     /// same function as a value more than once reuses one thunk instead of
     /// emitting a duplicate `define`.
     fn_value_thunks: std::collections::HashMap<String, String>,
+    /// Maps a mangled element-type key (`Codegen::mangle_ty`) -> the name of
+    /// the `list_release_<mangled>` thunk generated the first time a
+    /// `List<T>` of that element type is allocated (list literal, `push`
+    /// grow, or a copy-on-write clone), so every allocation of the same
+    /// element type reuses one thunk instead of emitting a duplicate
+    /// `define` (see `Codegen::list_release_thunk_operand`,
+    /// `crate::codegen::list`).
+    list_release_thunks: std::collections::HashMap<String, String>,
     /// True once the persistent `par`/`swarm` worker-thread pool's static
     /// machinery (globals, `@par.pool.worker_main`, `@par.pool.ensure_init`)
     /// has been pushed to `pending_top`. Guards against re-emitting it for a
@@ -159,6 +167,7 @@ impl Codegen {
             loop_stack: Vec::new(),
             owned_stack: Vec::new(),
             fn_value_thunks: std::collections::HashMap::new(),
+            list_release_thunks: std::collections::HashMap::new(),
             par_pool_emitted: false,
             extern_fns: std::collections::HashSet::new(),
         }
@@ -412,9 +421,10 @@ impl Codegen {
                 .get(n)
                 .map(|fields| fields.iter().map(|f| self.type_size(f)).sum())
                 .unwrap_or(8),
-            // `{ T*, i64, i64 }`: a pointer plus two 8-byte counters,
-            // regardless of the element type `T` -- see `crate::codegen::list`.
-            Ty::List(_) => 24,
+            // A reference-counted object pointer, same as `Ty::Str` -- the
+            // `{ T*, i64, i64 }` payload lives on the heap, not inline (see
+            // `crate::codegen::list`).
+            Ty::List(_) => 8,
             // A fieldless enum is a bare `i32` discriminant. A payload
             // enum is `{ i32 tag, [W x i64] payload }`; the `[W x i64]`
             // array forces 8-byte alignment, so the tag field is padded out
@@ -443,12 +453,12 @@ impl Codegen {
             Ty::Mat4 => "[4 x <4 x float>]".into(),
             Ty::Named(n) => format!("%{}", n),
             Ty::GenRef(_) => "%GenRef".into(),
-            // An anonymous (structural, not name-declared) LLVM struct type
-            // -- LLVM deduplicates identically-shaped anonymous types on its
-            // own, so every `List<T>` instantiation for the same `T` needs
-            // no separate `%List_T = type ...` declaration (mirrors how
-            // `emit_par_stmt`'s argument struct is spelled anonymously).
-            Ty::List(inner) => format!("{{ {}*, i64, i64 }}", self.llvm_ty(inner)),
+            // A reference-counted, copy-on-write object pointer -- same
+            // shape as `Ty::Str`, no extra boxing beyond the one pointer.
+            // The payload struct `{ T*, i64, i64 }` it points past a
+            // `star_rc_alloc` header lives at `Codegen::list_payload_llvm_ty`
+            // (see `crate::codegen::list`).
+            Ty::List(_) => "i8*".into(),
             // A fieldless enum has no LLVM struct declaration of its own --
             // it's just a dense discriminant, so it's represented directly
             // as `i32` (see `enum_variant_index`). A payload enum lowers to
@@ -460,6 +470,30 @@ impl Codegen {
             // `closure_fn_ptr_ty` -- see `crate::codegen::closure`).
             Ty::Closure(..) => "{ i8*, i8* }".into(),
             Ty::Ptr => "i8*".into(),
+        }
+    }
+
+    /// A valid-LLVM-identifier-fragment encoding of a type, used to key
+    /// per-element-type generated helpers (currently just
+    /// `Codegen::list_release_thunk_operand`) so two `List<T>` instantiations
+    /// with the same `T` share one generated function instead of each
+    /// emitting a duplicate `define`.
+    pub(super) fn mangle_ty(&self, ty: &Ty) -> String {
+        match ty {
+            Ty::Int => "i32".into(),
+            Ty::Float => "f32".into(),
+            Ty::Str => "str".into(),
+            Ty::Bool => "bool".into(),
+            Ty::Vec2 => "vec2".into(),
+            Ty::Vec3 => "vec3".into(),
+            Ty::Vec4 => "vec4".into(),
+            Ty::Mat4 => "mat4".into(),
+            Ty::Named(n) => format!("s_{}", n),
+            Ty::GenRef(inner) => format!("genref_{}", self.mangle_ty(inner)),
+            Ty::List(inner) => format!("list_{}", self.mangle_ty(inner)),
+            Ty::Enum(n) => format!("e_{}", n),
+            Ty::Closure(..) => "closure".into(),
+            Ty::Ptr => "ptr".into(),
         }
     }
 
@@ -524,8 +558,9 @@ impl Codegen {
             Ty::Bool => "false".into(),
             Ty::Str => "null".into(),
             Ty::Ptr => "null".into(),
+            Ty::List(_) => "null".into(),
             Ty::Enum(n) if !self.enum_is_payload(n) => "0".into(),
-            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat4 | Ty::Named(_) | Ty::GenRef(_) | Ty::Enum(_) | Ty::Closure(..) | Ty::List(_) => "zeroinitializer".into(),
+            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat4 | Ty::Named(_) | Ty::GenRef(_) | Ty::Enum(_) | Ty::Closure(..) => "zeroinitializer".into(),
         }
     }
 
@@ -543,15 +578,6 @@ impl Codegen {
 
     fn sym_ptr(&self, name: &str) -> Option<String> {
         self.symbols.iter().rev().find(|(n, _, _)| n == name).map(|(_, ptr, _)| ptr.clone())
-    }
-
-    /// Extract the variable name from a base expression used as a method
-    /// receiver, so its alloca pointer can be passed as `self`.
-    fn receiver_name(&self, base: &TypedExpr) -> String {
-        match base {
-            TypedExpr::Ident { name, .. } => name.clone(),
-            _ => String::new(),
-        }
     }
 
     /// Emit code that yields a *pointer* to the storage of `expr`, for use as

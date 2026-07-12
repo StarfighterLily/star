@@ -144,6 +144,8 @@ impl Checker {
                                     );
                                 }
                             }
+                        } else {
+                            self.check_builtin_call_args(name, &arg_exprs, *span);
                         }
                         return Ok(TypedExpr::Call { callee: Box::new(callee_expr), args: arg_exprs, ty, span: *span });
                     }
@@ -615,6 +617,164 @@ impl Checker {
                     span,
                 );
             }
+        }
+    }
+
+    /// Validate a builtin call's argument count and types against what its
+    /// `crate::codegen` lowering actually assumes. Builtins aren't declared
+    /// by any `fn` item (see `builtin_return_ty`), so unlike an ordinary
+    /// call they never passed through `check_call_args` at all -- and several
+    /// (`emit_abs`/`emit_dot`/`emit_clamp`/`emit_file_open`/...) `untag` an
+    /// argument using *another* argument's inferred type rather than a fixed
+    /// type of their own choosing. A caller passing an unexpected type
+    /// (`file_open(42, 3.5)`, `clamp("x", 1, 5)`, `dot(v2, v3)`) previously
+    /// type-checked cleanly and only failed later at the `clang` step with a
+    /// confusing "expected value token" error pointing at generated IR the
+    /// user never wrote, instead of a clean diagnostic here -- the same class
+    /// of bug the `print`/`println` check just above (the first instance of
+    /// this fix) already guards against. `print`/`println` are validated by
+    /// the caller instead of here since their check is about the raw-
+    /// `printf`-format-string case, not ordinary argument arity/type.
+    fn check_builtin_call_args(&mut self, name: &str, args: &[TypedExpr], span: Span) {
+        fn is_placeholder(t: &Ty) -> bool {
+            matches!(t, Ty::Named(n) if matches!(n.as_str(), "unknown" | "infer_error" | "infer" | "Self"))
+        }
+        fn is_numeric(t: &Ty) -> bool {
+            matches!(t, Ty::Int | Ty::Float) || is_placeholder(t)
+        }
+        fn is_vec(t: &Ty) -> bool {
+            t.is_vec() || is_placeholder(t)
+        }
+        fn tys_eq(a: &Ty, b: &Ty) -> bool {
+            a == b || is_placeholder(a) || is_placeholder(b)
+        }
+
+        let arg_tys: Vec<Ty> = args.iter().map(|a| a.clone().into_ty()).collect();
+        let arity_ok = |want: usize, this: &mut Self| -> bool {
+            if arg_tys.len() != want {
+                this.error(format!("`{}` expects {} argument(s), found {}", name, want, arg_tys.len()), span);
+                false
+            } else {
+                true
+            }
+        };
+
+        match name {
+            "sqrt" | "floor" | "ceil" | "abs" => {
+                if arity_ok(1, self) && !is_numeric(&arg_tys[0]) {
+                    self.error(format!("`{}` expects a numeric (`int`/`float`) argument, found `{:?}`", name, arg_tys[0]), span);
+                }
+            }
+            "pow" | "min" | "max" => {
+                if arity_ok(2, self) {
+                    for (i, t) in arg_tys.iter().enumerate() {
+                        if !is_numeric(t) {
+                            self.error(format!("`{}` argument {} expected a numeric (`int`/`float`) value, found `{:?}`", name, i + 1, t), span);
+                        }
+                    }
+                }
+            }
+            "len" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Str) {
+                    self.error(format!("`len` expects a `str` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "concat" => {
+                if arity_ok(2, self) {
+                    for (i, t) in arg_tys.iter().enumerate() {
+                        if !tys_eq(t, &Ty::Str) {
+                            self.error(format!("`concat` argument {} expected `str`, found `{:?}`", i + 1, t), span);
+                        }
+                    }
+                }
+            }
+            "read_line" | "rand" | "null_ptr" => {
+                arity_ok(0, self);
+            }
+            "dot" => {
+                if arity_ok(2, self) {
+                    if !is_vec(&arg_tys[0]) {
+                        self.error(format!("`dot` argument 1 expected a `Vec2`/`Vec3`/`Vec4` value, found `{:?}`", arg_tys[0]), span);
+                    } else if !tys_eq(&arg_tys[0], &arg_tys[1]) {
+                        self.error(format!("`dot` arguments must be the same vector type, found `{:?}` and `{:?}`", arg_tys[0], arg_tys[1]), span);
+                    }
+                }
+            }
+            "length" => {
+                if arity_ok(1, self) && !is_vec(&arg_tys[0]) {
+                    self.error(format!("`length` expects a `Vec2`/`Vec3`/`Vec4` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "lerp" => {
+                if arity_ok(3, self) {
+                    let a_ok = matches!(arg_tys[0], Ty::Float) || is_vec(&arg_tys[0]) || is_placeholder(&arg_tys[0]);
+                    if !a_ok {
+                        self.error(format!("`lerp` argument 1 expected `float`/`Vec2`/`Vec3`/`Vec4`, found `{:?}`", arg_tys[0]), span);
+                    } else if !tys_eq(&arg_tys[0], &arg_tys[1]) {
+                        self.error(format!("`lerp` arguments 1 and 2 must be the same type, found `{:?}` and `{:?}`", arg_tys[0], arg_tys[1]), span);
+                    }
+                    if !is_numeric(&arg_tys[2]) {
+                        self.error(format!("`lerp` argument 3 (`t`) expected a numeric (`int`/`float`) value, found `{:?}`", arg_tys[2]), span);
+                    }
+                }
+            }
+            "clamp" => {
+                if arity_ok(3, self) {
+                    if !is_numeric(&arg_tys[0]) {
+                        self.error(format!("`clamp` argument 1 expected a numeric (`int`/`float`) value, found `{:?}`", arg_tys[0]), span);
+                    } else {
+                        for (i, t) in [&arg_tys[1], &arg_tys[2]].into_iter().enumerate() {
+                            if !tys_eq(&arg_tys[0], t) {
+                                self.error(format!("`clamp` argument {} expected `{:?}` (same as argument 1), found `{:?}`", i + 2, arg_tys[0], t), span);
+                            }
+                        }
+                    }
+                }
+            }
+            "rand_range" => {
+                if arity_ok(2, self) {
+                    for (i, t) in arg_tys.iter().enumerate() {
+                        if !tys_eq(t, &Ty::Int) {
+                            self.error(format!("`rand_range` argument {} expected `int`, found `{:?}`", i + 1, t), span);
+                        }
+                    }
+                }
+            }
+            "rand_seed" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Int) {
+                    self.error(format!("`rand_seed` expects an `int` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "is_null" | "ptr_to_str" | "file_close" | "file_read" | "file_read_line" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                    self.error(format!("`{}` expects a `ptr` argument, found `{:?}`", name, arg_tys[0]), span);
+                }
+            }
+            "file_exists" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Str) {
+                    self.error(format!("`file_exists` expects a `str` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "file_open" => {
+                if arity_ok(2, self) {
+                    for (i, t) in arg_tys.iter().enumerate() {
+                        if !tys_eq(t, &Ty::Str) {
+                            self.error(format!("`file_open` argument {} expected `str`, found `{:?}`", i + 1, t), span);
+                        }
+                    }
+                }
+            }
+            "file_write" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`file_write` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Str) {
+                        self.error(format!("`file_write` argument 2 expected `str`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
