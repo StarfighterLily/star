@@ -169,6 +169,94 @@ impl Codegen {
         format!("i8* {}", obj_raw)
     }
 
+    /// `args() -> List<str>`: the process's command-line arguments,
+    /// including `argv[0]` (the program path) -- the same convention the
+    /// underlying OS/CRT argv itself uses. Reads `@star.argc`/`@star.argv`
+    /// (populated once, at process start, by `Codegen::emit_fn`'s `is_main`
+    /// special case) and copies each `char*` into a fresh, owned `str` via
+    /// the same strlen+alloc+strcpy shape `emit_ptr_to_str` uses -- argv's
+    /// strings are plain C strings with no RC header (owned by the CRT, not
+    /// Star), so they're duplicated rather than referenced directly.
+    /// Otherwise structurally identical to `emit_list_lit`'s tail (malloc a
+    /// tightly-sized buffer, wrap it in a fresh RC object), just filling the
+    /// buffer from a runtime loop over `argv` instead of a compile-time
+    /// list of element expressions.
+    pub(super) fn emit_args(&mut self) -> String {
+        let elem_ty = Ty::Str;
+        let elem_llvm = self.llvm_ty(&elem_ty);
+
+        let argc32 = self.tmp_name();
+        self.line(&format!("  {} = load i32, i32* @star.argc", argc32));
+        let argc64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", argc64, argc32));
+        let argv = self.tmp_name();
+        self.line(&format!("  {} = load i8**, i8*** @star.argv", argv));
+
+        let bytes = self.tmp_name();
+        self.line(&format!("  {} = mul i64 {}, 8", bytes, argc64));
+        let raw = self.tmp_name();
+        self.line(&format!("  {} = call i8* @malloc(i64 {})", raw, bytes));
+        let data = self.tmp_name();
+        self.line(&format!("  {} = bitcast i8* {} to {}*", data, raw, elem_llvm));
+
+        let i_ptr = self.tmp_name();
+        self.line(&format!("  {} = alloca i64", i_ptr));
+        self.line(&format!("  store i64 0, i64* {}", i_ptr));
+
+        let cond_label = self.block_label("args_cond");
+        let body_label = self.block_label("args_body");
+        let end_label = self.block_label("args_end");
+        self.line(&format!("  br label %{}", cond_label));
+        self.line(&format!("{}:", cond_label));
+        let i_reg = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", i_reg, i_ptr));
+        let cmp = self.tmp_name();
+        self.line(&format!("  {} = icmp slt i64 {}, {}", cmp, i_reg, argc64));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, body_label, end_label));
+
+        self.line(&format!("{}:", body_label));
+        let argv_elem_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8*, i8** {}, i64 {}", argv_elem_ptr, argv, i_reg));
+        let c_str = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** {}", c_str, argv_elem_ptr));
+        let len = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", len, c_str));
+        let total = self.tmp_name();
+        self.line(&format!("  {} = add i32 {}, 1", total, len));
+        let total64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", total64, total));
+        let owned = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", owned, total64));
+        self.line(&format!("  call i8* @strcpy(i8* {}, i8* {})", owned, c_str));
+        let dest_elem_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 {}", dest_elem_ptr, elem_llvm, elem_llvm, data, i_reg));
+        self.line(&format!("  store {} {}, {}* {}", elem_llvm, owned, elem_llvm, dest_elem_ptr));
+        let i_next = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", i_next, i_reg));
+        self.line(&format!("  store i64 {}, i64* {}", i_next, i_ptr));
+        self.line(&format!("  br label %{}", cond_label));
+
+        self.line(&format!("{}:", end_label));
+
+        let payload_ty = self.list_payload_llvm_ty(&elem_ty);
+        let release_fn = self.list_release_thunk_operand(&elem_ty);
+        let obj_raw = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 24, i8* {})", obj_raw, release_fn));
+        let payload = self.tmp_name();
+        self.line(&format!("  {} = bitcast i8* {} to {}*", payload, obj_raw, payload_ty));
+        let data_field = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0", data_field, payload_ty, payload_ty, payload));
+        self.line(&format!("  store {}* {}, {}** {}", elem_llvm, data, elem_llvm, data_field));
+        let len_field = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 1", len_field, payload_ty, payload_ty, payload));
+        self.line(&format!("  store i64 {}, i64* {}", argc64, len_field));
+        let cap_field = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 2", cap_field, payload_ty, payload_ty, payload));
+        self.line(&format!("  store i64 {}, i64* {}", argc64, cap_field));
+
+        format!("i8* {}", obj_raw)
+    }
+
     /// Copy-on-write gate for every *mutating* list operation (`push`,
     /// `pop`, index-assignment). `slot_ptr` is the address of the
     /// variable's own storage (an `i8**`, from `emit_place`) holding a

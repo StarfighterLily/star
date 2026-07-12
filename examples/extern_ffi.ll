@@ -11,6 +11,15 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i8* @fopen(i8*, i8*)
+declare i32 @fclose(i8*)
+declare i64 @fread(i8*, i64, i64, i8*)
+declare i64 @fwrite(i8*, i64, i64, i8*)
+declare i32 @fseek(i8*, i32, i32)
+declare i32 @ftell(i8*)
+declare i32 @fgetc(i8*)
+declare i8* @getenv(i8*)
+declare i32 @_putenv(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -29,6 +38,9 @@ declare float @llvm.maxnum.f32(float, float)
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
+
+@star.argc = global i32 0
+@star.argv = global i8** null
 
 @rng.state = global i32 123456789
 
@@ -95,9 +107,11 @@ done:
 
 declare i32 @toupper(i32)
 declare i32 @atoi(i8*)
-declare i8* @getenv(i8*)
-define i32 @main() {
+declare i8* @strstr(i8*, i8*)
+define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  store i32 %.argc, i32* @star.argc
+  store i8** %.argv, i8*** @star.argv
   %t0 = call i32 @toupper(i32 97)
   %t1 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.0, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t1, i32 %t0)
@@ -112,65 +126,62 @@ entry:
   %t7 = getelementptr inbounds [13 x i8], [13 x i8]* @.str.2, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t7, i32 %t6)
   %t8 = alloca i8*
-  %t9 = getelementptr inbounds { i64, i8*, [38 x i8] }, { i64, i8*, [38 x i8] }* @.str.3, i64 0, i32 2, i64 0
-  %t10 = call i8* @getenv(i8* %t9)
-  store i8* %t10, i8** %t8
-  %t11 = load i8*, i8** %t8
-  %t12 = icmp eq i8* %t11, null
-  %t13 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.4, i64 0, i64 0
-  %t14 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.5, i64 0, i64 0
-  %t15 = select i1 %t12, i8* %t13, i8* %t14
-  %t16 = getelementptr inbounds [30 x i8], [30 x i8]* @.str.6, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t16, i8* %t15)
-  %t17 = alloca i8*
-  %t18 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.7, i64 0, i32 2, i64 0
-  %t19 = call i8* @getenv(i8* %t18)
-  store i8* %t19, i8** %t17
-  %t20 = load i8*, i8** %t17
-  %t21 = icmp eq i8* %t20, null
-  %t22 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.8, i64 0, i64 0
-  %t23 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.9, i64 0, i64 0
-  %t24 = select i1 %t21, i8* %t22, i8* %t23
-  %t25 = getelementptr inbounds [19 x i8], [19 x i8]* @.str.10, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t25, i8* %t24)
-  %t26 = load i8*, i8** %t17
-  %t27 = icmp eq i8* %t26, null
-  %t28 = xor i1 true, %t27
-  br i1 %t28, label %if_then_0, label %if_else_1
+  %t9 = getelementptr inbounds { i64, i8*, [12 x i8] }, { i64, i8*, [12 x i8] }* @.str.3, i64 0, i32 2, i64 0
+  %t10 = getelementptr inbounds { i64, i8*, [4 x i8] }, { i64, i8*, [4 x i8] }* @.str.4, i64 0, i32 2, i64 0
+  %t11 = call i8* @strstr(i8* %t9, i8* %t10)
+  store i8* %t11, i8** %t8
+  %t12 = load i8*, i8** %t8
+  %t13 = icmp eq i8* %t12, null
+  %t14 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.5, i64 0, i64 0
+  %t15 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.6, i64 0, i64 0
+  %t16 = select i1 %t13, i8* %t14, i8* %t15
+  %t17 = getelementptr inbounds [32 x i8], [32 x i8]* @.str.7, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t17, i8* %t16)
+  %t18 = alloca i8*
+  %t19 = getelementptr inbounds { i64, i8*, [12 x i8] }, { i64, i8*, [12 x i8] }* @.str.8, i64 0, i32 2, i64 0
+  %t20 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.9, i64 0, i32 2, i64 0
+  %t21 = call i8* @strstr(i8* %t19, i8* %t20)
+  store i8* %t21, i8** %t18
+  %t22 = load i8*, i8** %t18
+  %t23 = icmp eq i8* %t22, null
+  %t24 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.10, i64 0, i64 0
+  %t25 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.11, i64 0, i64 0
+  %t26 = select i1 %t23, i8* %t24, i8* %t25
+  %t27 = getelementptr inbounds [30 x i8], [30 x i8]* @.str.12, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t27, i8* %t26)
+  %t28 = load i8*, i8** %t18
+  %t29 = icmp eq i8* %t28, null
+  %t30 = xor i1 true, %t29
+  br i1 %t30, label %if_then_0, label %if_else_1
 if_then_0:
-  %t29 = alloca i8*
-  %t30 = load i8*, i8** %t17
-  %t31 = call i32 @strlen(i8* %t30)
-  %t32 = add i32 %t31, 1
-  %t33 = sext i32 %t32 to i64
-  %t34 = call i8* @star_rc_alloc(i64 %t33, i8* null)
-  call i8* @strcpy(i8* %t34, i8* %t30)
-  store i8* %t34, i8** %t29
-  %t35 = load i8*, i8** %t29
-  %t36 = load i8*, i8** %t29
-  call void @star_rc_retain(i8* %t36)
-  call void @star_rc_release(i8* %t35)
-  %t37 = call i32 @strlen(i8* %t35)
-  %t38 = icmp sgt i32 %t37, 0
-  %t39 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.11, i64 0, i64 0
-  %t40 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.12, i64 0, i64 0
-  %t41 = select i1 %t38, i8* %t39, i8* %t40
-  %t42 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.13, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t42, i8* %t41)
-  %t43 = load i8*, i8** %t29
-  call void @star_rc_release(i8* %t43)
+  %t31 = alloca i8*
+  %t32 = load i8*, i8** %t18
+  %t33 = call i32 @strlen(i8* %t32)
+  %t34 = add i32 %t33, 1
+  %t35 = sext i32 %t34 to i64
+  %t36 = call i8* @star_rc_alloc(i64 %t35, i8* null)
+  call i8* @strcpy(i8* %t36, i8* %t32)
+  store i8* %t36, i8** %t31
+  %t37 = load i8*, i8** %t31
+  %t38 = load i8*, i8** %t31
+  call void @star_rc_retain(i8* %t38)
+  call void @star_rc_release(i8* %t37)
+  %t39 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.13, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t39, i8* %t37)
+  %t40 = load i8*, i8** %t31
+  call void @star_rc_release(i8* %t40)
   br label %if_end_2
 if_else_1:
   br label %if_end_2
 if_end_2:
-  %t44 = icmp eq i8* null, null
-  %t45 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.14, i64 0, i64 0
-  %t46 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.15, i64 0, i64 0
-  %t47 = select i1 %t44, i8* %t45, i8* %t46
-  %t48 = getelementptr inbounds [30 x i8], [30 x i8]* @.str.16, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t48, i8* %t47)
-  %t49 = load i8*, i8** %t2
-  call void @star_rc_release(i8* %t49)
+  %t41 = icmp eq i8* null, null
+  %t42 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.14, i64 0, i64 0
+  %t43 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.15, i64 0, i64 0
+  %t44 = select i1 %t41, i8* %t42, i8* %t43
+  %t45 = getelementptr inbounds [30 x i8], [30 x i8]* @.str.16, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t45, i8* %t44)
+  %t46 = load i8*, i8** %t2
+  call void @star_rc_release(i8* %t46)
   ret i32 0
 }
 
@@ -179,17 +190,17 @@ if_end_2:
 @.str.0 = private unnamed_addr constant [17 x i8] c"toupper(97): %d\0A\00"
 @.str.1 = private unnamed_addr constant { i64, i8*, [3 x i8] } { i64 -1, i8* null, [3 x i8] c"42\00" }
 @.str.2 = private unnamed_addr constant [13 x i8] c"atoi(s): %d\0A\00"
-@.str.3 = private unnamed_addr constant { i64, i8*, [38 x i8] } { i64 -1, i8* null, [38 x i8] c"STAR_EXAMPLE_DEFINITELY_UNSET_VAR_XYZ\00" }
-@.str.4 = private unnamed_addr constant [5 x i8] c"true\00"
-@.str.5 = private unnamed_addr constant [6 x i8] c"false\00"
-@.str.6 = private unnamed_addr constant [30 x i8] c"is_null(missing env var): %s\0A\00"
-@.str.7 = private unnamed_addr constant { i64, i8*, [5 x i8] } { i64 -1, i8* null, [5 x i8] c"PATH\00" }
-@.str.8 = private unnamed_addr constant [5 x i8] c"true\00"
-@.str.9 = private unnamed_addr constant [6 x i8] c"false\00"
-@.str.10 = private unnamed_addr constant [19 x i8] c"is_null(PATH): %s\0A\00"
-@.str.11 = private unnamed_addr constant [5 x i8] c"true\00"
-@.str.12 = private unnamed_addr constant [6 x i8] c"false\00"
-@.str.13 = private unnamed_addr constant [21 x i8] c"PATH length > 0: %s\0A\00"
+@.str.3 = private unnamed_addr constant { i64, i8*, [12 x i8] } { i64 -1, i8* null, [12 x i8] c"hello world\00" }
+@.str.4 = private unnamed_addr constant { i64, i8*, [4 x i8] } { i64 -1, i8* null, [4 x i8] c"xyz\00" }
+@.str.5 = private unnamed_addr constant [5 x i8] c"true\00"
+@.str.6 = private unnamed_addr constant [6 x i8] c"false\00"
+@.str.7 = private unnamed_addr constant [32 x i8] c"is_null(missing substring): %s\0A\00"
+@.str.8 = private unnamed_addr constant { i64, i8*, [12 x i8] } { i64 -1, i8* null, [12 x i8] c"hello world\00" }
+@.str.9 = private unnamed_addr constant { i64, i8*, [6 x i8] } { i64 -1, i8* null, [6 x i8] c"world\00" }
+@.str.10 = private unnamed_addr constant [5 x i8] c"true\00"
+@.str.11 = private unnamed_addr constant [6 x i8] c"false\00"
+@.str.12 = private unnamed_addr constant [30 x i8] c"is_null(found substring): %s\0A\00"
+@.str.13 = private unnamed_addr constant [21 x i8] c"found substring: %s\0A\00"
 @.str.14 = private unnamed_addr constant [5 x i8] c"true\00"
 @.str.15 = private unnamed_addr constant [6 x i8] c"false\00"
 @.str.16 = private unnamed_addr constant [30 x i8] c"null_ptr() == null_ptr(): %s\0A\00"

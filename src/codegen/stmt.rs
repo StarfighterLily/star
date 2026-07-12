@@ -159,15 +159,28 @@ impl Codegen {
         let func_name = &f.sig.name;
 
         self.write(&format!("define {} @{}(", ret_ty, func_name));
-        let params: Vec<String> = f.sig.params.iter().map(|p| {
-            let ty = if p.is_self {
-                match &p.ty { Ty::Named(n) => format!("%{}*", n), t => format!("{}*", self.llvm_ty(t)) }
-            } else { self.llvm_ty(&p.ty) };
-            format!("{} %{}", ty, p.name)
-        }).collect();
+        // `main`'s real, OS-called LLVM signature always accepts `argc`/
+        // `argv` regardless of Star `fn main()`'s own (always empty in
+        // practice) declared parameter list -- see `args()`'s doc comment
+        // above `@star.argc`/`@star.argv` in `crate::codegen::Codegen::emit_builtins`.
+        let params: Vec<String> = if is_main {
+            vec!["i32 %.argc".to_string(), "i8** %.argv".to_string()]
+        } else {
+            f.sig.params.iter().map(|p| {
+                let ty = if p.is_self {
+                    match &p.ty { Ty::Named(n) => format!("%{}*", n), t => format!("{}*", self.llvm_ty(t)) }
+                } else { self.llvm_ty(&p.ty) };
+                format!("{} %{}", ty, p.name)
+            }).collect()
+        };
         self.write(&params.join(", "));
         self.line(") {");
         self.line("entry:");
+
+        if is_main {
+            self.line("  store i32 %.argc, i32* @star.argc");
+            self.line("  store i8** %.argv, i8*** @star.argv");
+        }
 
         for p in &f.sig.params {
             let ptr_ty = if p.is_self {

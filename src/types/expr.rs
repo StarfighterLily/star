@@ -774,6 +774,23 @@ impl Checker {
                     }
                 }
             }
+            "args" => {
+                arity_ok(0, self);
+            }
+            "env_get" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Str) {
+                    self.error(format!("`env_get` expects a `str` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "env_set" => {
+                if arity_ok(2, self) {
+                    for (i, t) in arg_tys.iter().enumerate() {
+                        if !tys_eq(t, &Ty::Str) {
+                            self.error(format!("`env_set` argument {} expected `str`, found `{:?}`", i + 1, t), span);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }

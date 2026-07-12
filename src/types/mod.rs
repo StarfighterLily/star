@@ -146,6 +146,16 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "file_close" => Some(Ty::Named("unknown".into())),
         "file_read" | "file_read_line" => Some(Ty::Str),
         "file_write" | "file_exists" => Some(Ty::Bool),
+        // Minimal OS surface (todo.md #2) -- see `crate::codegen::list::emit_args`
+        // and `crate::codegen::os`. `args()` includes `argv[0]` (the program
+        // path/name), same convention the underlying OS argv itself uses.
+        // `env_get` yields `""` for an unset variable rather than a null
+        // `ptr`, matching `file_read`/`read_line`'s established EOF
+        // convention instead of introducing an Option/Result type Star
+        // doesn't have.
+        "args" => Some(Ty::List(Box::new(Ty::Str))),
+        "env_get" => Some(Ty::Str),
+        "env_set" => Some(Ty::Bool),
         _ => None,
     }
 }
@@ -181,6 +191,8 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     "CreateThread", "WaitForSingleObject", "CloseHandle",
     "CreateSemaphoreA", "ReleaseSemaphore", "GetCurrentThreadId",
     "star_rc_alloc", "star_rc_retain", "star_rc_release",
+    // `env_get`/`env_set` builtins -- see `crate::codegen::os`.
+    "getenv", "_putenv",
 ];
 
 /// The error type for type checking.

@@ -17,6 +17,7 @@ mod closure;
 mod expr;
 mod file_io;
 mod list;
+mod os;
 mod par_pool;
 mod rc;
 mod reflect;
@@ -275,6 +276,9 @@ impl Codegen {
         self.line("declare i32 @fseek(i8*, i32, i32)");
         self.line("declare i32 @ftell(i8*)");
         self.line("declare i32 @fgetc(i8*)");
+        // `env_get`/`env_set` builtins -- see `crate::codegen::os`.
+        self.line("declare i8* @getenv(i8*)");
+        self.line("declare i32 @_putenv(i8*)");
         self.line("declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)");
         self.line("declare i32 @WaitForSingleObject(i8*, i32)");
         self.line("declare i32 @CloseHandle(i8*)");
@@ -298,6 +302,17 @@ impl Codegen {
         self.line("");
         self.line("@frame.buf = global [4096 x i8] zeroinitializer");
         self.line("@frame.off = global i64 0");
+        self.line("");
+        // `args()` builtin -- see `crate::codegen::list::emit_args`. A
+        // hosted `main` may be declared with no parameters at the Star
+        // level (every program's always has been so far), but the process's
+        // real C entry point always receives `argc`/`argv` from the OS/CRT
+        // startup thunk -- `Codegen::emit_fn`'s `is_main` special case
+        // always accepts them and stores them here once, at process start,
+        // so `args()` can read them from any function without needing
+        // `main` to thread them through explicitly.
+        self.line("@star.argc = global i32 0");
+        self.line("@star.argv = global i8** null");
         self.line("");
         // Seed state for the `rand`/`rand_range` builtins' xorshift32
         // generator -- a fixed nonzero default so runs are deterministic

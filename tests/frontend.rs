@@ -5205,10 +5205,15 @@ fn runtime_extern_atoi_str_arg_end_to_end() {
     let _ = std::fs::remove_file(&exe);
 }
 
-/// A `ptr` round trip through a real C runtime symbol (`getenv`, always
+/// A `ptr` round trip through a real C runtime symbol (`strstr`, always
 /// linked on this target, no `-l` needed) -- `null_ptr()`/`is_null`
 /// correctly distinguish a null handle from a real one, exercising both a
-/// `str` argument and a `ptr` return in the same call.
+/// `str` argument and a `ptr` return in the same call. (Previously used
+/// `getenv` for this, but `getenv` became a reserved runtime symbol once
+/// the `env_get`/`env_set` builtins started declaring it unconditionally --
+/// see `crate::codegen::os` -- so this picks a different real CRT symbol
+/// with the same `str -> ptr` shape instead, which also drops the
+/// dependency on the host process's `PATH` actually being set.)
 ///
 /// Deliberately avoids any Win32 API (`GetModuleHandleA`, `GlobalAlloc`,
 /// ...) for two independent reasons that make them unsuitable extern-fn
@@ -5228,7 +5233,7 @@ fn runtime_extern_atoi_str_arg_end_to_end() {
 /// surface currently offers (see the plan's "Scope for v1" note).
 #[test]
 fn runtime_extern_ptr_round_trip_end_to_end() {
-    let src = "extern \"C\" fn getenv(name: str) -> ptr\nfn main():\n    println(f\"{is_null(null_ptr())}\")\n    let missing = getenv(\"STAR_TEST_DEFINITELY_UNSET_VAR_ABC123\")\n    println(f\"{is_null(missing)}\")\n    let path = getenv(\"PATH\")\n    println(f\"{is_null(path)}\")\n";
+    let src = "extern \"C\" fn strstr(haystack: str, needle: str) -> ptr\nfn main():\n    println(f\"{is_null(null_ptr())}\")\n    let missing = strstr(\"hello world\", \"xyz\")\n    println(f\"{is_null(missing)}\")\n    let found = strstr(\"hello world\", \"world\")\n    println(f\"{is_null(found)}\")\n";
     let module = Driver::parse(src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
@@ -5248,7 +5253,7 @@ fn runtime_extern_ptr_round_trip_end_to_end() {
     assert_eq!(
         lines,
         vec!["true", "true", "false"],
-        "null_ptr() is null; an unset env var is null; PATH (set for any process that can run clang) isn't: {}",
+        "null_ptr() is null; a substring that isn't present yields null; one that is present doesn't: {}",
         stdout
     );
 
@@ -5310,7 +5315,7 @@ fn extern_fn_rejects_main_as_reserved_name() {
 /// only fail at the clang step.
 #[test]
 fn extern_fn_rejects_duplicate_declaration() {
-    let src = "extern \"C\" fn getenv(name: str) -> ptr\nextern \"C\" fn getenv(name: str) -> ptr\n";
+    let src = "extern \"C\" fn atoi(s: str) -> int\nextern \"C\" fn atoi(s: str) -> int\n";
     let module = Driver::parse(src).expect("should parse");
     let Err(diags) = Driver::check(&module) else { panic!("a duplicate extern fn declaration should be a type error") };
     assert!(diags.iter().any(|d| d.message.contains("declared more than once")), "{:?}", diags);
@@ -5910,4 +5915,201 @@ fn checker_accepts_well_typed_file_io_calls() {
     let src = "fn t():\n    let h = file_open(\"x.txt\", \"w\")\n    file_write(h, \"data\")\n    file_close(h)\n    let r = file_open(\"x.txt\", \"r\")\n    let a = file_read(r)\n    let b = file_read_line(r)\n    let e = file_exists(\"x.txt\")\n    file_close(r)\n";
     let module = Driver::parse(src).expect("should parse");
     Driver::check(&module).expect("well-typed file I/O calls should type-check");
+}
+
+// ===== Minimal OS surface: args()/env_get/env_set (todo.md #2) =============
+
+/// `args()`/`env_get`/`env_set` resolve to proper (non-`unknown`) types
+/// through the checker, same as every other builtin -- `args()` returns
+/// `List<str>` (not just `str`/`bool`), so this also exercises
+/// `builtin_return_ty` producing a `Ty::List` for a builtin with no
+/// arguments to infer an element type from.
+#[test]
+fn checks_os_surface_builtin_return_types() {
+    let src = "fn t():\n    let a: List<str> = args()\n    let s: str = env_get(\"PATH\")\n    let b: bool = env_set(\"X\", \"Y\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("well-typed args()/env_get/env_set calls should type-check");
+}
+
+/// `args()` takes no arguments -- passing any is rejected by
+/// `Checker::check_builtin_call_args`, same as `read_line()`/`rand()`.
+#[test]
+fn checker_rejects_args_with_arguments() {
+    let src = "fn t():\n    args(1)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("args(1) should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`args` expects 0 argument(s), found 1")), "{:?}", diags);
+}
+
+/// `env_get(name)` expects exactly 1 `str` argument.
+#[test]
+fn checker_rejects_env_get_wrong_arg_count() {
+    let src = "fn t():\n    env_get()\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("env_get() should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`env_get` expects 1 argument(s), found 0")), "{:?}", diags);
+}
+
+/// `env_get(42)` -- a non-`str` argument -- is rejected rather than
+/// smuggled through to `emit_env_get`'s `emit_raw_str_ptr`, which assumes
+/// its argument is already a `str`.
+#[test]
+fn checker_rejects_env_get_non_str_arg() {
+    let src = "fn t():\n    env_get(42)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("env_get(42) should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`env_get` expects a `str` argument")), "{:?}", diags);
+}
+
+/// `env_set(name, value)` expects exactly 2 arguments.
+#[test]
+fn checker_rejects_env_set_wrong_arg_count() {
+    let src = "fn t():\n    env_set(\"X\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("env_set(\"X\") should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`env_set` expects 2 argument(s), found 1")), "{:?}", diags);
+}
+
+/// `env_set(name, value)` expects both arguments to be `str` -- swapping in
+/// an `int` for either is rejected rather than reaching `emit_env_set`'s
+/// `strlen`/`strcpy` calls with the wrong operand type.
+#[test]
+fn checker_rejects_env_set_non_str_args() {
+    let src = "fn t():\n    env_set(1, 2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("env_set(1, 2) should fail to type-check") };
+    assert_eq!(diags.iter().filter(|d| d.message.contains("`env_set`")).count(), 2, "both arguments are wrong: {:?}", diags);
+}
+
+/// `getenv`/`_putenv` -- the real CRT symbols `env_get`/`env_set` lower to
+/// (see `crate::codegen::os`) -- are reserved runtime symbol names, same as
+/// `puts`/`malloc`/etc: an `extern "C" fn getenv` would collide with the
+/// `declare i8* @getenv(i8*)` `Codegen::emit_builtins` always emits.
+#[test]
+fn extern_fn_rejects_getenv_as_reserved_name() {
+    let src = "extern \"C\" fn getenv(name: str) -> ptr\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("extern fn named `getenv` should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("compiler always declares internally")), "{:?}", diags);
+}
+
+/// `main`'s real, OS-called LLVM signature always accepts `i32 %.argc, i8**
+/// %.argv` -- regardless of Star `fn main()`'s own declared (empty)
+/// parameter list -- so `args()` can read the real process argv from
+/// anywhere, not just from an explicitly-threaded parameter. See
+/// `Codegen::emit_fn`'s `is_main` special case.
+#[test]
+fn codegen_main_accepts_argc_argv_params() {
+    let src = "fn main():\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("define i32 @main(i32 %.argc, i8** %.argv)"), "{}", ir);
+    let main_body = extract_fn_body(&ir, "define i32 @main(");
+    assert!(main_body.contains("store i32 %.argc, i32* @star.argc"), "{}", main_body);
+    assert!(main_body.contains("store i8** %.argv, i8*** @star.argv"), "{}", main_body);
+}
+
+/// Like `compile_and_run`, but also passes extra `argv` entries and/or
+/// preset environment variables to the compiled binary -- needed to
+/// exercise `args()`/`env_get` end to end, since both read real
+/// OS-supplied process state `compile_and_run`'s bare `.output()` call
+/// doesn't control.
+fn compile_and_run_with(name: &str, src: &str, extra_args: &[&str], envs: &[(&str, &str)]) -> std::process::Output {
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let exe = std::env::temp_dir().join(format!("star_test_{}.exe", name));
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args(extra_args);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let output = cmd.output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    output
+}
+
+/// `args()` includes `argv[0]` (the program path) plus every extra
+/// command-line argument the process was actually launched with, in order
+/// -- the same convention the underlying OS/CRT argv itself uses (see
+/// `Codegen::emit_args`'s doc comment).
+#[test]
+fn runtime_args_includes_program_path_and_extra_args_end_to_end() {
+    let src = "fn main():\n    let a = args()\n    println(f\"{a.len()}\")\n    println(a[1])\n    println(a[2])\n";
+    let output = compile_and_run_with("args_extra", src, &["alpha", "beta"], &[]);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["3", "alpha", "beta"], "argv[0] + 2 extra args: {}", stdout);
+}
+
+/// With no extra command-line arguments, `args()` still has exactly one
+/// element -- `argv[0]`, the program's own path -- never an empty list.
+#[test]
+fn runtime_args_has_only_program_path_when_no_extra_args_end_to_end() {
+    let src = "fn main():\n    let a = args()\n    println(f\"{a.len()}\")\n";
+    let output = compile_and_run_with("args_none", src, &[], &[]);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "1", "argv[0] alone: {}", stdout);
+}
+
+/// `env_get` on a variable that was never set yields `""` (empty `str`),
+/// matching `read_line`/`file_read`'s established EOF convention, rather
+/// than a null `ptr` or a crash.
+#[test]
+fn runtime_env_get_missing_var_returns_empty_string_end_to_end() {
+    let src = "fn main():\n    let missing = env_get(\"STAR_TEST_DEFINITELY_UNSET_VAR_ABC123\")\n    println(f\"[{missing}]\")\n";
+    let output = compile_and_run_with("env_get_missing", src, &[], &[]);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "[]", "{}", stdout);
+}
+
+/// `env_get` reads a variable that was actually set in the process's
+/// environment before it started (not just one `env_set` from within the
+/// same run) -- exercises the real `getenv` round trip end to end, not just
+/// the same-process `env_set` -> `env_get` path.
+#[test]
+fn runtime_env_get_reads_preset_environment_variable_end_to_end() {
+    let src = "fn main():\n    println(env_get(\"STAR_TEST_PRESET_VAR\"))\n";
+    let output = compile_and_run_with("env_get_preset", src, &[], &[("STAR_TEST_PRESET_VAR", "hello from the environment")]);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "hello from the environment", "{}", stdout);
+}
+
+/// `env_set` reports success (`true`) and the variable it just set is
+/// immediately visible to `env_get` within the same process -- the
+/// `_putenv`-backed round trip `emit_env_set`'s doc comment describes.
+#[test]
+fn runtime_env_set_round_trip_end_to_end() {
+    let src = "fn main():\n    let ok = env_set(\"STAR_TEST_ROUND_TRIP_VAR\", \"round trip value\")\n    println(f\"{ok}\")\n    println(env_get(\"STAR_TEST_ROUND_TRIP_VAR\"))\n";
+    let output = compile_and_run_with("env_set_round_trip", src, &[], &[]);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "round trip value"], "{}", stdout);
+}
+
+/// `env_set` on an already-set variable overwrites its value (rather than,
+/// say, silently failing or appending) -- distinguishes "set" from
+/// "set-if-absent" semantics.
+#[test]
+fn runtime_env_set_overwrites_existing_value_end_to_end() {
+    let src = "fn main():\n    let ok = env_set(\"STAR_TEST_OVERWRITE_VAR\", \"new value\")\n    println(f\"{ok}\")\n    println(env_get(\"STAR_TEST_OVERWRITE_VAR\"))\n";
+    let output = compile_and_run_with("env_set_overwrite", src, &[], &[("STAR_TEST_OVERWRITE_VAR", "old value")]);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "new value"], "{}", stdout);
 }
