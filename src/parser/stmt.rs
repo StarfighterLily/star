@@ -6,7 +6,30 @@ use crate::lexer::TokenKind;
 use super::Parser;
 
 impl Parser {
+    /// A generous bound on nested block parsing -- see `Parser::block_depth`'s
+    /// doc comment. Kept well below `MAX_EXPR_DEPTH` since each block-nesting
+    /// level costs more Rust stack frames than an expression-nesting level
+    /// (`parse_block` -> `parse_stmt` -> one of `parse_if_stmt`/
+    /// `parse_while_stmt`/`parse_for_stmt`/`parse_match`/... -> `parse_block`
+    /// again).
+    const MAX_BLOCK_DEPTH: u32 = 60;
+
     pub(super) fn parse_block(&mut self) -> Option<Block> {
+        if self.block_depth >= Self::MAX_BLOCK_DEPTH {
+            let span = self.peek_span();
+            self.error(
+                "block nested too deeply (over 60 levels of if/while/for/match/frame/par) -- likely a runaway generated program",
+                span,
+            );
+            return None;
+        }
+        self.block_depth += 1;
+        let result = self.parse_block_inner();
+        self.block_depth -= 1;
+        result
+    }
+
+    fn parse_block_inner(&mut self) -> Option<Block> {
         let start = self.peek_span();
         self.expect(&TokenKind::Newline)?;
         self.expect(&TokenKind::Indent)?;

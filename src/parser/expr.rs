@@ -62,8 +62,15 @@ impl Parser {
     /// `Parser::expr_depth`'s doc comment. High enough that no real,
     /// hand-written expression should ever hit it, but low enough to fail
     /// fast with a clean diagnostic well before exhausting the real Rust
-    /// call stack.
-    const MAX_EXPR_DEPTH: u32 = 200;
+    /// call stack. Empirically, a debug build's default (~1-2MiB) thread
+    /// stack overflows for real somewhere between 100 and 150 levels of
+    /// this recursion (each level costs six-odd stack frames across
+    /// `parse_unary`/`parse_unary_inner`/`parse_postfix`/`parse_primary`/
+    /// `parse_expr`/`parse_binary`) -- 80 keeps a comfortable margin below
+    /// that observed cliff (mirrors `Checker::MAX_MONO_DEPTH`'s similarly
+    /// conservative, empirically-chosen bound) while staying well above
+    /// `runtime_moderately_nested_parens_end_to_end`'s 50-level sanity case.
+    pub(super) const MAX_EXPR_DEPTH: u32 = 80;
 
     fn parse_unary(&mut self) -> Option<Expr> {
         if self.expr_depth >= Self::MAX_EXPR_DEPTH {
@@ -454,8 +461,25 @@ impl Parser {
                     // brought into scope by an outer `import`, so the
                     // sub-parser needs to know about them too.
                     sub.import_aliases = self.import_aliases.clone();
-                    let expr = sub.parse_expr()?;
+                    // Carry the outer parser's nesting counters into the
+                    // fresh sub-parser -- otherwise a chain of nested
+                    // f-string interpolations (`f"{f"{f"{...}"}"}"`) resets
+                    // `expr_depth`/`block_depth` to 0 at every level, so
+                    // `MAX_EXPR_DEPTH`/`MAX_BLOCK_DEPTH` never actually
+                    // accumulate across levels and only the real (unbounded)
+                    // Rust call stack does, defeating the guard entirely.
+                    sub.expr_depth = self.expr_depth;
+                    sub.block_depth = self.block_depth;
+                    let parsed = sub.parse_expr();
+                    // Merge the sub-parser's errors *before* handling a
+                    // `None` result -- `parse_expr` can fail (bad syntax,
+                    // depth-guard trip, ...) while still having pushed a
+                    // diagnostic into `sub.errors`; bailing out via `?`
+                    // ahead of this merge would silently drop that
+                    // diagnostic and make the whole enclosing statement
+                    // vanish from the AST with no error reported at all.
                     self.errors.append(&mut sub.errors);
+                    let expr = parsed?;
                     out.push(FStrExpr::Expr(Box::new(expr)));
                 }
             }

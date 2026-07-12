@@ -17,6 +17,7 @@ mod closure;
 mod expr;
 mod file_io;
 mod list;
+mod net;
 mod os;
 mod par_pool;
 mod rc;
@@ -291,6 +292,19 @@ impl Codegen {
         // `env_get`/`env_set` builtins -- see `crate::codegen::os`.
         self.line("declare i8* @getenv(i8*)");
         self.line("declare i32 @_putenv(i8*)");
+        // `tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close` builtins -- see
+        // `crate::codegen::net`. Winsock2 (`ws2_32.dll`) isn't part of this
+        // target's implicitly-linked default libraries the way libc/
+        // kernel32 are, so a Star program calling any of these needs
+        // `-l ws2_32` passed explicitly at build time.
+        self.line("declare i32 @WSAStartup(i16, i8*)");
+        self.line("declare i8* @socket(i32, i32, i32)");
+        self.line("declare i32 @connect(i8*, i8*, i32)");
+        self.line("declare i32 @send(i8*, i8*, i32, i32)");
+        self.line("declare i32 @recv(i8*, i8*, i32, i32)");
+        self.line("declare i32 @closesocket(i8*)");
+        self.line("declare i16 @htons(i16)");
+        self.line("declare i32 @inet_addr(i8*)");
         self.line("declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)");
         self.line("declare i32 @WaitForSingleObject(i8*, i32)");
         self.line("declare i32 @CloseHandle(i8*)");

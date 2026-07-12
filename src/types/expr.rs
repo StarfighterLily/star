@@ -847,7 +847,7 @@ impl Checker {
                     self.error(format!("`rand_seed` expects an `int` argument, found `{:?}`", arg_tys[0]), span);
                 }
             }
-            "is_null" | "ptr_to_str" | "file_close" | "file_read" | "file_read_line" => {
+            "is_null" | "ptr_to_str" | "file_close" | "file_read" | "file_read_line" | "tcp_close" | "tcp_recv" => {
                 if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Ptr) {
                     self.error(format!("`{}` expects a `ptr` argument, found `{:?}`", name, arg_tys[0]), span);
                 }
@@ -890,6 +890,26 @@ impl Checker {
                         if !tys_eq(t, &Ty::Str) {
                             self.error(format!("`env_set` argument {} expected `str`, found `{:?}`", i + 1, t), span);
                         }
+                    }
+                }
+            }
+            "tcp_connect" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Str) {
+                        self.error(format!("`tcp_connect` argument 1 expected `str`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Int) {
+                        self.error(format!("`tcp_connect` argument 2 expected `int`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "tcp_send" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`tcp_send` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Str) {
+                        self.error(format!("`tcp_send` argument 2 expected `str`, found `{:?}`", arg_tys[1]), span);
                     }
                 }
             }

@@ -156,6 +156,15 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "args" => Some(Ty::List(Box::new(Ty::Str))),
         "env_get" => Some(Ty::Str),
         "env_set" => Some(Ty::Bool),
+        // Raw TCP socket builtins (todo.md #3 "Networking basics") -- see
+        // `crate::codegen::net`. `tcp_connect` reuses `Ty::Ptr` as an
+        // opaque socket handle (null on failure, same convention as
+        // `file_open`); `tcp_recv` returns an empty `str` on a closed
+        // connection/error (same convention as `file_read`).
+        "tcp_connect" => Some(Ty::Ptr),
+        "tcp_send" => Some(Ty::Bool),
+        "tcp_recv" => Some(Ty::Str),
+        "tcp_close" => Some(Ty::Named("unknown".into())),
         _ => None,
     }
 }
@@ -193,6 +202,9 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     "star_rc_alloc", "star_rc_retain", "star_rc_release",
     // `env_get`/`env_set` builtins -- see `crate::codegen::os`.
     "getenv", "_putenv",
+    // `tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close` builtins -- see
+    // `crate::codegen::net`.
+    "WSAStartup", "socket", "connect", "send", "recv", "closesocket", "htons", "inet_addr",
     // Materializes a non-print f-string value (`let s = f"..."`) into an
     // owned `str` buffer -- see `Codegen::emit_expr`'s `TypedExpr::FStr` arm.
     "snprintf",

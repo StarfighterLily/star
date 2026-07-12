@@ -354,6 +354,10 @@ impl Codegen {
                     Some("args") => self.emit_args(),
                     Some("env_get") => self.emit_env_get(args),
                     Some("env_set") => self.emit_env_set(args),
+                    Some("tcp_connect") => self.emit_tcp_connect(args),
+                    Some("tcp_send") => self.emit_tcp_send(args),
+                    Some("tcp_recv") => self.emit_tcp_recv(args),
+                    Some("tcp_close") => { self.emit_tcp_close(args); "%undef".into() }
                     Some(name) if self.extern_fns.contains(name) => self.emit_extern_call(name, args, expr),
                     _ => self.emit_call_expr(callee, args, expr),
                 }

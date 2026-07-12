@@ -55,11 +55,29 @@ pub struct Parser {
     /// bug `Checker::mono_depth` already guards against on the generic-
     /// monomorphization side.
     expr_depth: u32,
+    /// Nesting depth of `Parser::parse_block` calls -- every layer of
+    /// `if`/`while`/`for`/`match`-arm/`frame`/`par`/block-bodied-lambda body
+    /// re-enters `parse_block` (directly or via `parse_stmt`), so bounding it
+    /// here bounds all of them the same way `expr_depth` bounds expression
+    /// nesting. Previously unguarded: a source with a few hundred levels of
+    /// strictly increasing indentation (e.g. nested `if true:` blocks)
+    /// overflowed the real Rust call stack with a bare process abort and no
+    /// diagnostic, the block-nesting counterpart of the same class of bug
+    /// `expr_depth` guards against.
+    block_depth: u32,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, errors: Vec::new(), import_aliases: HashSet::new(), block_just_closed: false, expr_depth: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            errors: Vec::new(),
+            import_aliases: HashSet::new(),
+            block_just_closed: false,
+            expr_depth: 0,
+            block_depth: 0,
+        }
     }
 
     /// Parse a complete module from source, running the lexer first.
@@ -100,7 +118,30 @@ impl Parser {
         }
     }
 
+    /// Same guard, same shared counter, as `Parser::parse_unary`'s
+    /// `expr_depth`/`MAX_EXPR_DEPTH` (see that field's doc comment) --
+    /// `Type::Fn`'s params/return and `Type::Generic`'s type arguments both
+    /// recurse back into `parse_type` with no base case of their own, so a
+    /// deeply nested type annotation (`List<List<List<...>>>`) previously
+    /// overflowed the real Rust call stack with a bare process abort and no
+    /// diagnostic, exactly like the expression-nesting case this same
+    /// counter already guards against.
     fn parse_type(&mut self) -> Option<Type> {
+        if self.expr_depth >= Self::MAX_EXPR_DEPTH {
+            let span = self.peek_span();
+            self.error(
+                "type nested too deeply (over 80 levels of generic arguments/function types) -- likely a runaway generated type",
+                span,
+            );
+            return None;
+        }
+        self.expr_depth += 1;
+        let result = self.parse_type_inner();
+        self.expr_depth -= 1;
+        result
+    }
+
+    fn parse_type_inner(&mut self) -> Option<Type> {
         // A closure/function type: `Fn(T1, T2, ...) -> Ret`. `Fn` is a plain
         // capitalized identifier here (distinct from the `fn` keyword used
         // for declarations/lambda literals), so it's recognized by name
