@@ -3627,6 +3627,97 @@ fn t() -> i32:
     assert!(Driver::check(&module).is_ok(), "using the closure entirely within the frame scope should be allowed");
 }
 
+// --- §3.1b: closure capturing self by pointer from *any* local struct, not
+// just a `frame:`-scoped one -- see `Checker::check_frame_escapes` /
+// `src/types/frame_analysis.rs`'s `local_structs` tracking. -----------------
+
+/// The exact todo.md repro: a method returning a closure that captures
+/// `self` by pointer, called on a plain (non-`frame`) local struct, then
+/// returned out of its enclosing function. Before this fix, `frame_locals`
+/// only tracked `let`-bindings inside a `frame:` block, so an ordinary
+/// stack-local receiver's dangling `self` pointer sailed straight past the
+/// escape check and printed a garbage value at runtime instead of failing
+/// to compile.
+#[test]
+fn rejects_closure_capturing_plain_local_self_escaping_via_return() {
+    let src = r#"struct Holder:
+    val: i32
+
+impl Holder:
+    fn get_closure(self) -> Fn() -> i32:
+        fn(): self.val
+
+fn make() -> Fn() -> i32:
+    let h = Holder(777)
+    return h.get_closure()
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("a closure escaping with a plain local's self pointer should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("h")), "{:?}", errs);
+}
+
+/// The same bug shape, but the dangling receiver is a by-value function
+/// *parameter* rather than a `let`-bound local -- todo.md explicitly calls
+/// this case out too, since a parameter's storage is just as scoped to the
+/// enclosing function as an ordinary local's.
+#[test]
+fn rejects_closure_capturing_by_value_param_self_escaping_via_return() {
+    let src = r#"struct Holder:
+    val: i32
+
+impl Holder:
+    fn get_closure(self) -> Fn() -> i32:
+        fn(): self.val
+
+fn make(h: Holder) -> Fn() -> i32:
+    return h.get_closure()
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("a closure escaping with a by-value parameter's self pointer should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("h")), "{:?}", errs);
+}
+
+/// The same closure, called and used *before* the enclosing function
+/// returns (never escaping it), is safe: the plain local's storage is still
+/// valid for the whole call. This is the over-rejection risk todo.md flags
+/// when broadening `frame_locals` -- confirms the fix stays scoped to actual
+/// escapes, not merely calling a self-capturing-closure method at all.
+#[test]
+fn accepts_closure_capturing_plain_local_self_used_within_same_function() {
+    let src = r#"struct Holder:
+    val: i32
+
+impl Holder:
+    fn get_closure(self) -> Fn() -> i32:
+        fn(): self.val
+
+fn t() -> i32:
+    let h = Holder(777)
+    let c = h.get_closure()
+    return c()
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "using the closure entirely within its defining function should be allowed");
+}
+
+/// Returning a plain local struct *by value* (no closure involved at all)
+/// must stay accepted -- broadening the escape tracking to ordinary locals
+/// must not reject this extremely common, entirely sound pattern just
+/// because the local's name is now tracked for the closure-capture check.
+#[test]
+fn accepts_returning_plain_local_struct_by_value() {
+    let src = r#"struct Point:
+    x: i32
+    y: i32
+
+fn make() -> Point:
+    let p = Point(1, 2)
+    return p
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "returning an ordinary local struct by value is always safe and must not be rejected");
+}
+
 // --- §3.2: arena-capacity overflow is loud, not silent ----------------------
 
 /// Spawning past `ARENA_CAPACITY` (1024) live elements still drops the

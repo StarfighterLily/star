@@ -757,7 +757,7 @@ impl Checker {
                 }
             }
         }
-        self.check_frame_escapes(&body);
+        self.check_frame_escapes(&body, &sig);
         Some(TypedFnDef { sig, body, span: f.span })
     }
 
