@@ -6753,3 +6753,271 @@ fn runtime_fstring_value_nested_and_concat_end_to_end() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines, vec!["nested: star!", "a1b2"], "{}", stdout);
 }
+
+// ===== match exhaustiveness ==================================================
+
+/// A `match` over an enum that neither covers every variant nor has a
+/// wildcard/binding catch-all must be rejected -- previously nothing checked
+/// this at all, and the generated code fell through to an `undef` value at
+/// runtime (see `Codegen::emit_expr`'s `TypedExpr::Match` arm's "no arm
+/// matched" fallthrough path, which assumes this was already validated).
+#[test]
+fn rejects_non_exhaustive_match_over_enum() {
+    let src = "enum Dir:\n    North\n    South\n    East\n    West\nfn describe(d: Dir) -> i32:\n    match d:\n        Dir::North -> 1\n        Dir::South -> 2\nfn main():\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("a match missing enum variants with no wildcard should be rejected")
+    };
+    assert!(
+        errs.iter().any(|d| d.message.contains("non-exhaustive") && d.message.contains("East") && d.message.contains("West")),
+        "{:?}",
+        errs
+    );
+}
+
+/// A `match` over an enum that covers every variant explicitly (no wildcard
+/// needed) must still type-check -- guards against the exhaustiveness check
+/// above being so aggressive it rejects sound, ordinary code (this is
+/// exactly the shape `examples/control_flow.star`'s `Dir` match already
+/// uses).
+#[test]
+fn accepts_exhaustive_match_over_enum_covering_every_variant_without_wildcard() {
+    let src = "enum Dir:\n    North\n    South\nfn describe(d: Dir) -> i32:\n    match d:\n        Dir::North -> 1\n        Dir::South -> 2\nfn main():\n    println(f\"{describe(Dir::North)}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("a match covering every enum variant should type-check without a wildcard");
+}
+
+/// Same bug, `bool` scrutinee: only `true` is covered, `false` isn't, and
+/// there's no wildcard.
+#[test]
+fn rejects_non_exhaustive_match_over_bool() {
+    let src = "fn describe(b: bool) -> i32:\n    match b:\n        true -> 1\nfn main():\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("a bool match missing `false` and no wildcard should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("non-exhaustive") && d.message.contains("bool")), "{:?}", errs);
+}
+
+/// Same bug, an unbounded scalar domain (`i32`): a finite set of
+/// `Compare`/literal patterns can never be proven to cover every `i32`, so
+/// this always requires an explicit wildcard.
+#[test]
+fn rejects_non_exhaustive_match_over_int_without_wildcard() {
+    let src = "fn describe(x: i32) -> i32:\n    match x:\n        <= 0 -> 1\nfn main():\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("an int match with no wildcard catch-all should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("non-exhaustive")), "{:?}", errs);
+}
+
+// ===== generic type-parameter consistency ===================================
+
+/// A generic function whose type parameter `T` appears in more than one
+/// parameter position must infer the *same* concrete type from every
+/// argument -- previously `Checker::unify_ty` kept only the first binding
+/// found for a parameter and silently ignored any later, conflicting one, so
+/// `pick(5, "hello")` against `fn pick<T>(a: T, b: T) -> T` type-checked
+/// cleanly.
+#[test]
+fn rejects_generic_fn_call_with_inconsistent_type_parameter() {
+    let src = "fn pick<T>(a: T, b: T) -> T:\n    return a\nfn main():\n    let x = pick(5, \"hello\")\n    println(f\"{x}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("a generic call binding the same type parameter to two different types should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("inconsistently") && d.message.contains("pick")), "{:?}", errs);
+}
+
+/// Same bug, reached through generic struct construction (`Checker::unify_ty`
+/// is shared by `infer_generic_call` and `resolve_generic_ctor_args`).
+#[test]
+fn rejects_generic_struct_ctor_with_inconsistent_type_parameter() {
+    let src = "struct Pair<T>:\n    a: T\n    b: T\nfn main():\n    let p = Pair(5, \"hello\")\n    println(f\"{p.a}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("a generic struct literal binding the same type parameter to two different types should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("inconsistently") && d.message.contains("Pair")), "{:?}", errs);
+}
+
+/// Consistent use of a repeated type parameter must still work -- guards
+/// against the check above being so aggressive it rejects sound, ordinary
+/// generic calls.
+#[test]
+fn runtime_generic_fn_call_with_consistent_type_parameter_end_to_end() {
+    let src = "fn pick<T>(a: T, b: T) -> T:\n    return a\nfn main():\n    let x = pick(5, 6)\n    println(f\"{x}\")\n";
+    let output = compile_and_run("generic_consistent_type_param", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "5", "{}", stdout);
+}
+
+// ===== impl Trait completeness ===============================================
+
+/// `impl Trait for Type` that never defines one of the trait's required
+/// methods must be rejected -- previously nothing checked this, and (since
+/// traits are purely nominal, with no dynamic dispatch anywhere in codegen)
+/// there was no other point in the pipeline that could ever catch it either.
+#[test]
+fn rejects_impl_missing_trait_method() {
+    let src = "trait Greeter:\n    fn greet(self) -> i32\nstruct Foo:\n    x: i32\nimpl Greeter for Foo:\n    fn other(self) -> i32:\n        return self.x\nfn main():\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("an impl missing a required trait method should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("missing method") && d.message.contains("greet")), "{:?}", errs);
+}
+
+/// A method present under the trait's exact name but with the wrong arity
+/// must also be rejected -- a name match alone doesn't mean the impl
+/// actually provides what the trait requires.
+#[test]
+fn rejects_impl_method_wrong_arity_for_trait() {
+    let src = "trait Greeter:\n    fn greet(self, n: i32) -> i32\nstruct Foo:\n    x: i32\nimpl Greeter for Foo:\n    fn greet(self) -> i32:\n        return self.x\nfn main():\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("an impl method with the wrong arity for its trait method should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("parameter(s)") && d.message.contains("greet")), "{:?}", errs);
+}
+
+/// An impl that faithfully provides every trait method must still work end
+/// to end -- guards against the two checks above being so aggressive they
+/// reject sound, ordinary trait impls (mirrors `examples/player.star`'s
+/// `Damageable`/`Player` shape).
+#[test]
+fn runtime_impl_satisfying_trait_exactly_end_to_end() {
+    let src = "trait Greeter:\n    fn greet(self) -> i32\nstruct Foo:\n    x: i32\nimpl Greeter for Foo:\n    fn greet(self) -> i32:\n        return self.x\nfn main():\n    let f = Foo(x = 5)\n    println(f\"{f.greet()}\")\n";
+    let output = compile_and_run("impl_satisfying_trait_exactly", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "5", "{}", stdout);
+}
+
+// ===== comparison-operator type checking =====================================
+
+/// Comparing two `GenRef<T>` values with `==` must be rejected by the
+/// checker with a real, located diagnostic -- previously `Checker::infer_binop_ty`
+/// returned `bool` unconditionally for any comparison whose operand types
+/// weren't a vector/matrix, so this type-checked cleanly and only failed
+/// once `Codegen::emit_binop` actually saw the (unsupported) `GenRef`
+/// operands, with no span at all (`Span::dummy()`).
+#[test]
+fn rejects_genref_equality_comparison() {
+    let src = "struct Enemy:\n    hp: i32\narena Enemies: Enemy\nfn main():\n    spawn Enemies(10)\n    spawn Enemies(20)\n    let a: GenRef<Enemy> = GenRef<Enemy>(0)\n    let b: GenRef<Enemy> = GenRef<Enemy>(1)\n    if a == b:\n        println(\"same\")\n    else:\n        println(\"different\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("comparing two `GenRef<T>` values with `==` should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("not supported") && d.message.contains("GenRef")), "{:?}", errs);
+}
+
+/// Same bug, `str` operands -- also silently `bool`-typed before this fix,
+/// then failed unlocated at codegen (there's no `strcmp`-backed `==` lowering
+/// for `str` in `Codegen::emit_binop` at all).
+#[test]
+fn rejects_str_equality_comparison() {
+    let src = "fn main():\n    let a = \"x\"\n    let b = \"y\"\n    if a == b:\n        println(\"eq\")\n    else:\n        println(\"ne\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("comparing two `str` values with `==` should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("not supported") && d.message.contains("Str")), "{:?}", errs);
+}
+
+/// Comparing two entirely unrelated types (`i32` and `str`) with `==` must
+/// also be rejected, not just same-typed-but-unsupported pairs.
+#[test]
+fn rejects_equality_comparison_between_unrelated_types() {
+    let src = "fn main():\n    if 1 == \"x\":\n        println(\"eq\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("comparing an `i32` and a `str` with `==` should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("not supported")), "{:?}", errs);
+}
+
+/// Ordinary scalar comparisons -- including a mixed `i32`/`float` pair,
+/// which promotes exactly like the arithmetic operators do -- must still
+/// work; guards against the checks above being so aggressive they reject
+/// sound, ordinary comparisons.
+#[test]
+fn runtime_mixed_scalar_comparison_still_works_end_to_end() {
+    let src = "fn main():\n    let a = 1\n    let b = 2.5\n    if a < b:\n        println(\"less\")\n    else:\n        println(\"not less\")\n";
+    let output = compile_and_run("mixed_scalar_comparison", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "less", "{}", stdout);
+}
+
+// ===== f-string lexing =======================================================
+
+/// An f-string interpolation hole containing a nested `str` literal that
+/// itself contains a `}` byte must not confuse the hole's brace-depth
+/// scanner -- previously `Lexer::scan_fstring`'s `{`/`}` counting had no
+/// awareness of quotes at all, so the `}` inside the nested string literal
+/// was mistaken for the hole's own closing brace.
+#[test]
+fn runtime_fstring_hole_containing_string_literal_with_brace_end_to_end() {
+    let src = "fn main():\n    let s = f\"result: {concat(\"a}b\", \"c\")}\"\n    println(s)\n";
+    let output = compile_and_run("fstring_hole_nested_brace_string", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "result: a}bc", "{}", stdout);
+}
+
+// ===== duplicate top-level declarations ======================================
+
+/// Two top-level functions declared with the same name in one file must be
+/// rejected -- previously the checker's registration pass silently let the
+/// second `HashMap::insert` overwrite the first with no diagnostic at all,
+/// and the collision only ever surfaced once both reached the LLVM parser as
+/// clang's opaque "invalid redefinition of function".
+#[test]
+fn rejects_duplicate_top_level_function_declaration() {
+    let src = "fn helper() -> i32:\n    return 1\nfn helper() -> i32:\n    return 2\nfn main():\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("two top-level functions with the same name should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("declared more than once")), "{:?}", errs);
+}
+
+/// Same bug, two top-level structs -- these share the LLVM named-type
+/// namespace (`%Name`), not the function-symbol one.
+#[test]
+fn rejects_duplicate_top_level_struct_declaration() {
+    let src = "struct Point:\n    x: i32\nstruct Point:\n    y: i32\nfn main():\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("two top-level structs with the same name should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("declared more than once")), "{:?}", errs);
+}
+
+/// The scenario `todo.md` specifically called out: two *different* imported
+/// files, both declaring a same-named top-level item, imported under the
+/// *same* alias -- `crate::modules::rename_module` mangles both files'
+/// `helper` to the identical `m__helper`, which the checker's new duplicate
+/// check now catches with a real diagnostic instead of it silently reaching
+/// codegen as a colliding `define @m__helper` pair (a raw clang
+/// "invalid redefinition" error).
+#[test]
+fn rejects_duplicate_top_level_name_from_two_imports_sharing_one_alias() {
+    let dir = test_scratch_dir("rejects_duplicate_top_level_name_from_two_imports_sharing_one_alias");
+    write_test_file(&dir, "a.star", "fn helper() -> i32:\n    return 1\n");
+    write_test_file(&dir, "b.star", "fn helper() -> i32:\n    return 2\n");
+    let main_path = write_test_file(
+        &dir,
+        "main.star",
+        "import \"a.star\" as m\nimport \"b.star\" as m\nfn main():\n    println(f\"{m::helper()}\")\n",
+    );
+    let module = Driver::parse(&std::fs::read_to_string(&main_path).unwrap()).expect("should parse");
+    let resolved = star::modules::resolve(module, &main_path).expect("import resolution itself should succeed");
+    let Err(errs) = Driver::check(&resolved) else {
+        panic!("two same-named top-level items imported under the same alias should be rejected by the checker")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("declared more than once")), "{:?}", errs);
+}

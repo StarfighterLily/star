@@ -354,6 +354,28 @@ impl Checker {
         // function declared later in the file.
         self.unsafe_par_fns = compute_unsafe_par_fns(&module);
 
+        // Duplicate-name detection for the two namespaces a top-level
+        // declaration's mangled name is emitted into at codegen time: every
+        // struct/enum (generic or not) becomes (or, once monomorphized,
+        // instantiates into) an LLVM named type `%Name`, and every
+        // (non-generic) `fn` becomes an LLVM function symbol `@Name`. Two
+        // declarations landing on the same name within a namespace -- most
+        // commonly two different files imported under the *same* alias that
+        // each declare a same-named item, since `crate::modules::rename_module`
+        // mangles both to the identical `alias__name` (but equally reachable
+        // by just writing the same top-level name twice in one file) --
+        // previously went undetected here entirely: `HashMap::insert` below
+        // silently let the second declaration win, and the collision only
+        // ever surfaced once both reached the LLVM parser as clang's opaque
+        // "invalid redefinition of type/function", pointing at generated IR
+        // the user never wrote rather than at their own source. Doesn't cover
+        // an `extern "C" fn` colliding with an ordinary `fn`'s name -- that
+        // narrower gap is left for a future round -- extern-fn-vs-extern-fn
+        // is already caught separately by `extern_fn_names_seen`.
+        let mut type_names_seen: HashSet<String> = HashSet::new();
+        let mut value_names_seen: HashSet<String> = HashSet::new();
+        let mut arena_names_seen: HashSet<String> = HashSet::new();
+
         // First pass (0): register every struct/enum/fn *name* -- generic
         // templates into `generic_structs`/`generic_enums`/`generic_fns`,
         // everything else into `structs`/`enums` -- before any type is
@@ -363,11 +385,36 @@ impl Checker {
         // sees it regardless of declaration order.
         for item in &module.items {
             match item {
-                Item::Struct(s) if !s.type_params.is_empty() => { self.generic_structs.insert(s.name.clone(), s.clone()); }
-                Item::Struct(s) => { self.structs.insert(s.name.clone(), s.clone()); }
-                Item::Enum(e) if !e.type_params.is_empty() => { self.generic_enums.insert(e.name.clone(), e.clone()); }
-                Item::Enum(e) => { self.enums.insert(e.name.clone(), e.clone()); }
-                Item::Fn(f) if !f.sig.type_params.is_empty() => { self.generic_fns.insert(f.sig.name.clone(), f.clone()); }
+                Item::Struct(s) if !s.type_params.is_empty() => {
+                    if !type_names_seen.insert(s.name.clone()) {
+                        self.error(format!("the type `{}` is declared more than once", s.name), s.span);
+                    }
+                    self.generic_structs.insert(s.name.clone(), s.clone());
+                }
+                Item::Struct(s) => {
+                    if !type_names_seen.insert(s.name.clone()) {
+                        self.error(format!("the type `{}` is declared more than once", s.name), s.span);
+                    }
+                    self.structs.insert(s.name.clone(), s.clone());
+                }
+                Item::Enum(e) if !e.type_params.is_empty() => {
+                    if !type_names_seen.insert(e.name.clone()) {
+                        self.error(format!("the type `{}` is declared more than once", e.name), e.span);
+                    }
+                    self.generic_enums.insert(e.name.clone(), e.clone());
+                }
+                Item::Enum(e) => {
+                    if !type_names_seen.insert(e.name.clone()) {
+                        self.error(format!("the type `{}` is declared more than once", e.name), e.span);
+                    }
+                    self.enums.insert(e.name.clone(), e.clone());
+                }
+                Item::Fn(f) if !f.sig.type_params.is_empty() => {
+                    if !value_names_seen.insert(f.sig.name.clone()) {
+                        self.error(format!("the function `{}` is declared more than once", f.sig.name), f.span);
+                    }
+                    self.generic_fns.insert(f.sig.name.clone(), f.clone());
+                }
                 _ => {}
             }
         }
@@ -382,10 +429,16 @@ impl Checker {
                 Item::Struct(_) | Item::Enum(_) => {}
                 Item::Trait(t) => { self.traits.insert(t.name.clone(), t.clone()); }
                 Item::Arena(a) => {
+                    if !arena_names_seen.insert(a.name.clone()) {
+                        self.error(format!("the arena `{}` is declared more than once", a.name), a.span);
+                    }
                     let ty = self.resolve_type(&a.ty).unwrap_or(Ty::Named("unknown".into()));
                     self.arenas.insert(a.name.clone(), ty);
                 }
                 Item::Fn(f) if f.sig.type_params.is_empty() => {
+                    if !value_names_seen.insert(f.sig.name.clone()) {
+                        self.error(format!("the function `{}` is declared more than once", f.sig.name), f.span);
+                    }
                     let param_tys: Vec<Ty> = f.sig.params.iter().map(|p| {
                         p.ty.as_ref().and_then(|t| self.resolve_type(t)).unwrap_or(Ty::Named("infer".into()))
                     }).collect();
@@ -710,6 +763,70 @@ impl Checker {
         state.insert(name.to_string(), 2);
     }
 
+    /// Report a checker error for each method `impl trait_name for
+    /// impl_blk.type_name` fails to faithfully provide -- previously nothing
+    /// checked this at all: a genuinely missing method, or one present under
+    /// the right name but with the wrong arity/self-ness/parameter or return
+    /// type, silently "implemented" the trait with no diagnostic. There's no
+    /// dynamic dispatch through a trait anywhere in codegen to catch this
+    /// later either (traits are purely nominal here, see `check_impl`'s call
+    /// site) -- this was the only place such a mismatch could ever be
+    /// caught. `is_mut` is deliberately not compared: requiring exact
+    /// mutability agreement is a stricter rule than this check aims for.
+    fn check_impl_satisfies_trait(&mut self, trait_name: &str, impl_blk: &ImplBlock) {
+        let Some(tdef) = self.traits.get(trait_name).cloned() else { return };
+        for req in &tdef.methods {
+            let Some(provided) = impl_blk.methods.iter().find(|m| m.sig.name == req.name) else {
+                self.error(
+                    format!(
+                        "`impl {} for {}` is missing method `{}` required by trait `{}`",
+                        trait_name, impl_blk.type_name, req.name, trait_name
+                    ),
+                    impl_blk.span,
+                );
+                continue;
+            };
+            if provided.sig.params.len() != req.params.len() {
+                self.error(
+                    format!(
+                        "method `{}` in `impl {} for {}` has {} parameter(s), but trait `{}` declares {}",
+                        req.name, trait_name, impl_blk.type_name, provided.sig.params.len(), trait_name, req.params.len()
+                    ),
+                    provided.sig.span,
+                );
+                continue;
+            }
+            for (rp, pp) in req.params.iter().zip(provided.sig.params.iter()) {
+                if rp.is_self != pp.is_self {
+                    self.error(
+                        format!(
+                            "method `{}` in `impl {} for {}` disagrees with trait `{}` on whether `{}` is the `self` receiver",
+                            req.name, trait_name, impl_blk.type_name, trait_name, pp.name
+                        ),
+                        provided.sig.span,
+                    );
+                } else if !rp.is_self && rp.ty != pp.ty {
+                    self.error(
+                        format!(
+                            "parameter `{}` of method `{}` in `impl {} for {}` has type `{:?}`, but trait `{}` declares `{:?}`",
+                            pp.name, req.name, impl_blk.type_name, trait_name, pp.ty, trait_name, rp.ty
+                        ),
+                        provided.sig.span,
+                    );
+                }
+            }
+            if req.ret != provided.sig.ret {
+                self.error(
+                    format!(
+                        "method `{}` in `impl {} for {}` returns `{:?}`, but trait `{}` declares `{:?}`",
+                        req.name, impl_blk.type_name, trait_name, provided.sig.ret, trait_name, req.ret
+                    ),
+                    provided.sig.span,
+                );
+            }
+        }
+    }
+
     fn check_impl(&mut self, impl_blk: &ImplBlock) -> Option<TypedImplBlock> {
         if let Some(trait_name) = &impl_blk.trait_name {
             if !self.traits.contains_key(trait_name) {
@@ -736,6 +853,9 @@ impl Checker {
                 None => self.error(format!("undefined type `{}`", impl_blk.type_name), impl_blk.span),
             }
             return None;
+        }
+        if let Some(trait_name) = &impl_blk.trait_name {
+            self.check_impl_satisfies_trait(trait_name, impl_blk);
         }
         let struct_ty = Ty::Named(impl_blk.type_name.clone());
         let methods: Vec<TypedFnDef> = impl_blk.methods.iter().filter_map(|m| self.check_fn_with_self_ty(m, &struct_ty)).collect();
@@ -1122,18 +1242,41 @@ impl Checker {
         mangled
     }
 
+    /// True for the placeholder types that stand in for an expression whose
+    /// real type couldn't be determined because an error was already
+    /// reported for it elsewhere (an undefined name, an unresolved field,
+    /// ...) -- shared by [`Checker::types_compatible`] and [`Checker::unify_ty`]
+    /// so neither cascades a second diagnostic on top of the real one.
+    fn is_placeholder_ty(t: &Ty) -> bool {
+        matches!(t, Ty::Named(n) if matches!(n.as_str(), "unknown" | "infer_error" | "infer" | "Self"))
+    }
+
     /// Unify a (possibly type-parameterized) declared syntactic type against
     /// a concrete inferred `Ty`, recording any type parameter it binds into
     /// `subst`. Used both to infer a generic function call's type arguments
     /// from its call-site arguments, and to infer a generic struct/enum
     /// construction's type arguments from its constructor arguments, when no
     /// explicit turbofish was given. The first binding found for a given
-    /// parameter wins; later, conflicting bindings are silently ignored
-    /// (this compiler does no cross-argument consistency check today).
-    fn unify_ty(&self, param_ty: &Type, arg_ty: &Ty, type_params: &[String], subst: &mut HashMap<String, Ty>) {
+    /// parameter wins; any later occurrence that disagrees with it is
+    /// recorded into `conflicts` (skipped if the offending argument was
+    /// already a placeholder from an earlier error) so the caller can report
+    /// a single, located diagnostic instead of silently keeping the first
+    /// guess.
+    fn unify_ty(&self, param_ty: &Type, arg_ty: &Ty, type_params: &[String], subst: &mut HashMap<String, Ty>, conflicts: &mut Vec<(String, Ty, Ty)>) {
         match param_ty {
             Type::Named(n) if type_params.iter().any(|p| p == n) => {
-                subst.entry(n.clone()).or_insert_with(|| arg_ty.clone());
+                if Self::is_placeholder_ty(arg_ty) {
+                    return;
+                }
+                match subst.get(n) {
+                    Some(existing) if existing != arg_ty => {
+                        conflicts.push((n.clone(), existing.clone(), arg_ty.clone()));
+                    }
+                    Some(_) => {}
+                    None => {
+                        subst.insert(n.clone(), arg_ty.clone());
+                    }
+                }
             }
             Type::Named(_) => {}
             // A closure-typed generic parameter has nothing to unify against
@@ -1144,13 +1287,13 @@ impl Checker {
             Type::Generic(name, args) => {
                 if name == "GenRef" {
                     if let (Some(a0), Ty::GenRef(inner)) = (args.first(), arg_ty) {
-                        self.unify_ty(a0, inner, type_params, subst);
+                        self.unify_ty(a0, inner, type_params, subst, conflicts);
                     }
                     return;
                 }
                 if name == "List" {
                     if let (Some(a0), Ty::List(inner)) = (args.first(), arg_ty) {
-                        self.unify_ty(a0, inner, type_params, subst);
+                        self.unify_ty(a0, inner, type_params, subst, conflicts);
                     }
                     return;
                 }
@@ -1162,7 +1305,7 @@ impl Checker {
                 if let Some((tmpl, ty_args)) = instantiated {
                     if tmpl == name {
                         for (pa, ta) in args.iter().zip(ty_args.iter()) {
-                            self.unify_ty(pa, ta, type_params, subst);
+                            self.unify_ty(pa, ta, type_params, subst, conflicts);
                         }
                     }
                 }
@@ -1178,10 +1321,7 @@ impl Checker {
     /// name, an unresolved field, ...), so staying silent here avoids
     /// cascading a second, less useful diagnostic on top of the real one.
     fn types_compatible(declared: &Ty, actual: &Ty) -> bool {
-        fn is_placeholder(t: &Ty) -> bool {
-            matches!(t, Ty::Named(n) if matches!(n.as_str(), "unknown" | "infer_error" | "infer" | "Self"))
-        }
-        declared == actual || is_placeholder(declared) || is_placeholder(actual)
+        declared == actual || Self::is_placeholder_ty(declared) || Self::is_placeholder_ty(actual)
     }
 
     /// True if the last statement of `stmts` unconditionally terminates the

@@ -295,6 +295,7 @@ impl Checker {
                     let mut arm_vars = vars.clone();
                     self.check_match_arm(a, &scrutinee_expr, &mut arm_vars)
                 }).collect();
+                self.check_match_exhaustive(&scrutinee_expr.clone().into_ty(), &arm_tys, *span);
                 // The match's own value type is the first arm that actually
                 // has one -- an arm ending in `return`/`break`/`continue`
                 // never flows into the join point (see `Codegen`'s match
@@ -516,10 +517,20 @@ impl Checker {
         let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
         let template = self.generic_fns.get(name).cloned().expect("caller already checked generic_fns.contains_key");
         let mut subst: HashMap<String, Ty> = HashMap::new();
+        let mut conflicts = Vec::new();
         for (p, a) in template.sig.params.iter().zip(arg_exprs.iter()) {
             if let Some(pty) = &p.ty {
-                self.unify_ty(pty, &a.clone().into_ty(), &template.sig.type_params, &mut subst);
+                self.unify_ty(pty, &a.clone().into_ty(), &template.sig.type_params, &mut subst, &mut conflicts);
             }
+        }
+        for (tp, first, second) in &conflicts {
+            self.error(
+                format!(
+                    "type parameter `{}` of `{}` is used inconsistently: inferred both `{:?}` and `{:?}` from its arguments",
+                    tp, name, first, second
+                ),
+                span,
+            );
         }
         let mut type_args = Vec::new();
         for tp in &template.sig.type_params {
@@ -630,8 +641,18 @@ impl Checker {
             return Some(resolved);
         }
         let mut subst: HashMap<String, Ty> = HashMap::new();
+        let mut conflicts = Vec::new();
         for (fty, a) in field_tys.zip(arg_exprs.iter()) {
-            self.unify_ty(fty, &a.clone().into_ty(), type_params, &mut subst);
+            self.unify_ty(fty, &a.clone().into_ty(), type_params, &mut subst, &mut conflicts);
+        }
+        for (tp, first, second) in &conflicts {
+            self.error(
+                format!(
+                    "type parameter `{}` of `{}` is used inconsistently: inferred both `{:?}` and `{:?}` from its arguments",
+                    tp, template_name, first, second
+                ),
+                span,
+            );
         }
         let mut out = Vec::new();
         for tp in type_params {
@@ -891,14 +912,43 @@ impl Checker {
         }
         let is_cmp = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge);
         if !lhs_ty.is_vec() && !lhs_ty.is_mat() && !rhs_ty.is_vec() && !rhs_ty.is_mat() {
-            // Original scalar behavior, preserved exactly.
-            return if is_cmp {
-                Ty::Bool
-            } else {
-                match (lhs_ty, rhs_ty) {
-                    (Ty::Float, _) | (_, Ty::Float) => Ty::Float,
-                    _ => Ty::Int,
+            if is_cmp {
+                // Only these two shapes have real codegen support today
+                // (`Codegen::emit_binop`'s scalar and `Ty::Ptr` arms): a
+                // scalar Int/Float pair (any mix, all six operators), and a
+                // `ptr`/`ptr` pair restricted to `==`/`!=`. Every other type
+                // -- `GenRef<T>`, `str`, an enum, a struct, `List<T>`, a
+                // closure, `bool`, or any mismatched pair -- used to fall
+                // through this same "original scalar behavior" branch and
+                // type-check cleanly regardless, only to fail with an
+                // unlocated error once `emit_binop` actually saw it at
+                // codegen time.
+                let is_scalar = |t: &Ty| matches!(t, Ty::Int | Ty::Float);
+                if is_scalar(lhs_ty) && is_scalar(rhs_ty) {
+                    return Ty::Bool;
                 }
+                if *lhs_ty == Ty::Ptr && *rhs_ty == Ty::Ptr {
+                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
+                        self.error("only `==`/`!=` are supported on `ptr` values", span);
+                    }
+                    return Ty::Bool;
+                }
+                let op_str = match op {
+                    BinOp::Eq => "==", BinOp::Ne => "!=",
+                    BinOp::Lt => "<", BinOp::Gt => ">",
+                    BinOp::Le => "<=", BinOp::Ge => ">=",
+                    _ => unreachable!("is_cmp already restricts op to these six"),
+                };
+                self.error(
+                    format!("`{}` is not supported between `{:?}` and `{:?}`", op_str, lhs_ty, rhs_ty),
+                    span,
+                );
+                return Ty::Bool;
+            }
+            // Original scalar arithmetic behavior, preserved exactly.
+            return match (lhs_ty, rhs_ty) {
+                (Ty::Float, _) | (_, Ty::Float) => Ty::Float,
+                _ => Ty::Int,
             };
         }
 
@@ -1031,6 +1081,70 @@ impl Checker {
             }
         }
         Ty::vec_of_arity(field.len() as u8).unwrap_or(Ty::Named("unknown".into()))
+    }
+
+    /// Report a checker error if `arms` doesn't provably cover every value
+    /// of `scrutinee_ty` -- previously nothing did, so a non-exhaustive
+    /// `match` compiled cleanly and fell through to an `undef` value at
+    /// runtime (see the "no arm matched" fallthrough path in
+    /// `Codegen::emit_expr`'s `TypedExpr::Match` arm, which assumes
+    /// exhaustiveness was already checked here). `Pattern::Wildcard`,
+    /// `Pattern::Binding`, and a `Pattern::Struct` matching the scrutinee's
+    /// own struct type (per its doc comment, a struct pattern carries no tag
+    /// and always matches) are all unconditional catch-alls. Otherwise,
+    /// exhaustiveness is provable only for `enum` (every variant covered)
+    /// and `bool` (`true` and `false` both covered) scrutinees; every other
+    /// type's domain (`i32`, `str`, ...) can't be proven covered by a finite
+    /// set of literal/`Compare` patterns, so those always require an
+    /// explicit catch-all.
+    fn check_match_exhaustive(&mut self, scrutinee_ty: &Ty, arms: &[TypedMatchArm], span: Span) {
+        if Self::is_placeholder_ty(scrutinee_ty) {
+            return;
+        }
+        let has_catchall = arms.iter().any(|a| matches!(a.pattern, Pattern::Wildcard | Pattern::Binding(_)));
+        if has_catchall {
+            return;
+        }
+        match scrutinee_ty {
+            Ty::Enum(name) => {
+                let Some(edef) = self.enums.get(name).cloned() else { return };
+                let covered: std::collections::HashSet<&str> = arms.iter()
+                    .filter_map(|a| if let Pattern::EnumVariant(_, variant, _) = &a.pattern { Some(variant.as_str()) } else { None })
+                    .collect();
+                let missing: Vec<&str> = edef.variants.iter()
+                    .map(|v| v.name.as_str())
+                    .filter(|v| !covered.contains(v))
+                    .collect();
+                if !missing.is_empty() {
+                    self.error(
+                        format!(
+                            "non-exhaustive match over `{}`: missing variant(s) `{}` -- add a match arm for each, or a wildcard `_`",
+                            name, missing.join("`, `")
+                        ),
+                        span,
+                    );
+                }
+            }
+            Ty::Bool => {
+                let has_true = arms.iter().any(|a| matches!(a.pattern, Pattern::Bool(true)));
+                let has_false = arms.iter().any(|a| matches!(a.pattern, Pattern::Bool(false)));
+                if !(has_true && has_false) {
+                    self.error("non-exhaustive match over `bool`: missing `true` and/or `false` -- add a wildcard `_` or cover both", span);
+                }
+            }
+            Ty::Named(struct_name) => {
+                let has_struct_catchall = arms.iter().any(|a| matches!(&a.pattern, Pattern::Struct(n, _) if n == struct_name));
+                if !has_struct_catchall {
+                    self.error(
+                        format!("non-exhaustive match over `{}`: add a `{}(..)` pattern or a wildcard `_`", struct_name, struct_name),
+                        span,
+                    );
+                }
+            }
+            _ => {
+                self.error("non-exhaustive match: add a wildcard `_` arm to cover any remaining values", span);
+            }
+        }
     }
 
     fn check_match_arm(&mut self, arm: &MatchArm, scrutinee_expr: &TypedExpr, vars: &mut HashMap<String, Ty>) -> TypedMatchArm {

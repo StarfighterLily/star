@@ -488,10 +488,26 @@ impl<'src> Lexer<'src> {
                     self.pos += 1;
                     let expr_start = self.pos;
                     let mut depth = 1;
+                    // Tracks whether the scan is currently inside a nested
+                    // `"..."` string literal within the hole's expression
+                    // (e.g. `f"{concat("}", x)}"` ) -- brace bytes inside one
+                    // don't affect nesting `depth`, and a `\"` inside it
+                    // doesn't end it early. Bytes are compared against plain
+                    // ASCII here (not full codepoints); that's safe even for
+                    // multi-byte UTF-8 content because no continuation or
+                    // lead byte of a multi-byte sequence ever collides with
+                    // the ASCII values of `"`/`{`/`}`/`\`.
+                    let mut in_str = false;
                     while self.pos < self.bytes.len() && depth > 0 {
                         match self.bytes[self.pos] {
-                            b'{' => depth += 1,
-                            b'}' => depth -= 1,
+                            b'\\' if in_str => {
+                                // Skip the escaped byte too, so it's never
+                                // mistaken for the closing `"`.
+                                self.pos += 1;
+                            }
+                            b'"' => in_str = !in_str,
+                            b'{' if !in_str => depth += 1,
+                            b'}' if !in_str => depth -= 1,
                             _ => {}
                         }
                         if depth == 0 {
