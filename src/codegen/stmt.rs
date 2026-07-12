@@ -131,7 +131,15 @@ impl Codegen {
         self.line(&format!("declare {} @{}({})", ret_ty, sig.name, params.join(", ")));
     }
 
-    pub(super) fn emit_fn(&mut self, f: &TypedFnDef) {
+    /// `owner`: `Some(struct_name)` for an impl method, `None` for a free
+    /// function. A method's emitted LLVM function name is mangled as
+    /// `{struct}__{method}` (looked up via `Codegen::methods` at call sites,
+    /// see `emit_call_expr`) rather than the bare method name, since two
+    /// unrelated structs may declare a same-named method with a different
+    /// signature -- emitting both under the bare name would be a duplicate
+    /// `define @name` global, rejected by clang as an "invalid redefinition
+    /// of function" on otherwise valid source.
+    pub(super) fn emit_fn(&mut self, f: &TypedFnDef, owner: Option<&str>) {
         self.symbols.clear();
         self.owned_stack.clear();
         self.push_scope();
@@ -150,13 +158,16 @@ impl Codegen {
         // implicit `ret i32 0` appended when the user's body doesn't already
         // return a value, mirroring what `rustc`/`clang` do for a bare `fn
         // main()`/`void main()`.
-        let is_main = f.sig.name == "main";
+        let is_main = owner.is_none() && f.sig.name == "main";
         let ret_ty = if is_main {
             "i32".to_string()
         } else {
             match &f.sig.ret { Some(t) => self.llvm_ty(t), None => "void".into() }
         };
-        let func_name = &f.sig.name;
+        let func_name = match owner {
+            Some(struct_name) => format!("{}__{}", struct_name, f.sig.name),
+            None => f.sig.name.clone(),
+        };
 
         self.write(&format!("define {} @{}(", ret_ty, func_name));
         // `main`'s real, OS-called LLVM signature always accepts `argc`/

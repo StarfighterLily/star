@@ -7,9 +7,19 @@ declare noalias i8* @malloc(i64)
 declare void @free(i8*)
 declare void @exit(i32) noreturn
 declare i32 @strlen(i8*)
+declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i8* @fopen(i8*, i8*)
+declare i32 @fclose(i8*)
+declare i64 @fread(i8*, i64, i64, i8*)
+declare i64 @fwrite(i8*, i64, i64, i8*)
+declare i32 @fseek(i8*, i32, i32)
+declare i32 @ftell(i8*)
+declare i32 @fgetc(i8*)
+declare i8* @getenv(i8*)
+declare i32 @_putenv(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -28,6 +38,9 @@ declare float @llvm.maxnum.f32(float, float)
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
+
+@star.argc = global i32 0
+@star.argv = global i8** null
 
 @rng.state = global i32 123456789
 
@@ -93,7 +106,7 @@ done:
 }
 
 %Countdown = type { i32, i32, i32 }
-define i1 @resume(%Countdown* %self) {
+define i1 @Countdown__resume(%Countdown* %self) {
 entry:
   %t0 = alloca %Countdown*
   store %Countdown* %self, %Countdown** %t0
@@ -177,8 +190,10 @@ if_else_7:
   ret i1 false
 }
 
-define i32 @main() {
+define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  store i32 %.argc, i32* @star.argc
+  store i8** %.argv, i8*** @star.argv
   %t0 = alloca %Countdown
   %t1 = alloca %Countdown
   %t2 = getelementptr inbounds %Countdown, %Countdown* %t1, i32 0, i32 0
@@ -196,7 +211,7 @@ while_cond_9:
   %t7 = load i1, i1* %t6
   br i1 %t7, label %while_body_10, label %while_end_12
 while_body_10:
-  %t8 = call i1 @resume(%Countdown* %t0)
+  %t8 = call i1 @Countdown__resume(%Countdown* %t0)
   store i1 %t8, i1* %t6
   br label %while_cond_9
 while_else_11:

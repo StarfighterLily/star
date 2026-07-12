@@ -18,6 +18,8 @@ declare i64 @fwrite(i8*, i64, i64, i8*)
 declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
+declare i8* @getenv(i8*)
+declare i32 @_putenv(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -36,6 +38,9 @@ declare float @llvm.maxnum.f32(float, float)
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
+
+@star.argc = global i32 0
+@star.argv = global i8** null
 
 @rng.state = global i32 123456789
 
@@ -100,8 +105,10 @@ done:
   ret void
 }
 
-define i32 @main() {
+define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  store i32 %.argc, i32* @star.argc
+  store i8** %.argv, i8*** @star.argv
   %t0 = alloca i8*
   %t1 = getelementptr inbounds { i64, i8*, [33 x i8] }, { i64, i8*, [33 x i8] }* @.str.0, i64 0, i32 2, i64 0
   store i8* %t1, i8** %t0

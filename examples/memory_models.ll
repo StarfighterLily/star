@@ -7,9 +7,19 @@ declare noalias i8* @malloc(i64)
 declare void @free(i8*)
 declare void @exit(i32) noreturn
 declare i32 @strlen(i8*)
+declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i8* @fopen(i8*, i8*)
+declare i32 @fclose(i8*)
+declare i64 @fread(i8*, i64, i64, i8*)
+declare i64 @fwrite(i8*, i64, i64, i8*)
+declare i32 @fseek(i8*, i32, i32)
+declare i32 @ftell(i8*)
+declare i32 @fgetc(i8*)
+declare i8* @getenv(i8*)
+declare i32 @_putenv(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -28,6 +38,9 @@ declare float @llvm.maxnum.f32(float, float)
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
+
+@star.argc = global i32 0
+@star.argv = global i8** null
 
 @rng.state = global i32 123456789
 
@@ -223,29 +236,28 @@ entry:
   %t4 = load i32, i32* %t3
   %t5 = sext i32 %t2 to i64
   %t6 = icmp ult i64 %t5, 1024
-  br i1 %t6, label %genref_check_7, label %genref_stale_9
-genref_check_7:
+  br i1 %t6, label %genref_place_check_7, label %genref_place_stale_9
+genref_place_check_7:
   %t7 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.EnemyArena.gen, i64 0, i64 %t5
   %t8 = load i32, i32* %t7
   %t9 = icmp eq i32 %t4, %t8
   %t10 = and i32 %t8, 1
   %t11 = icmp eq i32 %t10, 1
   %t12 = and i1 %t9, %t11
-  br i1 %t12, label %genref_ok_8, label %genref_stale_9
-genref_ok_8:
+  br i1 %t12, label %genref_place_ok_8, label %genref_place_stale_9
+genref_place_ok_8:
   %t13 = load %Point*, %Point** @arena.EnemyArena.data
   %t14 = getelementptr inbounds %Point, %Point* %t13, i64 %t5
-  %t15 = load %Point, %Point* %t14
-  br label %genref_end_10
-genref_stale_9:
-  br label %genref_end_10
-genref_end_10:
-  %t16 = phi %Point [ %t15, %genref_ok_8 ], [ zeroinitializer, %genref_stale_9 ]
-  %t17 = alloca %Point
-  store %Point %t16, %Point* %t17
-  %t18 = getelementptr inbounds %Point, %Point* %t17, i32 0, i32 0
-  %t19 = load i32, i32* %t18
-  ret i32 %t19
+  br label %genref_place_end_10
+genref_place_stale_9:
+  %t15 = alloca %Point
+  store %Point zeroinitializer, %Point* %t15
+  br label %genref_place_end_10
+genref_place_end_10:
+  %t16 = phi %Point* [ %t14, %genref_place_ok_8 ], [ %t15, %genref_place_stale_9 ]
+  %t17 = getelementptr inbounds %Point, %Point* %t16, i32 0, i32 0
+  %t18 = load i32, i32* %t17
+  ret i32 %t18
 }
 
 define void @game_tick() {
@@ -337,8 +349,10 @@ frame_alloc_ok_22:
   ret void
 }
 
-define i32 @main() {
+define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  store i32 %.argc, i32* @star.argc
+  store i8** %.argv, i8*** @star.argv
   %t0 = alloca i32
   %t1 = call i32 @calculate_path(i32 5, i32 10)
   store i32 %t1, i32* %t0

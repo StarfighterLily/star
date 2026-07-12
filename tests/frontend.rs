@@ -927,7 +927,7 @@ fn codegen_sequence_uses_state_machine() {
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
     assert!(ir.contains("%Countdown = type"), "{}", ir);
-    assert!(ir.contains("define i1 @resume(%Countdown* %self)"), "{}", ir);
+    assert!(ir.contains("define i1 @Countdown__resume(%Countdown* %self)"), "{}", ir);
     assert!(ir.contains("icmp eq i32"), "state comparison should appear: {}", ir);
     assert!(ir.matches("ret i1").count() >= 2, "each segment should be able to return a bool: {}", ir);
 }
@@ -1334,6 +1334,33 @@ fn codegen_spawn_reuses_freed_slot_before_growing() {
     assert!(ir.contains("spawn_grow"), "spawn should have a count-growing fallback path: {}", ir);
 }
 
+/// Regression test: `@arena.{name}.count` is a high-water mark of
+/// ever-allocated slots, not a live count -- `despawn` never decrements it,
+/// only bumps the slot's generation and pushes it onto the free-list (see
+/// `codegen_despawn_pushes_freed_slot_onto_freelist`). Before this fix, the
+/// `par`/`swarm` worker loop walked `[start, end)` over that raw index range
+/// with no liveness check at all, so it visited despawned "holes" exactly
+/// like live slots -- for an RC-bearing element type this reads/retains a
+/// pointer `despawn` already released (a use-after-free), and even for
+/// plain data it processes an entity that's supposed to no longer exist.
+/// The generated worker must gate each slot on its generation's parity
+/// before running the loop body.
+#[test]
+fn codegen_par_worker_skips_despawned_slots() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let worker_ir = extract_fn_body(&ir, "define i32 @par_worker_0(");
+    assert!(
+        worker_ir.contains("@arena.Enemies.gen"),
+        "par worker should check the slot's generation before visiting it: {}",
+        worker_ir
+    );
+    assert!(worker_ir.contains("par_live"), "par worker should branch around despawned slots: {}", worker_ir);
+    assert!(worker_ir.contains("par_incr"), "the increment/next-iteration path must be reachable whether or not a slot is skipped: {}", worker_ir);
+}
+
 /// Runtime test: `despawn` pushes a slot onto the arena's free-list and the
 /// next `spawn` reclaims that same slot rather than growing the arena, while
 /// the generation bump still keeps a `GenRef` taken before the despawn from
@@ -1362,6 +1389,61 @@ fn runtime_double_despawn_does_not_double_free_slot() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("slot0: 200"), "reused slot should hold the second spawn's value: {}", stdout);
     assert!(stdout.contains("slot1: 300"), "third spawn should grow into a fresh slot, not alias slot 0: {}", stdout);
+}
+
+/// Runtime regression test for the same bug `codegen_par_worker_skips_despawned_slots`
+/// checks at the IR level, but exercised end to end against an RC-bearing
+/// element field (`str`), where the consequence isn't just "wrong
+/// results" but an actual use-after-free: `despawn` releases a dead slot's
+/// `str` field (see `emit_despawn_stmt`), so a `par` body that reads it
+/// (retaining an already-released/possibly-freed pointer, then releasing it
+/// again at the end of that iteration) would previously crash or corrupt
+/// the heap. Also verifies the still-live entities are correctly visited
+/// and mutated, so the despawned-slot skip doesn't accidentally skip real
+/// work too.
+///
+/// This test also caught a second, independent bug while it was being
+/// written: `emit_par_stmt` swapped out `self.ir`/`self.symbols` for the
+/// worker function's own but never did the same for `self.owned_stack`
+/// (the release-at-scope-exit bookkeeping, see `rc.rs`), and never wrapped
+/// the loop body in its own `push_scope`/`pop_scope` at all. An RC-owned
+/// local declared inside the body (`let t: str = e.name`, right below) got
+/// `track_owned`'d onto whatever scope frame happened to be open in the
+/// *caller* at the time `par` was codegen'd, rather than the worker's own
+/// -- so once codegen returned and the caller's frame was eventually
+/// popped, it tried to release a register (`%tN`) that was only ever
+/// defined in the worker function's separate IR buffer, producing invalid
+/// IR ("use of undefined value") at the `clang` step regardless of the
+/// despawn/generation-parity fix above. Fixed alongside it.
+#[test]
+fn runtime_par_skips_despawned_slot_end_to_end() {
+    let src = concat!(
+        "struct Enemy:\n",
+        "    mut hp: i32\n",
+        "    name: str\n",
+        "arena Enemies: Enemy\n",
+        "fn main():\n",
+        "    spawn Enemies(1, \"keep-a\")\n",
+        "    spawn Enemies(2, \"keep-b\")\n",
+        "    spawn Enemies(3, \"dead-c\")\n",
+        "    despawn Enemies[2]\n",
+        "    par e in Enemies:\n",
+        "        let t: str = e.name\n",
+        "        e.hp -= 100\n",
+        "    let r0 = GenRef<Enemy>(0)\n",
+        "    let r1 = GenRef<Enemy>(1)\n",
+        "    println(f\"hp0={r0[0].hp} hp1={r1[0].hp}\")\n",
+    );
+    let output = compile_and_run("par_skips_despawned", src);
+    assert!(
+        output.status.success(),
+        "reading a despawned slot's already-released str field from inside par must not crash: {:?}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "hp0=-99 hp1=-98", "both still-live entities should still be visited and mutated: {}", stdout);
 }
 
 // ===== M8 Reflection ========================================================
@@ -3493,6 +3575,74 @@ fn runtime_list_cow_clone_retains_str_elements_end_to_end() {
     assert_eq!(lines.next(), Some("b0=alpha b1=beta b2=gamma blen=3"), "{}", stdout);
 }
 
+/// Regression test: `Codegen::emit_place` previously had no `ListIndex` arm,
+/// so a mutating operation whose *receiver* was itself a `list[i]`
+/// expression (`outer[i].push(v)`, chaining a `List<T>` method call onto an
+/// index) fell into `emit_place`'s generic fallback -- evaluate the
+/// expression, spill the resulting *value* into a fresh, disconnected
+/// alloca, and mutate that instead of the real buffer. The write silently
+/// vanished: `outer[0].push(99)` type-checked, compiled, and ran with zero
+/// observable effect on `outer`. Fixed by giving `emit_place` a dedicated
+/// `ListIndex` arm (`Codegen::emit_list_index_place`) that resolves a real
+/// pointer into the (copy-on-write-uniqued) buffer.
+#[test]
+fn runtime_nested_list_index_receiver_push_mutates_through_index_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let mut outer: List<List<i32>> = [[1, 2], [3, 4]]\n",
+        "    outer[0].push(99)\n",
+        "    println(f\"len0={outer[0].len()} last={outer[0][2]} len1={outer[1].len()}\")\n",
+    );
+    let output = compile_and_run("nested_list_index_push", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "len0=3 last=99 len1=2", "{}", stdout);
+}
+
+/// Same root-cause bug as above (`emit_place`'s missing `ListIndex` arm),
+/// but through the `store_target`/`store_list_index` path instead of a
+/// method-call receiver: `m[i][j] = v` -- a nested nested index-assignment
+/// where the *outer* target's own `base` (`m[i]`) is itself a `ListIndex`
+/// that must resolve to real storage in `m`'s buffer, not a throwaway copy.
+#[test]
+fn runtime_nested_list_index_assignment_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let mut m: List<List<i32>> = [[1, 2], [3, 4]]\n",
+        "    m[0][1] = 999\n",
+        "    println(f\"m00={m[0][0]} m01={m[0][1]} m10={m[1][0]}\")\n",
+    );
+    let output = compile_and_run("nested_list_index_assign", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "m00=1 m01=999 m10=3", "{}", stdout);
+}
+
+/// The same `emit_place` gap also applied to `GenRefIndex` (`gen_ref[0]`
+/// used as the base of a further access): `r[0].field = v`/`r[0].field -= v`
+/// silently no-op'd on the arena, since `emit_place`'s generic fallback
+/// mutated a disconnected copy of the dereferenced struct rather than a
+/// pointer into the live slot. Fixed by `Codegen::emit_genref_index_place`,
+/// mirroring `emit_list_index_place`'s fix for the identical root cause.
+#[test]
+fn runtime_genref_field_write_mutates_arena_slot_end_to_end() {
+    let src = concat!(
+        "struct Entity:\n",
+        "    mut hp: i32\n",
+        "arena Entities: Entity\n",
+        "fn main():\n",
+        "    spawn Entities(100)\n",
+        "    let r = GenRef<Entity>(0)\n",
+        "    r[0].hp -= 10\n",
+        "    let after = r[0]\n",
+        "    println(f\"after: {after.hp}\")\n",
+    );
+    let output = compile_and_run("genref_field_write", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "after: 90", "{}", stdout);
+}
+
 // ===== LANGUAGE_ANALYSIS.md fixes =========================================
 //
 // Regression tests for the bugs identified in `LANGUAGE_ANALYSIS.md` and
@@ -4114,7 +4264,7 @@ fn codegen_sequence_early_return_becomes_ret_false() {
     let module = Driver::parse(src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    let resume_ir = extract_fn_body(&ir, "define i1 @resume(");
+    let resume_ir = extract_fn_body(&ir, "define i1 @S__resume(");
     assert!(resume_ir.contains("ret i1 false"), "early return should lower to ret i1 false: {}", resume_ir);
     assert!(!resume_ir.contains("ret void"), "resume() must never contain a ret void: {}", resume_ir);
 }
@@ -4349,7 +4499,7 @@ fn codegen_method_self_param_is_not_released_at_scope_exit() {
     let module = Driver::parse(src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    let fn_ir = extract_fn_body(&ir, "define i32 @greet(");
+    let fn_ir = extract_fn_body(&ir, "define i32 @P__greet(");
     assert!(!fn_ir.contains("star_rc_release"), "a method must never release its own `self` pointer: {}", fn_ir);
 }
 
@@ -4727,6 +4877,62 @@ fn rejects_struct_recursive_through_generic_wrapper() {
         "got: {:?}",
         errs
     );
+}
+
+/// A generic struct whose field wraps its *own* type parameter in another
+/// generic each level (`Node<T>: next: Node<Box<T>>`) is a fundamentally
+/// different shape from `rejects_directly_recursive_struct`/
+/// `rejects_struct_recursive_through_generic_wrapper` above: those are
+/// caught by `check_no_recursive_structs` walking the *already-instantiated*
+/// items, but this one never gets that far -- `instantiate_struct`
+/// memoizes by mangled name (`Node__Box__i32`, `Node__Box__Box__i32`, ...),
+/// and every recursive step here produces a *new* mangled name the memo
+/// check has never seen, so it recurses through Rust's own call stack
+/// forever. Previously an unguarded stack-overflow ICE (the whole `star`
+/// process aborting) on four lines of otherwise ordinary-looking source,
+/// with no diagnostic at all. `Checker::mono_depth` bounds this to a clean
+/// error instead.
+#[test]
+fn rejects_infinitely_nested_generic_struct_field_does_not_overflow_stack() {
+    let src = concat!(
+        "struct Box<T>:\n",
+        "    value: T\n",
+        "struct Node<T>:\n",
+        "    next: Node<Box<T>>\n",
+        "struct Root:\n",
+        "    n: Node<i32>\n",
+        "fn main():\n",
+        "    println(\"hi\")\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("an infinitely-growing generic instantiation should be rejected, not silently accepted")
+    };
+    assert!(
+        errs.iter().any(|d| d.message.contains("nests too deeply")),
+        "got: {:?}",
+        errs
+    );
+}
+
+/// A generic wrapper nested several levels deep, but *finitely* (each level
+/// is written explicitly in the source, not generated by recursive
+/// instantiation), must still compile and run correctly -- guards against
+/// `mono_depth`'s recursion guard being so aggressive it rejects sound,
+/// ordinary nested-generic code.
+#[test]
+fn runtime_finitely_nested_generic_struct_end_to_end() {
+    let src = concat!(
+        "struct Box<T>:\n",
+        "    value: T\n",
+        "fn main():\n",
+        "    let b = Box(Box(Box(5)))\n",
+        "    println(f\"{b.value.value.value}\")\n",
+    );
+    let output = compile_and_run("finitely_nested_generic", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "5", "{}", stdout);
 }
 
 /// Runtime test for the RC atomicity fix: `examples/par_rc_race.exe` spawns
@@ -5782,8 +5988,12 @@ fn runtime_method_call_on_nested_field_receiver_end_to_end() {
 
 /// A method call chained directly onto a list-index expression
 /// (`list[i].method()`) -- a receiver that is neither a bare `Ident` nor a
-/// `Field`, so it exercises `emit_place`'s fallback arm (spill the rvalue
-/// into a fresh alloca) rather than either of its named-storage arms.
+/// `Field`, so it exercises `emit_place`'s dedicated `ListIndex` arm
+/// (`Codegen::emit_list_index_place`) rather than either of its
+/// named-storage arms. (Before that arm existed, this fell into the generic
+/// fallback -- fine for this particular test since `get` never mutates, but
+/// see `runtime_nested_list_index_receiver_push_mutates_through_index_end_to_end`
+/// for the mutating case that fallback got wrong.)
 #[test]
 fn runtime_method_call_on_list_index_receiver_end_to_end() {
     let src = concat!(
@@ -5802,6 +6012,99 @@ fn runtime_method_call_on_list_index_receiver_end_to_end() {
     assert!(output.status.success(), "{:?}", output.status);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim_end(), "9", "{}", stdout);
+}
+
+// ===== Method name mangling (per-struct method tables) =====================
+//
+// Both `Checker::check`'s registration pass and `Codegen::emit_fn` used to
+// key every impl method by its *bare* method name alone -- `self.functions`
+// (checker) and the emitted LLVM function itself (codegen: `define @{name}`)
+// -- shared with every other function/method in the module. Two unrelated
+// structs declaring a same-named method (`impl A: fn area(self) -> i32`,
+// `impl B: fn area(self, scale: i32) -> i32`) collided: the checker
+// type-checked every `.area()` call site against whichever impl happened to
+// be registered last (wrong argument/return-type validation, or a
+// false-positive arity error on perfectly valid code), and codegen emitted
+// two `define @area(...)` globals under the identical LLVM name, which
+// clang rejected outright ("invalid redefinition of function") even when
+// both methods' signatures happened to agree. Fixed by keying methods
+// per-struct: `Checker::methods`/`Codegen::methods`, both keyed by
+// `"{struct}#{method}"`, with the emitted LLVM function itself mangled to
+// `{struct}__{method}` (`Codegen::emit_fn`'s `owner` parameter).
+
+/// Two unrelated structs declaring a same-named method with *different*
+/// arity must not collide: previously this was rejected by the checker with
+/// a bogus "expects 1 argument(s), found 0" (validated against whichever
+/// impl was registered last in the flat, name-keyed table) even though
+/// `a.area()` supplies exactly the right number of arguments for `A::area`.
+#[test]
+fn checks_same_named_methods_on_different_structs_with_different_arity() {
+    let src = concat!(
+        "struct A:\n",
+        "    x: i32\n",
+        "struct B:\n",
+        "    y: i32\n",
+        "impl A:\n",
+        "    fn area(self) -> i32:\n",
+        "        return 1\n",
+        "impl B:\n",
+        "    fn area(self, scale: i32) -> i32:\n",
+        "        return scale\n",
+        "fn main():\n",
+        "    let a = A(5)\n",
+        "    println(f\"{a.area()}\")\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "{:?}", Driver::check(&module).err());
+}
+
+/// Two unrelated structs declaring a same-named method with the *same*
+/// arity/signature shape must still dispatch to the correct implementation
+/// (not just type-check) and must not collide as duplicate LLVM globals --
+/// previously this failed at the `clang` step with "invalid redefinition of
+/// function 'area'" regardless of whether the checker accepted the source.
+#[test]
+fn runtime_same_named_methods_on_different_structs_dispatch_correctly_end_to_end() {
+    let src = concat!(
+        "struct A:\n",
+        "    x: i32\n",
+        "struct B:\n",
+        "    y: i32\n",
+        "impl A:\n",
+        "    fn area(self) -> i32:\n",
+        "        return self.x * 2\n",
+        "impl B:\n",
+        "    fn area(self) -> i32:\n",
+        "        return self.y * 100\n",
+        "fn main():\n",
+        "    let a = A(5)\n",
+        "    let b = B(3)\n",
+        "    println(f\"a.area={a.area()} b.area={b.area()}\")\n",
+    );
+    let output = compile_and_run("method_name_collision", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "a.area=10 b.area=300", "{}", stdout);
+}
+
+/// Codegen-shape check: an impl method's emitted LLVM function is mangled
+/// as `{struct}__{method}`, not the bare method name, so two structs'
+/// same-named methods never collide as duplicate `define`s regardless of
+/// what a runtime test's specific call sites happen to exercise.
+#[test]
+fn codegen_impl_method_llvm_name_is_mangled_by_struct() {
+    let src = concat!(
+        "struct A:\n",
+        "    x: i32\n",
+        "impl A:\n",
+        "    fn area(self) -> i32:\n",
+        "        return self.x\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("define i32 @A__area(%A* %self)"), "{}", ir);
+    assert!(!ir.contains("define i32 @area("), "the bare, unmangled method name must never be emitted as a global: {}", ir);
 }
 
 // ===== Builtin call argument validation =====================================

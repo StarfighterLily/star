@@ -69,9 +69,10 @@ impl Checker {
                     }
                     // A method call `obj.method(args)` where `method` isn't
                     // also a field on `obj`'s struct: type the callee as a
-                    // bare `Field` (`ty: unknown`, resolved below through the
-                    // flat, name-keyed function/method table -- impl methods
-                    // share it with free functions, see `Checker::check`)
+                    // bare `Field` (`ty: unknown`, resolved below through
+                    // `Checker::methods`, keyed by `"{struct}#{method}"` so
+                    // two unrelated structs can declare a same-named method
+                    // without colliding -- see that field's own doc comment)
                     // rather than routing it through the generic `Expr::Field`
                     // arm's `resolve_field_type`, which only ever looks a
                     // name up in the struct's *field* list and would reject
@@ -81,7 +82,8 @@ impl Checker {
                         let is_real_field = self.structs.get(&struct_name)
                             .map(|s| s.fields.iter().any(|f| f.name == *field))
                             .unwrap_or(false);
-                        if !is_real_field && self.functions.contains_key(field) {
+                        let method_key = format!("{}#{}", struct_name, field);
+                        if !is_real_field && self.methods.contains_key(&method_key) {
                             let callee_expr = TypedExpr::Field {
                                 base: Box::new(base_typed),
                                 field: field.clone(),
@@ -91,10 +93,10 @@ impl Checker {
                             let arg_exprs: Vec<TypedExpr> = args.iter()
                                 .map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into()))))
                                 .collect();
-                            if let Some((param_tys, _)) = self.functions.get(field).cloned() {
+                            if let Some((param_tys, _)) = self.methods.get(&method_key).cloned() {
                                 self.check_call_args(&param_tys, true, &arg_exprs, *span);
                             }
-                            let ret_ty = self.functions.get(field).and_then(|(_, ret)| ret.clone()).unwrap_or(Ty::Named("unknown".into()));
+                            let ret_ty = self.methods.get(&method_key).and_then(|(_, ret)| ret.clone()).unwrap_or(Ty::Named("unknown".into()));
                             return Ok(TypedExpr::Call { callee: Box::new(callee_expr), args: arg_exprs, ty: ret_ty, span: *span });
                         }
                     }
@@ -159,21 +161,31 @@ impl Checker {
                 let ret_ty = if let Ty::Closure(_, ret) = callee_expr.clone().into_ty() {
                     *ret
                 } else {
-                    // Look up the signature from the function table. Impl
-                    // methods share the same flat table as free functions
-                    // (keyed by name only), so a method call `obj.method()`
-                    // resolves exactly like a free-function call: through the
-                    // callee's name, whether that name came from an `Ident` or
-                    // (for methods) the field of a `Field` access. §1.4: this
-                    // is also where argument count/type validation happens
-                    // for an ordinary call -- previously entirely absent, so
-                    // `add("foo", "bar")` against `fn add(a: i32, b: i32)`
-                    // type-checked cleanly and only misbehaved (undefined
-                    // behavior from treating two string pointers as `i32`s)
-                    // once actually run.
+                    // Look up the signature from the function table. §1.4:
+                    // this is also where argument count/type validation
+                    // happens for an ordinary call -- previously entirely
+                    // absent, so `add("foo", "bar")` against `fn add(a: i32,
+                    // b: i32)` type-checked cleanly and only misbehaved
+                    // (undefined behavior from treating two string pointers
+                    // as `i32`s) once actually run.
+                    //
+                    // Most `Field`-callee method calls are already resolved
+                    // (and returned) by the per-struct `self.methods` lookup
+                    // above; this branch only remains reachable for a method
+                    // call whose receiver type wasn't a plain `Ty::Named`
+                    // (e.g. still `unknown` from an earlier error), so it
+                    // falls back to `self.functions` defensively rather than
+                    // reporting "no such method" twice.
                     let sig = match &callee_expr {
                         TypedExpr::Ident { name, .. } => self.functions.get(name).cloned(),
-                        TypedExpr::Field { field, .. } => self.functions.get(field).cloned(),
+                        TypedExpr::Field { base, field, .. } => {
+                            if let Ty::Named(struct_name) = base.clone().into_ty() {
+                                self.methods.get(&format!("{}#{}", struct_name, field)).cloned()
+                                    .or_else(|| self.functions.get(field).cloned())
+                            } else {
+                                self.functions.get(field).cloned()
+                            }
+                        }
                         _ => None,
                     };
                     match sig {

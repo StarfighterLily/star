@@ -203,11 +203,20 @@ impl Codegen {
         }
 
         // Register method names so `obj.method()` can be resolved in codegen.
+        // The LLVM function itself is emitted under a struct-mangled name
+        // (`{struct}__{method}`, see `emit_fn`'s `owner` parameter) rather
+        // than the bare method name -- two unrelated structs can declare a
+        // method with the same name, and emitting both as `define @method`
+        // is a duplicate global-symbol definition that clang rejects
+        // ("invalid redefinition of function") on ordinary, correctly
+        // type-checked source.
         for item in &module.items {
             if let TypedItem::Impl(blk) = item {
                 for m in &blk.methods {
-                    self.methods
-                        .insert(format!("{}#{}", blk.type_name, m.sig.name), m.sig.name.clone());
+                    self.methods.insert(
+                        format!("{}#{}", blk.type_name, m.sig.name),
+                        format!("{}__{}", blk.type_name, m.sig.name),
+                    );
                 }
             }
         }
@@ -215,9 +224,9 @@ impl Codegen {
         for item in &module.items {
             match item {
                 TypedItem::Impl(blk) => {
-                    for m in &blk.methods { self.emit_fn(m); }
+                    for m in &blk.methods { self.emit_fn(m, Some(&blk.type_name)); }
                 }
-                TypedItem::Fn(f) => self.emit_fn(f),
+                TypedItem::Fn(f) => self.emit_fn(f, None),
                 _ => {}
             }
         }
@@ -621,10 +630,21 @@ impl Codegen {
                 self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, bty, bty, base_ptr, idx));
                 gep
             }
-            // Any other expression (e.g. `gen_ref[idx].field`, chaining a
-            // field access directly onto a struct returned *by value*) has
-            // no existing storage to address -- spill it into a fresh
-            // alloca so the `Field` arm above has a pointer to GEP into.
+            // `list[idx]`/`gen_ref[idx]` used as the *base* of a further
+            // access (`list[i].field = v`, `list[i].push(x)`,
+            // `gen_ref[0].hp -= 10`, `m[i][j] = v`, ...): resolve to a real
+            // pointer into the underlying buffer/arena slot rather than
+            // falling into the generic fallback below, which would spill a
+            // disconnected *copy* of the read value and silently discard
+            // any write through it. See `emit_list_index_place`/
+            // `emit_genref_index_place`'s own doc comments for the bug this
+            // closes.
+            TypedExpr::ListIndex { base, index, ty, .. } => self.emit_list_index_place(base, index, ty),
+            TypedExpr::GenRefIndex { base, ty, span, .. } => self.emit_genref_index_place(base, ty, *span),
+            // Any other expression (e.g. chaining a field access directly
+            // onto a struct returned *by value*) has no existing storage to
+            // address -- spill it into a fresh alloca so the `Field` arm
+            // above has a pointer to GEP into.
             _ => {
                 let val = self.emit_expr(expr);
                 let ty = self.expr_ty(expr);

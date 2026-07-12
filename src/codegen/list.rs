@@ -565,6 +565,60 @@ impl Codegen {
         self.line(&format!("{}:", end_label));
     }
 
+    /// Place resolution for a `list[idx]` *base* of a further access --
+    /// `list[i].field = v`, `list[i].push(v)`, `m[i][j] = v` (a nested
+    /// `ListIndex` chained onto another `ListIndex`), `list[i].method()`
+    /// with a mutating receiver, etc. Returns a real pointer into the
+    /// (copy-on-write-uniqued) buffer at `idx`, so a write through the
+    /// returned pointer is actually observable in the list afterwards.
+    ///
+    /// Before this existed, `Codegen::emit_place` had no `ListIndex` arm, so
+    /// any such chained access fell into its generic fallback: evaluate the
+    /// expression, spill the *resulting value* into a fresh, disconnected
+    /// alloca, and hand out that pointer. Reads through that pointer were
+    /// (accidentally) correct, but every write vanished into the throwaway
+    /// alloca instead of reaching the list -- `outer[0].push(x)` and
+    /// `m[i][j] = v` silently no-op'd on the real data.
+    ///
+    /// An out-of-bounds index yields a pointer to a fresh, zeroed,
+    /// disconnected alloca (mirrors `store_list_index`'s own out-of-bounds
+    /// silent-no-op convention: nothing is loaded from or written into the
+    /// real buffer, and any read back out of the returned pointer sees a
+    /// well-defined zero value rather than uninitialized memory).
+    pub(super) fn emit_list_index_place(&mut self, base: &TypedExpr, index: &TypedExpr, elem_ty: &Ty) -> String {
+        let elem_llvm = self.llvm_ty(elem_ty);
+        let (data, _, len, _, _) = self.list_fields_mut(base, elem_ty);
+
+        let idx_val = self.emit_expr(index);
+        let idx_bare = self.untag(&idx_val, &Ty::Int);
+        let idx64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", idx64, idx_bare));
+
+        let in_bounds = self.tmp_name();
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, len));
+        let ok_label = self.block_label("list_place_ok");
+        let oob_label = self.block_label("list_place_oob");
+        let end_label = self.block_label("list_place_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, ok_label, oob_label));
+
+        self.line(&format!("{}:", ok_label));
+        let elem_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, elem_llvm, elem_llvm, data, idx64));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.line(&format!("{}:", oob_label));
+        let dummy = self.tmp_name();
+        self.line(&format!("  {} = alloca {}", dummy, elem_llvm));
+        let zero = self.zero_value(elem_ty);
+        self.line(&format!("  store {} {}, {}* {}", elem_llvm, zero, elem_llvm, dummy));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.line(&format!("{}:", end_label));
+        let result = self.tmp_name();
+        self.line(&format!("  {} = phi {}* [ {}, %{} ], [ {}, %{} ]", result, elem_llvm, elem_ptr, ok_label, dummy, oob_label));
+        result
+    }
+
     /// `list.push(v)` / `list.pop()` / `list.len()`.
     pub(super) fn emit_list_method(&mut self, base: &TypedExpr, method: ListMethod, args: &[TypedExpr], elem_ty: &Ty) -> String {
         let elem_llvm = self.llvm_ty(elem_ty);

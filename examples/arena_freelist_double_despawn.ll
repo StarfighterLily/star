@@ -7,9 +7,19 @@ declare noalias i8* @malloc(i64)
 declare void @free(i8*)
 declare void @exit(i32) noreturn
 declare i32 @strlen(i8*)
+declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i8* @fopen(i8*, i8*)
+declare i32 @fclose(i8*)
+declare i64 @fread(i8*, i64, i64, i8*)
+declare i64 @fwrite(i8*, i64, i64, i8*)
+declare i32 @fseek(i8*, i32, i32)
+declare i32 @ftell(i8*)
+declare i32 @fgetc(i8*)
+declare i8* @getenv(i8*)
+declare i32 @_putenv(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -28,6 +38,9 @@ declare float @llvm.maxnum.f32(float, float)
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
+
+@star.argc = global i32 0
+@star.argv = global i8** null
 
 @rng.state = global i32 123456789
 
@@ -100,8 +113,10 @@ done:
 @arena.Entities.free = global [1024 x i64] zeroinitializer
 @arena.Entities.free_top = global i64 0
 
-define i32 @main() {
+define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  store i32 %.argc, i32* @star.argc
+  store i8** %.argv, i8*** @star.argv
   %t0 = load %Entity*, %Entity** @arena.Entities.data
   %t1 = icmp eq %Entity* %t0, null
   br i1 %t1, label %spawn_init_0, label %spawn_ready_1
@@ -319,60 +334,58 @@ genref_create_end_35:
   %t109 = load i32, i32* %t108
   %t110 = sext i32 %t107 to i64
   %t111 = icmp ult i64 %t110, 1024
-  br i1 %t111, label %genref_check_36, label %genref_stale_38
-genref_check_36:
+  br i1 %t111, label %genref_place_check_36, label %genref_place_stale_38
+genref_place_check_36:
   %t112 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Entities.gen, i64 0, i64 %t110
   %t113 = load i32, i32* %t112
   %t114 = icmp eq i32 %t109, %t113
   %t115 = and i32 %t113, 1
   %t116 = icmp eq i32 %t115, 1
   %t117 = and i1 %t114, %t116
-  br i1 %t117, label %genref_ok_37, label %genref_stale_38
-genref_ok_37:
+  br i1 %t117, label %genref_place_ok_37, label %genref_place_stale_38
+genref_place_ok_37:
   %t118 = load %Entity*, %Entity** @arena.Entities.data
   %t119 = getelementptr inbounds %Entity, %Entity* %t118, i64 %t110
-  %t120 = load %Entity, %Entity* %t119
-  br label %genref_end_39
-genref_stale_38:
-  br label %genref_end_39
-genref_end_39:
-  %t121 = phi %Entity [ %t120, %genref_ok_37 ], [ zeroinitializer, %genref_stale_38 ]
-  %t122 = alloca %Entity
-  store %Entity %t121, %Entity* %t122
-  %t123 = getelementptr inbounds %Entity, %Entity* %t122, i32 0, i32 0
-  %t124 = load i32, i32* %t123
-  %t125 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.3, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t125, i32 %t124)
-  %t126 = getelementptr inbounds %GenRef, %GenRef* %t96, i32 0, i32 0
-  %t127 = load i32, i32* %t126
-  %t128 = getelementptr inbounds %GenRef, %GenRef* %t96, i32 0, i32 1
-  %t129 = load i32, i32* %t128
-  %t130 = sext i32 %t127 to i64
-  %t131 = icmp ult i64 %t130, 1024
-  br i1 %t131, label %genref_check_40, label %genref_stale_42
-genref_check_40:
-  %t132 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Entities.gen, i64 0, i64 %t130
-  %t133 = load i32, i32* %t132
-  %t134 = icmp eq i32 %t129, %t133
-  %t135 = and i32 %t133, 1
-  %t136 = icmp eq i32 %t135, 1
-  %t137 = and i1 %t134, %t136
-  br i1 %t137, label %genref_ok_41, label %genref_stale_42
-genref_ok_41:
-  %t138 = load %Entity*, %Entity** @arena.Entities.data
-  %t139 = getelementptr inbounds %Entity, %Entity* %t138, i64 %t130
-  %t140 = load %Entity, %Entity* %t139
-  br label %genref_end_43
-genref_stale_42:
-  br label %genref_end_43
-genref_end_43:
-  %t141 = phi %Entity [ %t140, %genref_ok_41 ], [ zeroinitializer, %genref_stale_42 ]
-  %t142 = alloca %Entity
-  store %Entity %t141, %Entity* %t142
-  %t143 = getelementptr inbounds %Entity, %Entity* %t142, i32 0, i32 0
-  %t144 = load i32, i32* %t143
-  %t145 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.4, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t145, i32 %t144)
+  br label %genref_place_end_39
+genref_place_stale_38:
+  %t120 = alloca %Entity
+  store %Entity zeroinitializer, %Entity* %t120
+  br label %genref_place_end_39
+genref_place_end_39:
+  %t121 = phi %Entity* [ %t119, %genref_place_ok_37 ], [ %t120, %genref_place_stale_38 ]
+  %t122 = getelementptr inbounds %Entity, %Entity* %t121, i32 0, i32 0
+  %t123 = load i32, i32* %t122
+  %t124 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.3, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t124, i32 %t123)
+  %t125 = getelementptr inbounds %GenRef, %GenRef* %t96, i32 0, i32 0
+  %t126 = load i32, i32* %t125
+  %t127 = getelementptr inbounds %GenRef, %GenRef* %t96, i32 0, i32 1
+  %t128 = load i32, i32* %t127
+  %t129 = sext i32 %t126 to i64
+  %t130 = icmp ult i64 %t129, 1024
+  br i1 %t130, label %genref_place_check_40, label %genref_place_stale_42
+genref_place_check_40:
+  %t131 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Entities.gen, i64 0, i64 %t129
+  %t132 = load i32, i32* %t131
+  %t133 = icmp eq i32 %t128, %t132
+  %t134 = and i32 %t132, 1
+  %t135 = icmp eq i32 %t134, 1
+  %t136 = and i1 %t133, %t135
+  br i1 %t136, label %genref_place_ok_41, label %genref_place_stale_42
+genref_place_ok_41:
+  %t137 = load %Entity*, %Entity** @arena.Entities.data
+  %t138 = getelementptr inbounds %Entity, %Entity* %t137, i64 %t129
+  br label %genref_place_end_43
+genref_place_stale_42:
+  %t139 = alloca %Entity
+  store %Entity zeroinitializer, %Entity* %t139
+  br label %genref_place_end_43
+genref_place_end_43:
+  %t140 = phi %Entity* [ %t138, %genref_place_ok_41 ], [ %t139, %genref_place_stale_42 ]
+  %t141 = getelementptr inbounds %Entity, %Entity* %t140, i32 0, i32 0
+  %t142 = load i32, i32* %t141
+  %t143 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.4, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t143, i32 %t142)
   ret i32 0
 }
 

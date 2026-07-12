@@ -7,9 +7,19 @@ declare noalias i8* @malloc(i64)
 declare void @free(i8*)
 declare void @exit(i32) noreturn
 declare i32 @strlen(i8*)
+declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i8* @fopen(i8*, i8*)
+declare i32 @fclose(i8*)
+declare i64 @fread(i8*, i64, i64, i8*)
+declare i64 @fwrite(i8*, i64, i64, i8*)
+declare i32 @fseek(i8*, i32, i32)
+declare i32 @ftell(i8*)
+declare i32 @fgetc(i8*)
+declare i8* @getenv(i8*)
+declare i32 @_putenv(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -28,6 +38,9 @@ declare float @llvm.maxnum.f32(float, float)
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
+
+@star.argc = global i32 0
+@star.argv = global i8** null
 
 @rng.state = global i32 123456789
 
@@ -94,7 +107,7 @@ done:
 
 %Vec3 = type { float, float, float }
 %Player = type { i32, <3 x float>, i8* }
-define void @take_damage(%Player* %self, i32 %amount) {
+define void @Player__take_damage(%Player* %self, i32 %amount) {
 entry:
   %t0 = alloca %Player*
   store %Player* %self, %Player** %t0
@@ -136,7 +149,7 @@ match_end_12:
   ret void
 }
 
-define i32 @remaining_health(%Player* %self) {
+define i32 @Player__remaining_health(%Player* %self) {
 entry:
   %t0 = alloca %Player*
   store %Player* %self, %Player** %t0
@@ -146,8 +159,10 @@ entry:
   ret i32 %t3
 }
 
-define i32 @main() {
+define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  store i32 %.argc, i32* @star.argc
+  store i8** %.argv, i8*** @star.argv
   %t0 = alloca %Player
   %t1 = alloca %Player
   %t2 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 0
@@ -165,10 +180,10 @@ entry:
   store i8* %t10, i8** %t11
   %t12 = load %Player, %Player* %t1
   store %Player %t12, %Player* %t0
-  %t13 = call i32 @remaining_health(%Player* %t0)
+  %t13 = call i32 @Player__remaining_health(%Player* %t0)
   %t14 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.3, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t14, i32 %t13)
-  call void @take_damage(%Player* %t0, i32 150)
+  call void @Player__take_damage(%Player* %t0, i32 150)
   %t16 = getelementptr inbounds %Player, %Player* %t0, i32 0, i32 2
   %t17 = load i8*, i8** %t16
   call void @star_rc_release(i8* %t17)

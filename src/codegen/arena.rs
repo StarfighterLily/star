@@ -92,6 +92,19 @@ impl Codegen {
         self.in_frame = false; // the frame bump allocator's offset is a single shared global, not thread-safe
         let saved_in_main = self.in_main;
         self.in_main = false; // the worker function is its own `i32`-returning function, not `main` itself
+        // `self.owned_stack` tracks pointers to release at scope exit (see
+        // `rc.rs`), keyed by register names -- those names are only
+        // meaningful within the LLVM function they were emitted into. Like
+        // `self.ir`/`self.symbols` above, this must be swapped out for the
+        // worker function's own, empty stack rather than shared with the
+        // caller: previously an RC-owned local declared inside the loop
+        // body (`let t: str = e.name`) called `track_owned`, which pushed
+        // onto *the caller's* still-open scope frame (nothing here ever
+        // swapped it), so once codegen returned to the caller and that
+        // frame was eventually popped, it tried to release a register that
+        // was never defined in the caller's function at all -- invalid IR
+        // ("use of undefined value"), not just a leak.
+        let saved_owned_stack = std::mem::take(&mut self.owned_stack);
 
         self.line(&format!("define i32 @{}(i8* %argp) {{", worker_name));
         self.line("entry:");
@@ -127,6 +140,8 @@ impl Codegen {
         self.line(&format!("  store i64 {}, i64* {}", start_reg, i_ptr));
         let cond_label = self.block_label("par_cond");
         let body_label = self.block_label("par_body");
+        let live_label = self.block_label("par_live");
+        let incr_label = self.block_label("par_incr");
         let end_label = self.block_label("par_end");
         self.line(&format!("  br label %{}", cond_label));
         self.line(&format!("{}:", cond_label));
@@ -136,16 +151,51 @@ impl Codegen {
         self.line(&format!("  {} = icmp slt i64 {}, {}", cmp, i_reg, end_reg));
         self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, body_label, end_label));
         self.line(&format!("{}:", body_label));
+        // `@arena.{arena}.count` is a high-water mark of ever-allocated
+        // slots, not a live count -- `despawn` never decrements it (see
+        // `emit_despawn_stmt`), only bumps the slot's generation and pushes
+        // it onto the free-list. Without this check, a `par`/`swarm` walking
+        // `[0, count)` would visit a despawned "hole" exactly like a live
+        // slot: for an RC-bearing element type, `despawn` already released
+        // that slot's content (see `emit_despawn_stmt`'s own `emit_release_at`
+        // call), so reading/retaining it here is a use-after-free; even for a
+        // plain-data element it's a stale/logically-nonexistent entity that
+        // shouldn't be visited at all. Live slots always carry an odd
+        // generation (see `emit_arena_decl`), so a parity check is enough to
+        // skip every despawned/never-spawned slot in this chunk.
+        let gen_ptr = self.tmp_name();
+        self.line(&format!(
+            "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
+            gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, i_reg
+        ));
+        let gen_val = self.tmp_name();
+        self.line(&format!("  {} = load i32, i32* {}", gen_val, gen_ptr));
+        let parity = self.tmp_name();
+        self.line(&format!("  {} = and i32 {}, 1", parity, gen_val));
+        let is_live = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, 1", is_live, parity));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_live, live_label, incr_label));
+        self.line(&format!("{}:", live_label));
         let elem_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds {}, {}* {}, i64 {}",
             elem_ptr, elem_llvm_ty, elem_llvm_ty, data_reg, i_reg
         ));
         self.symbols.push((var.to_string(), elem_ptr, elem_ty.clone()));
+        // Each iteration is its own scope: an RC-owned local declared in
+        // the body (`let t: str = ...`) must be released at the end of
+        // *that* iteration, not accumulate across the whole chunk this
+        // worker walks or (as this call was missing entirely before) leak
+        // into the caller's own scope bookkeeping -- see `saved_owned_stack`
+        // above.
+        self.push_scope();
         for stmt in &body.stmts {
             self.emit_stmt(stmt);
         }
+        self.pop_scope(true);
         self.symbols.pop();
+        self.line(&format!("  br label %{}", incr_label));
+        self.line(&format!("{}:", incr_label));
         let i_next = self.tmp_name();
         self.line(&format!("  {} = add i64 {}, 1", i_next, i_reg));
         self.line(&format!("  store i64 {}, i64* {}", i_next, i_ptr));
@@ -160,6 +210,7 @@ impl Codegen {
         self.symbols = saved_symbols;
         self.in_frame = saved_in_frame;
         self.in_main = saved_in_main;
+        self.owned_stack = saved_owned_stack;
 
         // --- back in the caller: hand off to the persistent worker pool ---
         self.emit_par_dispatch(&worker_name, &args_ty, &captured, arena);
@@ -536,5 +587,89 @@ impl Codegen {
             result, elem_llvm_ty, elem_val, ok_label, zero, stale_label
         ));
         format!("{} {}", elem_llvm_ty, result)
+    }
+
+    /// Place resolution for a `gen_ref[N]` *base* of a further access --
+    /// `gen_ref[0].field = v`, `gen_ref[0].push(x)` on a `List<T>` field,
+    /// a mutating method call on `gen_ref[0]`, etc. Returns a real pointer
+    /// into the arena's live slot, so a write through the returned pointer
+    /// actually lands in the arena -- mirrors `emit_list_index_place`'s
+    /// identical fix for the same root cause: `Codegen::emit_place` had no
+    /// `GenRefIndex` arm, so any such chained access fell into its generic
+    /// fallback (spill the *read* value into a throwaway alloca), silently
+    /// discarding every write (`r[0].hp -= 10` compiled and ran with zero
+    /// effect on the arena).
+    ///
+    /// A stale generation or out-of-bounds index yields a pointer to a
+    /// fresh, zeroed, disconnected alloca -- same "safe no-op, well-defined
+    /// zero value on read-back" convention as `emit_genref_index`'s own
+    /// stale/OOB fallback and `emit_list_index_place`'s OOB fallback.
+    pub(super) fn emit_genref_index_place(&mut self, base: &TypedExpr, ty: &Ty, span: Span) -> String {
+        let elem_ty = ty.clone();
+        let elem_llvm_ty = self.llvm_ty(&elem_ty);
+        let arena = self.arena_for_elem_ty(&elem_ty, span);
+
+        let base_ptr = self.emit_place(base);
+        let idx_field_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 0", idx_field_ptr, base_ptr));
+        let stored_idx = self.tmp_name();
+        self.line(&format!("  {} = load i32, i32* {}", stored_idx, idx_field_ptr));
+        let gen_field_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 1", gen_field_ptr, base_ptr));
+        let stored_gen = self.tmp_name();
+        self.line(&format!("  {} = load i32, i32* {}", stored_gen, gen_field_ptr));
+        let idx64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", idx64, stored_idx));
+
+        let in_bounds = self.tmp_name();
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, Self::ARENA_CAPACITY));
+        let check_label = self.block_label("genref_place_check");
+        let ok_label = self.block_label("genref_place_ok");
+        let stale_label = self.block_label("genref_place_stale");
+        let end_label = self.block_label("genref_place_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, check_label, stale_label));
+
+        self.line(&format!("{}:", check_label));
+        let gen_ptr = self.tmp_name();
+        self.line(&format!(
+            "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
+            gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
+        ));
+        let live_gen = self.tmp_name();
+        self.line(&format!("  {} = load i32, i32* {}", live_gen, gen_ptr));
+        let gen_match = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, {}", gen_match, stored_gen, live_gen));
+        let parity = self.tmp_name();
+        self.line(&format!("  {} = and i32 {}, 1", parity, live_gen));
+        let is_live = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, 1", is_live, parity));
+        let ok = self.tmp_name();
+        self.line(&format!("  {} = and i1 {}, {}", ok, gen_match, is_live));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", ok, ok_label, stale_label));
+
+        self.line(&format!("{}:", ok_label));
+        let data_ptr = self.tmp_name();
+        self.line(&format!("  {} = load {}*, {}** @arena.{}.data", data_ptr, elem_llvm_ty, elem_llvm_ty, arena));
+        let elem_ptr = self.tmp_name();
+        self.line(&format!(
+            "  {} = getelementptr inbounds {}, {}* {}, i64 {}",
+            elem_ptr, elem_llvm_ty, elem_llvm_ty, data_ptr, idx64
+        ));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.line(&format!("{}:", stale_label));
+        let dummy = self.tmp_name();
+        self.line(&format!("  {} = alloca {}", dummy, elem_llvm_ty));
+        let zero = self.zero_value(&elem_ty);
+        self.line(&format!("  store {} {}, {}* {}", elem_llvm_ty, zero, elem_llvm_ty, dummy));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.line(&format!("{}:", end_label));
+        let result = self.tmp_name();
+        self.line(&format!(
+            "  {} = phi {}* [ {}, %{} ], [ {}, %{} ]",
+            result, elem_llvm_ty, elem_ptr, ok_label, dummy, stale_label
+        ));
+        result
     }
 }

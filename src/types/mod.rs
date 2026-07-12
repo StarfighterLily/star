@@ -212,6 +212,20 @@ pub struct Checker {
     enums: HashMap<String, EnumDef>,
     /// Function signatures: maps function name -> (param_tys, ret_ty)
     functions: HashMap<String, (Vec<Ty>, Option<Ty>)>,
+    /// Impl-method signatures: maps `"{struct_name}#{method_name}"` ->
+    /// (param_tys including the receiver, ret_ty). Kept separate from
+    /// `functions` (which used to also hold methods, keyed by bare method
+    /// name) because two unrelated structs can declare a method with the
+    /// same name and different signature -- with a single flat table, the
+    /// second `impl` block's registration silently overwrote the first,
+    /// so `a.area()` on a struct `A` could get argument/return-type checked
+    /// against a same-named method on an unrelated struct `B`, and codegen
+    /// (which *does* dispatch per-struct, via its own analogous
+    /// `Codegen::methods` map) emitted two colliding `define @area(...)`
+    /// globals for the same LLVM function name, failing at the `clang` step
+    /// with "invalid redefinition of function". See `check_impl` for
+    /// population and `Expr::Call`'s method-call arm for lookup.
+    methods: HashMap<String, (Vec<Ty>, Option<Ty>)>,
     /// Generic struct/enum/fn templates -- declarations with a non-empty
     /// `type_params` list, kept separate from `structs`/`enums`/`functions`
     /// since they have no concrete layout of their own until instantiated
@@ -272,6 +286,21 @@ pub struct Checker {
     /// case) duplicate `declare` reaches the LLVM parser -- see
     /// `check_extern_fn`.
     extern_fn_names_seen: HashSet<String>,
+    /// Current nesting depth of generic struct/enum/fn monomorphization
+    /// (`instantiate_struct`/`instantiate_enum`/`instantiate_fn`), each of
+    /// which increments this for the duration of instantiating one
+    /// template and checking its (substituted) body. A *literal*
+    /// self-referential generic (`struct Wrap<T>: v: Wrap<T>`) is already
+    /// caught by memoizing on the mangled name before recursing -- but a
+    /// field/call that wraps the type parameter in another generic each
+    /// step (`struct Node<T>: next: Node<Box<T>>`, or a generic function
+    /// that recursively calls itself with a wrapped argument type) produces
+    /// a *new* mangled name every time, so the memo check never fires and
+    /// the checker recurses through Rust's own call stack forever --
+    /// previously an unguarded stack-overflow ICE on four lines of valid-
+    /// looking source, with no diagnostic at all. This bounds that
+    /// recursion to a clean error instead (see `MAX_MONO_DEPTH`).
+    mono_depth: u32,
 }
 
 impl Checker {
@@ -282,6 +311,7 @@ impl Checker {
             arenas: HashMap::new(),
             enums: HashMap::new(),
             functions: HashMap::new(),
+            methods: HashMap::new(),
             generic_structs: HashMap::new(),
             generic_enums: HashMap::new(),
             generic_fns: HashMap::new(),
@@ -293,8 +323,16 @@ impl Checker {
             unsafe_par_fns: HashSet::new(),
             current_ret_ty: None,
             extern_fn_names_seen: HashSet::new(),
+            mono_depth: 0,
         }
     }
+
+    /// A generous bound on nested generic monomorphization -- see
+    /// `mono_depth`'s doc comment. High enough that no real, terminating
+    /// generic usage (including deliberately nested wrappers a few levels
+    /// deep) should ever hit it, but low enough to fail fast with a clean
+    /// diagnostic well before exhausting the real Rust call stack.
+    const MAX_MONO_DEPTH: u32 = 64;
 
     pub fn check(&mut self, module: &Module) -> Result<TypedModule, Vec<Diagnostic>> {
         // `sequence` items are pure syntax sugar over struct+impl (see
@@ -365,7 +403,8 @@ impl Checker {
                             p.ty.as_ref().and_then(|t| self.resolve_type(t)).unwrap_or(Ty::Named("infer".into()))
                         }).collect();
                         let ret_ty = m.sig.ret.as_ref().and_then(|t| self.resolve_type(t));
-                        self.functions.insert(m.sig.name.clone(), (param_tys, ret_ty));
+                        let key = format!("{}#{}", blk.type_name, m.sig.name);
+                        self.methods.insert(key, (param_tys, ret_ty));
                     }
                 }
                 // Desugared away above; never present past this point.
@@ -926,6 +965,23 @@ impl Checker {
         if self.structs.contains_key(&mangled) {
             return mangled;
         }
+        if self.mono_depth >= Self::MAX_MONO_DEPTH {
+            self.error(
+                format!(
+                    "generic type `{}` nests too deeply while instantiating `{}` -- likely a field whose type wraps its own type parameter in another generic (e.g. `struct Node<T>: next: Node<Box<T>>`), which grows a new instantiation forever",
+                    template_name, mangled
+                ),
+                Span::dummy(),
+            );
+            return mangled;
+        }
+        self.mono_depth += 1;
+        let result = self.instantiate_struct_inner(template_name, args, mangled);
+        self.mono_depth -= 1;
+        result
+    }
+
+    fn instantiate_struct_inner(&mut self, template_name: &str, args: &[Ty], mangled: String) -> String {
         let Some(template) = self.generic_structs.get(template_name).cloned() else {
             self.error(format!("undefined generic struct `{}`", template_name), Span::dummy());
             return mangled;
@@ -954,12 +1010,30 @@ impl Checker {
     }
 
     /// Instantiate generic enum `template_name` with concrete `args`. Mirrors
-    /// `instantiate_struct`; see its doc comment.
+    /// `instantiate_struct`; see its doc comment (including `mono_depth`'s
+    /// recursion guard).
     fn instantiate_enum(&mut self, template_name: &str, args: &[Ty]) -> String {
         let mangled = mangle_generic(template_name, args);
         if self.enums.contains_key(&mangled) {
             return mangled;
         }
+        if self.mono_depth >= Self::MAX_MONO_DEPTH {
+            self.error(
+                format!(
+                    "generic type `{}` nests too deeply while instantiating `{}` -- likely a variant field whose type wraps its own type parameter in another generic, which grows a new instantiation forever",
+                    template_name, mangled
+                ),
+                Span::dummy(),
+            );
+            return mangled;
+        }
+        self.mono_depth += 1;
+        let result = self.instantiate_enum_inner(template_name, args, mangled);
+        self.mono_depth -= 1;
+        result
+    }
+
+    fn instantiate_enum_inner(&mut self, template_name: &str, args: &[Ty], mangled: String) -> String {
         let Some(template) = self.generic_enums.get(template_name).cloned() else {
             self.error(format!("undefined generic enum `{}`", template_name), Span::dummy());
             return mangled;
@@ -988,12 +1062,33 @@ impl Checker {
     /// returning its mangled name. Registers the mangled signature into
     /// `self.functions` *before* checking the (substituted) body, so a
     /// recursive call back to the same instantiation resolves to this same
-    /// mangled name instead of instantiating forever.
+    /// mangled name instead of instantiating forever -- but a recursive call
+    /// that wraps its argument in another generic each time (`fn wrap<T>(x:
+    /// T) -> Wrapped<T> { wrap(Box(x)) }`) produces a *different* mangled
+    /// name on every call, so that memoization doesn't help; see
+    /// `mono_depth`'s doc comment for the shared recursion guard that does.
     fn instantiate_fn(&mut self, template_name: &str, args: &[Ty]) -> String {
         let mangled = mangle_generic(template_name, args);
         if self.functions.contains_key(&mangled) {
             return mangled;
         }
+        if self.mono_depth >= Self::MAX_MONO_DEPTH {
+            self.error(
+                format!(
+                    "generic function `{}` nests too deeply while instantiating `{}` -- likely a recursive call that wraps its argument in another generic each time, which grows a new instantiation forever",
+                    template_name, mangled
+                ),
+                Span::dummy(),
+            );
+            return mangled;
+        }
+        self.mono_depth += 1;
+        let result = self.instantiate_fn_inner(template_name, args, mangled);
+        self.mono_depth -= 1;
+        result
+    }
+
+    fn instantiate_fn_inner(&mut self, template_name: &str, args: &[Ty], mangled: String) -> String {
         let Some(template) = self.generic_fns.get(template_name).cloned() else {
             self.error(format!("undefined generic function `{}`", template_name), Span::dummy());
             return mangled;
