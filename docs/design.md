@@ -71,3 +71,61 @@ fn main():
 
 ```
 Notice the match statement—Rust's pattern matching is too good to leave behind, but we can make it visually lighter.
+
+
+# Type System
+Star's pitch is a single language spanning small indie titles, retro remakes/throwbacks and emulated retrocomputer systems, and AAA-quality games. Today's type system (`src/types/mod.rs`'s `Ty` enum) covers only `i32`, `f32`, `str`, `bool`, `Vec2`/`Vec3`/`Vec4`, `Mat4`, `List<T>`, `GenRef<T>`, closures, and nominal structs/enums — everything else (`Option`, `Result`, maps, sets) is user-space library code, and there is exactly one integer width and one float width. That is enough for toy programs but not for the three stated tiers, each of which pulls the type system in a different direction. This section lays out the gap and the additions needed to close it. Nothing below is implemented yet — this is the plan to circle back to.
+
+1. Why one type system has to stretch three ways
+Retro/emulation demands *exact-width, wrapping* arithmetic: an 8-bit CPU register or a PSG audio channel must overflow silently at 255 -> 0, which is the opposite of Star's current philosophy of trapping overflow as a bug. It also needs indexed/palette color and packed pixel formats, since that's how the hardware being emulated actually stores a frame.
+
+AAA pulls the other way: `f64` for large-world coordinates without precision loss, quaternions to avoid gimbal lock, HDR linear color, and resource handles for GPU/audio assets that fail safely the way `GenRef` already does for despawned entities, plus string interning so per-frame tag/event comparisons across a huge entity count aren't `strcmp`.
+
+Indie mostly needs the connective tissue both extremes assume already exists: `Option`/`Result` as real primitives (not a hand-rolled generic enum copied into every project), `Map`/`Set`, tuples, fixed-size arrays. Unglamorous, but currently entirely absent.
+
+2. Numeric widths and modes
+Add `i8`/`u8`/`i16`/`u16`/`u32`/`i64`/`u64`/`f64` alongside today's `i32`/`f32`, plus `char` (a Unicode scalar, distinct from a raw `str` byte). Keep trap-on-overflow as the *default* for signed/unsigned ints — that's a genuine safety property worth keeping — and add two explicit opt-ins rather than a silent global mode change:
+- `Wrapping<T>`: silent-overflow arithmetic, for emulating an actual 8/16-bit register or audio-chip counter faithfully.
+- `Fixed<Bits, Frac>`: deterministic fixed-point (e.g. `Fixed<32,16>`), for lockstep simulation and rollback netcode where float non-determinism across machines is a correctness bug, not a rounding nit.
+
+3. Compound and collection types
+```Python
+[T; N]          # fixed-size inline array: tile grids, palettes, register files, vertex layouts
+(T, U, ...)     # tuple: lightweight multi-return without declaring a one-off struct
+Map<K, V>       # hash map: asset lookup tables, save data, tag indices
+Set<T>          # hash set
+Table<T>        # struct-of-arrays, complementing arena's array-of-structs for cache-batch AAA systems
+Ring<T, N>      # fixed-capacity ring buffer: input replay, frame-time history, netcode rollback buffers
+```
+`Map`/`Set` are already flagged as a known gap in `todo.md`'s roadmap; fixed-size arrays and tuples are new asks that fall out of the retro/AAA tiers respectively.
+
+4. Text and bytes
+`Bytes`, an owned growable byte buffer distinct from `Str`, for asset formats, binary save data, and network payloads that aren't text. `Symbol`, an interned string with O(1) comparison, for entity tags and event names — at AAA entity counts, comparing tags with a byte-for-byte `str` compare every frame is a real cost.
+
+5. Math and geometry
+Extending today's `Vec2`/`Vec3`/`Vec4`/`Mat4`:
+```Python
+Quat                     # quaternion rotation, no gimbal lock
+Mat2, Mat3
+Rect, Aabb2, Aabb3
+Transform                # position + rotation + scale — the de facto universal ECS component
+Ray, Plane, Frustum      # physics and culling
+Color                    # f32 linear HDR, for AAA lighting pipelines
+Color32                  # packed RGBA8, for indie-scale 2D/3D
+Palette, PaletteIndex(u8)  # indexed color, for faithful retro console emulation
+```
+
+6. Time
+`Tick` (integer simulation-step counter, matching `sequence`'s existing tick model), `Duration` (wall-clock, e.g. `i64` nanoseconds), `Instant` (monotonic timestamp). Keeping these distinct from a bare `f32` delta-time avoids the drift and non-determinism bugs that break replay recording and rollback netcode.
+
+7. Resource handles
+Generalize the `GenRef<T>` pattern — already generation-checked, already proven safe for arena entities — to engine resources: `Handle<Texture>`, `Handle<Mesh>`, `Handle<Shader>`, `Handle<Sound>`. A freed texture handle used after unload fails the same safe generation-check path `GenRef` already gives despawned entities, instead of segfaulting the renderer. This is a reuse of existing machinery, not a new safety mechanism.
+
+8. Bit-level types
+`Flags<E: Enum>`, a typed bitflag set for input state, physics collision layers, and render state. `BitField<N>`, a packed bit register for accurate retro CPU flag-register emulation (e.g. Z80/6502 status flags).
+
+9. `Option`/`Result` as compiler primitives
+Promote these from a user-space generic enum (as in the current docs example) to true builtins with `?`-propagation sugar. This matters more as the standard library grows past bare `bool` return codes for file/network I/O.
+
+10. Sequencing
+The lowest-effort, highest-value slice is `Option`/`Result` as builtins + `Map`/`Set` + fixed-size arrays — all indie-tier gaps that unblock ordinary programs immediately and require no new codegen primitives beyond what generics/`List<T>` already establish. The numeric-width and `Wrapping`/`Fixed` work is the larger lift, since it touches the lexer, parser, checker, and every arithmetic codegen path, and only pays off once a real retro-emulation or netcode example exists to validate it against.
