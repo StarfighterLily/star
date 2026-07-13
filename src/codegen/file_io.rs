@@ -32,7 +32,7 @@ impl Codegen {
         let ok_label = self.block_label("file_handle_ok");
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, fail_label, ok_label));
 
-        self.line(&format!("{}:", fail_label));
+        self.open_block(&fail_label);
         let msg = format!("star runtime error: {}(..) called with a null/closed file handle\n", builtin_name);
         let g = self.global_name();
         let escaped = msg.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
@@ -43,7 +43,7 @@ impl Codegen {
         self.line("  call void @exit(i32 1)");
         self.line("  unreachable");
 
-        self.line(&format!("{}:", ok_label));
+        self.open_block(&ok_label);
     }
 
     /// `file_open(path: str, mode: str) -> ptr`: `fopen`, passing `mode`
@@ -97,8 +97,19 @@ impl Codegen {
         self.line(&format!("  call i32 @fseek(i8* {}, i32 {}, i32 0)", handle, cur));
         let remaining = self.tmp_name();
         self.line(&format!("  {} = sub i32 {}, {}", remaining, end, cur));
+        let remaining64_raw = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", remaining64_raw, remaining));
+        // `ftell` returns -1 on a non-seekable stream (a pipe, a console
+        // handle, ...); sign-extending that (or any other negative `remaining`
+        // it produces) to i64 and treating it as an unsigned byte count would
+        // request a near-u64::MAX `star_rc_alloc`/`fread`, corrupting memory
+        // instead of failing cleanly. Clamp to 0 (empty read) exactly like an
+        // already-at-EOF handle, rather than trusting the C runtime's signed
+        // result to always be a valid unsigned size.
+        let is_valid = self.tmp_name();
+        self.line(&format!("  {} = icmp sge i64 {}, 0", is_valid, remaining64_raw));
         let remaining64 = self.tmp_name();
-        self.line(&format!("  {} = sext i32 {} to i64", remaining64, remaining));
+        self.line(&format!("  {} = select i1 {}, i64 {}, i64 0", remaining64, is_valid, remaining64_raw));
         let cap64 = self.tmp_name();
         self.line(&format!("  {} = add i64 {}, 1", cap64, remaining64));
         let buf = self.tmp_name();
@@ -138,14 +149,14 @@ impl Codegen {
         let end_label = self.block_label("file_read_line_end");
 
         self.line(&format!("  br label %{}", cond_label));
-        self.line(&format!("{}:", cond_label));
+        self.open_block(&cond_label);
         let i_reg = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", i_reg, i_ptr));
         let has_room = self.tmp_name();
         self.line(&format!("  {} = icmp ult i64 {}, {}", has_room, i_reg, CAP - 1));
         self.line(&format!("  br i1 {}, label %{}, label %{}", has_room, body_label, end_label));
 
-        self.line(&format!("{}:", body_label));
+        self.open_block(&body_label);
         let c = self.tmp_name();
         self.line(&format!("  {} = call i32 @fgetc(i8* {})", c, handle));
         let is_eof = self.tmp_name();
@@ -156,7 +167,7 @@ impl Codegen {
         self.line(&format!("  {} = or i1 {}, {}", stop, is_eof, is_nl));
         self.line(&format!("  br i1 {}, label %{}, label %{}", stop, end_label, store_label));
 
-        self.line(&format!("{}:", store_label));
+        self.open_block(&store_label);
         let dest = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", dest, buf, i_reg));
         let c8 = self.tmp_name();
@@ -167,7 +178,7 @@ impl Codegen {
         self.line(&format!("  store i64 {}, i64* {}", i_next, i_ptr));
         self.line(&format!("  br label %{}", cond_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
         let final_i = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", final_i, i_ptr));
         let nul = self.tmp_name();
@@ -223,10 +234,10 @@ impl Codegen {
         let close_label = self.block_label("file_exists_close");
         let end_label = self.block_label("file_exists_end");
         self.line(&format!("  br i1 {}, label %{}, label %{}", exists, close_label, end_label));
-        self.line(&format!("{}:", close_label));
+        self.open_block(&close_label);
         self.line(&format!("  call i32 @fclose(i8* {})", handle));
         self.line(&format!("  br label %{}", end_label));
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
         format!("i1 {}", exists)
     }
 }

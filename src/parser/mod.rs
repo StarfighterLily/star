@@ -65,6 +65,24 @@ pub struct Parser {
     /// diagnostic, the block-nesting counterpart of the same class of bug
     /// `expr_depth` guards against.
     block_depth: u32,
+    /// Nesting depth of `Parser::parse_match` calls -- a `match` reachable
+    /// either as a bare statement (`parse_match_stmt`, uncounted by
+    /// `expr_depth`/`block_depth` at the `parse_match` call site itself) or
+    /// nested inline in another arm's body (`_ -> match ...`, going through
+    /// `expr_depth` via `parse_unary`) recurses back into `parse_match`
+    /// either way, so a dedicated counter here bounds both forms uniformly.
+    /// Needed as its own counter, calibrated lower than `MAX_EXPR_DEPTH`,
+    /// because each level of `match` nesting costs far more real stack per
+    /// level than a plain paren/unary chain does (`parse_match` ->
+    /// `parse_match_arm` -> `parse_pattern`/`parse_block`/`parse_expr`, each
+    /// with their own locals) -- previously unguarded, 55-60 levels of
+    /// nested `match` overflowed the real Rust call stack with a bare
+    /// process abort ("thread 'main' has overflowed its stack") and no
+    /// diagnostic, well under `MAX_EXPR_DEPTH`'s 80-level threshold, the
+    /// same class of "guard calibrated for a lighter call chain doesn't
+    /// trigger before a heavier one crashes" bug fixed elsewhere for
+    /// `MAX_BLOCK_DEPTH`.
+    match_depth: u32,
 }
 
 impl Parser {
@@ -77,6 +95,7 @@ impl Parser {
             block_just_closed: false,
             expr_depth: 0,
             block_depth: 0,
+            match_depth: 0,
         }
     }
 

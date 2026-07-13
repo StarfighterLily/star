@@ -80,9 +80,21 @@ impl Checker {
                 self.walk_par_stmts(&body.stmts, &mut l);
             }
             TypedStmt::Break { .. } | TypedStmt::Continue { .. } => {}
-            TypedStmt::Frame { body, .. } => {
-                let mut l = locals.clone();
-                self.walk_par_stmts(&body.stmts, &mut l);
+            TypedStmt::Frame { span, .. } => {
+                // `@frame.off`/`@frame.buf` are single process-wide globals
+                // (see `Codegen::emit_par_stmt`'s own `self.in_frame = false`
+                // comment: "the frame bump allocator's offset is a single
+                // shared global, not thread-safe") -- every worker thread
+                // bump-allocating from the same shared buffer concurrently
+                // would race exactly like `spawn`/`despawn` racing on an
+                // arena's globals, so this must be rejected the same way
+                // rather than silently recursing into the body as if it were
+                // an ordinary nested scope.
+                self.error(
+                    "`frame:` cannot be used inside a par/swarm body (the frame bump allocator's offset is a \
+                     single shared global, not thread-safe across worker threads)",
+                    *span,
+                );
             }
             TypedStmt::Par { var, body, .. } => {
                 // A nested par loop gets its own fresh disjointness proof
@@ -155,7 +167,18 @@ impl Checker {
                 // before any body is checked, so this catches the hazard
                 // regardless of declaration order or how many calls deep it is.
                 if let Some(name) = called_name {
-                    if self.unsafe_par_fns.contains(name) {
+                    // `unsafe_par_fns` is keyed by each hazardous function's
+                    // *declared* (template) name, computed from the raw AST
+                    // before any generic instantiation happens (see
+                    // `compute_unsafe_par_fns`). A call to a generic
+                    // function/method instead names its *mangled* monomorphized
+                    // form here (`sneaky__i32`, via `Checker::instantiate_fn`)
+                    // -- resolve back through `mono_fn_of` (populated at the
+                    // instantiation site) so the hazard is still recognized,
+                    // or this whole ban is silently bypassed for any generic
+                    // hazard just by it being generic.
+                    let hazard_name = self.mono_fn_of.get(name).map(|s| s.as_str()).unwrap_or(name);
+                    if self.unsafe_par_fns.contains(hazard_name) {
                         self.error(
                             format!(
                                 "cannot call `{}` inside a par/swarm body: it spawns/despawns entities or opens a \
@@ -189,6 +212,15 @@ impl Checker {
                         for b in bindings {
                             l.insert(b.clone());
                         }
+                    }
+                    // `Pattern::Binding(name)` binds the *whole* scrutinee to
+                    // a fresh per-arm name (`match x: v -> ...`) -- just as
+                    // much a fresh body-local as a destructured payload
+                    // field above; without this, mutating it was rejected as
+                    // "cannot mutate a captured value" even though it's
+                    // exactly as safe as any other match-arm/body-local.
+                    if let Pattern::Binding(name) = &arm.pattern {
+                        l.insert(name.clone());
                     }
                     self.walk_par_stmts(&arm.body.stmts, &mut l);
                 }

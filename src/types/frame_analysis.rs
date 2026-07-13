@@ -338,6 +338,34 @@ fn local_struct_receiver(expr: &TypedExpr, local_structs: &HashSet<String>) -> O
 fn frame_escape_source_block(block: &TypedBlock, frame_locals: &HashSet<String>, local_structs: &HashSet<String>) -> Option<String> {
     match block.stmts.last() {
         Some(TypedStmt::Expr(e)) => frame_escape_source(e, frame_locals, local_structs),
+        // A trailing `frame:` block's own value falls out of that scope the
+        // same way a direct, function-body-level trailing `frame:` block
+        // does (see `walk_frame_stmt`'s own `TypedStmt::Frame` arm) --
+        // `Codegen::emit_stmts_value` treats a trailing `TypedStmt::Frame`
+        // exactly like a trailing `TypedStmt::Expr`, propagating its value
+        // out through the `if`/`match` arm containing it. Without this arm,
+        // `return if cond:\n    frame:\n        let p = Point(1, 2)\n        p\nelse:\n    ...`
+        // silently skipped this whole check, since this lookahead only ever
+        // recognized a bare trailing expression. Every `Ty::Named` local the
+        // frame body itself `let`-binds is folded into the set checked
+        // against, mirroring what `walk_frame_stmt`'s stateful walker would
+        // have registered had it actually descended into this frame body
+        // (which it never does -- this helper only exists for the
+        // value-producing `if`/`match`-arm lookahead `frame_escape_source`
+        // needs, a separate path from the statement-level walk).
+        Some(TypedStmt::Frame { body, .. }) => {
+            let mut l = frame_locals.clone();
+            let mut ls = local_structs.clone();
+            for stmt in &body.stmts {
+                if let TypedStmt::Let { name, ty, .. } = stmt {
+                    if matches!(ty, Ty::Named(_)) {
+                        ls.insert(name.clone());
+                    }
+                    l.insert(name.clone());
+                }
+            }
+            frame_escape_source_block(body, &l, &ls)
+        }
         _ => None,
     }
 }

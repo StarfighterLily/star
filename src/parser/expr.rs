@@ -487,7 +487,24 @@ impl Parser {
         Some(out)
     }
 
+    /// A conservative bound on nested `match` parsing -- see
+    /// `Parser::match_depth`'s doc comment for why this needs its own
+    /// (lower) counter rather than reusing `MAX_EXPR_DEPTH`/`MAX_BLOCK_DEPTH`.
+    pub(super) const MAX_MATCH_DEPTH: u32 = 30;
+
     pub(super) fn parse_match(&mut self) -> Option<Expr> {
+        if self.match_depth >= Self::MAX_MATCH_DEPTH {
+            let span = self.peek_span();
+            self.error("`match` nested too deeply (over 30 levels) -- likely a runaway generated expression", span);
+            return None;
+        }
+        self.match_depth += 1;
+        let result = self.parse_match_inner();
+        self.match_depth -= 1;
+        result
+    }
+
+    fn parse_match_inner(&mut self) -> Option<Expr> {
         let start = self.peek_span();
         self.expect(&TokenKind::Match)?;
         let scrutinee = self.parse_expr()?;

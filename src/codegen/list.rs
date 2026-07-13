@@ -65,7 +65,7 @@ impl Codegen {
 
         let saved_ir = std::mem::take(&mut self.ir);
         self.line(&format!("define void @{}(i8* %objp) {{", name));
-        self.line("entry:");
+        self.open_block("entry");
         let payload = self.tmp_name();
         self.line(&format!("  {} = bitcast i8* %objp to {}*", payload, payload_ty));
         let data_field = self.tmp_name();
@@ -87,14 +87,14 @@ impl Codegen {
             let body_label = self.block_label("list_release_body");
             let end_label = self.block_label("list_release_end");
             self.line(&format!("  br label %{}", cond_label));
-            self.line(&format!("{}:", cond_label));
+            self.open_block(&cond_label);
             let i_reg = self.tmp_name();
             self.line(&format!("  {} = load i64, i64* {}", i_reg, i_ptr));
             let cmp = self.tmp_name();
             self.line(&format!("  {} = icmp slt i64 {}, {}", cmp, i_reg, len));
             self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, body_label, end_label));
 
-            self.line(&format!("{}:", body_label));
+            self.open_block(&body_label);
             let elem_ptr = self.tmp_name();
             self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, elem_llvm, elem_llvm, data, i_reg));
             self.emit_release_at(&elem_ptr, elem_ty);
@@ -103,7 +103,7 @@ impl Codegen {
             self.line(&format!("  store i64 {}, i64* {}", i_next, i_ptr));
             self.line(&format!("  br label %{}", cond_label));
 
-            self.line(&format!("{}:", end_label));
+            self.open_block(&end_label);
         }
 
         let data_i8 = self.tmp_name();
@@ -213,14 +213,14 @@ impl Codegen {
         let body_label = self.block_label("args_body");
         let end_label = self.block_label("args_end");
         self.line(&format!("  br label %{}", cond_label));
-        self.line(&format!("{}:", cond_label));
+        self.open_block(&cond_label);
         let i_reg = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", i_reg, i_ptr));
         let cmp = self.tmp_name();
         self.line(&format!("  {} = icmp slt i64 {}, {}", cmp, i_reg, argc64));
         self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, body_label, end_label));
 
-        self.line(&format!("{}:", body_label));
+        self.open_block(&body_label);
         let argv_elem_ptr = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds i8*, i8** {}, i64 {}", argv_elem_ptr, argv, i_reg));
         let c_str = self.tmp_name();
@@ -242,7 +242,7 @@ impl Codegen {
         self.line(&format!("  store i64 {}, i64* {}", i_next, i_ptr));
         self.line(&format!("  br label %{}", cond_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
 
         let payload_ty = self.list_payload_llvm_ty(&elem_ty);
         let release_fn = self.list_release_thunk_operand(&elem_ty);
@@ -294,7 +294,7 @@ impl Codegen {
         // Never-allocated list (the zero value): allocate a fresh, empty,
         // uniquely-owned object rather than treating `null` as a special
         // "shared empty" sentinel.
-        self.line(&format!("{}:", alloc_label));
+        self.open_block(&alloc_label);
         let release_fn0 = self.list_release_thunk_operand(elem_ty);
         let raw0 = self.tmp_name();
         self.line(&format!("  {} = call i8* @star_rc_alloc(i64 24, i8* {})", raw0, release_fn0));
@@ -316,7 +316,7 @@ impl Codegen {
         // `star_rc_retain`/`star_rc_release` use, inlined here since it's
         // only needed for this uniqueness check) to decide unique vs.
         // shared.
-        self.line(&format!("{}:", check_label));
+        self.open_block(&check_label);
         let hdr_i8 = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 -16", hdr_i8, obj));
         let hdr = self.tmp_name();
@@ -330,7 +330,7 @@ impl Codegen {
 
         // Shared: clone into a fresh object before this operation is
         // allowed to mutate anything.
-        self.line(&format!("{}:", clone_label));
+        self.open_block(&clone_label);
         let old_payload = self.tmp_name();
         self.line(&format!("  {} = bitcast i8* {} to {}*", old_payload, obj, payload_ty));
         let od_field = self.tmp_name();
@@ -368,7 +368,7 @@ impl Codegen {
         let after_copy_label = self.block_label("list_cow_after_copy");
         self.line(&format!("  br i1 {}, label %{}, label %{}", has_len, copy_label, after_copy_label));
 
-        self.line(&format!("{}:", copy_label));
+        self.open_block(&copy_label);
         let old_bytes = self.tmp_name();
         self.line(&format!("  {} = mul i64 {}, {}", old_bytes, ol, elem_size));
         let old_raw_data = self.tmp_name();
@@ -385,13 +385,13 @@ impl Codegen {
             let body_label = self.block_label("list_cow_retain_body");
             let retain_end_label = self.block_label("list_cow_retain_end");
             self.line(&format!("  br label %{}", cond_label));
-            self.line(&format!("{}:", cond_label));
+            self.open_block(&cond_label);
             let i_reg = self.tmp_name();
             self.line(&format!("  {} = load i64, i64* {}", i_reg, i_ptr));
             let cmp = self.tmp_name();
             self.line(&format!("  {} = icmp slt i64 {}, {}", cmp, i_reg, ol));
             self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, body_label, retain_end_label));
-            self.line(&format!("{}:", body_label));
+            self.open_block(&body_label);
             let elem_ptr = self.tmp_name();
             self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, elem_llvm, elem_llvm, new_data, i_reg));
             self.emit_retain_at(&elem_ptr, elem_ty);
@@ -399,11 +399,11 @@ impl Codegen {
             self.line(&format!("  {} = add i64 {}, 1", i_next, i_reg));
             self.line(&format!("  store i64 {}, i64* {}", i_next, i_ptr));
             self.line(&format!("  br label %{}", cond_label));
-            self.line(&format!("{}:", retain_end_label));
+            self.open_block(&retain_end_label);
         }
         self.line(&format!("  br label %{}", after_copy_label));
 
-        self.line(&format!("{}:", after_copy_label));
+        self.open_block(&after_copy_label);
         let nd_field = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0", nd_field, payload_ty, payload_ty, new_payload));
         self.line(&format!("  store {}* {}, {}** {}", elem_llvm, new_data, elem_llvm, nd_field));
@@ -422,7 +422,7 @@ impl Codegen {
         self.line(&format!("  store i8* {}, i8** {}", new_raw, slot_ptr));
         self.line(&format!("  br label %{}", done_label));
 
-        self.line(&format!("{}:", done_label));
+        self.open_block(&done_label);
     }
 
     /// Read path: resolve `base`'s `(data, len)`, with no copy-on-write
@@ -430,13 +430,40 @@ impl Codegen {
     /// zero value -- `null` (a list that was constructed but never
     /// mutated) reads as `data = null, len = 0` rather than dereferencing
     /// through a null object pointer.
+    ///
+    /// A nested list-index base (`m[0][1]`, `m[0].len()`) must not resolve
+    /// through `Codegen::emit_place`'s `ListIndex` arm: that arm exists for
+    /// *writes* (`emit_list_index_place`), which unconditionally runs the
+    /// copy-on-write uniqueness gate (`emit_list_ensure_unique`) on `m`
+    /// itself before returning a pointer into it -- silently cloning `m`
+    /// and un-aliasing it from any other variable sharing its buffer, as a
+    /// side effect of a plain read, and doing so regardless of whether `m`'s
+    /// own Star-level binding was even declared `mut`. Resolved instead via
+    /// `list_index_read_obj`, which peeks at the loaded element without
+    /// retaining it -- safe because nothing releases `inner_base`'s own
+    /// reference for the remainder of this single, straight-line
+    /// expression, so the object it points at is guaranteed to stay alive
+    /// long enough to read through here without needing an independent,
+    /// owned copy of its own.
     fn list_fields(&mut self, base: &TypedExpr, elem_ty: &Ty) -> (String, String) {
-        let elem_llvm = self.llvm_ty(elem_ty);
-        let payload_ty = self.list_payload_llvm_ty(elem_ty);
+        if let TypedExpr::ListIndex { base: inner_base, index, ty: inner_elem_ty, .. } = base {
+            let obj = self.list_index_read_obj(inner_base, index, inner_elem_ty);
+            return self.list_fields_from_obj(&obj, elem_ty);
+        }
         let slot_ptr = self.emit_place(base);
-
         let obj = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** {}", obj, slot_ptr));
+        self.list_fields_from_obj(&obj, elem_ty)
+    }
+
+    /// Shared tail end of `list_fields`, factored out so `list_fields`'s
+    /// nested-`ListIndex`-base fast path can hand in an already-loaded
+    /// object pointer (from `list_index_read_obj`) instead of loading one
+    /// from a slot address.
+    fn list_fields_from_obj(&mut self, obj: &str, elem_ty: &Ty) -> (String, String) {
+        let elem_llvm = self.llvm_ty(elem_ty);
+        let payload_ty = self.list_payload_llvm_ty(elem_ty);
+
         let is_null = self.tmp_name();
         self.line(&format!("  {} = icmp eq i8* {}, null", is_null, obj));
         let null_label = self.block_label("list_read_null");
@@ -444,10 +471,10 @@ impl Codegen {
         let end_label = self.block_label("list_read_end");
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, null_label, real_label));
 
-        self.line(&format!("{}:", null_label));
+        self.open_block(&null_label);
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", real_label));
+        self.open_block(&real_label);
         let payload = self.tmp_name();
         self.line(&format!("  {} = bitcast i8* {} to {}*", payload, obj, payload_ty));
         let data_field = self.tmp_name();
@@ -460,13 +487,52 @@ impl Codegen {
         self.line(&format!("  {} = load i64, i64* {}", len_real, len_field));
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
         let data = self.tmp_name();
         self.line(&format!("  {} = phi {}* [ null, %{} ], [ {}, %{} ]", data, elem_llvm, null_label, data_real, real_label));
         let len = self.tmp_name();
         self.line(&format!("  {} = phi i64 [ 0, %{} ], [ {}, %{} ]", len, null_label, len_real, real_label));
 
         (data, len)
+    }
+
+    /// Bounds-checked, retain-free read of `base[index]`'s raw element
+    /// register -- used only by `list_fields`'s nested-base fast path,
+    /// where the element is immediately peeked at (never kept as an owned
+    /// value), so skipping the retain `emit_list_index` would otherwise do
+    /// is intentional, not an oversight. Out of bounds yields `null`,
+    /// matching `list_fields_from_obj`'s own "list constructed but never
+    /// mutated" null-object handling.
+    fn list_index_read_obj(&mut self, base: &TypedExpr, index: &TypedExpr, elem_ty: &Ty) -> String {
+        let elem_llvm = self.llvm_ty(elem_ty);
+        let (data, len) = self.list_fields(base, elem_ty);
+
+        let idx_val = self.emit_expr(index);
+        let idx_bare = self.untag(&idx_val, &Ty::Int);
+        let idx64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", idx64, idx_bare));
+
+        let in_bounds = self.tmp_name();
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, len));
+        let ok_label = self.block_label("list_read_obj_ok");
+        let oob_label = self.block_label("list_read_obj_oob");
+        let end_label = self.block_label("list_read_obj_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, ok_label, oob_label));
+
+        self.open_block(&ok_label);
+        let elem_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, elem_llvm, elem_llvm, data, idx64));
+        let obj_ok = self.tmp_name();
+        self.line(&format!("  {} = load {}, {}* {}", obj_ok, elem_llvm, elem_llvm, elem_ptr));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&oob_label);
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
+        let result = self.tmp_name();
+        self.line(&format!("  {} = phi {} [ {}, %{} ], [ null, %{} ]", result, elem_llvm, obj_ok, ok_label, oob_label));
+        result
     }
 
     /// Mutating path: ensure `base`'s object is uniquely owned (allocating
@@ -520,7 +586,7 @@ impl Codegen {
         let end_label = self.block_label("list_idx_end");
         self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, ok_label, oob_label));
 
-        self.line(&format!("{}:", ok_label));
+        self.open_block(&ok_label);
         let elem_ptr = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, elem_llvm, elem_llvm, data, idx64));
         let elem_val = self.tmp_name();
@@ -533,10 +599,10 @@ impl Codegen {
         self.emit_retain_at(&elem_ptr, elem_ty);
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", oob_label));
+        self.open_block(&oob_label);
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
         let zero = self.zero_value(elem_ty);
         let result = self.tmp_name();
         self.line(&format!("  {} = phi {} [ {}, %{} ], [ {}, %{} ]", result, elem_llvm, elem_val, ok_label, zero, oob_label));
@@ -562,7 +628,7 @@ impl Codegen {
         let end_label = self.block_label("list_set_end");
         self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, do_label, end_label));
 
-        self.line(&format!("{}:", do_label));
+        self.open_block(&do_label);
         let elem_ptr = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, elem_llvm, elem_llvm, data, idx64));
         let clean_val = self.untag(val, elem_ty);
@@ -574,7 +640,7 @@ impl Codegen {
         self.line(&format!("  store {} {}, {}* {}", elem_llvm, clean_val, elem_llvm, elem_ptr));
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
     }
 
     /// Place resolution for a `list[idx]` *base* of a further access --
@@ -613,19 +679,19 @@ impl Codegen {
         let end_label = self.block_label("list_place_end");
         self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, ok_label, oob_label));
 
-        self.line(&format!("{}:", ok_label));
+        self.open_block(&ok_label);
         let elem_ptr = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, elem_llvm, elem_llvm, data, idx64));
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", oob_label));
+        self.open_block(&oob_label);
         let dummy = self.tmp_name();
         self.line(&format!("  {} = alloca {}", dummy, elem_llvm));
         let zero = self.zero_value(elem_ty);
         self.line(&format!("  store {} {}, {}* {}", elem_llvm, zero, elem_llvm, dummy));
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
         let result = self.tmp_name();
         self.line(&format!("  {} = phi {}* [ {}, %{} ], [ {}, %{} ]", result, elem_llvm, elem_ptr, ok_label, dummy, oob_label));
         result
@@ -659,7 +725,7 @@ impl Codegen {
                 let store_label = self.block_label("list_push_store");
                 self.line(&format!("  br i1 {}, label %{}, label %{}", needs_grow, grow_label, store_label));
 
-                self.line(&format!("{}:", grow_label));
+                self.open_block(&grow_label);
                 let doubled = self.tmp_name();
                 self.line(&format!("  {} = mul i64 {}, 2", doubled, cap));
                 let has_cap = self.tmp_name();
@@ -696,7 +762,7 @@ impl Codegen {
                 let after_copy_label = self.block_label("list_push_after_copy");
                 self.line(&format!("  br i1 {}, label %{}, label %{}", had_data, copy_label, after_copy_label));
 
-                self.line(&format!("{}:", copy_label));
+                self.open_block(&copy_label);
                 let old_bytes = self.tmp_name();
                 self.line(&format!("  {} = mul i64 {}, {}", old_bytes, len, elem_size));
                 let old_raw = self.tmp_name();
@@ -705,12 +771,12 @@ impl Codegen {
                 self.line(&format!("  call void @free(i8* {})", old_raw));
                 self.line(&format!("  br label %{}", after_copy_label));
 
-                self.line(&format!("{}:", after_copy_label));
+                self.open_block(&after_copy_label);
                 self.line(&format!("  store {}* {}, {}** {}", elem_llvm, new_data, elem_llvm, data_field));
                 self.line(&format!("  store i64 {}, i64* {}", new_cap, cap_field));
                 self.line(&format!("  br label %{}", store_label));
 
-                self.line(&format!("{}:", store_label));
+                self.open_block(&store_label);
                 let data_now = self.tmp_name();
                 self.line(&format!("  {} = load {}*, {}** {}", data_now, elem_llvm, elem_llvm, data_field));
                 let elem_ptr = self.tmp_name();
@@ -731,7 +797,7 @@ impl Codegen {
                 let end_label = self.block_label("list_pop_end");
                 self.line(&format!("  br i1 {}, label %{}, label %{}", is_empty, empty_label, nonempty_label));
 
-                self.line(&format!("{}:", nonempty_label));
+                self.open_block(&nonempty_label);
                 let new_len = self.tmp_name();
                 self.line(&format!("  {} = sub i64 {}, 1", new_len, len));
                 self.line(&format!("  store i64 {}, i64* {}", new_len, len_field));
@@ -743,10 +809,10 @@ impl Codegen {
                 self.line(&format!("  {} = load {}, {}* {}", popped, elem_llvm, elem_llvm, elem_ptr));
                 self.line(&format!("  br label %{}", end_label));
 
-                self.line(&format!("{}:", empty_label));
+                self.open_block(&empty_label);
                 self.line(&format!("  br label %{}", end_label));
 
-                self.line(&format!("{}:", end_label));
+                self.open_block(&end_label);
                 let zero = self.zero_value(elem_ty);
                 let result = self.tmp_name();
                 self.line(&format!("  {} = phi {} [ {}, %{} ], [ {}, %{} ]", result, elem_llvm, popped, nonempty_label, zero, empty_label));

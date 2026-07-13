@@ -56,7 +56,7 @@ impl Codegen {
         let ok_label = self.block_label("frame_alloc_ok");
         self.line(&format!("  br i1 {}, label %{}, label %{}", overflow, fail_label, ok_label));
 
-        self.line(&format!("{}:", fail_label));
+        self.open_block(&fail_label);
         let msg = "star runtime error: a `frame:` block exceeded its 4096-byte capacity\n";
         let g = self.global_name();
         let escaped = msg.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
@@ -67,7 +67,7 @@ impl Codegen {
         self.line("  call void @exit(i32 1)");
         self.line("  unreachable");
 
-        self.line(&format!("{}:", ok_label));
+        self.open_block(&ok_label);
         self.line(&format!("  store i64 {}, i64* @frame.off", new_off));
         let base = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0", base));
@@ -186,7 +186,7 @@ impl Codegen {
         };
         self.write(&params.join(", "));
         self.line(") {");
-        self.line("entry:");
+        self.open_block("entry");
 
         if is_main {
             self.line("  store i32 %.argc, i32* @star.argc");
@@ -345,7 +345,7 @@ impl Codegen {
                 let else_label = self.block_label("if_else");
                 let end_label = self.block_label("if_end");
                 self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, then_label, else_label));
-                self.line(&format!("{}:", then_label));
+                self.open_block(&then_label);
                 self.push_scope();
                 for stmt in &then_block.stmts {
                     self.emit_stmt(stmt);
@@ -354,7 +354,7 @@ impl Codegen {
                 if !then_terminates {
                     self.line(&format!("  br label %{}", end_label));
                 }
-                self.line(&format!("{}:", else_label));
+                self.open_block(&else_label);
                 self.push_scope();
                 if let Some(else_b) = else_block {
                     for stmt in &else_b.stmts {
@@ -366,7 +366,7 @@ impl Codegen {
                     self.line(&format!("  br label %{}", end_label));
                 }
                 if !both_terminate {
-                    self.line(&format!("{}:", end_label));
+                    self.open_block(&end_label);
                 }
             }
             TypedStmt::Frame { body, .. } => { self.emit_frame_body(body); }
@@ -377,14 +377,14 @@ impl Codegen {
                 let end_label = self.block_label("while_end");
                 // Loop header: evaluate the condition and branch.
                 self.line(&format!("  br label %{}", cond_label));
-                self.line(&format!("{}:", cond_label));
+                self.open_block(&cond_label);
                 let cond_val = self.emit_expr(cond);
                 let cond_reg = self.reg_of(&cond_val);
                 self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, body_label, end_label));
                 // Loop body: runs, then jumps back to the condition. `break`
                 // targets `end_label` and `continue` targets `cond_label`
                 // directly (re-evaluating the condition has no side effects).
-                self.line(&format!("{}:", body_label));
+                self.open_block(&body_label);
                 let depth_at_entry = self.owned_stack.len();
                 self.push_scope();
                 self.loop_stack.push((cond_label.clone(), end_label.clone(), depth_at_entry));
@@ -398,7 +398,7 @@ impl Codegen {
                     self.line(&format!("  br label %{}", cond_label));
                 }
                 // Optional else clause runs once after the loop exits, then joins end.
-                self.line(&format!("{}:", else_label));
+                self.open_block(&else_label);
                 self.push_scope();
                 if let Some(else_b) = else_block {
                     for stmt in &else_b.stmts {
@@ -407,7 +407,7 @@ impl Codegen {
                 }
                 self.pop_scope(true);
                 self.line(&format!("  br label %{}", end_label));
-                self.line(&format!("{}:", end_label));
+                self.open_block(&end_label);
             }
             TypedStmt::For { var, start, end, body, .. } => {
                 self.emit_for_stmt(var, start, end, body);
@@ -465,14 +465,14 @@ impl Codegen {
         let end_label = self.block_label("for_end");
 
         self.line(&format!("  br label %{}", cond_label));
-        self.line(&format!("{}:", cond_label));
+        self.open_block(&cond_label);
         let i_reg = self.tmp_name();
         self.line(&format!("  {} = load i32, i32* {}", i_reg, i_ptr));
         let cmp = self.tmp_name();
         self.line(&format!("  {} = icmp slt i32 {}, {}", cmp, i_reg, end_bare));
         self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, body_label, end_label));
 
-        self.line(&format!("{}:", body_label));
+        self.open_block(&body_label);
         self.symbols.push((var.to_string(), i_ptr.clone(), Ty::Int));
         let depth_at_entry = self.owned_stack.len();
         self.push_scope();
@@ -488,7 +488,7 @@ impl Codegen {
             self.line(&format!("  br label %{}", step_label));
         }
 
-        self.line(&format!("{}:", step_label));
+        self.open_block(&step_label);
         let i_reg2 = self.tmp_name();
         self.line(&format!("  {} = load i32, i32* {}", i_reg2, i_ptr));
         let i_next = self.tmp_name();
@@ -496,7 +496,7 @@ impl Codegen {
         self.line(&format!("  store i32 {}, i32* {}", i_next, i_ptr));
         self.line(&format!("  br label %{}", cond_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
     }
 
     fn load_target(&mut self, target: &TypedExpr) -> String {

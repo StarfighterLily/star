@@ -327,9 +327,19 @@ impl Checker {
                 }
                 let then_typed = self.check_block_inner(then_block, &mut vars.clone());
                 let else_typed = else_block.as_ref().map(|b| self.check_block_inner(b, &mut vars.clone()));
-                let ty = then_typed.stmts.last()
-                    .and_then(|s| if let TypedStmt::Expr(e) = s { Some(e.clone().into_ty()) } else { None })
-                    .unwrap_or_else(|| Ty::Named("void".into()));
+                // Mirrors `Codegen::emit_stmts_value`'s exact notion of which
+                // statement shapes contribute a value: a bare trailing
+                // expression, or a `frame:` scope whose own trailing
+                // statement does -- previously only the former was
+                // recognized here, so an `if`-expression whose `then`
+                // branch ended in a trailing `frame:` block (`if cond:
+                // frame: let p = Point(1, 2); p`) inferred `void` instead
+                // of `Point`, either rejecting sound code downstream or
+                // (if reached via an explicit `return`) letting the
+                // `check_frame_escapes` pass beneath it silently skip the
+                // struct entirely (see `frame_escape_source_block`'s own
+                // matching fix).
+                let ty = Self::trailing_value_ty(&then_typed.stmts).unwrap_or_else(|| Ty::Named("void".into()));
                 Ok(TypedExpr::If {
                     cond: Box::new(cond_typed),
                     then_block: then_typed,
@@ -424,9 +434,13 @@ impl Checker {
                 // for a body with no trailing value.
                 let ret_ty = match ret {
                     Some(t) => self.resolve_type(t).unwrap_or(Ty::Named("unknown".into())),
-                    None => body_typed.stmts.last()
-                        .and_then(|s| if let TypedStmt::Expr(e) = s { Some(e.clone().into_ty()) } else { None })
-                        .unwrap_or_else(|| Ty::Named("unknown".into())),
+                    // Mirrors `Codegen::emit_stmts_value`'s exact notion of
+                    // which statement shapes contribute a value (see the
+                    // matching fix on the `if`-expression's own type
+                    // inference above) -- a closure body ending in a
+                    // trailing `frame:` block previously inferred `unknown`
+                    // (void) instead of that block's real trailing type.
+                    None => Self::trailing_value_ty(&body_typed.stmts).unwrap_or_else(|| Ty::Named("unknown".into())),
                 };
                 let param_tys: Vec<Ty> = typed_params.iter().map(|p| p.ty.clone()).collect();
                 let closure_ty = Ty::Closure(param_tys, Box::new(ret_ty));
@@ -1269,6 +1283,16 @@ impl Checker {
             }
             pattern = Pattern::EnumVariant(resolved_name, variant.clone(), bindings.clone());
         }
+        // `Pattern::Binding(name)` binds the *whole* scrutinee value to a
+        // fresh name (`match x: v -> v + 1`) and, per `check_match_exhaustive`'s
+        // own doc comment, is an unconditional catch-all -- but until now
+        // nothing ever inserted `name` into the arm-local scope, so any use
+        // of it inside the arm body failed with "undefined name" on every
+        // single use, making this documented pattern kind entirely unusable.
+        if let Pattern::Binding(name) = &arm.pattern {
+            let scrutinee_ty = scrutinee_expr.clone().into_ty();
+            vars.insert(name.clone(), scrutinee_ty);
+        }
         let mut stmts = Vec::new();
         for stmt in &arm.body.stmts {
             if let Some(typed) = self.check_stmt(stmt, vars) {
@@ -1279,11 +1303,12 @@ impl Checker {
         // value it contributes when this `match` is used as a
         // value-producing expression, phi-merged across arms by codegen);
         // an arm used purely for side effects (its last statement isn't a
-        // bare expression) has no such value, so it stays `unknown`.
-        let ty = match stmts.last() {
-            Some(TypedStmt::Expr(e)) => e.clone().into_ty(),
-            _ => Ty::Named("unknown".into()),
-        };
+        // bare expression, and isn't a `frame:` scope whose own trailing
+        // statement is -- `Self::trailing_value_ty` mirrors
+        // `Codegen::emit_stmts_value`'s exact notion of which statement
+        // shapes contribute a value) has no such value, so it stays
+        // `unknown`.
+        let ty = Self::trailing_value_ty(&stmts).unwrap_or_else(|| Ty::Named("unknown".into()));
         TypedMatchArm { pattern, body: TypedBlock { stmts, span: arm.span }, ty, span: arm.span }
     }
 

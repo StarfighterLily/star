@@ -258,6 +258,17 @@ pub struct Checker {
     /// argument (see `unify_ty`).
     mono_struct_of: HashMap<String, (String, Vec<Ty>)>,
     mono_enum_of: HashMap<String, (String, Vec<Ty>)>,
+    /// Mangled instantiated-function name (`sneaky__i32`) -> its generic
+    /// template name (`sneaky`), mirroring `mono_struct_of`/`mono_enum_of`
+    /// above. Needed so `par_analysis::walk_par_expr`'s `unsafe_par_fns`
+    /// hazard check (keyed by the *template's* declared name, computed
+    /// up front from the raw AST -- see `compute_unsafe_par_fns`) can still
+    /// recognize a call to a generic function/method by its mangled,
+    /// monomorphized name: without this, `self.unsafe_par_fns.contains(name)`
+    /// always misses for any generic hazard, since the call site only ever
+    /// sees the mangled name, never the template name the hazard set was
+    /// built from.
+    mono_fn_of: HashMap<String, String>,
     /// Monomorphized struct/enum/fn items generated on demand while checking
     /// (e.g. the first time `Box<i32>` or `identity(5)` is used), appended to
     /// the module's typed items once checking finishes (see `check`).
@@ -332,6 +343,7 @@ impl Checker {
             generic_fns: HashMap::new(),
             mono_struct_of: HashMap::new(),
             mono_enum_of: HashMap::new(),
+            mono_fn_of: HashMap::new(),
             mono_items: Vec::new(),
             errors: Vec::new(),
             loop_depth: 0,
@@ -1249,6 +1261,7 @@ impl Checker {
         }).collect();
         let ret_ty = concrete.sig.ret.as_ref().and_then(|t| self.resolve_type(t));
         self.functions.insert(mangled.clone(), (param_tys, ret_ty));
+        self.mono_fn_of.insert(mangled.clone(), template_name.to_string());
         let Some(typed) = self.check_fn(&concrete) else { return mangled; };
         self.mono_items.push(TypedItem::Fn(typed));
         mangled

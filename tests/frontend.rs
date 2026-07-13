@@ -3383,6 +3383,153 @@ fn runtime_match_value_and_statement_end_to_end() {
     assert_eq!(lines[positive_at + 1], "done describing", "match statement followed by another statement, positive branch: {}", stdout);
 }
 
+/// A `match` compare-pattern's rhs can be a negative integer literal
+/// (`<= -5`), which parses as `Expr::Unary { op: Neg, operand: Expr::Int }`
+/// rather than `Expr::Int` directly (the lexer has no dedicated
+/// negative-literal token) -- `Codegen::emit_expr`'s `Pattern::Compare` arm
+/// previously only recognized a bare `Expr::Int` rhs and fell into its
+/// "unsupported match rhs expression" error for anything else, so this
+/// perfectly ordinary, type-checked syntax failed at the codegen step with a
+/// confusing internal error instead of compiling.
+#[test]
+fn runtime_match_compare_pattern_against_negative_literal_end_to_end() {
+    let src = "fn classify(x: i32) -> str:\n    match x:\n        <= -5 ->\n            return \"very low\"\n        < 0 ->\n            return \"low\"\n        _ ->\n            return \"other\"\n\nfn main():\n    println(classify(-10))\n    println(classify(-1))\n    println(classify(5))\n";
+    let output = compile_and_run("match_compare_negative_literal", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["very low", "low", "other"], "{}", stdout);
+}
+
+/// A `Pattern::Binding` match arm (`v -> ...`) binds the *whole* scrutinee
+/// value to a fresh name, and per `check_match_exhaustive`'s own doc comment
+/// is treated as an unconditional catch-all -- but nothing ever actually
+/// inserted that name into the arm's scope, so any use of it failed
+/// type-checking with "undefined name" on every single use, making this
+/// entire documented pattern kind unusable. Exercises an `i32` scrutinee.
+#[test]
+fn runtime_match_binding_pattern_int_scrutinee_end_to_end() {
+    let src = "fn classify(x: i32) -> i32:\n    match x:\n        v -> v + 1\n\nfn main():\n    println(f\"{classify(5)}\")\n    println(f\"{classify(-3)}\")\n";
+    let output = compile_and_run("match_binding_pattern_int", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["6", "-2"], "{}", stdout);
+}
+
+/// Same `Pattern::Binding` fix, `str` scrutinee: exercises the codegen path
+/// where the scrutinee has no ready-made storage pointer of its own (unlike
+/// a struct/payload-enum scrutinee) and the binding must spill the loaded
+/// value into a fresh alloca before it can be registered as a local.
+#[test]
+fn runtime_match_binding_pattern_str_scrutinee_end_to_end() {
+    let src = "fn describe(s: str) -> str:\n    match s:\n        v -> v\n\nfn main():\n    println(describe(\"hello\"))\n";
+    let output = compile_and_run("match_binding_pattern_str", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "hello", "{}", stdout);
+}
+
+// ===== `if`/`match`-as-value phi-predecessor tracking =======================
+//
+// `TypedExpr::If`'s and `TypedExpr::Match`'s codegen merge each branch/arm's
+// trailing value with a `phi` instruction at the join block, and previously
+// hardcoded the *entry* label of that branch/arm (`if_then_N`/`match_then_N`)
+// as the `phi`'s incoming-block operand. That's only correct if the branch's
+// trailing value is computed with zero further control flow of its own --
+// true for a literal or a plain scalar binop, but false for almost anything
+// else: a short-circuit `&&`/`||`, a `list[i]`/`gen_ref[i]` bounds check, a
+// `frame:` allocation, a nested `if`/`match`, all open their *own* basic
+// blocks partway through evaluating the branch, so the block actually
+// falling through to the join point is whichever of those was opened last,
+// not the branch's original entry block. Using the stale label produced
+// invalid LLVM IR ("PHI node entries do not match predecessors" / "Instruction
+// does not dominate all uses"), rejected by `clang` at the very last pipeline
+// stage, for any such branch value -- discovered while fixing a narrower,
+// related gap (`Checker::trailing_value_ty` not recognizing a trailing
+// `frame:` block, see the `frame_escape`/`trailing_value` tests below) that
+// happened to unblock type-checking for the first repro case that exposed
+// this. Fixed by threading `Codegen::current_label` (updated by the new
+// `open_block` helper, the sole place any block is opened) through both
+// `phi` sites instead of the stale entry labels.
+
+/// The most common trigger: a short-circuit `&&`/`||` as the trailing value
+/// of one arm of an `if` used as a value (via `return if ...`).
+#[test]
+fn runtime_if_value_branch_with_logical_and_end_to_end() {
+    let src = "fn compute(cond: bool, a: bool, b: bool) -> bool:\n    return if cond:\n        a && b\n    else:\n        false\n\nfn main():\n    println(f\"{compute(true, true, true)}\")\n    println(f\"{compute(true, true, false)}\")\n    println(f\"{compute(false, true, true)}\")\n";
+    let output = compile_and_run("if_value_logical_and", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "false", "false"], "{}", stdout);
+}
+
+/// Same bug, `list[idx]`'s own internal bounds-check block as the trigger.
+#[test]
+fn runtime_if_value_branch_with_list_index_end_to_end() {
+    let src = "fn compute(cond: bool, nums: List<i32>) -> i32:\n    return if cond:\n        nums[0]\n    else:\n        -1\n\nfn main():\n    let mut nums = List<i32>()\n    nums.push(42)\n    println(f\"{compute(true, nums)}\")\n    println(f\"{compute(false, nums)}\")\n";
+    let output = compile_and_run("if_value_list_index", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["42", "-1"], "{}", stdout);
+}
+
+/// Same bug, a trailing `frame:` block as the trigger -- exercises both the
+/// codegen phi fix *and* the `Checker::trailing_value_ty`/`Expr::If` type
+/// inference fix that made this construct type-check as `i32` (rather than
+/// `void`) in the first place.
+#[test]
+fn runtime_if_value_branch_with_trailing_frame_end_to_end() {
+    let src = "fn compute(cond: bool) -> i32:\n    return if cond:\n        frame:\n            let x = 5\n            x * 2\n    else:\n        0\n\nfn main():\n    println(f\"{compute(true)}\")\n    println(f\"{compute(false)}\")\n";
+    let output = compile_and_run("if_value_trailing_frame", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["10", "0"], "{}", stdout);
+}
+
+/// Same bug, `match`-as-value side: a `Compare`-pattern arm's trailing value
+/// opens its own blocks (`&&`), exercising the `Pattern::Compare`/
+/// `Pattern::EnumVariant` arms' phi-predecessor fix.
+#[test]
+fn runtime_match_value_compare_arm_with_logical_and_end_to_end() {
+    let src = "fn classify(x: i32, flag: bool) -> bool:\n    match x:\n        <= 0 -> flag && false\n        _ -> flag && true\n\nfn main():\n    println(f\"{classify(-1, true)}\")\n    println(f\"{classify(1, true)}\")\n";
+    let output = compile_and_run("match_value_compare_logical_and", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["false", "true"], "{}", stdout);
+}
+
+/// Same bug, `match`-as-value side: an `EnumVariant`-pattern arm's trailing
+/// value opens its own blocks (`&&`), exercising the payload-enum path of
+/// the same phi-predecessor fix.
+#[test]
+fn runtime_match_value_enum_variant_arm_with_logical_and_end_to_end() {
+    let src = "enum IntOption:\n    None\n    Some(value: i32)\n\nfn describe(o: IntOption, flag: bool) -> bool:\n    match o:\n        IntOption::Some(v) -> flag && (v > 0)\n        IntOption::None -> false\n\nfn main():\n    println(f\"{describe(IntOption::Some(5), true)}\")\n    println(f\"{describe(IntOption::Some(-5), true)}\")\n    println(f\"{describe(IntOption::None, true)}\")\n";
+    let output = compile_and_run("match_value_enum_variant_logical_and", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "false", "false"], "{}", stdout);
+}
+
+/// `Checker::check_frame_escapes`'s lookahead (`frame_escape_source_block`)
+/// previously only recognized a bare trailing expression as a branch's
+/// value, so a `frame:` block nested inside an `if`-expression's branch and
+/// returned from the enclosing function silently skipped this whole safety
+/// check -- a struct allocated inside that `frame:` block could be returned
+/// with no diagnostic at all. Fixed alongside the type-inference gap above.
+#[test]
+fn rejects_frame_local_struct_escaping_through_if_value_branch() {
+    let src = "struct Point:\n    x: i32\n    y: i32\n\nfn make(cond: bool) -> Point:\n    return if cond:\n        frame:\n            let p = Point(1, 2)\n            p\n    else:\n        Point(0, 0)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("returning a frame-local struct through an if-value branch should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("p") && d.message.contains("does not outlive")), "{:?}", errs);
+}
+
 /// Runtime test: `examples/player.exe`'s `take_damage` method (called as a
 /// bare statement) and `remaining_health` method (called as a value inside
 /// an f-string interpolation) both type-check and run correctly.
@@ -3606,6 +3753,87 @@ fn codegen_list_index_write_is_bounds_checked() {
     let ir = Driver::codegen(&typed).expect("should codegen");
     assert!(ir.contains("icmp ult i64"), "{}", ir);
     assert!(ir.contains("list_set_do"), "{}", ir);
+}
+
+/// A *nested* list-index read (`m[0][1]`, where `m`'s own element type is
+/// itself a `List<T>`) must not trigger the copy-on-write uniqueness gate
+/// on `m` -- `list_fields` (the read path) previously resolved a
+/// `ListIndex` base through `Codegen::emit_place`, whose `ListIndex` arm
+/// exists for *writes* and unconditionally runs `emit_list_ensure_unique`
+/// (identifiable by the `list_cow_clone` block it emits) before returning a
+/// pointer, silently cloning and un-aliasing `m` from any other variable
+/// sharing its buffer as a side effect of a plain read. Fixed by resolving
+/// the inner object through a dedicated, retain-free, COW-free read path
+/// (`Codegen::list_index_read_obj`) instead.
+#[test]
+fn codegen_nested_list_index_read_does_not_trigger_cow_clone() {
+    let module = Driver::parse("fn t(nums: List<List<i32>>) -> i32:\n    nums[0][1]\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i32 @t(");
+    assert!(!fn_ir.contains("list_cow_clone"), "a pure nested read must not clone/unshare the outer list: {}", fn_ir);
+}
+
+/// Same nested shape, but a *write* (`m[0][1] = 5`) still must run the
+/// copy-on-write gate on the outer list -- a regression guard alongside
+/// `codegen_nested_list_index_read_does_not_trigger_cow_clone` so the read
+/// fix above doesn't overcorrect into skipping the uniqueness check a real
+/// mutation still needs.
+#[test]
+fn codegen_nested_list_index_write_still_triggers_cow_clone() {
+    let module = Driver::parse("fn t(mut nums: List<List<i32>>):\n    nums[0][1] = 5\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("list_cow_clone"), "a nested write must still uniquify the outer list before mutating: {}", ir);
+}
+
+/// A nested list-index read (`m[i][j]`) on a `List<List<i32>>` must still
+/// produce correct values end to end -- a functional regression guard for
+/// the `list_fields`/`list_fields_from_obj`/`list_index_read_obj` split
+/// introduced to fix the unwanted-COW-clone-on-read bug above. Also
+/// exercises the out-of-bounds path on both index levels (zero value, not a
+/// crash), mirroring `emit_list_index`'s established OOB convention.
+#[test]
+fn runtime_nested_list_index_read_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let m: List<List<i32>> = [[1, 2], [3, 4, 5]]\n",
+        "    println(f\"{m[0][1]}\")\n",
+        "    println(f\"{m[1][2]}\")\n",
+        "    println(f\"{m[0][99]}\")\n",
+        "    println(f\"{m[99][0]}\")\n",
+    );
+    let output = compile_and_run("nested_list_index_read", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["2", "5", "0", "0"], "{}", stdout);
+}
+
+/// A pure nested read (`n[0][1]`) must not un-alias two variables sharing
+/// the same outer list's buffer -- a subsequent mutation through *either*
+/// alias must still behave exactly as plain copy-on-write semantics
+/// predict (mutating one never affects the other), regardless of whether a
+/// read happened first. This can't distinguish "never cloned" from
+/// "clone­d-then-still-correctly-isolated" by final values alone (both are
+/// observably identical, which is precisely why the bug was invisible from
+/// program output) -- `codegen_nested_list_index_read_does_not_trigger_cow_clone`
+/// is what actually pins the fix; this is a functional companion guarding
+/// against a botched fix breaking ordinary COW isolation.
+#[test]
+fn runtime_nested_list_read_then_mutate_preserves_cow_isolation_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let mut m: List<List<i32>> = [[1, 2]]\n",
+        "    let n = m\n",
+        "    let x = n[0][1]\n",
+        "    m[0].push(99)\n",
+        "    println(f\"x={x} m0len={m[0].len()} n0len={n[0].len()}\")\n",
+    );
+    let output = compile_and_run("nested_list_read_then_mutate", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "x=2 m0len=3 n0len=2", "{}", stdout);
 }
 
 /// `len()` truncates the internal `i64` length counter down to the
@@ -4155,6 +4383,59 @@ fn accepts_harmless_helper_function_call_inside_par() {
     );
     let module = Driver::parse(&src).expect("should parse");
     assert!(Driver::check(&module).is_ok(), "a harmless helper call should still be allowed: {:?}", Driver::check(&module).err());
+}
+
+/// A `frame:` block written *directly* inside a `par`/`swarm` body (not
+/// hidden behind a helper call) is the same shared-global race as
+/// `rejects_frame_hidden_behind_helper_function_call_inside_par` -- but
+/// `walk_par_stmt`'s own `TypedStmt::Frame` arm previously just recursed
+/// into the body with no check at all (unlike the `Spawn`/`Despawn`/
+/// `Closure` arms right next to it), so this exact, more obvious case of the
+/// hazard was the one actually left unguarded.
+#[test]
+fn rejects_frame_directly_inside_par() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        frame:\n            let x = e.hp\n        e.hp -= 1\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("frame: directly inside a par/swarm body should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("frame")), "{:?}", errs);
+}
+
+/// The transitive spawn/despawn/`frame:` ban is keyed by each hazardous
+/// function's *declared* (template) name (`compute_unsafe_par_fns` walks the
+/// raw, pre-monomorphization AST) -- but a generic function's call site
+/// names its *mangled* monomorphized form instead (`sneaky__i32`, via
+/// `Checker::instantiate_fn`), which was never in that set, so any generic
+/// function/method opening a `frame:` block silently bypassed the ban simply
+/// by being generic.
+#[test]
+fn rejects_generic_function_hazard_hidden_behind_monomorphization() {
+    let src = format!(
+        "{}fn sneaky<T>(x: T):\n    frame:\n        let tmp = x\n\nfn t():\n    par e in Enemies:\n        sneaky(e.hp)\n        e.hp -= 1\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("a generic function hiding a frame: hazard should still be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("sneaky")), "{:?}", errs);
+}
+
+/// A `Pattern::Binding` match arm (`v -> ...`, binding the whole scrutinee
+/// to a fresh name rather than destructuring it) is safe to mutate/use
+/// inside a `par`/`swarm` body -- it's a fresh per-arm local exactly like a
+/// destructured payload-enum/struct-pattern binding, which `walk_par_expr`'s
+/// `TypedExpr::Match` arm already treated as safe. Previously only
+/// `Pattern::EnumVariant`/`Pattern::Struct` bindings were added to `locals`,
+/// so this pattern kind's binding was incorrectly rejected as "cannot mutate
+/// a captured value" -- a false positive (usability bug, not a caught
+/// safety hole), fixed alongside the (separately far more broken)
+/// `Pattern::Binding` bugs covered by `runtime_match_binding_pattern_*`.
+#[test]
+fn accepts_binding_pattern_local_mutation_inside_par() {
+    let src = format!(
+        "{}fn t():\n    par e in Enemies:\n        match e.hp:\n            v ->\n                let mut local = v\n                local = local + 1\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "mutating a Pattern::Binding local inside par should be allowed: {:?}", Driver::check(&module).err());
 }
 
 // --- §1.1-1.4: type-checking holes ------------------------------------------
@@ -5096,6 +5377,79 @@ fn runtime_moderately_nested_if_blocks_end_to_end() {
     assert!(output.status.success(), "{:?}", output.status);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim_end(), "hi", "{}", stdout);
+}
+
+/// Same failure mode again, `match`-nesting side: `parse_match` recurses
+/// back into itself both as a bare statement (`parse_match_stmt`, uncounted
+/// by `expr_depth`/`block_depth` at that call site) and inline in another
+/// arm's body (`_ -> match ...`, going through `expr_depth` via
+/// `parse_unary`) -- previously unguarded by any counter of its own, and
+/// each level of `match` nesting costs far more real stack per level
+/// (`parse_match` -> `parse_match_arm` -> `parse_pattern`/`parse_expr`, each
+/// with their own locals) than a plain paren/unary chain does, so ~55-60
+/// levels of nested inline `match` reliably overflowed the real call stack
+/// with a bare process abort well *under* `MAX_EXPR_DEPTH`'s 80-level
+/// threshold -- the same "guard calibrated for a lighter call chain doesn't
+/// trigger before a heavier one crashes" bug already fixed once for
+/// `MAX_BLOCK_DEPTH`. Guarded by the new, separate `Parser::match_depth`/
+/// `MAX_MATCH_DEPTH` counter.
+#[test]
+fn rejects_deeply_nested_match_does_not_overflow_stack() {
+    let mut src = String::from("fn main():\n    match a0:\n");
+    for i in 1..60 {
+        src.push_str(&"    ".repeat(i + 1));
+        src.push_str(&format!("_ -> match a{}:\n", i));
+    }
+    src.push_str(&"    ".repeat(61));
+    src.push_str("_ -> 1\n");
+    let result = Driver::parse(&src);
+    assert!(result.is_err(), "60 levels of nested `match` should be a clean parse error, not succeed or crash");
+}
+
+/// A reasonably (but not adversarially) nested `match` -- well under
+/// `MAX_MATCH_DEPTH` -- must still parse correctly (a regression guard
+/// against the depth guard being so aggressive it rejects sound, if
+/// unusual, code).
+#[test]
+fn parses_moderately_nested_match() {
+    let mut src = String::from("fn main():\n    match a0:\n");
+    for i in 1..20 {
+        src.push_str(&"    ".repeat(i + 1));
+        src.push_str(&format!("_ -> match a{}:\n", i));
+    }
+    src.push_str(&"    ".repeat(21));
+    src.push_str("_ -> 1\n");
+    Driver::parse(&src).expect("20 levels of nested `match` should parse cleanly");
+}
+
+/// A structurally-valid enum variant followed by garbage instead of a line
+/// ending (`Red 123`) must produce exactly one diagnostic and recover
+/// cleanly -- `parse_enum_variant` previously discarded `expect_line_end()`'s
+/// `Option` outright (`self.expect_line_end();`, no `?`), so on failure it
+/// still returned `Some(EnumVariantDef { .. })` as if nothing had gone
+/// wrong, leaving the stray `123` for the next loop iteration to
+/// misinterpret as the start of another variant and produce a second,
+/// redundant diagnostic.
+#[test]
+fn rejects_enum_variant_with_garbage_after_it_with_single_diagnostic() {
+    let src = "enum Color:\n    Red 123\n    Blue\n";
+    let errs = Driver::parse(src).expect_err("garbage after an enum variant should be a parse error");
+    assert_eq!(errs.len(), 1, "should recover after exactly one diagnostic, not cascade into a second: {:?}", errs);
+    assert!(errs[0].message.contains("end of line"), "{:?}", errs);
+}
+
+/// Same fix, trait-method side: a structurally-valid method signature
+/// followed by garbage instead of a line ending (`fn bar() 123`) must also
+/// produce exactly one diagnostic -- `parse_trait`'s method loop called
+/// `self.expect_line_end();` directly (also discarding the `Option`) rather
+/// than recovering on failure, so the stray `123` was left for the next
+/// iteration to misinterpret as the start of another method.
+#[test]
+fn rejects_trait_method_with_garbage_after_it_with_single_diagnostic() {
+    let src = "trait Foo:\n    fn bar() 123\n    fn baz()\n";
+    let errs = Driver::parse(src).expect_err("garbage after a trait method signature should be a parse error");
+    assert_eq!(errs.len(), 1, "should recover after exactly one diagnostic, not cascade into a second: {:?}", errs);
+    assert!(errs[0].message.contains("end of line"), "{:?}", errs);
 }
 
 /// Same failure mode a third time, f-string-interpolation side: each nested
@@ -6277,6 +6631,23 @@ fn runtime_file_read_twice_second_call_returns_empty_end_to_end() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines, vec!["first:all", "second:"], "{}", stdout);
     let _ = std::fs::remove_file(&path);
+}
+
+/// `file_read` on a handle to a non-seekable stream (the `NUL` device, which
+/// `fopen` happily opens but which fails `ftell`/`fseek`, returning `-1`)
+/// must return `""` instead of corrupting memory -- `emit_file_read` sizes
+/// its buffer as `sext(ftell(end) - ftell(start))`, and without clamping a
+/// negative result, `-1` sign-extended to `i64` and treated as an unsigned
+/// byte count would request a `star_rc_alloc`/`fread` of roughly
+/// `u64::MAX` bytes instead of failing cleanly.
+#[test]
+fn runtime_file_read_on_non_seekable_handle_returns_empty_end_to_end() {
+    let src = "fn main():\n    let h = file_open(\"NUL\", \"r\")\n    println(f\"len={len(file_read(h))}\")\n    file_close(h)\n    println(\"done\")\n";
+    let output = compile_and_run("file_read_non_seekable", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["len=0", "done"], "{}", stdout);
 }
 
 /// Opening a file in append mode (`"a"`) and writing to it adds to the

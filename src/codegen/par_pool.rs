@@ -73,7 +73,7 @@ impl Codegen {
         // smuggled through the `LPTHREAD_START_ROUTINE`-shaped `i8*` param
         // as if it were a pointer (see `ensure_init`'s `inttoptr`).
         self.line("define i32 @par.pool.worker_main(i8* %idx_arg) {");
-        self.line("entry:");
+        self.open_block("entry");
         let idx64 = self.tmp_name();
         self.line(&format!("  {} = ptrtoint i8* %idx_arg to i64", idx64));
         let idx = self.tmp_name();
@@ -139,7 +139,7 @@ impl Codegen {
         // thread of control ever reaches this function, ever, making a
         // plain load/store race-free (no concurrent write is possible).
         self.line("define void @par.pool.ensure_init() {");
-        self.line("entry:");
+        self.open_block("entry");
         let inited = self.tmp_name();
         self.line(&format!("  {} = load i1, i1* @par.pool.inited", inited));
         self.line(&format!("  br i1 {}, label %par_pool_already, label %par_pool_init", inited));
@@ -238,7 +238,7 @@ impl Codegen {
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_worker, serial_label, pooled_label));
 
         // --- ordinary top-level dispatch: fan out to all NUM_WORKERS mailboxes ---
-        self.line(&format!("{}:", pooled_label));
+        self.open_block(&pooled_label);
         let count_reg = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @arena.{}.count", count_reg, arena));
         for t in 0..NUM_WORKERS {
@@ -311,14 +311,14 @@ impl Codegen {
         // --- nested `par`/`swarm`: this thread is itself a pool worker, so ---
         // it can't dispatch to the pool it belongs to; run the whole range
         // serially inline instead, behind the manually-reentrant lock.
-        self.line(&format!("{}:", serial_label));
+        self.open_block(&serial_label);
         let owner_reg = self.tmp_name();
         self.line(&format!("  {} = load i32, i32* @par.pool.serial_owner", owner_reg));
         let already_mine = self.tmp_name();
         self.line(&format!("  {} = icmp eq i32 {}, {}", already_mine, owner_reg, my_idx));
         self.line(&format!("  br i1 {}, label %{}, label %{}", already_mine, run_label, acquire_label));
 
-        self.line(&format!("{}:", acquire_label));
+        self.open_block(&acquire_label);
         let lock_h = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** @par.pool.serial_lock", lock_h));
         let wait2 = self.tmp_name();
@@ -326,7 +326,7 @@ impl Codegen {
         self.line(&format!("  store i32 {}, i32* @par.pool.serial_owner", my_idx));
         self.line(&format!("  br label %{}", run_label));
 
-        self.line(&format!("{}:", run_label));
+        self.open_block(&run_label);
         let count_reg2 = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @arena.{}.count", count_reg2, arena));
         let args_ptr2 = self.tmp_name();
@@ -353,7 +353,7 @@ impl Codegen {
         self.line(&format!("  {} = call i32 @{}(i8* {})", call_res, worker_name, args_i8_2));
         self.line(&format!("  br i1 {}, label %{}, label %{}", already_mine, join_label, release_label));
 
-        self.line(&format!("{}:", release_label));
+        self.open_block(&release_label);
         self.line("  store i32 -1, i32* @par.pool.serial_owner");
         let lock_h2 = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** @par.pool.serial_lock", lock_h2));
@@ -361,6 +361,6 @@ impl Codegen {
         self.line(&format!("  {} = call i32 @ReleaseSemaphore(i8* {}, i32 1, i32* null)", rel2, lock_h2));
         self.line(&format!("  br label %{}", join_label));
 
-        self.line(&format!("{}:", join_label));
+        self.open_block(&join_label);
     }
 }

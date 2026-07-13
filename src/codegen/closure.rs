@@ -93,7 +93,7 @@ impl Codegen {
             self.write(&format!(", {} %arg_{}", self.llvm_ty(&p.ty), p.name));
         }
         self.line(") {");
-        self.line("entry:");
+        self.open_block("entry");
         self.push_scope();
 
         if !captured.is_empty() {
@@ -207,7 +207,7 @@ impl Codegen {
                 let release_fn_name = format!("closure_{}_release_env", id);
                 let saved_ir2 = std::mem::take(&mut self.ir);
                 self.line(&format!("define void @{}(i8* %envp) {{", release_fn_name));
-                self.line("entry:");
+                self.open_block("entry");
                 let env_ptr2 = self.tmp_name();
                 self.line(&format!("  {} = bitcast i8* %envp to {}*", env_ptr2, env_ty));
                 for (i, fty) in &rc_fields {
@@ -294,7 +294,7 @@ impl Codegen {
                 self.write(&format!(", {} %arg_{}", ty, i));
             }
             self.line(") {");
-            self.line("entry:");
+            self.open_block("entry");
             let fwd_args: Vec<String> = param_llvm.iter().enumerate().map(|(i, ty)| format!("{} %arg_{}", ty, i)).collect();
             // The call site that produced this closure value (`emit_closure_call`)
             // retains each `str` argument before the call, on the assumption that

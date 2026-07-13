@@ -274,14 +274,14 @@ impl Codegen {
         let end_label = self.block_label("read_line_end");
 
         self.line(&format!("  br label %{}", cond_label));
-        self.line(&format!("{}:", cond_label));
+        self.open_block(&cond_label);
         let i_reg = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", i_reg, i_ptr));
         let has_room = self.tmp_name();
         self.line(&format!("  {} = icmp ult i64 {}, {}", has_room, i_reg, CAP - 1));
         self.line(&format!("  br i1 {}, label %{}, label %{}", has_room, body_label, end_label));
 
-        self.line(&format!("{}:", body_label));
+        self.open_block(&body_label);
         let c = self.tmp_name();
         self.line(&format!("  {} = call i32 @getchar()", c));
         let is_eof = self.tmp_name();
@@ -292,7 +292,7 @@ impl Codegen {
         self.line(&format!("  {} = or i1 {}, {}", stop, is_eof, is_nl));
         self.line(&format!("  br i1 {}, label %{}, label %{}", stop, end_label, store_label));
 
-        self.line(&format!("{}:", store_label));
+        self.open_block(&store_label);
         let dest = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", dest, buf, i_reg));
         let c8 = self.tmp_name();
@@ -303,7 +303,7 @@ impl Codegen {
         self.line(&format!("  store i64 {}, i64* {}", i_next, i_ptr));
         self.line(&format!("  br label %{}", cond_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
         let final_i = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", final_i, i_ptr));
         let nul = self.tmp_name();

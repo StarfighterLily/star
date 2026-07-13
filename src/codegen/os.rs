@@ -29,13 +29,13 @@ impl Codegen {
         let end_label = self.block_label("env_get_end");
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, null_label, real_label));
 
-        self.line(&format!("{}:", null_label));
+        self.open_block(&null_label);
         let empty = self.tmp_name();
         self.line(&format!("  {} = call i8* @star_rc_alloc(i64 1, i8* null)", empty));
         self.line(&format!("  store i8 0, i8* {}", empty));
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", real_label));
+        self.open_block(&real_label);
         let len = self.tmp_name();
         self.line(&format!("  {} = call i32 @strlen(i8* {})", len, raw));
         let total = self.tmp_name();
@@ -47,7 +47,7 @@ impl Codegen {
         self.line(&format!("  call i8* @strcpy(i8* {}, i8* {})", buf, raw));
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
         let result = self.tmp_name();
         self.line(&format!("  {} = phi i8* [ {}, %{} ], [ {}, %{} ]", result, empty, null_label, buf, real_label));
         format!("i8* {}", result)

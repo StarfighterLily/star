@@ -216,16 +216,16 @@ impl Codegen {
         };
         self.line(&format!("  br i1 {}, label %{}, label %{}", l_reg, true_dest, false_dest));
 
-        self.line(&format!("{}:", rhs_label));
+        self.open_block(&rhs_label);
         let r = self.emit_expr(rhs);
         let r_reg = self.reg_of(&r);
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", short_label));
+        self.open_block(&short_label);
         let short_val = if op == BinOp::And { "false" } else { "true" };
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
         let phi = self.tmp_name();
         self.line(&format!("  {} = phi i1 [ {}, %{} ], [ {}, %{} ]", phi, r_reg, rhs_label, short_val, short_label));
         format!("i1 {}", phi)
@@ -442,7 +442,7 @@ impl Codegen {
                 let entry_label = format!("match_scrutinee_{}", self.tmp);
                 self.tmp += 1;
                 self.line(&format!("  br label %{}", entry_label));
-                self.line(&format!("{}:", entry_label));
+                self.open_block(&entry_label);
                 let mut current_label = entry_label;
                 // `Compare`/`EnumVariant` arms each open a "next" block for
                 // the following arm to test against; the very last arm in
@@ -459,6 +459,17 @@ impl Codegen {
                         Pattern::Compare(op, rhs) => {
                             let rhs_val = match rhs.as_ref() {
                                 Expr::Int(v, _) => format!("i32 {}", v),
+                                // A negative literal (`<= -5`) parses as a
+                                // unary negation of an int literal, not an
+                                // `Expr::Int` directly (the lexer/parser have
+                                // no negative-literal token) -- fold it here
+                                // so this is still a compile-time constant
+                                // rather than falling into the "unsupported"
+                                // error below for perfectly ordinary syntax.
+                                Expr::Unary { op: UnOp::Neg, operand, .. } => match operand.as_ref() {
+                                    Expr::Int(v, _) => format!("i32 {}", -v),
+                                    _ => { self.err("unsupported match rhs expression", Span::dummy()); "i32 0".into() }
+                                },
                                 _ => { self.err("unsupported match rhs expression", Span::dummy()); "i32 0".into() }
                             };
                             let cmp = self.tmp_name();
@@ -474,7 +485,7 @@ impl Codegen {
                             let rhs_val_clean = rhs_val.strip_prefix("i32 ").unwrap_or(&rhs_val);
                             self.line(&format!("  {} = {} i32 {}, {}", cmp, llvm_op, scrut_val, rhs_val_clean));
                             self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, then_label, next_label));
-                            self.line(&format!("{}:", then_label));
+                            self.open_block(&then_label);
                             self.push_scope();
                             let val = self.emit_stmts_value(&arm.body.stmts);
                             let arm_terminates = Self::body_terminates(&arm.body.stmts);
@@ -482,11 +493,17 @@ impl Codegen {
                             if !arm_terminates {
                                 if produces_value {
                                     let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
-                                    arm_values.push((reg, then_label.clone()));
+                                    // Not necessarily `then_label` anymore --
+                                    // evaluating the arm's trailing value may
+                                    // have opened further blocks of its own
+                                    // (see `Codegen::current_label`'s doc
+                                    // comment; same fix as `TypedExpr::If`'s
+                                    // phi merge just below).
+                                    arm_values.push((reg, self.current_label.clone()));
                                 }
                                 self.line(&format!("  br label %{}", end_label));
                             }
-                            self.line(&format!("{}:", next_label));
+                            self.open_block(&next_label);
                             current_label = next_label.clone();
                         }
                         Pattern::EnumVariant(enum_name, variant, bindings) => {
@@ -503,7 +520,7 @@ impl Codegen {
                                 self.line(&format!("  {} = icmp eq i32 {}, {}", cmp, scrut_val, idx));
                             }
                             self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, then_label, next_label));
-                            self.line(&format!("{}:", then_label));
+                            self.open_block(&then_label);
                             // Destructure the variant's payload fields into
                             // fresh symbol bindings (scoped to this arm's
                             // body only -- popped right after) by bitcasting
@@ -536,11 +553,11 @@ impl Codegen {
                             if !arm_terminates {
                                 if produces_value {
                                     let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
-                                    arm_values.push((reg, then_label.clone()));
+                                    arm_values.push((reg, self.current_label.clone()));
                                 }
                                 self.line(&format!("  br label %{}", end_label));
                             }
-                            self.line(&format!("{}:", next_label));
+                            self.open_block(&next_label);
                             current_label = next_label.clone();
                         }
                         Pattern::Struct(struct_name, bindings) => {
@@ -573,7 +590,14 @@ impl Codegen {
                             if !arm_terminates {
                                 if produces_value {
                                     let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
-                                    arm_values.push((reg, current_label.clone()));
+                                    // `self.current_label`, not the local
+                                    // `current_label` (which only tracks
+                                    // transitions *between* arms) -- this
+                                    // arm's own body may have opened further
+                                    // blocks while computing its trailing
+                                    // value (see `Codegen::current_label`'s
+                                    // doc comment).
+                                    arm_values.push((reg, self.current_label.clone()));
                                 }
                                 self.line(&format!("  br label %{}", end_label));
                             }
@@ -586,7 +610,41 @@ impl Codegen {
                             if !arm_terminates {
                                 if produces_value {
                                     let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
-                                    arm_values.push((reg, current_label.clone()));
+                                    arm_values.push((reg, self.current_label.clone()));
+                                }
+                                self.line(&format!("  br label %{}", end_label));
+                            }
+                        }
+                        // `v -> ...` binds the *whole* scrutinee value to a
+                        // fresh name and, like `Wildcard`, carries no tag to
+                        // test -- an unconditional catch-all that runs in
+                        // whatever block is already current. Needs a real
+                        // storage pointer to register in `self.symbols`
+                        // (every entry is a `(name, ptr, ty)` triple): reuse
+                        // `scrut_ptr` directly when the scrutinee already has
+                        // one (struct/payload-enum), otherwise spill the
+                        // loaded `scrut_val` into a fresh alloca first.
+                        Pattern::Binding(name) => {
+                            self.push_scope();
+                            let bind_ptr = if needs_scrut_ptr {
+                                scrut_ptr.clone()
+                            } else {
+                                let bare = self.untag(&scrut_val, &scrutinee_ty);
+                                let sty = self.llvm_ty(&scrutinee_ty);
+                                let ptr = self.tmp_name();
+                                self.line(&format!("  {} = alloca {}", ptr, sty));
+                                self.line(&format!("  store {} {}, {}* {}", sty, bare, sty, ptr));
+                                ptr
+                            };
+                            self.symbols.push((name.clone(), bind_ptr, scrutinee_ty.clone()));
+                            let val = self.emit_stmts_value(&arm.body.stmts);
+                            self.symbols.pop();
+                            let arm_terminates = Self::body_terminates(&arm.body.stmts);
+                            self.pop_scope(!arm_terminates);
+                            if !arm_terminates {
+                                if produces_value {
+                                    let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
+                                    arm_values.push((reg, self.current_label.clone()));
                                 }
                                 self.line(&format!("  br label %{}", end_label));
                             }
@@ -608,7 +666,7 @@ impl Codegen {
                     }
                     self.line(&format!("  br label %{}", end_label));
                 }
-                self.line(&format!("{}:", end_label));
+                self.open_block(&end_label);
                 // If every arm terminates on its own (each ends in `return`/
                 // `break`/`continue`), this join block is only ever reached
                 // through the final "no arm matched" fallthrough of a
@@ -791,15 +849,15 @@ impl Codegen {
                     let else_label = self.block_label("if_else");
                     let end_label = self.block_label("if_end");
                     self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, then_label, else_label));
-                    self.line(&format!("{}:", then_label));
+                    self.open_block(&then_label);
                     self.emit_block_value(then_block);
                     self.line(&format!("  br label %{}", end_label));
-                    self.line(&format!("{}:", else_label));
+                    self.open_block(&else_label);
                     if let Some(else_b) = else_block {
                         self.emit_block_value(else_b);
                     }
                     self.line(&format!("  br label %{}", end_label));
-                    self.line(&format!("{}:", end_label));
+                    self.open_block(&end_label);
                     "%undef".into()
                 } else {
                     // A value-producing `if`: each branch computes its trailing
@@ -810,17 +868,31 @@ impl Codegen {
                     let else_label = self.block_label("if_else");
                     let end_label = self.block_label("if_end");
                     self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, then_label, else_label));
-                    self.line(&format!("{}:", then_label));
+                    self.open_block(&then_label);
                     let then_val = self.emit_block_value(then_block);
                     let then_reg = then_val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "%undef".to_string());
+                    // The block actually falling through to `end_label` isn't
+                    // necessarily `then_label` itself anymore: evaluating the
+                    // branch's trailing value may have opened further blocks
+                    // of its own (a short-circuit `&&`/`||`, a list/`GenRef`
+                    // index bounds check, a nested `if`/`match`, a `frame:`
+                    // allocation, ...). `current_label` (updated by every
+                    // `open_block` call, including ones nested inside
+                    // `emit_block_value` above) names whichever block is
+                    // actually current right now -- using the stale
+                    // `then_label` here instead produced invalid LLVM IR
+                    // ("PHI node entries do not match predecessors") for any
+                    // branch value more complex than a literal/simple binop.
+                    let then_pred = self.current_label.clone();
                     self.line(&format!("  br label %{}", end_label));
-                    self.line(&format!("{}:", else_label));
+                    self.open_block(&else_label);
                     let else_val = else_block.as_ref().and_then(|b| self.emit_block_value(b));
                     let else_reg = else_val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "%undef".to_string());
+                    let else_pred = self.current_label.clone();
                     self.line(&format!("  br label %{}", end_label));
-                    self.line(&format!("{}:", end_label));
+                    self.open_block(&end_label);
                     let phi = self.tmp_name();
-                    self.line(&format!("  {} = phi {} [ {}, %{} ], [ {}, %{} ]", phi, ty_str, then_reg, then_label, else_reg, else_label));
+                    self.line(&format!("  {} = phi {} [ {}, %{} ], [ {}, %{} ]", phi, ty_str, then_reg, then_pred, else_reg, else_pred));
                     format!("{} {}", ty_str, phi)
                 }
             }

@@ -46,6 +46,73 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Thorough bug-hunting round across the whole compiler (parser/lexer, type checker,
+codegen), using three parallel research agents (lexer/parser, type checker,
+codegen list/closure/par_pool) plus manual review of file I/O, networking, RC,
+arena, and the driver. Found and fixed nine real bugs, all with new regression
+tests in tests/frontend.rs (478 -> 499 tests, all green):
+1. `match` nesting had no depth guard of its own (unlike `parse_unary`/`parse_type`/
+   `parse_block`) -- `parse_match` is reachable both as a bare statement and inline
+   in another arm's body, and costs far more real stack per level than a plain
+   paren/unary chain, so ~55-60 levels of nested `match` overflowed the stack well
+   under `MAX_EXPR_DEPTH`'s 80-level threshold. Added a dedicated `match_depth`/
+   `MAX_MATCH_DEPTH = 30` counter (src/parser/mod.rs, src/parser/expr.rs).
+2. `expect_line_end()`'s failure was silently discarded (no `?`) in
+   `parse_enum_variant`/`parse_trait` (src/parser/items.rs) -- garbage after an
+   otherwise-valid enum variant or trait method signature produced two cascading
+   diagnostics instead of one clean recovery.
+3. **Critical, par/swarm data race**: `frame:` written directly inside a `par`/
+   `swarm` body was never rejected (src/types/par_analysis.rs) -- `@frame.off`/
+   `@frame.buf` are shared globals, so every worker thread would race on them
+   unsynchronized. The *indirect* case (frame hidden behind a helper call) was
+   already caught; the direct, more obvious case wasn't.
+4. **Critical, par/swarm safety bypass**: the transitive spawn/despawn/`frame:`
+   ban is keyed by each hazardous function's declared (template) name, but a
+   generic function's call site names its *mangled* monomorphized form instead
+   (`sneaky__i32`) -- never in the hazard set, so any generic function/method
+   silently bypassed the ban just by being generic. Fixed with a new
+   `mono_fn_of` map (mirroring `mono_struct_of`/`mono_enum_of`) resolving a
+   mangled name back to its template before the hazard check.
+5. `Pattern::Binding` (`match x: v -> v + 1`, binding the whole scrutinee to a
+   name) was completely unusable: the type checker never inserted `v` into the
+   arm's scope (any use failed "undefined name"), and codegen had no arm for it
+   at all (would have hit "unsupported match pattern in codegen" once the first
+   bug was fixed). Fixed both; also fixed the same pattern being incorrectly
+   rejected as an unsafe mutation inside a `par`/`swarm` body.
+6. A nested list-index *read* (`m[0][1]`, `m[0].len()`) silently triggered the
+   copy-on-write uniqueness gate on `m` itself (src/codegen/list.rs) -- `list_fields`
+   (the read path) resolved its base through `Codegen::emit_place`, whose
+   `ListIndex` arm exists for writes and unconditionally clones/un-aliases the
+   list before returning a pointer. A pure read now resolves through a new,
+   retain-free `list_index_read_obj` instead.
+7. `file_read`'s buffer sizing (`sext(ftell(end) - ftell(start))`) didn't clamp a
+   negative result (e.g. `ftell` returning -1 on a non-seekable handle) before
+   treating it as an unsigned byte count -- would have requested a ~u64::MAX
+   `star_rc_alloc`/`fread` instead of failing cleanly. Clamped to 0.
+8. A negative literal in a match compare-pattern (`<= -5`) parses as
+   `Unary{Neg, Int}`, not `Expr::Int` directly (no negative-literal token) --
+   codegen's `Pattern::Compare` arm only recognized a bare `Expr::Int` rhs, so
+   this ordinary syntax hit "unsupported match rhs expression" instead of
+   compiling. Folded the unary-negation case in.
+9. **The most impactful bug found**: `TypedExpr::If`/`TypedExpr::Match`'s `phi`
+   merges hardcoded each branch/arm's *entry* label as the incoming-block
+   operand -- correct only if the trailing value is computed with zero further
+   control flow. Any branch value with its own basic blocks (`&&`/`||`,
+   `list[i]`/`gen_ref[i]` bounds checks, `frame:`, nested `if`/`match`) produced
+   invalid LLVM IR ("PHI node entries do not match predecessors"), rejected by
+   `clang` -- meaning `if`/`match` used as a *value* was broken for almost any
+   non-trivial branch expression. Fixed generally: added `Codegen::current_label`
+   (tracked by a new `open_block` helper, now the sole place any block label is
+   emitted -- ~120 call sites across every codegen file migrated to it) and threaded
+   it through both `phi` sites instead of the stale entry labels. Discovered while
+   fixing a narrower, related gap: `Checker::trailing_value_ty` already existed and
+   correctly handled a trailing `frame:` block, but `Expr::If`'s own type inference,
+   `check_match_arm`'s arm-type inference, and closure return-type inference each
+   independently hand-rolled a narrower "bare trailing expression only" check
+   instead of reusing it -- now consolidated onto the one correct helper.
+
+---
+
 Bug-hunting round on the parser's recursion-depth guards, prompted by discovering
 `rejects_deeply_nested_parens_does_not_overflow_stack` was actually crashing
 (`STATUS_STACK_OVERFLOW`) rather than hitting its own depth guard. Found and fixed four

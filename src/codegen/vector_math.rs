@@ -81,7 +81,7 @@ impl Codegen {
         let ok_label = self.block_label("int_div_ok");
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_bad, fail_label, ok_label));
 
-        self.line(&format!("{}:", fail_label));
+        self.open_block(&fail_label);
         let opname = if op == BinOp::Div { "/" } else { "%" };
         let msg = format!(
             "star runtime error: integer `{}` by zero (or `i32::MIN {} -1` overflow)\n",
@@ -96,7 +96,7 @@ impl Codegen {
         self.line("  call void @exit(i32 1)");
         self.line("  unreachable");
 
-        self.line(&format!("{}:", ok_label));
+        self.open_block(&ok_label);
         let reg = self.tmp_name();
         let opcode = if op == BinOp::Div { "sdiv i32" } else { "srem i32" };
         self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));

@@ -46,7 +46,7 @@ impl Codegen {
         let ok_label = self.block_label("tcp_handle_ok");
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, fail_label, ok_label));
 
-        self.line(&format!("{}:", fail_label));
+        self.open_block(&fail_label);
         let msg = format!("star runtime error: {}(..) called with a null/closed socket handle\n", builtin_name);
         let g = self.global_name();
         let escaped = msg.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
@@ -57,7 +57,7 @@ impl Codegen {
         self.line("  call void @exit(i32 1)");
         self.line("  unreachable");
 
-        self.line(&format!("{}:", ok_label));
+        self.open_block(&ok_label);
     }
 
     /// `tcp_connect(host: str, port: int) -> ptr`: `WSAStartup` (called on
@@ -96,10 +96,10 @@ impl Codegen {
         let end_label = self.block_label("tcp_connect_end");
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_invalid, sock_fail, sock_ok));
 
-        self.line(&format!("{}:", sock_fail));
+        self.open_block(&sock_fail);
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", sock_ok));
+        self.open_block(&sock_ok);
         let host = self.emit_raw_str_ptr(&args[0]);
         let port_v = self.emit_expr(&args[1]);
         let port = self.untag(&port_v, &Ty::Int);
@@ -145,14 +145,14 @@ impl Codegen {
         let connect_ok = self.block_label("tcp_connect_ok");
         self.line(&format!("  br i1 {}, label %{}, label %{}", conn_failed, connect_fail, connect_ok));
 
-        self.line(&format!("{}:", connect_fail));
+        self.open_block(&connect_fail);
         self.line(&format!("  call i32 @closesocket(i8* {})", sock));
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", connect_ok));
+        self.open_block(&connect_ok);
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
         let result = self.tmp_name();
         self.line(&format!(
             "  {} = phi i8* [ null, %{} ], [ null, %{} ], [ {}, %{} ]",

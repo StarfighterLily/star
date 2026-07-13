@@ -167,7 +167,7 @@ impl Parser {
             }
             self.expect(&TokenKind::RParen)?;
         }
-        self.expect_line_end();
+        self.expect_line_end()?;
         let span = start.to(self.prev_span());
         Some(EnumVariantDef { name, fields, span })
     }
@@ -227,7 +227,17 @@ impl Parser {
         let mut methods = Vec::new();
         while !self.at(&TokenKind::Dedent) && !self.at(&TokenKind::Eof) {
             if let Some(sig) = self.parse_fn_sig() {
-                self.expect_line_end();
+                // A structurally-valid signature followed by garbage instead
+                // of a line ending (e.g. `fn bar() 123`) must still recover
+                // the same way a wholesale parse failure does -- previously
+                // this discarded `expect_line_end()`'s `Option` outright, so
+                // the leftover tokens were left for the *next* loop iteration
+                // to reinterpret as if they started a new trait method,
+                // producing a redundant second diagnostic instead of one
+                // clean recovery.
+                if self.expect_line_end().is_none() {
+                    self.recover_to_newline();
+                }
                 methods.push(sig);
             } else {
                 self.recover_to_newline();

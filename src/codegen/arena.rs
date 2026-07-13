@@ -107,7 +107,7 @@ impl Codegen {
         let saved_owned_stack = std::mem::take(&mut self.owned_stack);
 
         self.line(&format!("define i32 @{}(i8* %argp) {{", worker_name));
-        self.line("entry:");
+        self.open_block("entry");
         let typed_arg = self.tmp_name();
         self.line(&format!("  {} = bitcast i8* %argp to {}*", typed_arg, args_ty));
         let start_ptr = self.tmp_name();
@@ -144,13 +144,13 @@ impl Codegen {
         let incr_label = self.block_label("par_incr");
         let end_label = self.block_label("par_end");
         self.line(&format!("  br label %{}", cond_label));
-        self.line(&format!("{}:", cond_label));
+        self.open_block(&cond_label);
         let i_reg = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", i_reg, i_ptr));
         let cmp = self.tmp_name();
         self.line(&format!("  {} = icmp slt i64 {}, {}", cmp, i_reg, end_reg));
         self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, body_label, end_label));
-        self.line(&format!("{}:", body_label));
+        self.open_block(&body_label);
         // `@arena.{arena}.count` is a high-water mark of ever-allocated
         // slots, not a live count -- `despawn` never decrements it (see
         // `emit_despawn_stmt`), only bumps the slot's generation and pushes
@@ -175,7 +175,7 @@ impl Codegen {
         let is_live = self.tmp_name();
         self.line(&format!("  {} = icmp eq i32 {}, 1", is_live, parity));
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_live, live_label, incr_label));
-        self.line(&format!("{}:", live_label));
+        self.open_block(&live_label);
         let elem_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds {}, {}* {}, i64 {}",
@@ -195,12 +195,12 @@ impl Codegen {
         self.pop_scope(true);
         self.symbols.pop();
         self.line(&format!("  br label %{}", incr_label));
-        self.line(&format!("{}:", incr_label));
+        self.open_block(&incr_label);
         let i_next = self.tmp_name();
         self.line(&format!("  {} = add i64 {}, 1", i_next, i_reg));
         self.line(&format!("  store i64 {}, i64* {}", i_next, i_ptr));
         self.line(&format!("  br label %{}", cond_label));
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
         self.line("  ret i32 0");
         self.line("}");
         self.line("");
@@ -243,7 +243,7 @@ impl Codegen {
         let ready_label = self.block_label("spawn_ready");
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, init_label, ready_label));
 
-        self.line(&format!("{}:", init_label));
+        self.open_block(&init_label);
         // Ask LLVM itself for `elem_llvm_ty`'s real (alignment-padded) size
         // rather than trusting a Rust-side estimate -- this buffer is later
         // indexed via `getelementptr` against `elem_llvm_ty` directly (see
@@ -263,7 +263,7 @@ impl Codegen {
         self.line(&format!("  store {}* {}, {}** @arena.{}.data", elem_llvm_ty, casted, elem_llvm_ty, arena));
         self.line(&format!("  br label %{}", ready_label));
 
-        self.line(&format!("{}:", ready_label));
+        self.open_block(&ready_label);
         let data_ready = self.tmp_name();
         self.line(&format!("  {} = load {}*, {}** @arena.{}.data", data_ready, elem_llvm_ty, elem_llvm_ty, arena));
 
@@ -277,7 +277,7 @@ impl Codegen {
         let grow_label = self.block_label("spawn_grow");
         self.line(&format!("  br i1 {}, label %{}, label %{}", has_free, reuse_label, grow_label));
 
-        self.line(&format!("{}:", reuse_label));
+        self.open_block(&reuse_label);
         let new_free_top = self.tmp_name();
         self.line(&format!("  {} = sub i64 {}, 1", new_free_top, free_top_reg));
         self.line(&format!("  store i64 {}, i64* @arena.{}.free_top", new_free_top, arena));
@@ -306,7 +306,7 @@ impl Codegen {
         let end_label = self.block_label("spawn_end");
         self.line(&format!("  br label %{}", store_label));
 
-        self.line(&format!("{}:", grow_label));
+        self.open_block(&grow_label);
         let count_reg = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @arena.{}.count", count_reg, arena));
         let in_bounds = self.tmp_name();
@@ -322,7 +322,7 @@ impl Codegen {
         // at least loud: a warning identifying the offending arena is
         // printed every time it happens, rather than the caller having no
         // signal at all that a `spawn` it believes succeeded never happened.
-        self.line(&format!("{}:", capacity_warn_label));
+        self.open_block(&capacity_warn_label);
         let msg = format!("star runtime warning: arena `{}` is full ({} live elements) -- spawn dropped\n", arena, Self::ARENA_CAPACITY);
         let g = self.global_name();
         let escaped = msg.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
@@ -332,13 +332,13 @@ impl Codegen {
         self.line(&format!("  call i32 @puts(i8* {})", msg_ptr));
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", grow_ok_label));
+        self.open_block(&grow_ok_label);
         let next_count = self.tmp_name();
         self.line(&format!("  {} = add i64 {}, 1", next_count, count_reg));
         self.line(&format!("  store i64 {}, i64* @arena.{}.count", next_count, arena));
         self.line(&format!("  br label %{}", store_label));
 
-        self.line(&format!("{}:", store_label));
+        self.open_block(&store_label);
         let slot_idx = self.tmp_name();
         self.line(&format!(
             "  {} = phi i64 [ {}, %{} ], [ {}, %{} ]",
@@ -369,7 +369,7 @@ impl Codegen {
         self.line(&format!("  store i32 {}, i32* {}", next_gen, gen_slot_ptr));
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
     }
 
     /// Emit `despawn ArenaName[index]`: if the slot is currently live (odd
@@ -395,7 +395,7 @@ impl Codegen {
         let end_label = self.block_label("despawn_end");
         self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, do_label, end_label));
 
-        self.line(&format!("{}:", do_label));
+        self.open_block(&do_label);
         let gen_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
@@ -410,7 +410,7 @@ impl Codegen {
         let live_label = self.block_label("despawn_live");
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_live, live_label, end_label));
 
-        self.line(&format!("{}:", live_label));
+        self.open_block(&live_label);
         // Releases the slot's own RC-bearing content (if any) now that it's
         // being marked dead -- otherwise a struct field/element spawned in
         // and later despawned without ever being overwritten by a later
@@ -445,7 +445,7 @@ impl Codegen {
         self.line(&format!("  store i64 {}, i64* @arena.{}.free_top", next_free_top, arena));
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
     }
 
     /// `GenRef<T>(idx)`: creates a handle to slot `idx` of the arena
@@ -474,7 +474,7 @@ impl Codegen {
         let end_label = self.block_label("genref_create_end");
         self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, ok_label, oob_label));
 
-        self.line(&format!("{}:", ok_label));
+        self.open_block(&ok_label);
         let gen_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
@@ -484,10 +484,10 @@ impl Codegen {
         self.line(&format!("  {} = load i32, i32* {}", gen_ok, gen_ptr));
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", oob_label));
+        self.open_block(&oob_label);
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
         let gen_val = self.tmp_name();
         self.line(&format!(
             "  {} = phi i32 [ {}, %{} ], [ 0, %{} ]",
@@ -539,7 +539,7 @@ impl Codegen {
         let end_label = self.block_label("genref_end");
         self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, check_label, stale_label));
 
-        self.line(&format!("{}:", check_label));
+        self.open_block(&check_label);
         let gen_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
@@ -568,7 +568,7 @@ impl Codegen {
         self.line(&format!("  {} = and i1 {}, {}", ok, gen_match, is_live));
         self.line(&format!("  br i1 {}, label %{}, label %{}", ok, ok_label, stale_label));
 
-        self.line(&format!("{}:", ok_label));
+        self.open_block(&ok_label);
         let data_ptr = self.tmp_name();
         self.line(&format!("  {} = load {}*, {}** @arena.{}.data", data_ptr, elem_llvm_ty, elem_llvm_ty, arena));
         let elem_ptr = self.tmp_name();
@@ -587,10 +587,10 @@ impl Codegen {
         // Both failure paths (out-of-bounds, stale generation) funnel
         // through this one block so the `phi` below sees exactly two
         // incoming edges.
-        self.line(&format!("{}:", stale_label));
+        self.open_block(&stale_label);
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
         let zero = self.zero_value(&elem_ty);
         let result = self.tmp_name();
         self.line(&format!(
@@ -640,7 +640,7 @@ impl Codegen {
         let end_label = self.block_label("genref_place_end");
         self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, check_label, stale_label));
 
-        self.line(&format!("{}:", check_label));
+        self.open_block(&check_label);
         let gen_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
@@ -658,7 +658,7 @@ impl Codegen {
         self.line(&format!("  {} = and i1 {}, {}", ok, gen_match, is_live));
         self.line(&format!("  br i1 {}, label %{}, label %{}", ok, ok_label, stale_label));
 
-        self.line(&format!("{}:", ok_label));
+        self.open_block(&ok_label);
         let data_ptr = self.tmp_name();
         self.line(&format!("  {} = load {}*, {}** @arena.{}.data", data_ptr, elem_llvm_ty, elem_llvm_ty, arena));
         let elem_ptr = self.tmp_name();
@@ -668,14 +668,14 @@ impl Codegen {
         ));
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", stale_label));
+        self.open_block(&stale_label);
         let dummy = self.tmp_name();
         self.line(&format!("  {} = alloca {}", dummy, elem_llvm_ty));
         let zero = self.zero_value(&elem_ty);
         self.line(&format!("  store {} {}, {}* {}", elem_llvm_ty, zero, elem_llvm_ty, dummy));
         self.line(&format!("  br label %{}", end_label));
 
-        self.line(&format!("{}:", end_label));
+        self.open_block(&end_label);
         let result = self.tmp_name();
         self.line(&format!(
             "  {} = phi {}* [ {}, %{} ], [ {}, %{} ]",

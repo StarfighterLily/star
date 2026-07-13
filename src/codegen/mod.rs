@@ -137,6 +137,23 @@ pub struct Codegen {
     /// they need different argument-passing conventions for RC'd (`str`)
     /// arguments, see `emit_extern_call`'s own doc comment.
     extern_fns: std::collections::HashSet<String>,
+    /// The label of the basic block most recently opened via `open_block`
+    /// (reset to `"entry"` at the start of every function/worker/thunk).
+    /// A `TypedExpr::If`/`TypedExpr::Match` branch's `phi` merge needs to
+    /// name the block it's actually jumping to `end_label` *from* -- but
+    /// that isn't necessarily the branch's own entry label (`if_then_N`)
+    /// anymore by the time its trailing value has been computed, if
+    /// evaluating that value itself opened further blocks of its own (a
+    /// short-circuit `&&`/`||`, a list/`GenRef` index bounds check, a
+    /// `frame:` allocation, a nested `if`/`match`, ...). Using the stale
+    /// entry label there produced invalid LLVM IR ("PHI node entries do not
+    /// match predecessors" / "instruction does not dominate all uses") for
+    /// almost any nontrivial expression used as one arm of a value-producing
+    /// `if`/`match` -- this field is threaded through `open_block` (the sole
+    /// place every basic block in this codegen is opened) so those two call
+    /// sites can ask "what block are we actually in right now" instead of
+    /// assuming it never changed.
+    current_label: String,
 }
 
 impl Codegen {
@@ -172,6 +189,7 @@ impl Codegen {
             list_release_thunks: std::collections::HashMap::new(),
             par_pool_emitted: false,
             extern_fns: std::collections::HashSet::new(),
+            current_label: "entry".to_string(),
         }
     }
 
@@ -786,6 +804,17 @@ impl Codegen {
         let id = self.block_id;
         self.block_id += 1;
         format!("{}_{}", prefix, id)
+    }
+
+    /// Open a new basic block: emit its label line and record it as
+    /// `current_label` (see that field's doc comment). This is the sole
+    /// place a block label is ever written into `self.ir` -- every other
+    /// call site goes through this instead of writing `"{}:"` directly, so
+    /// `current_label` can never drift out of sync with what block is
+    /// actually being appended to.
+    fn open_block(&mut self, label: &str) {
+        self.line(&format!("{}:", label));
+        self.current_label = label.to_string();
     }
 
     /// Extract just the register name from an expression emission result such
