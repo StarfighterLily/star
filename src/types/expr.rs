@@ -402,8 +402,14 @@ impl Checker {
                     Ty::List(inner) => {
                         Ok(TypedExpr::ListIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: *inner, span: *span })
                     }
+                    // `s[i]` -- a bounds-checked byte read (0-255 as `i32`),
+                    // not a Python-style length-1 substring; see
+                    // `TypedExpr::StrIndex`'s doc comment.
+                    Ty::Str => {
+                        Ok(TypedExpr::StrIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: Ty::Int, span: *span })
+                    }
                     other => {
-                        self.error(format!("`[..]` indexing requires a `GenRef<T>` or `List<T>`, found `{:?}`", other), *span);
+                        self.error(format!("`[..]` indexing requires a `GenRef<T>`, `List<T>`, or `str`, found `{:?}`", other), *span);
                         Ok(TypedExpr::Error(Ty::Named("unknown".into())))
                     }
                 }

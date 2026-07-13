@@ -3430,6 +3430,41 @@ fn runtime_match_binding_pattern_str_scrutinee_end_to_end() {
     assert_eq!(stdout.trim_end(), "hello", "{}", stdout);
 }
 
+/// `Pattern::Int`/`Pattern::Bool` (`43 -> ...`, `true -> ...`) type-checked
+/// fine but had no codegen arm at all -- `Codegen::emit_expr`'s `TypedExpr::Match`
+/// fell through to the catch-all "unsupported match pattern in codegen"
+/// error for perfectly ordinary, exhaustively-covered literal match arms
+/// (found while writing a Brainfuck interpreter in Star, examples/brainfuck.star,
+/// whose opcode dispatch is exactly this shape: `match op: 43 -> ... 45 -> ...`).
+/// Fixed by giving both patterns the same then/next branch-and-chain codegen
+/// `Pattern::Compare`'s `Eq` case already used, and generalizing the match
+/// scrutinee's own value-loading to use `Codegen::untag` (type-aware) instead
+/// of an unconditional `strip_prefix("i32 ")` that silently left a `bool`
+/// scrutinee's `i1` tag attached.
+#[test]
+fn runtime_match_int_literal_pattern_end_to_end() {
+    let src = "fn name_of(op: i32) -> str:\n    match op:\n        43 -> \"plus\"\n        45 -> \"minus\"\n        _ -> \"other\"\n\nfn main():\n    println(name_of(43))\n    println(name_of(45))\n    println(name_of(1))\n";
+    let output = compile_and_run("match_int_literal_pattern", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["plus", "minus", "other"], "{}", stdout);
+}
+
+/// Same bug, `bool` scrutinee -- also exercises the `bool` scrutinee value
+/// actually being untagged correctly (`i1`, not the `i32` the old ad-hoc
+/// strip assumed) now that both literal patterns and non-literal scrutinees
+/// share `Codegen::untag`.
+#[test]
+fn runtime_match_bool_literal_pattern_end_to_end() {
+    let src = "fn describe(b: bool) -> str:\n    match b:\n        true -> \"yes\"\n        false -> \"no\"\n\nfn main():\n    println(describe(true))\n    println(describe(false))\n";
+    let output = compile_and_run("match_bool_literal_pattern", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["yes", "no"], "{}", stdout);
+}
+
 // ===== `if`/`match`-as-value phi-predecessor tracking =======================
 //
 // `TypedExpr::If`'s and `TypedExpr::Match`'s codegen merge each branch/arm's
@@ -5040,6 +5075,52 @@ fn runtime_str_return_fresh_value_end_to_end() {
     assert!(stdout.contains("fresh literal return"), "a function returning a bare literal must not dangle: {}", stdout);
     assert!(stdout.contains("fresh concat return"), "a function returning a concat result must not dangle: {}", stdout);
     assert_eq!(output.status.code(), Some(0));
+}
+
+/// `s[i]` (`TypedExpr::StrIndex`, added alongside `chr`/`ord` while writing
+/// examples/brainfuck.star -- see that file's own doc comment): a
+/// bounds-checked byte read yielding an `i32` (0-255), not a Python-style
+/// length-1 substring. Covers the in-bounds case, an out-of-range index, and
+/// a negative index -- the latter two must read as `0` (mirroring
+/// `List<T>`'s zero-value OOB-read convention) rather than crashing.
+#[test]
+fn runtime_str_index_reads_byte_end_to_end() {
+    let src = "fn main():\n    let s = \"Hi\"\n    println(f\"{s[0]}\")\n    println(f\"{s[1]}\")\n    println(f\"{s[50]}\")\n    println(f\"{s[-1]}\")\n";
+    let output = compile_and_run("str_index_reads_byte", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["72", "105", "0", "0"], "{}", stdout);
+}
+
+/// `chr(i32) -> str` / `ord(str) -> i32`, the byte<->string conversions that
+/// complement `s[i]`. Covers the round trip through `s[i]`, `ord` on an empty
+/// string (must read `0`, not crash on a zero-length buffer), and `chr`
+/// truncating an out-of-`u8`-range input rather than erroring (`chr(321)` ==
+/// `chr(65)`, mirroring `tape[ptr]`'s own wraparound in the Brainfuck
+/// interpreter this was written for).
+#[test]
+fn runtime_chr_ord_round_trip_end_to_end() {
+    let src = "fn main():\n    println(chr(72))\n    let a = \"A\"\n    println(f\"{ord(a)}\")\n    let empty = \"\"\n    println(f\"{ord(empty)}\")\n    println(chr(321))\n    let s = \"Hi\"\n    let mut rebuilt = \"\"\n    let mut i: i32 = 0\n    while i < len(s):\n        rebuilt = concat(rebuilt, chr(s[i]))\n        i += 1\n    println(rebuilt)\n";
+    let output = compile_and_run("chr_ord_round_trip", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["H", "65", "0", "A", "Hi"], "{}", stdout);
+}
+
+/// `str` has no mutating methods -- `s[i] = ...` must be rejected at
+/// type-check time rather than silently compiling into a no-op (`Codegen::
+/// emit_place`'s generic fallback would otherwise spill the assigned value
+/// into a dead alloca with no error at all).
+#[test]
+fn rejects_assignment_into_str_index() {
+    let src = "fn main():\n    let s = \"Hi\"\n    s[0] = 65\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("assigning into a str index should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("cannot assign into a `str` index")), "{:?}", errs);
 }
 
 /// `println`/`print` with a non-f-string argument that isn't a plain

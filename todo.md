@@ -27,7 +27,7 @@ relative-path file at a time with no transitive symbol visibility.
 The current 28 builtins cover almost no string/collection manipulation beyond
 `List<T>`. Grow incrementally as real programs (see #8) expose actual gaps
 rather than speculatively.
-- String ops: split/join/trim/replace/contains/format beyond f-strings.
+- String ops: split/join/trim/replace/contains/format beyond f-strings
 - A `Map`/`Dict` and `Set` type to complement `List<T>`.
 - Fill out math builtins as needed (trig, log/exp, etc.).
 

@@ -47,6 +47,15 @@ impl Checker {
                         }
                     }
                 }
+                // `s[i] = ...`: unlike `ListIndex`/`GenRefIndex`, `str` has no
+                // mutating methods at all -- `StrIndex` exists for reads
+                // only. Rejected here rather than left to `Codegen::emit_place`'s
+                // generic fallback, which would silently spill the assigned
+                // value into a dead alloca (a byte written nowhere) instead
+                // of erroring.
+                if let TypedExpr::StrIndex { .. } = &target_typed {
+                    self.error("cannot assign into a `str` index -- strings are immutable in Star", *span);
+                }
                 // §1.2: assignments were never type-checked at all -- only
                 // the swizzle-specific duplicate-component check above
                 // existed in this arm. `x += y`/`x -= y`/etc. are held to

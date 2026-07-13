@@ -325,6 +325,127 @@ impl Codegen {
         format!("i32 {}", reg)
     }
 
+    /// `s[idx] -> i32`: a bounds-checked byte read, yielding the byte's
+    /// value (0-255, `zext`ed rather than `sext`ed so a high-bit-set byte
+    /// reads as e.g. 200, not -56) rather than a length-1 substring -- see
+    /// `TypedExpr::StrIndex`'s doc comment. `null` (the zero value a `str`
+    /// field/binding can hold, e.g. a struct field never assigned) and an
+    /// out-of-range `idx` both yield `0`, mirroring `List<T>`'s "safe
+    /// null-equivalent" OOB-read convention (`Codegen::emit_list_index`)
+    /// rather than crashing on a null `strlen`/`getelementptr`. A negative
+    /// `idx` is safe for the same reason `emit_list_index` is: the unsigned
+    /// compare against `len` sign-extends/wraps it to a huge value, so it
+    /// always fails the bounds check rather than reading before the buffer.
+    pub(super) fn emit_str_index(&mut self, base: &TypedExpr, index: &TypedExpr) -> String {
+        let raw = self.emit_raw_str_ptr(base);
+
+        let idx_val = self.emit_expr(index);
+        let idx_bare = self.untag(&idx_val, &Ty::Int);
+        let idx64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", idx64, idx_bare));
+
+        let is_null = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i8* {}, null", is_null, raw));
+        let chk_label = self.block_label("str_idx_chk");
+        let ok_label = self.block_label("str_idx_ok");
+        let oob_label = self.block_label("str_idx_oob");
+        let end_label = self.block_label("str_idx_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, oob_label, chk_label));
+
+        self.open_block(&chk_label);
+        let len32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", len32, raw));
+        let len64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", len64, len32));
+        let in_bounds = self.tmp_name();
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, len64));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, ok_label, oob_label));
+
+        self.open_block(&ok_label);
+        let byte_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", byte_ptr, raw, idx64));
+        let byte = self.tmp_name();
+        self.line(&format!("  {} = load i8, i8* {}", byte, byte_ptr));
+        let byte32 = self.tmp_name();
+        self.line(&format!("  {} = zext i8 {} to i32", byte32, byte));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&oob_label);
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
+        let result = self.tmp_name();
+        self.line(&format!("  {} = phi i32 [ {}, %{} ], [ 0, %{} ]", result, byte32, ok_label, oob_label));
+        format!("i32 {}", result)
+    }
+
+    /// `chr(b) -> str`: a fresh, owned length-1 string holding byte `b`
+    /// (truncated to `i8`, so e.g. `chr(321)` wraps to `chr(65)` = `"A"` --
+    /// same "no runtime error for a scalar out of its usual range" stance
+    /// `List<T>`'s zero-value OOB reads take). Allocates a 2-byte buffer
+    /// (byte + null terminator) via `star_rc_alloc` with no release thunk,
+    /// same shape `emit_ptr_to_str`'s owned-copy allocation uses -- a
+    /// `str`'s only heap content is its own byte buffer, nothing further to
+    /// release when it's freed.
+    pub(super) fn emit_chr(&mut self, args: &[TypedExpr]) -> String {
+        let Some(arg) = args.first() else {
+            self.err("chr(..) expects 1 argument", Span::dummy());
+            return "i8* null".into();
+        };
+        let val = self.emit_expr(arg);
+        let bare = self.untag(&val, &Ty::Int);
+        let byte = self.tmp_name();
+        self.line(&format!("  {} = trunc i32 {} to i8", byte, bare));
+        let buf = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 2, i8* null)", buf));
+        self.line(&format!("  store i8 {}, i8* {}", byte, buf));
+        let nul_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 1", nul_ptr, buf));
+        self.line(&format!("  store i8 0, i8* {}", nul_ptr));
+        format!("i8* {}", buf)
+    }
+
+    /// `ord(s) -> i32`: `s[0]` -- the first byte's value, or `0` for a
+    /// `null`/empty `str` (same convention `emit_str_index` uses; this is
+    /// deliberately just that logic evaluated at a fixed index 0 rather
+    /// than a separate implementation).
+    pub(super) fn emit_ord(&mut self, args: &[TypedExpr]) -> String {
+        let Some(arg) = args.first() else {
+            self.err("ord(..) expects 1 argument", Span::dummy());
+            return "i32 0".into();
+        };
+        let raw = self.emit_raw_str_ptr(arg);
+        let is_null = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i8* {}, null", is_null, raw));
+        let ok_label = self.block_label("ord_ok");
+        let oob_label = self.block_label("ord_oob");
+        let end_label = self.block_label("ord_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, oob_label, ok_label));
+
+        self.open_block(&ok_label);
+        let len32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", len32, raw));
+        let has_len = self.tmp_name();
+        self.line(&format!("  {} = icmp sgt i32 {}, 0", has_len, len32));
+        let read_label = self.block_label("ord_read");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", has_len, read_label, oob_label));
+
+        self.open_block(&read_label);
+        let byte = self.tmp_name();
+        self.line(&format!("  {} = load i8, i8* {}", byte, raw));
+        let byte32 = self.tmp_name();
+        self.line(&format!("  {} = zext i8 {} to i32", byte32, byte));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&oob_label);
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
+        let result = self.tmp_name();
+        self.line(&format!("  {} = phi i32 [ {}, %{} ], [ 0, %{} ]", result, byte32, read_label, oob_label));
+        format!("i32 {}", result)
+    }
+
     /// `concat(a, b) -> str`: allocates a new buffer sized for both strings
     /// plus a null terminator, then copies `a` followed by `b` into it.
     pub(super) fn emit_str_concat(&mut self, args: &[TypedExpr]) -> String {

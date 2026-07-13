@@ -275,6 +275,10 @@ impl Checker {
                 self.walk_par_expr(base, locals);
                 self.walk_par_expr(index, locals);
             }
+            TypedExpr::StrIndex { base, index, .. } => {
+                self.walk_par_expr(base, locals);
+                self.walk_par_expr(index, locals);
+            }
             // `push`/`pop` mutate the receiver in place (growing/shrinking
             // its backing buffer), so they're held to the same standard as
             // a struct method call above: only the loop variable's own

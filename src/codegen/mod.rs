@@ -832,7 +832,7 @@ impl Codegen {
             | TypedExpr::Match { ty, .. } | TypedExpr::StructLit { ty, .. }
             | TypedExpr::FStr(_, ty, _) | TypedExpr::GenRefIndex { ty, .. } | TypedExpr::EnumVariant { ty, .. }
             | TypedExpr::Closure { ty, .. } | TypedExpr::ListIndex { ty, .. } | TypedExpr::ListMethod { ty, .. }
-            | TypedExpr::Error(ty) => ty.clone(),
+            | TypedExpr::StrIndex { ty, .. } | TypedExpr::Error(ty) => ty.clone(),
             TypedExpr::Ident { ty, .. } => ty.clone(),
             TypedExpr::GenRefCreate { inner_ty, .. } => Ty::GenRef(Box::new(inner_ty.clone())),
             TypedExpr::ListNew { elem_ty, .. } => Ty::List(Box::new(elem_ty.clone())),

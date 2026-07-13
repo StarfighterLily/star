@@ -114,6 +114,12 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "abs" | "min" | "max" => Some(args.first().map(|a| a.clone().into_ty()).unwrap_or(Ty::Float)),
         "len" => Some(Ty::Int),
         "concat" => Some(Ty::Str),
+        // `chr`/`ord`: byte <-> length-1-`str` conversions, the natural
+        // complement to `s[i]` (`Expr::GenRefIndex`'s `Ty::Str` case)
+        // returning a byte rather than a substring -- see
+        // `crate::codegen::builtins::emit_chr`/`emit_ord`.
+        "chr" => Some(Ty::Str),
+        "ord" => Some(Ty::Int),
         // Reads one line of text from stdin (trailing newline stripped, EOF
         // yielding whatever was read so far -- possibly empty). See
         // `crate::codegen::builtins::emit_read_line`.

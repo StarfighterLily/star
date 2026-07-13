@@ -301,6 +301,10 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>, local_s
         | TypedExpr::ListLit { .. }
         | TypedExpr::ListIndex { .. }
         | TypedExpr::ListMethod { .. }
+        // A `str` byte read (`s[i]`) yields a plain `i32`, never a
+        // frame-local struct's identity -- same reasoning as `ListIndex`
+        // just above.
+        | TypedExpr::StrIndex { .. }
         | TypedExpr::Error(_) => None,
     }
 }

@@ -228,6 +228,18 @@ pub enum TypedExpr {
     /// `list.push(v)` / `list.pop()` / `list.len()`, see
     /// `Checker::infer_list_method`.
     ListMethod { base: Box<TypedExpr>, method: ListMethod, args: Vec<TypedExpr>, ty: Ty, span: Span },
+    /// `s[idx]`: a bounds-checked `str` byte read, yielding the byte's value
+    /// (0-255) as an `i32` -- Star has no dedicated `char` type, so this is
+    /// the C-like "index a string, get a byte" convention rather than
+    /// Python's "index a string, get a length-1 string". `ty` is always
+    /// `Ty::Int`; carried as a field anyway (rather than hardcoded in
+    /// `into_ty`) purely for uniformity with every other index/method node
+    /// here. See `Codegen::emit_str_index`'s doc comment for the null/OOB
+    /// convention (0, matching `ListIndex`'s zero-value read). Read-only:
+    /// `str` has no mutating methods, so unlike `ListIndex`/`GenRefIndex`
+    /// this never appears as an assignment target (rejected in
+    /// `Checker::check_stmt`'s `Stmt::Assign` arm).
+    StrIndex { base: Box<TypedExpr>, index: Box<TypedExpr>, ty: Ty, span: Span },
     Error(Ty),
 }
 
@@ -252,7 +264,7 @@ impl TypedExpr {
             | TypedExpr::Unary { ty, .. } | TypedExpr::Match { ty, .. } | TypedExpr::StructLit { ty, .. }
             | TypedExpr::FStr(_, ty, _) | TypedExpr::GenRefIndex { ty, .. } | TypedExpr::EnumVariant { ty, .. }
             | TypedExpr::Closure { ty, .. } | TypedExpr::ListIndex { ty, .. } | TypedExpr::ListMethod { ty, .. }
-            | TypedExpr::Error(ty) => ty,
+            | TypedExpr::StrIndex { ty, .. } | TypedExpr::Error(ty) => ty,
             TypedExpr::Ident { ty, .. } => ty,
             TypedExpr::SelfExpr(ty, _) => ty,
             TypedExpr::If { ty, .. } => ty.clone(),
@@ -271,7 +283,8 @@ impl TypedExpr {
             | TypedExpr::StructLit { span, .. } | TypedExpr::If { span, .. } | TypedExpr::GenRefCreate { span, .. }
             | TypedExpr::GenRefIndex { span, .. } | TypedExpr::EnumVariant { span, .. }
             | TypedExpr::Closure { span, .. } | TypedExpr::ListNew { span, .. } | TypedExpr::ListLit { span, .. }
-            | TypedExpr::ListIndex { span, .. } | TypedExpr::ListMethod { span, .. } => *span,
+            | TypedExpr::ListIndex { span, .. } | TypedExpr::ListMethod { span, .. }
+            | TypedExpr::StrIndex { span, .. } => *span,
             TypedExpr::SelfExpr(_, s) => *s,
             TypedExpr::Error(_) => Span::dummy(),
         }

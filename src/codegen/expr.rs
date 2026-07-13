@@ -334,6 +334,8 @@ impl Codegen {
                     Some("max") => self.emit_minmax(args, false),
                     Some("len") => self.emit_str_len(args),
                     Some("concat") => self.emit_str_concat(args),
+                    Some("chr") => self.emit_chr(args),
+                    Some("ord") => self.emit_ord(args),
                     Some("read_line") => self.emit_read_line(),
                     Some("dot") => self.emit_dot(args),
                     Some("length") => self.emit_length(args),
@@ -426,7 +428,7 @@ impl Codegen {
                     String::new()
                 } else {
                     let reg = self.emit_expr(scrutinee);
-                    reg.strip_prefix("i32 ").unwrap_or(&reg).to_string()
+                    self.untag(&reg, &scrutinee_ty)
                 };
                 let end_label = format!("match_end_{}", self.tmp);
                 self.tmp += 1;
@@ -454,8 +456,51 @@ impl Codegen {
                 for (i, arm) in arms.iter().enumerate() {
                     let then_label = format!("match_then_{}", i);
                     let next_label = format!("match_next_{}", i);
-                    dangling_next_block = matches!(arm.pattern, Pattern::Compare(..) | Pattern::EnumVariant(..));
+                    dangling_next_block = matches!(arm.pattern, Pattern::Compare(..) | Pattern::EnumVariant(..) | Pattern::Int(..) | Pattern::Bool(..));
                     match &arm.pattern {
+                        // `Int`/`Bool` are plain equality patterns (`43 -> ...`,
+                        // `true -> ...`) -- same then/next branch-and-chain
+                        // shape as `Compare`'s `Eq` case, just without an rhs
+                        // expression to evaluate first.
+                        Pattern::Int(v) => {
+                            let cmp = self.tmp_name();
+                            self.line(&format!("  {} = icmp eq i32 {}, {}", cmp, scrut_val, v));
+                            self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, then_label, next_label));
+                            self.open_block(&then_label);
+                            self.push_scope();
+                            let val = self.emit_stmts_value(&arm.body.stmts);
+                            let arm_terminates = Self::body_terminates(&arm.body.stmts);
+                            self.pop_scope(!arm_terminates);
+                            if !arm_terminates {
+                                if produces_value {
+                                    let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
+                                    arm_values.push((reg, self.current_label.clone()));
+                                }
+                                self.line(&format!("  br label %{}", end_label));
+                            }
+                            self.open_block(&next_label);
+                            current_label = next_label.clone();
+                        }
+                        Pattern::Bool(b) => {
+                            let cmp = self.tmp_name();
+                            let bval = if *b { "true" } else { "false" };
+                            self.line(&format!("  {} = icmp eq i1 {}, {}", cmp, scrut_val, bval));
+                            self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, then_label, next_label));
+                            self.open_block(&then_label);
+                            self.push_scope();
+                            let val = self.emit_stmts_value(&arm.body.stmts);
+                            let arm_terminates = Self::body_terminates(&arm.body.stmts);
+                            self.pop_scope(!arm_terminates);
+                            if !arm_terminates {
+                                if produces_value {
+                                    let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
+                                    arm_values.push((reg, self.current_label.clone()));
+                                }
+                                self.line(&format!("  br label %{}", end_label));
+                            }
+                            self.open_block(&next_label);
+                            current_label = next_label.clone();
+                        }
                         Pattern::Compare(op, rhs) => {
                             let rhs_val = match rhs.as_ref() {
                                 Expr::Int(v, _) => format!("i32 {}", v),
@@ -648,9 +693,6 @@ impl Codegen {
                                 }
                                 self.line(&format!("  br label %{}", end_label));
                             }
-                        }
-                        _ => {
-                            self.err("unsupported match pattern in codegen", Span::dummy());
                         }
                     }
                 }
@@ -939,6 +981,7 @@ impl Codegen {
             TypedExpr::ListNew { elem_ty, .. } => self.emit_list_new(elem_ty),
             TypedExpr::ListLit { elems, elem_ty, .. } => self.emit_list_lit(elems, elem_ty),
             TypedExpr::ListIndex { base, index, ty, .. } => self.emit_list_index(base, index, ty),
+            TypedExpr::StrIndex { base, index, .. } => self.emit_str_index(base, index),
             TypedExpr::ListMethod { base, method, args, .. } => {
                 // `ty` on this node is the *method's return type* (`i32` for
                 // `len`, the element type for `pop`, `unknown` for `push`),
