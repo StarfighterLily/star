@@ -62,7 +62,13 @@ pub struct Codegen {
     struct_field_types: std::collections::HashMap<String, Vec<Ty>>,
     /// Maps `"Struct.method"` -> `@method` so method calls (`obj.method()`) can
     /// be lowered to a direct function call with the receiver as `self`.
-    methods: std::collections::HashMap<String, String>,
+    /// The `bool` is whether this method actually declares `self` as its
+    /// first parameter -- a method may omit it entirely (an "associated
+    /// function" with no receiver, still called via `obj.method(...)`
+    /// syntax), in which case the call site must not pass a receiver
+    /// pointer as its first argument (see `emit_call_expr`'s `Field`-callee
+    /// branch).
+    methods: std::collections::HashMap<String, (String, bool)>,
     errors: Vec<Diagnostic>,
     in_frame: bool,
     /// True while emitting `main`'s body. `main` is always forced to lower
@@ -232,9 +238,10 @@ impl Codegen {
         for item in &module.items {
             if let TypedItem::Impl(blk) = item {
                 for m in &blk.methods {
+                    let has_self = m.sig.params.first().map(|p| p.is_self).unwrap_or(false);
                     self.methods.insert(
                         format!("{}#{}", blk.type_name, m.sig.name),
-                        format!("{}__{}", blk.type_name, m.sig.name),
+                        (format!("{}__{}", blk.type_name, m.sig.name), has_self),
                     );
                 }
             }
@@ -487,7 +494,10 @@ impl Codegen {
                 .get(n)
                 .map(|fields| fields.iter().map(|f| self.type_align(f)).max().unwrap_or(1))
                 .unwrap_or(8),
-            Ty::Enum(_) => 8,
+            // A fieldless enum lowers to a bare `i32` discriminant (align 4,
+            // see `llvm_ty`); only a payload enum is the `{ i32, [W x i64] }`
+            // tagged union that needs 8-byte alignment.
+            Ty::Enum(n) => if self.enum_is_payload(n) { 8 } else { 4 },
         }
     }
 
@@ -510,6 +520,27 @@ impl Codegen {
     /// one (`str`/`List<T>`/a named struct/`ptr`/a vector), corrupting
     /// reflection metadata offsets for every field after the first such
     /// mismatch.
+    /// The padded size (bytes) of a struct-like sequence of fields laid out
+    /// in order, matching real LLVM struct layout (each field padded to its
+    /// own alignment, the whole thing padded up to its widest field's
+    /// alignment). Shared by `type_size`'s `Ty::Named` case and by
+    /// `enum_payload_words` -- a payload enum variant's fields bitcast to
+    /// exactly this same `{ f1, f2, ... }` struct shape (see
+    /// `enum_variant_payload_llvm_ty`), so it must be sized identically or
+    /// the shared `[W x i64]` payload buffer silently undersizes any variant
+    /// whose fields need inter-field alignment padding.
+    fn padded_struct_size(&self, fields: &[Ty]) -> u32 {
+        let mut offset: u32 = 0;
+        let mut max_align: u32 = 1;
+        for f in fields {
+            let align = self.type_align(f);
+            max_align = max_align.max(align);
+            offset = offset.div_ceil(align) * align;
+            offset += self.type_size(f);
+        }
+        offset.div_ceil(max_align) * max_align
+    }
+
     fn type_size(&self, ty: &Ty) -> u32 {
         match ty {
             Ty::Int | Ty::Float => 4,
@@ -523,17 +554,7 @@ impl Codegen {
             Ty::Vec4 => 16,
             Ty::Mat4 => 64,
             Ty::Named(n) => match self.struct_field_types.get(n) {
-                Some(fields) => {
-                    let mut offset: u32 = 0;
-                    let mut max_align: u32 = 1;
-                    for f in fields {
-                        let align = self.type_align(f);
-                        max_align = max_align.max(align);
-                        offset = offset.div_ceil(align) * align;
-                        offset += self.type_size(f);
-                    }
-                    offset.div_ceil(max_align) * max_align
-                }
+                Some(fields) => self.padded_struct_size(fields),
                 None => 8,
             },
             // A reference-counted object pointer, same as `Ty::Str` -- the
@@ -669,7 +690,7 @@ impl Codegen {
         let max_bytes: u64 = self
             .enum_variant_fields
             .get(enum_name)
-            .map(|vs| vs.iter().map(|fields| fields.iter().map(|t| self.type_size(t) as u64).sum::<u64>()).max().unwrap_or(0))
+            .map(|vs| vs.iter().map(|fields| self.padded_struct_size(fields) as u64).max().unwrap_or(0))
             .unwrap_or(0);
         ((max_bytes + 7) / 8) as u32
     }

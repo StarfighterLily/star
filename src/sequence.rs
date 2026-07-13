@@ -258,7 +258,92 @@ fn scan_for_nested_yield(stmt: &Stmt, errors: &mut Vec<Diagnostic>, nested: bool
                 scan_for_nested_yield(s, errors, true);
             }
         }
+        // A `match` used as a statement is `Stmt::Expr(Expr::Match{..})`,
+        // and an expression-form `if`/lambda literal reaches here the same
+        // way whenever it appears as a `let`/assignment/return value or a
+        // bare expression statement -- each carries its own `Block`s that
+        // can just as easily hide a `yield` as `if`/`while`/`frame`/`for`
+        // can, so they need the same nested scan (previously only these
+        // four statement-form constructs were scanned; a `yield` inside a
+        // match arm, an `if`-as-value branch, or a lambda body slipped
+        // through unrecognized here and was only caught later, by the
+        // generic type-checker fallback, with a strictly worse diagnostic).
+        Stmt::Let { value, .. } => scan_expr_for_nested_yield(value, errors),
+        Stmt::Assign { target, value, .. } => {
+            scan_expr_for_nested_yield(target, errors);
+            scan_expr_for_nested_yield(value, errors);
+        }
+        Stmt::Return { value: Some(v), .. } => scan_expr_for_nested_yield(v, errors),
+        Stmt::Expr(e) => scan_expr_for_nested_yield(e, errors),
         _ => {}
+    }
+}
+
+/// Look inside `expr` for a nested `Block` (a `match` arm body, an `if`-as-
+/// value branch, a lambda body) that might itself contain a `yield`, and
+/// scan each one found (always as `nested = true`: there is no expression
+/// position from which a `yield` could ever be considered top-level).
+fn scan_expr_for_nested_yield(expr: &Expr, errors: &mut Vec<Diagnostic>) {
+    match expr {
+        Expr::Match { scrutinee, arms, .. } => {
+            scan_expr_for_nested_yield(scrutinee, errors);
+            for a in arms {
+                for s in &a.body.stmts {
+                    scan_for_nested_yield(s, errors, true);
+                }
+            }
+        }
+        Expr::If { cond, then_block, else_block, .. } => {
+            scan_expr_for_nested_yield(cond, errors);
+            for s in &then_block.stmts {
+                scan_for_nested_yield(s, errors, true);
+            }
+            if let Some(e) = else_block {
+                for s in &e.stmts {
+                    scan_for_nested_yield(s, errors, true);
+                }
+            }
+        }
+        Expr::Lambda { body, .. } => {
+            for s in &body.stmts {
+                scan_for_nested_yield(s, errors, true);
+            }
+        }
+        Expr::FStr(parts, _) => {
+            for p in parts {
+                if let FStrExpr::Expr(e) = p {
+                    scan_expr_for_nested_yield(e, errors);
+                }
+            }
+        }
+        Expr::Field { base, .. } => scan_expr_for_nested_yield(base, errors),
+        Expr::Call { callee, args, .. } => {
+            scan_expr_for_nested_yield(callee, errors);
+            for a in args {
+                scan_expr_for_nested_yield(a, errors);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            scan_expr_for_nested_yield(lhs, errors);
+            scan_expr_for_nested_yield(rhs, errors);
+        }
+        Expr::Unary { operand, .. } => scan_expr_for_nested_yield(operand, errors),
+        Expr::StructLit { args, .. } | Expr::EnumVariant { args, .. } => {
+            for a in args {
+                scan_expr_for_nested_yield(a, errors);
+            }
+        }
+        Expr::GenRefCreate { value, .. } => scan_expr_for_nested_yield(value, errors),
+        Expr::GenRefIndex { base, index, .. } => {
+            scan_expr_for_nested_yield(base, errors);
+            scan_expr_for_nested_yield(index, errors);
+        }
+        Expr::ListLit(elems, _) => {
+            for e in elems {
+                scan_expr_for_nested_yield(e, errors);
+            }
+        }
+        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Ident(..) | Expr::SelfExpr(..) => {}
     }
 }
 
@@ -303,13 +388,21 @@ fn rewrite_stmt(stmt: &Stmt, hoist: &HashSet<String>) -> Stmt {
             else_block: else_block.as_ref().map(|b| rewrite_block(b, hoist)),
             span: *span,
         },
-        Stmt::For { var, start, end, body, span } => Stmt::For {
-            var: var.clone(),
-            start: rewrite_expr(start, hoist),
-            end: rewrite_expr(end, hoist),
-            body: rewrite_block(body, hoist),
-            span: *span,
-        },
+        Stmt::For { var, start, end, body, span } => {
+            // `var` shadows any hoisted field of the same name for the
+            // duration of the loop body -- without this, a use of `var`
+            // inside `body` would be wrongly rewritten to `self.var`
+            // (the outer, stale hoisted value) instead of referring to the
+            // loop's own induction variable.
+            let inner_hoist = without(hoist, std::slice::from_ref(var));
+            Stmt::For {
+                var: var.clone(),
+                start: rewrite_expr(start, hoist),
+                end: rewrite_expr(end, hoist),
+                body: rewrite_block(body, &inner_hoist),
+                span: *span,
+            }
+        }
         Stmt::Break { span } => Stmt::Break { span: *span },
         Stmt::Continue { span } => Stmt::Continue { span: *span },
         Stmt::Frame { body, span } => Stmt::Frame { body: rewrite_block(body, hoist), span: *span },
@@ -330,6 +423,31 @@ fn rewrite_stmt(stmt: &Stmt, hoist: &HashSet<String>) -> Stmt {
 
 fn rewrite_block(block: &Block, hoist: &HashSet<String>) -> Block {
     Block { stmts: block.stmts.iter().map(|s| rewrite_stmt(s, hoist)).collect(), span: block.span }
+}
+
+/// `hoist` minus `names` -- used to temporarily shadow hoisted fields that a
+/// nested scope (a `for` loop's induction variable, a lambda's parameters, a
+/// match arm's bound names) rebinds locally, so a reference to the shadowing
+/// name inside that scope rewrites to the local binding instead of the outer
+/// `self.<name>` field.
+fn without(hoist: &HashSet<String>, names: &[String]) -> HashSet<String> {
+    if names.is_empty() {
+        return hoist.clone();
+    }
+    let mut out = hoist.clone();
+    for n in names {
+        out.remove(n);
+    }
+    out
+}
+
+/// The fresh local names a pattern binds in its arm's body, if any.
+fn pattern_bound_names(pattern: &Pattern) -> Vec<String> {
+    match pattern {
+        Pattern::Binding(name) => vec![name.clone()],
+        Pattern::EnumVariant(_, _, bindings) | Pattern::Struct(_, bindings) => bindings.clone(),
+        Pattern::Wildcard | Pattern::Int(_) | Pattern::Bool(_) | Pattern::Compare(..) => Vec::new(),
+    }
 }
 
 fn rewrite_pattern(pattern: &Pattern, hoist: &HashSet<String>) -> Pattern {
@@ -371,7 +489,16 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
             scrutinee: Box::new(rewrite_expr(scrutinee, hoist)),
             arms: arms
                 .iter()
-                .map(|a| MatchArm { pattern: rewrite_pattern(&a.pattern, hoist), body: rewrite_block(&a.body, hoist), span: a.span })
+                .map(|a| {
+                    // A binding pattern (`Pattern::Binding`/`EnumVariant`/
+                    // `Struct`) introduces fresh local names for the arm's
+                    // body -- each one shadows a same-named hoisted field for
+                    // the duration of that arm, same reasoning as the `for`
+                    // loop and lambda-parameter cases above.
+                    let bound = pattern_bound_names(&a.pattern);
+                    let inner_hoist = without(hoist, &bound);
+                    MatchArm { pattern: rewrite_pattern(&a.pattern, hoist), body: rewrite_block(&a.body, &inner_hoist), span: a.span }
+                })
                 .collect(),
             span: *span,
         },
@@ -400,15 +527,17 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
             args: args.iter().map(|a| rewrite_expr(a, hoist)).collect(),
             span: *span,
         },
-        // A lambda's own parameters aren't hoisted locals, so only its body
-        // needs rewriting (mirrors any other nested block); param/return
-        // types never reference hoisted *value* identifiers.
-        Expr::Lambda { params, ret, body, span } => Expr::Lambda {
-            params: params.clone(),
-            ret: ret.clone(),
-            body: rewrite_block(body, hoist),
-            span: *span,
-        },
+        // A lambda's own parameters aren't hoisted locals, and each one
+        // shadows a same-named hoisted field for the duration of the
+        // lambda's body -- without removing them from the effective hoist
+        // set, a use of a shadowing parameter inside the body would be
+        // wrongly rewritten to the outer `self.<name>` instead of the
+        // lambda's own parameter.
+        Expr::Lambda { params, ret, body, span } => {
+            let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+            let inner_hoist = without(hoist, &param_names);
+            Expr::Lambda { params: params.clone(), ret: ret.clone(), body: rewrite_block(body, &inner_hoist), span: *span }
+        }
         Expr::ListLit(elems, span) => Expr::ListLit(elems.iter().map(|e| rewrite_expr(e, hoist)).collect(), *span),
     }
 }

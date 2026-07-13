@@ -149,10 +149,10 @@ impl Checker {
                             let arg_exprs: Vec<TypedExpr> = args.iter()
                                 .map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into()))))
                                 .collect();
-                            if let Some((param_tys, _)) = self.methods.get(&method_key).cloned() {
-                                self.check_call_args(&param_tys, true, &arg_exprs, *span);
+                            if let Some((param_tys, _, has_self)) = self.methods.get(&method_key).cloned() {
+                                self.check_call_args(&param_tys, has_self, &arg_exprs, *span);
                             }
-                            let ret_ty = self.methods.get(&method_key).and_then(|(_, ret)| ret.clone()).unwrap_or(Ty::Named("unknown".into()));
+                            let ret_ty = self.methods.get(&method_key).and_then(|(_, ret, _)| ret.clone()).unwrap_or(Ty::Named("unknown".into()));
                             return Ok(TypedExpr::Call { callee: Box::new(callee_expr), args: arg_exprs, ty: ret_ty, span: *span });
                         }
                     }
@@ -232,22 +232,28 @@ impl Checker {
                     // (e.g. still `unknown` from an earlier error), so it
                     // falls back to `self.functions` defensively rather than
                     // reporting "no such method" twice.
-                    let sig = match &callee_expr {
-                        TypedExpr::Ident { name, .. } => self.functions.get(name).cloned(),
+                    // Free functions (`self.functions`) never have a `self`
+                    // receiver, so they're normalized to `has_self: false`
+                    // here to share the same tuple shape as `self.methods`
+                    // (whose `bool` reflects whether that specific method
+                    // actually declared `self` -- see `check_call_args`'s
+                    // call sites' doc comments for why this can't be
+                    // inferred from the call's syntactic shape alone).
+                    let sig: Option<(Vec<Ty>, Option<Ty>, bool)> = match &callee_expr {
+                        TypedExpr::Ident { name, .. } => self.functions.get(name).cloned().map(|(p, r)| (p, r, false)),
                         TypedExpr::Field { base, field, .. } => {
                             if let Ty::Named(struct_name) = base.clone().into_ty() {
                                 self.methods.get(&format!("{}#{}", struct_name, field)).cloned()
-                                    .or_else(|| self.functions.get(field).cloned())
+                                    .or_else(|| self.functions.get(field).cloned().map(|(p, r)| (p, r, false)))
                             } else {
-                                self.functions.get(field).cloned()
+                                self.functions.get(field).cloned().map(|(p, r)| (p, r, false))
                             }
                         }
                         _ => None,
                     };
                     match sig {
-                        Some((param_tys, ret)) => {
-                            let skip_self = matches!(&callee_expr, TypedExpr::Field { .. });
-                            self.check_call_args(&param_tys, skip_self, &arg_exprs, *span);
+                        Some((param_tys, ret, has_self)) => {
+                            self.check_call_args(&param_tys, has_self, &arg_exprs, *span);
                             ret.unwrap_or(Ty::Named("unknown".into()))
                         }
                         None => Ty::Named("unknown".into()),
@@ -293,7 +299,16 @@ impl Checker {
                 // into sibling arms or the surrounding scope.
                 let arm_tys: Vec<TypedMatchArm> = arms.iter().map(|a| {
                     let mut arm_vars = vars.clone();
-                    self.check_match_arm(a, &scrutinee_expr, &mut arm_vars)
+                    // Same reasoning as `arm_vars` itself: an arm body's own
+                    // `let mut`s must not leak their mutability into a
+                    // sibling arm or the surrounding scope. `check_match_arm`
+                    // checks its body via direct `check_stmt` calls (not
+                    // `check_block_inner`), so this scoping has to happen
+                    // here rather than being covered by that function's own.
+                    let saved_mut_vars = self.mut_vars.clone();
+                    let arm = self.check_match_arm(a, &scrutinee_expr, &mut arm_vars);
+                    self.mut_vars = saved_mut_vars;
+                    arm
                 }).collect();
                 self.check_match_exhaustive(&scrutinee_expr.clone().into_ty(), &arm_tys, *span);
                 // The match's own value type is the first arm that actually
@@ -422,8 +437,20 @@ impl Checker {
                 }
                 let typed_params: Vec<TypedParam> = params.iter().map(|p| self.check_param_with_self_ty(p, &Ty::Named("infer".into()))).collect();
                 let mut inner_vars = vars.clone();
+                // Saved/restored around the whole closure body (not just
+                // covered by `check_block_inner`'s own internal scoping)
+                // because a lambda parameter can shadow an outer `mut`
+                // variable of the same name with a non-`mut` one (or vice
+                // versa) -- that shadowing must not survive past the end of
+                // this closure literal.
+                let saved_mut_vars = self.mut_vars.clone();
                 for p in &typed_params {
                     inner_vars.insert(p.name.clone(), p.ty.clone());
+                    if p.is_mut {
+                        self.mut_vars.insert(p.name.clone());
+                    } else {
+                        self.mut_vars.remove(&p.name);
+                    }
                 }
                 // A closure's return type is inferred *from* its body below
                 // (its trailing expression, unless explicitly declared) --
@@ -433,6 +460,7 @@ impl Checker {
                 let saved_ret_ty = std::mem::replace(&mut self.current_ret_ty, None);
                 let body_typed = self.check_block_inner(body, &mut inner_vars);
                 self.current_ret_ty = saved_ret_ty;
+                self.mut_vars = saved_mut_vars;
                 // A declared `-> Ret` is used as-is; otherwise (mirroring the
                 // `if`-expression's own type inference) the closure's return
                 // type is whatever its trailing expression evaluates to, or
@@ -1288,6 +1316,40 @@ impl Checker {
                 }
             }
             pattern = Pattern::EnumVariant(resolved_name, variant.clone(), bindings.clone());
+        }
+        // `Pattern::Int`/`Pattern::Bool`/`Pattern::Compare` were previously
+        // never checked against the scrutinee's type at all -- only their
+        // *coverage* (`check_match_exhaustive`) was validated, mirroring the
+        // struct/enum-variant fix above but for the three pattern kinds
+        // codegen (`src/codegen/expr.rs`'s match-arm lowering) hardcodes as
+        // `icmp eq i32`/`icmp sle i32`/etc. regardless of the scrutinee's
+        // real LLVM type. A mismatch here (`match some_str: 5 -> ...`)
+        // previously type-checked cleanly and only surfaced as an opaque
+        // `clang` IR-verifier failure ("defined with type 'ptr' but expected
+        // 'i32'") instead of a clean diagnostic at the offending pattern.
+        match &arm.pattern {
+            Pattern::Int(v) => {
+                let scrutinee_ty = scrutinee_expr.clone().into_ty();
+                if !matches!(scrutinee_ty, Ty::Int) {
+                    self.error(format!("pattern `{}` does not match scrutinee type `{:?}`", v, scrutinee_ty), arm.span);
+                }
+            }
+            Pattern::Bool(v) => {
+                let scrutinee_ty = scrutinee_expr.clone().into_ty();
+                if !matches!(scrutinee_ty, Ty::Bool) {
+                    self.error(format!("pattern `{}` does not match scrutinee type `{:?}`", v, scrutinee_ty), arm.span);
+                }
+            }
+            Pattern::Compare(..) => {
+                let scrutinee_ty = scrutinee_expr.clone().into_ty();
+                if !matches!(scrutinee_ty, Ty::Int) {
+                    self.error(
+                        format!("comparison pattern requires an `i32` scrutinee, found `{:?}`", scrutinee_ty),
+                        arm.span,
+                    );
+                }
+            }
+            _ => {}
         }
         // `Pattern::Binding(name)` binds the *whole* scrutinee value to a
         // fresh name (`match x: v -> v + 1`) and, per `check_match_exhaustive`'s

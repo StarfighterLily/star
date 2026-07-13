@@ -246,7 +246,13 @@ pub struct Checker {
     /// globals for the same LLVM function name, failing at the `clang` step
     /// with "invalid redefinition of function". See `check_impl` for
     /// population and `Expr::Call`'s method-call arm for lookup.
-    methods: HashMap<String, (Vec<Ty>, Option<Ty>)>,
+    /// The `bool` is whether the method actually declares `self` as its
+    /// first parameter -- a method is free to omit it entirely (an
+    /// "associated function" with no receiver, callable only via
+    /// `obj.method(...)` syntax like any other method), so callers must not
+    /// assume the call's syntactic shape alone tells them whether to skip a
+    /// `self` argument (see `check_call_args`'s call sites).
+    methods: HashMap<String, (Vec<Ty>, Option<Ty>, bool)>,
     /// Generic struct/enum/fn templates -- declarations with a non-empty
     /// `type_params` list, kept separate from `structs`/`enums`/`functions`
     /// since they have no concrete layout of their own until instantiated
@@ -286,6 +292,13 @@ pub struct Checker {
     /// since a worker-thread dispatch has no well-defined `break`/`continue`
     /// target even when nested inside an outer loop.
     loop_depth: u32,
+    /// Names, within the function currently being checked, of every binding
+    /// (parameter or `let`) declared `mut` -- `Stmt::Assign`'s target must
+    /// resolve back to one of these (see `assign_root_name`) or it's an
+    /// assignment into an immutable binding. Reset per-function in
+    /// `check_block` (mirrors `vars`' own per-function reset), since `mut`
+    /// is a property of one specific binding, never global.
+    mut_vars: HashSet<String>,
     /// Names of every free function/method whose body -- directly, or
     /// transitively through any call it makes -- contains a `spawn`,
     /// `despawn`, or `frame:` statement. Computed once, up front, from the
@@ -353,6 +366,7 @@ impl Checker {
             mono_items: Vec::new(),
             errors: Vec::new(),
             loop_depth: 0,
+            mut_vars: HashSet::new(),
             unsafe_par_fns: HashSet::new(),
             current_ret_ty: None,
             extern_fn_names_seen: HashSet::new(),
@@ -489,8 +503,9 @@ impl Checker {
                             p.ty.as_ref().and_then(|t| self.resolve_type(t)).unwrap_or(Ty::Named("infer".into()))
                         }).collect();
                         let ret_ty = m.sig.ret.as_ref().and_then(|t| self.resolve_type(t));
+                        let has_self = m.sig.params.first().map(|p| p.is_self).unwrap_or(false);
                         let key = format!("{}#{}", blk.type_name, m.sig.name);
-                        self.methods.insert(key, (param_tys, ret_ty));
+                        self.methods.insert(key, (param_tys, ret_ty, has_self));
                     }
                 }
                 // Desugared away above; never present past this point.
@@ -996,8 +1011,12 @@ impl Checker {
 
     fn check_block(&mut self, block: &Block, fn_sig: &TypedFnSig) -> Option<TypedBlock> {
         let mut vars: HashMap<String, Ty> = HashMap::new();
+        self.mut_vars.clear();
         for p in &fn_sig.params {
             vars.insert(p.name.clone(), p.ty.clone());
+            if p.is_mut {
+                self.mut_vars.insert(p.name.clone());
+            }
         }
         Some(self.check_block_inner(block, &mut vars))
     }
@@ -1006,12 +1025,20 @@ impl Checker {
     /// `if`/`while` bodies and `else` branches so bindings from the enclosing
     /// scope remain visible.
     fn check_block_inner(&mut self, block: &Block, vars: &mut HashMap<String, Ty>) -> TypedBlock {
+        // `mut_vars` needs the same scoping `vars` gets via the `vars.clone()`
+        // every nested-block call site (then/else, while/frame/par/for
+        // bodies) already passes in: a `let mut`/re-`let` inside this block
+        // must not leak its mutability change out to whatever scope called
+        // this block, or a later, unrelated binding reusing the same name
+        // could wrongly inherit an inner block's stale mutability.
+        let saved_mut_vars = self.mut_vars.clone();
         let mut stmts = Vec::new();
         for stmt in &block.stmts {
             if let Some(typed) = self.check_stmt(stmt, vars) {
                 stmts.push(typed);
             }
         }
+        self.mut_vars = saved_mut_vars;
         TypedBlock { stmts, span: block.span }
     }
 
@@ -1064,18 +1091,41 @@ impl Checker {
                 self.error(format!("generic type `{}` used without type arguments", name), Span::dummy());
                 None
             }
-            Type::Named(name) => Some(match name.as_str() {
-                "i32" | "i64" | "int" => Ty::Int,
-                "f32" | "f64" | "float" => Ty::Float,
-                "String" | "str" => Ty::Str,
-                "bool" => Ty::Bool,
-                "Vec2" => Ty::Vec2,
-                "Vec3" => Ty::Vec3,
-                "Vec4" => Ty::Vec4,
-                "Mat4" => Ty::Mat4,
-                "ptr" => Ty::Ptr,
-                _ => Ty::Named(name.clone()),
-            }),
+            Type::Named(name) => match name.as_str() {
+                "i32" | "i64" | "int" => Some(Ty::Int),
+                "f32" | "f64" | "float" => Some(Ty::Float),
+                "String" | "str" => Some(Ty::Str),
+                "bool" => Some(Ty::Bool),
+                "Vec2" => Some(Ty::Vec2),
+                "Vec3" => Some(Ty::Vec3),
+                "Vec4" => Some(Ty::Vec4),
+                "Mat4" => Some(Ty::Mat4),
+                "ptr" => Some(Ty::Ptr),
+                // Every other candidate has to be a declared struct by this
+                // point: builtins are handled above, and enums/generics are
+                // both already caught by the two guarded arms above this
+                // one. Previously this fell through to a blind
+                // `Ty::Named(name.clone())` with no lookup at all, so a
+                // typo'd/undeclared type name in a parameter, field, or
+                // return position silently "resolved" to a bogus
+                // `Ty::Named`, which downstream code (e.g.
+                // `resolve_field_type`) treats as "already reported
+                // elsewhere" and quietly widens to the `unknown` placeholder
+                // -- masking what should be a real, clean diagnostic here.
+                _ if self.structs.contains_key(name) => Some(Ty::Named(name.clone())),
+                _ => {
+                    let candidates: Vec<&str> = self.structs.keys().map(String::as_str).collect();
+                    match suggest(name, candidates) {
+                        Some(close) => self.error_note(
+                            format!("undefined type `{}`", name),
+                            Span::dummy(),
+                            format!("did you mean `{}`?", close),
+                        ),
+                        None => self.error(format!("undefined type `{}`", name), Span::dummy()),
+                    }
+                    None
+                }
+            },
             Type::Generic(name, args) => {
                 // Handle GenRef<T>
                 if name == "GenRef" {
@@ -1353,6 +1403,44 @@ impl Checker {
     /// cascading a second, less useful diagnostic on top of the real one.
     fn types_compatible(declared: &Ty, actual: &Ty) -> bool {
         declared == actual || Self::is_placeholder_ty(declared) || Self::is_placeholder_ty(actual)
+    }
+
+    /// The root binding an assignment target ultimately writes through --
+    /// `x`, `x.f`, `x.f.g`, `x[i].f`, `self.f` all root at `x`/`self`.
+    /// `None` for any other target shape (nothing in `mut_vars` to check
+    /// against, e.g. a target expression that already failed to type-check).
+    /// Used to enforce that `mut` is required to change state (`docs/design.md`):
+    /// previously `is_mut` was parsed and threaded everywhere but never once
+    /// read by any check, so every binding -- `let`, parameter, or struct
+    /// field -- was silently mutable regardless of the keyword.
+    fn assign_root_name(target: &TypedExpr) -> Option<&str> {
+        match target {
+            TypedExpr::Ident { name, .. } => Some(name.as_str()),
+            TypedExpr::SelfExpr(..) => Some("self"),
+            TypedExpr::Field { base, .. } => Self::assign_root_name(base),
+            TypedExpr::ListIndex { base, .. } => Self::assign_root_name(base),
+            // Deliberately *not* recursed into, unlike `ListIndex` above: a
+            // `GenRef<T>` is a handle into arena-owned storage, not a value
+            // the binding itself owns (mirrors a Rust `&mut T` reference --
+            // `let r = &mut x; *r = v;` needs no `mut` on `r` itself, only
+            // on what it points to). Mutating through one is instead gated
+            // purely by the pointed-to struct's own per-field `mut`
+            // declaration (see the `field_is_mut` check below), independent
+            // of whether the local binding holding the `GenRef` is `mut`.
+            TypedExpr::GenRefIndex { .. } => None,
+            _ => None,
+        }
+    }
+
+    /// Whether `field` is declared `mut` on `base_ty`'s struct -- `None` if
+    /// `base_ty` isn't a plain struct or doesn't declare that field (e.g. a
+    /// vector's swizzle "field", or an already-errored unknown type), in
+    /// which case there's nothing to enforce here.
+    fn field_is_mut(&self, base_ty: &Ty, field: &str) -> Option<bool> {
+        match base_ty {
+            Ty::Named(n) => self.structs.get(n).and_then(|s| s.fields.iter().find(|f| f.name == *field).map(|f| f.is_mut)),
+            _ => None,
+        }
     }
 
     /// True if the last statement of `stmts` unconditionally terminates the

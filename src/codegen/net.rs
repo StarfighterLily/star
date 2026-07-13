@@ -110,6 +110,25 @@ impl Codegen {
         let addr = self.tmp_name();
         self.line(&format!("  {} = call i32 @inet_addr(i8* {})", addr, host));
 
+        // `inet_addr` returns `INADDR_NONE` (`0xFFFFFFFF`, i.e. `-1` as a
+        // signed `i32`) for a malformed address string -- indistinguishable
+        // bit-for-bit from the legitimate broadcast address
+        // `255.255.255.255`, but a real dotted-decimal host never resolves
+        // to `-1` for a normal `connect()` target, and letting it through
+        // unchecked would otherwise attempt a `connect()` using garbage
+        // address bytes instead of failing cleanly and closing the socket
+        // right away.
+        let addr_invalid = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, -1", addr_invalid, addr));
+        let addr_bad = self.block_label("tcp_addr_invalid");
+        let addr_good = self.block_label("tcp_addr_valid");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", addr_invalid, addr_bad, addr_good));
+
+        self.open_block(&addr_bad);
+        self.line(&format!("  call i32 @closesocket(i8* {})", sock));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&addr_good);
         let sa_buf = self.tmp_name();
         self.line(&format!("  {} = alloca [16 x i8]", sa_buf));
         let sa_ptr = self.tmp_name();
@@ -155,8 +174,8 @@ impl Codegen {
         self.open_block(&end_label);
         let result = self.tmp_name();
         self.line(&format!(
-            "  {} = phi i8* [ null, %{} ], [ null, %{} ], [ {}, %{} ]",
-            result, sock_fail, connect_fail, sock, connect_ok
+            "  {} = phi i8* [ null, %{} ], [ null, %{} ], [ null, %{} ], [ {}, %{} ]",
+            result, sock_fail, addr_bad, connect_fail, sock, connect_ok
         ));
         format!("i8* {}", result)
     }

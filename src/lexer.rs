@@ -303,7 +303,13 @@ impl<'src> Lexer<'src> {
             // tokens -- consuming the line's own trailing `\n` too, so
             // `scan_line_content()` never sees it and can't emit a spurious
             // `Newline` for a line that's supposed to produce no tokens.
-            if self.bytes[i] == b'\n' || self.bytes[i] == b'#' {
+            // A CRLF blank line is just `\r\n` with zero spaces/tabs before
+            // it, so `bytes[i]` lands on `\r`, not `\n` -- without this arm
+            // such a line falls through to the indentation branch below and
+            // (since its measured width is 0) pops every open indent level,
+            // corrupting the token stream for the rest of the block with no
+            // diagnostic at all.
+            if self.bytes[i] == b'\n' || self.bytes[i] == b'\r' || self.bytes[i] == b'#' {
                 self.pos = i;
                 self.skip_to_line_end();
                 if self.pos < self.bytes.len() && self.bytes[self.pos] == b'\n' {

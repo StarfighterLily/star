@@ -697,6 +697,54 @@ impl Codegen {
         result
     }
 
+    /// Retain-free, non-mutating counterpart to `emit_list_index_place`, for
+    /// a `list[idx]` base being read through (not written through) by a
+    /// further access -- e.g. `list[i].field` (a struct-element field read).
+    /// Resolves through `list_fields` (the read path) instead of
+    /// `list_fields_mut`, so it never triggers `emit_list_ensure_unique`'s
+    /// copy-on-write clone as a side effect of a plain read (the same bug
+    /// class `list_index_read_obj`/`list_fields`'s nested-base fast path
+    /// exists to avoid for scalar/list elements -- this is the struct-element
+    /// sibling of that fix, needed because a read of a *struct* element's
+    /// field must produce a pointer to GEP into, not a loaded value).
+    /// Safe for the same reason `list_index_read_obj` is: nothing releases
+    /// the list's own reference for the remainder of this single,
+    /// straight-line expression, so the buffer it points into is guaranteed
+    /// to stay alive long enough to read through here.
+    pub(super) fn emit_list_index_read_place(&mut self, base: &TypedExpr, index: &TypedExpr, elem_ty: &Ty) -> String {
+        let elem_llvm = self.llvm_ty(elem_ty);
+        let (data, len) = self.list_fields(base, elem_ty);
+
+        let idx_val = self.emit_expr(index);
+        let idx_bare = self.untag(&idx_val, &Ty::Int);
+        let idx64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", idx64, idx_bare));
+
+        let in_bounds = self.tmp_name();
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, len));
+        let ok_label = self.block_label("list_read_place_ok");
+        let oob_label = self.block_label("list_read_place_oob");
+        let end_label = self.block_label("list_read_place_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, ok_label, oob_label));
+
+        self.open_block(&ok_label);
+        let elem_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, elem_llvm, elem_llvm, data, idx64));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&oob_label);
+        let dummy = self.tmp_name();
+        self.line(&format!("  {} = alloca {}", dummy, elem_llvm));
+        let zero = self.zero_value(elem_ty);
+        self.line(&format!("  store {} {}, {}* {}", elem_llvm, zero, elem_llvm, dummy));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
+        let result = self.tmp_name();
+        self.line(&format!("  {} = phi {}* [ {}, %{} ], [ {}, %{} ]", result, elem_llvm, elem_ptr, ok_label, dummy, oob_label));
+        result
+    }
+
     /// `list.push(v)` / `list.pop()` / `list.len()`.
     pub(super) fn emit_list_method(&mut self, base: &TypedExpr, method: ListMethod, args: &[TypedExpr], elem_ty: &Ty) -> String {
         let elem_llvm = self.llvm_ty(elem_ty);

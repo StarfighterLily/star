@@ -31,6 +31,14 @@ impl Checker {
                 }
                 let actual_ty: Ty = annotated_ty.unwrap_or_else(|| value_typed.clone().into_ty());
                 vars.insert(name.clone(), actual_ty.clone());
+                // A re-`let` of the same name (shadowing) rebinds its
+                // mutability too -- `let mut x = 1; let x = 2;` makes the
+                // second `x` immutable again, regardless of the first's.
+                if *is_mut {
+                    self.mut_vars.insert(name.clone());
+                } else {
+                    self.mut_vars.remove(name);
+                }
                 TypedStmt::Let { is_mut: *is_mut, name: name.clone(), ty: actual_ty, value: value_typed, span: *span }
             }
             Stmt::Assign { target, op, value, span } => {
@@ -55,6 +63,30 @@ impl Checker {
                 // of erroring.
                 if let TypedExpr::StrIndex { .. } = &target_typed {
                     self.error("cannot assign into a `str` index -- strings are immutable in Star", *span);
+                }
+                // `mut` is required to change state (`docs/design.md`): the
+                // binding an assignment ultimately writes through -- `x`,
+                // `x.f`, `x[i]`, `self.f`, ... -- must have been declared
+                // `mut` (a `let mut`, a `mut` parameter, or `fn foo(mut
+                // self)`). Previously nothing checked this at all; every
+                // binding was silently mutable regardless of the keyword.
+                if let Some(root) = Self::assign_root_name(&target_typed) {
+                    if !self.mut_vars.contains(root) {
+                        let subject = if root == "self" { "self".to_string() } else { format!("`{}`", root) };
+                        self.error(
+                            format!("cannot assign to {} -- it was not declared `mut`", subject),
+                            *span,
+                        );
+                    }
+                }
+                // A struct field can independently be declared without
+                // `mut` (`name: String` vs `mut health: i32`), so even a
+                // `mut`-bound receiver can still have specific fields that
+                // may only ever be set once (at construction).
+                if let TypedExpr::Field { base, field, .. } = &target_typed {
+                    if self.field_is_mut(&base.clone().into_ty(), field) == Some(false) {
+                        self.error(format!("field `{}` is not mutable -- declare it `mut {}: ...` to allow assignment", field, field), *span);
+                    }
                 }
                 // §1.2: assignments were never type-checked at all -- only
                 // the swizzle-specific duplicate-component check above
@@ -170,6 +202,14 @@ impl Checker {
                 };
                 let mut inner_vars = vars.clone();
                 inner_vars.insert(var.clone(), elem_ty.clone());
+                // `par`/`swarm`'s whole reason to exist is safe, disjointness-
+                // proven in-place mutation of each worker's own arena element
+                // -- there's no `mut` keyword available in `par var in arena:`
+                // syntax at all, so `var` is implicitly, unconditionally
+                // mutable for the body's duration (the actual safety
+                // enforcement is `check_par_disjoint` below, not `mut`).
+                let saved_mut_vars = self.mut_vars.clone();
+                self.mut_vars.insert(var.clone());
                 // A `par`/`swarm` body dispatches across worker threads, so
                 // `break`/`continue` have no well-defined target even if this
                 // statement is lexically nested inside an outer loop; hide
@@ -178,6 +218,7 @@ impl Checker {
                 self.loop_depth = 0;
                 let body_typed = self.check_block_inner(body, &mut inner_vars);
                 self.loop_depth = saved_loop_depth;
+                self.mut_vars = saved_mut_vars;
                 self.check_par_disjoint(var, &body_typed);
                 TypedStmt::Par { var: var.clone(), elem_ty, arena: arena.clone(), body: body_typed, span: *span }
             }

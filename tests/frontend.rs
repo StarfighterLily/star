@@ -283,7 +283,7 @@ fn codegen_genref_index_extracts_index() {
 /// Arena declaration includes malloc declaration for runtime allocation.
 #[test]
 fn codegen_arena_includes_malloc() {
-    let src = "arena EnemyArena: Point\n";
+    let src = "struct Point:\n    x: i32\narena EnemyArena: Point\n";
     let module = Driver::parse(src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
@@ -7798,4 +7798,424 @@ fn rejects_malformed_expr_inside_fstring_interpolation() {
     let src = "fn main():\n    let x = f\"{1+}\"\n";
     let result = Driver::parse(src);
     assert!(result.is_err(), "a syntax error inside `f\"{{...}}\"` must be a parse error, not a silently dropped statement");
+}
+
+// ===== Bug-hunting round: lexer/CRLF, phi merges, enum payload sizing, ===
+// ===== list COW-on-read, sequence hoisting, mut enforcement, ============
+// ===== self-less methods, match-pattern typing, undefined types ==========
+
+/// `Lexer::handle_line_start`'s blank-line detection only recognized `\n`/`#`
+/// at the first non-whitespace byte of a line -- a CRLF blank line (just
+/// `\r\n`, no leading spaces) lands on `\r` instead, so it fell through to
+/// the indentation branch and (since its measured width is 0) popped every
+/// open indent level, injecting spurious `Dedent`/`Indent` tokens in the
+/// middle of an otherwise-contiguous block with no diagnostic at all.
+#[test]
+fn lexer_treats_crlf_blank_line_as_blank_not_dedent_boundary() {
+    let src = "struct P:\r\n    health: i32\r\n\r\n    speed: i32\r\n";
+    let tokens = Driver::lex(src).expect("lexing should succeed");
+    let indents = tokens.iter().filter(|t| t.kind == TokenKind::Indent).count();
+    let dedents = tokens.iter().filter(|t| t.kind == TokenKind::Dedent).count();
+    assert_eq!(indents, 1, "a CRLF blank line must not open a spurious second indent level");
+    assert_eq!(dedents, 1, "a CRLF blank line must not close the block early");
+}
+
+/// End-to-end repro of the same bug through the parser: a blank CRLF line
+/// inside a nested `if` block used to corrupt the token stream badly enough
+/// that the trailing statement was left dangling at module scope, reported
+/// as "expected a top-level item" pointing at ordinary statement text.
+#[test]
+fn parses_program_with_crlf_blank_line_inside_nested_block() {
+    let src = "fn main():\r\n    if true:\r\n        println(\"a\")\r\n\r\n        println(\"b\")\r\n";
+    let result = Driver::parse(src);
+    assert!(result.is_ok(), "a CRLF blank line inside a nested block must not corrupt parsing: {:?}", result.err());
+}
+
+/// `emit_logical_binop`'s `phi` merge hardcoded the `rhs` operand's *entry*
+/// label (`logic_rhs_N`) as its incoming block -- correct only if `rhs`
+/// itself opens no further basic blocks. A `list[i]` bounds check on the
+/// right-hand side of `&&` opens its own internal blocks, so the real
+/// predecessor falling through to `logic_end` is whichever block
+/// `current_label` names after `rhs` is evaluated, not `logic_rhs_N` --
+/// previously this produced invalid LLVM IR ("PHI node entries do not match
+/// predecessors"), rejected by `clang`.
+#[test]
+fn runtime_logical_and_with_list_index_rhs_end_to_end() {
+    let src = "fn compute(cond: bool, nums: List<i32>) -> bool:\n    return cond && nums[0] > 0\n\nfn main():\n    let mut nums = List<i32>()\n    nums.push(5)\n    println(f\"{compute(true, nums)}\")\n    println(f\"{compute(false, nums)}\")\n";
+    let output = compile_and_run("logical_and_list_index_rhs", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "false"], "{}", stdout);
+}
+
+/// Same bug, `||` with a nested `&&` (itself opening its own `phi`) as the
+/// right-hand operand -- two levels of the same stale-label bug stacked.
+#[test]
+fn runtime_logical_or_with_nested_and_rhs_end_to_end() {
+    let src = "fn compute(a: bool, b: bool, c: bool) -> bool:\n    return a || (b && c)\n\nfn main():\n    println(f\"{compute(false, true, true)}\")\n    println(f\"{compute(false, true, false)}\")\n    println(f\"{compute(true, false, false)}\")\n";
+    let output = compile_and_run("logical_or_nested_and_rhs", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "false", "true"], "{}", stdout);
+}
+
+/// `enum_payload_words` naively summed each variant's field sizes with no
+/// inter-field alignment padding, unlike `type_size`'s `Ty::Named` (struct)
+/// case -- but construction/destructuring bitcasts the same `[W x i64]`
+/// buffer to the variant's real, alignment-padded LLVM struct type. A
+/// variant mixing sub-8-byte fields with an 8-byte-aligned one (`bool`,
+/// `str`, `bool`) needs 24 padded bytes but was only allocated 16, so
+/// writing the trailing field silently overran the buffer into whatever
+/// followed it in memory.
+#[test]
+fn runtime_enum_payload_with_mixed_alignment_fields_does_not_corrupt_adjacent_field_end_to_end() {
+    let src = "enum Msg:\n    Triple(a: bool, b: str, c: bool)\n    None\n\nstruct Wrapper:\n    mut m: Msg\n    mut canary: i32\n\nfn main():\n    let mut w = Wrapper(m = Msg::None, canary = 305419896)\n    w.m = Msg::Triple(true, \"hello\", false)\n    println(f\"{w.canary}\")\n";
+    let output = compile_and_run("enum_payload_mixed_alignment", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "305419896", "constructing the payload variant must not corrupt the adjacent `canary` field: {}", stdout);
+}
+
+/// Same bug, a 16-byte-aligned `Vec3` payload field -- exceeds the
+/// `[W x i64]` array's 8-byte-per-element granularity entirely, so this
+/// reproduces the undersizing even more directly than the `bool`/`str`/`bool`
+/// case above.
+#[test]
+fn runtime_enum_payload_with_vec3_field_does_not_corrupt_adjacent_field_end_to_end() {
+    let src = "enum Shape:\n    Ball(flag: bool, pos: Vec3)\n    None\n\nstruct Wrapper:\n    mut s: Shape\n    mut canary: i32\n\nfn main():\n    let mut w = Wrapper(s = Shape::None, canary = 305419896)\n    w.s = Shape::Ball(true, Vec3(1.0, 2.0, 3.0))\n    println(f\"{w.canary}\")\n";
+    let output = compile_and_run("enum_payload_vec3_alignment", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "305419896", "constructing the payload variant must not corrupt the adjacent `canary` field: {}", stdout);
+}
+
+/// `type_align` hardcoded alignment 8 for *every* `Ty::Enum`, but a
+/// fieldless enum lowers to a bare `i32` (align 4, see `llvm_ty`) -- only a
+/// payload enum is the actual 8-byte-aligned tagged union. Reflect metadata
+/// offsets computed with the wrong alignment over-pad any field following a
+/// fieldless enum whenever the running offset isn't already 8-aligned.
+#[test]
+fn codegen_reflect_offset_correct_after_fieldless_enum_field() {
+    let src = "enum Color:\n    Red\n    Green\n    Blue\n\nstruct Player:\n    flag: bool = true\n    color: Color = Color::Red\n    @export tag: i32 = 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("%Player = type { i1, i32, i32 }"), "{}", ir);
+    assert!(ir.contains("tag:8:i32:export"), "a fieldless enum field aligns to 4, so `tag` should land at offset 8 (i1 padded to 4, plus color's own 4 bytes), not 12: {}", ir);
+}
+
+/// A field read off a `List<T>`-of-structs element (`points[0].x`) used to
+/// route through `Codegen::emit_place`'s `ListIndex` arm -- a write-only
+/// path that unconditionally clones/un-aliases the list via
+/// `emit_list_ensure_unique` -- as a side effect of a plain read. Same bug
+/// class as the already-fixed `list_fields`/`list_index_read_obj` split for
+/// scalar/nested-list-element reads, just for a struct-element field
+/// projection instead.
+#[test]
+fn codegen_list_of_structs_field_read_does_not_trigger_cow_clone() {
+    let module = Driver::parse("struct Point:\n    x: i32\n    y: i32\nfn t(points: List<Point>) -> i32:\n    points[0].x\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i32 @t(");
+    assert!(!fn_ir.contains("list_cow_clone"), "a pure struct-field read must not clone/unshare the list: {}", fn_ir);
+}
+
+/// Same shape, but a *write* through a chained field (`points[0].x = 5`)
+/// still must run the copy-on-write gate -- a regression guard alongside the
+/// read-side fix above so it doesn't overcorrect into skipping a real
+/// mutation's uniqueness check.
+#[test]
+fn codegen_list_of_structs_field_write_still_triggers_cow_clone() {
+    let module = Driver::parse("struct Point:\n    mut x: i32\n    mut y: i32\nfn t(mut points: List<Point>):\n    points[0].x = 5\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("list_cow_clone"), "a struct-field write must still uniquify the list before mutating: {}", ir);
+}
+
+/// Functional regression guard: reading a field off a `List<T>`-of-structs
+/// element must still produce the correct value (not just "doesn't clone").
+#[test]
+fn runtime_list_of_structs_field_read_end_to_end() {
+    let src = "struct Point:\n    x: i32\n    y: i32\nfn main():\n    let points: List<Point> = [Point(1, 2), Point(3, 4)]\n    println(f\"{points[0].x}, {points[1].y}\")\n";
+    let output = compile_and_run("list_of_structs_field_read", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "1, 4", "{}", stdout);
+}
+
+/// `sequence`'s hoisted-name rewrite (`rewrite_expr`'s `Expr::Ident` arm)
+/// had no lexical hygiene at all: a `for` loop's own induction variable
+/// sharing a name with a hoisted field got rewritten to `self.<name>`
+/// throughout the loop body just like any other reference to that name,
+/// so the loop variable itself became unreachable/dead and every use inside
+/// the loop silently read the stale, unrelated outer field instead.
+#[test]
+fn runtime_sequence_for_loop_var_shadowing_hoisted_field_end_to_end() {
+    let src = "sequence Tick(mut i: i32, mut total: i32):\n    for i in 0..3:\n        total = total + i\n    yield\n\nfn main():\n    let mut t = Tick(100, 0)\n    t.resume()\n    println(f\"{t.total}\")\n";
+    let output = compile_and_run("sequence_for_var_shadowing", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "3", "the for-loop's own `i` (0+1+2=3) must shadow the hoisted `i` field (100), not be rewritten to it: {}", stdout);
+}
+
+/// Same shadowing-hygiene bug, a `match` binding pattern (`Pattern::Binding`)
+/// that shares a name with a hoisted field -- the arm's own binding must
+/// win, not the outer `self.<name>`.
+#[test]
+fn runtime_sequence_match_binding_shadowing_hoisted_field_end_to_end() {
+    let src = "sequence Tick(mut n: i32, mut total: i32):\n    match n:\n        n ->\n            total = n + 1\n    yield\n\nfn main():\n    let mut t = Tick(41, 0)\n    t.resume()\n    println(f\"{t.total}\")\n";
+    let output = compile_and_run("sequence_match_binding_shadowing", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "42", "the match arm's own bound `n` must shadow the hoisted `n` field: {}", stdout);
+}
+
+/// `sequence.rs`'s `check_no_nested_yield` only recognized statement-form
+/// control flow (`Stmt::If`/`While`/`Frame`/`For`) -- a `match` used as a
+/// statement is `Stmt::Expr(Expr::Match{..})`, so a `yield` nested inside a
+/// match arm slipped past this dedicated check entirely and was only caught
+/// later by the generic type-checker fallback, with a strictly worse,
+/// unrelated-sounding diagnostic.
+#[test]
+fn rejects_yield_nested_inside_match_arm_in_sequence() {
+    let src = "sequence S(mut n: i32):\n    match n:\n        0 ->\n            yield\n        _ ->\n            n = n + 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("yield nested inside a match arm must be rejected") };
+    assert!(
+        errs.iter().any(|d| d.message.contains("only supported at the top level")),
+        "expected sequence.rs's own dedicated nested-yield diagnostic, got: {:?}", errs
+    );
+}
+
+/// `tcp_connect`'s `inet_addr` result was never checked against its
+/// `INADDR_NONE` (`0xFFFFFFFF`, i.e. `-1` as `i32`) failure sentinel before
+/// being stored into the `sockaddr_in` and handed to `connect()`.
+#[test]
+fn codegen_tcp_connect_checks_inet_addr_invalid_sentinel() {
+    let module = Driver::parse("fn t(host: str, port: i32) -> ptr:\n    tcp_connect(host, port)\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("call i32 @inet_addr"), "{}", ir);
+    assert!(ir.contains("icmp eq i32") && ir.contains(", -1"), "inet_addr's INADDR_NONE sentinel should be checked: {}", ir);
+    assert!(ir.contains("tcp_addr_invalid"), "a dedicated failure path for an invalid address should exist: {}", ir);
+}
+
+/// A typo'd/undeclared type name in a parameter position previously
+/// resolved to a blind `Ty::Named(name.clone())` with no lookup against
+/// `self.structs` at all -- `resolve_field_type` then treats that bogus
+/// named type as "already reported elsewhere" and silently widens to the
+/// `unknown` placeholder, masking what should be a clean diagnostic here.
+#[test]
+fn rejects_undefined_type_name_in_param_position() {
+    let src = "fn heal(p: Play):\n    println(\"x\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("an undeclared type name must be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("undefined type `Play`")), "{:?}", errs);
+}
+
+/// Same check, with a real struct close enough to trigger the "did you
+/// mean" suggestion path (mirrors `check_impl`'s existing undefined-type
+/// suggestion for `impl Foo for Bar`).
+#[test]
+fn rejects_undefined_type_name_with_suggestion() {
+    let src = "struct Player:\n    health: i32\nfn heal(p: Playr):\n    println(\"x\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("an undeclared type name must be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("undefined type `Playr`")), "{:?}", errs);
+    assert!(errs.iter().any(|d| d.note.as_deref().is_some_and(|n| n.contains("Player"))), "expected a \"did you mean `Player`?\" note: {:?}", errs);
+}
+
+/// `Pattern::Int`/`Pattern::Bool`/`Pattern::Compare` were never checked
+/// against the scrutinee's type -- only their *coverage* was validated.
+/// Codegen's match-arm lowering hardcodes `icmp eq i32`/`icmp sle i32` for
+/// these regardless of the scrutinee's real LLVM type, so a mismatch here
+/// previously type-checked cleanly and only failed at the opaque `clang` IR
+/// verifier step.
+#[test]
+fn rejects_int_pattern_against_non_int_scrutinee() {
+    let src = "fn f(s: str) -> i32:\n    match s:\n        5 -> 1\n        _ -> 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("an int pattern against a str scrutinee must be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("does not match scrutinee type")), "{:?}", errs);
+}
+
+#[test]
+fn rejects_bool_pattern_against_non_bool_scrutinee() {
+    let src = "fn f(n: i32) -> i32:\n    match n:\n        true -> 1\n        _ -> 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("a bool pattern against an int scrutinee must be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("does not match scrutinee type")), "{:?}", errs);
+}
+
+#[test]
+fn rejects_compare_pattern_against_non_int_scrutinee() {
+    let src = "fn f(s: str) -> i32:\n    match s:\n        <= 5 -> 1\n        _ -> 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("a comparison pattern against a non-int scrutinee must be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("requires an `i32` scrutinee")), "{:?}", errs);
+}
+
+/// Sanity/no-false-positive guard alongside the three rejection tests above.
+#[test]
+fn accepts_int_and_compare_patterns_against_int_scrutinee() {
+    let src = "fn f(n: i32) -> i32:\n    match n:\n        0 -> 1\n        <= 5 -> 2\n        _ -> 3\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "int/compare patterns against an int scrutinee should type-check cleanly");
+}
+
+/// A method declaring no `self` at all (an "associated function" still
+/// called via `obj.method(...)` syntax) had its call-site argument count
+/// silently mis-checked: `check_call_args` was always told `skip_self =
+/// true` whenever the callee was `Field`-shaped, unconditionally dropping
+/// the *first declared parameter* believing it was an implicit `self` --
+/// regardless of whether the matched method actually declared one. A
+/// missing/extra argument at the call site went completely undetected, and
+/// codegen's call-site receiver-pointer-as-arg0 convention (also fixed
+/// alongside this) would have produced silent argument-shape UB.
+#[test]
+fn rejects_wrong_arg_count_for_self_less_method_call() {
+    let src = "struct Player:\n    health: i32\nimpl Player:\n    fn combine(a: i32, b: i32) -> i32:\n        return a + b\nfn main():\n    let p = Player(health = 100)\n    let r = p.combine(7)\n    println(f\"{r}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("calling a self-less method with the wrong argument count must be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("expects 2 argument")), "{:?}", errs);
+}
+
+/// Functional regression guard: a correctly-called self-less method must
+/// still compile and run, with no receiver pointer threaded into its call
+/// (its LLVM signature has no leading pointer parameter at all).
+#[test]
+fn runtime_self_less_method_call_end_to_end() {
+    let src = "struct Player:\n    health: i32\nimpl Player:\n    fn combine(a: i32, b: i32) -> i32:\n        return a + b\nfn main():\n    let p = Player(health = 100)\n    println(f\"{p.combine(3, 7)}\")\n";
+    let output = compile_and_run("self_less_method_call", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "10", "{}", stdout);
+}
+
+// ===== `mut` enforcement (docs/design.md: "`mut` is required to change ==
+// ===== state") -- previously parsed and threaded everywhere but never ===
+// ===== once read by any check, so every binding was silently mutable ====
+// ===== regardless of the keyword. ========================================
+
+#[test]
+fn rejects_assignment_to_non_mut_let_binding() {
+    let src = "fn main():\n    let x = 5\n    x = 10\n    println(f\"{x}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("reassigning a non-`mut` binding must be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("not declared `mut`")), "{:?}", errs);
+}
+
+#[test]
+fn accepts_assignment_to_mut_let_binding() {
+    let src = "fn main():\n    let mut x = 5\n    x = 10\n    println(f\"{x}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "reassigning a `mut` binding should type-check cleanly");
+}
+
+#[test]
+fn rejects_assignment_to_struct_field_not_declared_mut() {
+    let src = "struct Player:\n    health: i32\nfn main():\n    let mut p = Player(health = 100)\n    p.health = 0\n    println(f\"{p.health}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("assigning to a field not declared `mut` must be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("field `health` is not mutable")), "{:?}", errs);
+}
+
+#[test]
+fn accepts_assignment_to_mut_struct_field_via_mut_binding() {
+    let src = "struct Player:\n    mut health: i32\nfn main():\n    let mut p = Player(health = 100)\n    p.health = 0\n    println(f\"{p.health}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "assigning to a `mut` field through a `mut` binding should type-check cleanly");
+}
+
+/// Both halves of the rule are independently required: a `mut` field can
+/// still not be assigned through a *non-`mut`* binding.
+#[test]
+fn rejects_assignment_through_non_mut_binding_even_if_field_is_mut() {
+    let src = "struct Player:\n    mut health: i32\nfn main():\n    let p = Player(health = 100)\n    p.health = 0\n    println(f\"{p.health}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("assigning through a non-`mut` binding must be rejected even if the field itself is `mut`") };
+    assert!(errs.iter().any(|d| d.message.contains("not declared `mut`")), "{:?}", errs);
+}
+
+#[test]
+fn rejects_assignment_to_non_mut_parameter() {
+    let src = "fn f(x: i32):\n    x = 1\nfn main():\n    f(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("reassigning a non-`mut` parameter must be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("not declared `mut`")), "{:?}", errs);
+}
+
+#[test]
+fn accepts_assignment_to_mut_parameter() {
+    let src = "fn f(mut x: i32):\n    x = 1\n    println(f\"{x}\")\nfn main():\n    f(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "reassigning a `mut` parameter should type-check cleanly");
+}
+
+/// `fn foo(mut self)` is required to mutate `self`'s fields, exactly like
+/// any other binding -- `self` is just a parameter named `self` under the
+/// hood (see `Param { is_self: true, .. }`).
+#[test]
+fn rejects_assignment_to_field_via_non_mut_self_receiver() {
+    let src = "struct Player:\n    mut health: i32\nimpl Player:\n    fn hurt(self, amount: i32):\n        self.health -= amount\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("mutating a field through a non-`mut self` receiver must be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("cannot assign to self")), "{:?}", errs);
+}
+
+#[test]
+fn accepts_assignment_to_mut_field_via_mut_self_receiver() {
+    let src = "struct Player:\n    mut health: i32\nimpl Player:\n    fn hurt(mut self, amount: i32):\n        self.health -= amount\nfn main():\n    let mut p = Player(health = 100)\n    p.hurt(10)\n    println(f\"{p.health}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "mutating a `mut` field through `mut self` should type-check cleanly");
+}
+
+/// A `GenRef<T>` is a handle into arena-owned storage, not a value the local
+/// binding itself owns -- mirrors a Rust `&mut T` reference, where `let r =
+/// &mut x; *r = v;` needs no `mut` on `r` itself. Mutating through one is
+/// gated purely by the pointed-to struct's own per-field `mut` declaration,
+/// independent of whether the binding holding the `GenRef` is `mut`.
+#[test]
+fn accepts_assignment_through_genref_index_without_mut_binding_on_handle() {
+    let src = "struct Entity:\n    mut hp: i32\narena Entities: Entity\nfn main():\n    spawn Entities(100)\n    let r = GenRef<Entity>(0)\n    r[0].hp -= 10\n    println(f\"{r[0].hp}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "mutating through a `GenRef` should not require the handle binding itself to be `mut`: {:?}", Driver::check(&module).err());
+}
+
+/// `par`/`swarm`'s entire purpose is safe, disjointness-proven in-place
+/// mutation of each worker's own arena element -- there's no `mut` keyword
+/// available in `par var in arena:` syntax at all, so the loop variable must
+/// be implicitly, unconditionally mutable (safety is enforced by
+/// `check_par_disjoint`, not by requiring a keyword that can't be written).
+#[test]
+fn accepts_par_loop_var_field_mutation_without_mut_keyword() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "mutating a par loop variable's field should not require a `mut` keyword that doesn't exist in the grammar");
+}
+
+/// `mut_vars` scoping regression guard: a lambda parameter shadowing an
+/// outer `mut` variable of the same name, but itself *not* declared `mut`,
+/// must not inherit the outer variable's mutability inside the lambda body
+/// -- and, symmetrically, must not leak its own (non-)mutability back out
+/// to the enclosing scope once the lambda literal ends.
+#[test]
+fn rejects_assignment_to_lambda_param_shadowing_outer_mut_var_when_param_not_mut() {
+    let src = "fn main():\n    let mut x = 1\n    let f = fn(x: i32) -> i32:\n        x = x + 1\n        x\n    println(f\"{f(5)}\")\n    x = 2\n    println(f\"{x}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("reassigning a non-`mut` lambda parameter that shadows an outer `mut` variable must still be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("not declared `mut`")), "{:?}", errs);
+}
+
+/// A match-arm binding pattern (`Pattern::Binding`) introduces an immutable
+/// local by default, same as a plain `let` -- there's no `mut` syntax for a
+/// pattern binding, so it can never be reassigned inside its arm.
+#[test]
+fn rejects_assignment_to_match_binding_pattern() {
+    let src = "fn f(n: i32) -> i32:\n    match n:\n        v ->\n            v = v + 1\n            v\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("reassigning a match-arm binding pattern must be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("not declared `mut`")), "{:?}", errs);
 }

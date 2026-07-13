@@ -88,9 +88,9 @@ impl Codegen {
                 _ => { self.err("method call on non-struct receiver", Span::dummy()); String::new() }
             };
             let key = format!("{}#{}", struct_name, field);
-            let fn_name = match self.methods.get(&key) {
+            let (fn_name, has_self) = match self.methods.get(&key) {
                 Some(m) => m.clone(),
-                None => { self.err(&format!("no method `{}` on `{}`", field, struct_name), Span::dummy()); field.clone() }
+                None => { self.err(&format!("no method `{}` on `{}`", field, struct_name), Span::dummy()); (field.clone(), true) }
             };
             // The receiver is passed by pointer: `emit_place` resolves any
             // receiver shape (a bare local, `self`, a nested field access, or
@@ -101,9 +101,23 @@ impl Codegen {
             // anything else -- breaking `self.other_method()`,
             // `obj.inner.method()`, and `list[i].method()`/`get_obj().method()`
             // style chained calls with invalid LLVM IR at the `clang` step.
-            let recv_ptr = self.emit_place(base);
-            let recv_ty = self.llvm_ty(&base_ty);
-            let mut call_args = vec![format!("{}* {}", recv_ty, recv_ptr)];
+            //
+            // A method declaring no `self` at all (an "associated function"
+            // still called via `obj.method(...)` syntax) takes no receiver
+            // argument -- its LLVM signature (see `emit_fn`) has no leading
+            // pointer parameter, so passing one here would be an arity
+            // mismatch. The receiver expression is still evaluated for any
+            // side effects it may have (it's written in the source even
+            // though the callee can't observe it), just not threaded through
+            // as an argument.
+            let mut call_args = if has_self {
+                let recv_ptr = self.emit_place(base);
+                let recv_ty = self.llvm_ty(&base_ty);
+                vec![format!("{}* {}", recv_ty, recv_ptr)]
+            } else {
+                self.emit_expr(base);
+                Vec::new()
+            };
             for a in args {
                 let reg = self.emit_expr(a);
                 let ats = self.llvm_ty(&self.expr_ty(a));
@@ -219,6 +233,13 @@ impl Codegen {
         self.open_block(&rhs_label);
         let r = self.emit_expr(rhs);
         let r_reg = self.reg_of(&r);
+        // `rhs` may itself open further basic blocks (a list/`GenRef` index
+        // bounds check, a nested logical op, an `if`/`match`-as-value), so
+        // the block that actually falls through to `end_label` is whatever
+        // `current_label` is now -- not the `rhs_label` opened above (see
+        // `Codegen::current_label`'s doc comment; same fix as the `if`/
+        // `match` phi merges).
+        let rhs_pred = self.current_label.clone();
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&short_label);
@@ -227,7 +248,7 @@ impl Codegen {
 
         self.open_block(&end_label);
         let phi = self.tmp_name();
-        self.line(&format!("  {} = phi i1 [ {}, %{} ], [ {}, %{} ]", phi, r_reg, rhs_label, short_val, short_label));
+        self.line(&format!("  {} = phi i1 [ {}, %{} ], [ {}, %{} ]", phi, r_reg, rhs_pred, short_val, short_label));
         format!("i1 {}", phi)
     }
 
@@ -300,7 +321,19 @@ impl Codegen {
                 if self.expr_ty(base).is_vec() {
                     return self.emit_swizzle_read(base, field);
                 }
-                let base_ptr = self.emit_place(base);
+                // A `list[idx]` base being read through (not written
+                // through) must not go via `emit_place`'s `ListIndex` arm --
+                // that arm exists for writes and unconditionally clones/
+                // un-aliases the list via `emit_list_ensure_unique` first.
+                // Same bug class as the already-fixed `list_fields`/
+                // `list_index_read_obj` (todo.md item 6), just for a
+                // struct-element field read instead of a scalar/nested-list
+                // element read.
+                let base_ptr = if let TypedExpr::ListIndex { base: inner_base, index, ty: elem_ty, .. } = base.as_ref() {
+                    self.emit_list_index_read_place(inner_base, index, elem_ty)
+                } else {
+                    self.emit_place(base)
+                };
                 let gep = self.tmp_name();
                 let bty = self.llvm_ty(&self.expr_ty(base));
                 let idx = self.field_index(&self.expr_ty(base), field);

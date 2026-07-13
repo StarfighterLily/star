@@ -46,6 +46,120 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Thorough bug-hunting round across the whole compiler, using four parallel research
+agents (lexer/parser/modules/sequence, type checker, codegen data structures,
+codegen io/net/par_pool/driver) plus manual verification of every finding against
+the real compiler before fixing. Found and fixed thirteen real bugs -- several of
+them independently confirmed by reverting the fix and watching the new regression
+test fail with the exact predicted symptom -- all with new tests in
+tests/frontend.rs (504 -> 539 tests, all green; all 39 examples still `star check`
+cleanly):
+1. **Critical, memory corruption**: `enum_payload_words` (src/codegen/mod.rs) sized
+   a payload enum's shared `[W x i64]` buffer by naively summing each field's size
+   with *no* inter-field alignment padding, while construction/destructuring
+   bitcasts that same buffer to the variant's real, padding-correct LLVM struct
+   type. Any variant mixing a sub-8-byte field with an 8-or-16-byte-aligned one
+   (`bool`+`str`, or a `Vec3`) under-allocated the buffer and silently overwrote
+   whatever followed it in memory. Fixed by extracting the same padding algorithm
+   `type_size`'s `Ty::Named` case already used into a shared `padded_struct_size`
+   helper, used by both.
+2. `type_align` hardcoded alignment 8 for *every* `Ty::Enum`, but a fieldless enum
+   is a bare `i32` (align 4) -- only a payload enum is the real 8-byte-aligned
+   tagged union. Wrong alignment corrupted `@export`/`@tweakable` reflect-metadata
+   byte offsets for any field following a fieldless enum.
+3. `emit_logical_binop`'s (`&&`/`||`) `phi` merge hardcoded the `rhs` operand's
+   *entry* label as its incoming block -- the exact same class of bug as the
+   already-fixed `if`/`match`-as-value phi merges (todo.md's own item 9 from the
+   previous round), just never applied to this call site. A list/`GenRef` index,
+   nested logical op, or `if`/`match`-value on the right of `&&`/`||` opens its own
+   blocks, producing invalid LLVM IR ("PHI node entries do not match
+   predecessors"). Fixed by capturing `current_label` after evaluating `rhs`,
+   mirroring the existing fix.
+4. A field read off a `List<T>`-of-structs element (`points[0].x`) routed through
+   `Codegen::emit_place`'s `ListIndex` arm -- a write-only path that unconditionally
+   clones/un-aliases the list via `emit_list_ensure_unique`. Same bug class as the
+   already-fixed `list_fields`/`list_index_read_obj` split (previous round's item
+   6), just for a struct-element field projection instead of a scalar/nested-list
+   read. Fixed with a new retain-free `emit_list_index_read_place`.
+5. `Lexer::handle_line_start`'s blank-line detection checked for `\n`/`#` only --
+   a CRLF blank line (`\r\n`, no leading spaces) lands on `\r` first, so it fell
+   through to the indentation branch and (measuring width 0) popped every open
+   indent level, corrupting the token stream for the rest of the block with no
+   diagnostic, on any Windows-authored source file with a blank line inside an
+   indented block.
+6. `sequence`'s hoisted-name rewrite (`rewrite_expr`'s `Expr::Ident` arm) had no
+   lexical hygiene: a `for` loop's induction variable, a lambda's parameter, or a
+   match arm's bound name sharing a name with a hoisted field got silently
+   rewritten to `self.<name>` throughout that inner scope instead of referring to
+   the local binding -- the loop variable became dead and the block ran using the
+   stale outer field value instead, no diagnostic. Fixed by threading a
+   scope-aware "shadowed" hoist set (`without`) into each of the three binding
+   sites.
+7. `sequence.rs`'s `check_no_nested_yield` only recognized statement-form control
+   flow (`Stmt::If`/`While`/`Frame`/`For`); a `match` used as a statement is
+   `Stmt::Expr(Expr::Match{..})`, and an expression-form `if`/lambda literal
+   reaches the checker the same way -- so a `yield` nested inside any of these
+   slipped past this dedicated check and was only caught later by the generic
+   type-checker fallback, with a strictly worse diagnostic. Added
+   `scan_expr_for_nested_yield` to recurse into these expression-carried blocks.
+8. `tcp_connect`'s `inet_addr` result was never checked against its `INADDR_NONE`
+   (`0xFFFFFFFF`) failure sentinel before being used to `connect()` -- a malformed
+   host string now fails cleanly (closesocket + null) instead of attempting a
+   connect with garbage address bytes.
+9. **`mut` was parsed and threaded everywhere but never once read by any check** --
+   `docs/design.md`'s very first stated rule ("`mut` is required to change state")
+   was a complete no-op: every `let`, parameter, `self`, and struct field was
+   silently mutable regardless of the keyword. Implemented real enforcement: a new
+   `Checker::mut_vars` set (scoped per-function, per-nested-block, and per-lambda
+   exactly like `vars` itself, including shadowing correctness verified by a
+   dedicated test) checked at every `Stmt::Assign`, plus a per-field `is_mut` check
+   for the specific field being written. Two deliberate carve-outs, both matching
+   how the language already uses these constructs: a `GenRef<T>` handle needs no
+   `mut` on the local binding holding it (mirrors a Rust `&mut T` reference --
+   mutability is a property of what it points to, not the handle), and a
+   `par`/`swarm` loop variable is implicitly mutable (there's no `mut` keyword
+   available in that syntax at all, and safety is already proven by
+   `check_par_disjoint`).
+10. A method declaring no `self` at all (an "associated function" still called via
+    `obj.method(...)` syntax) had its call-site argument count silently
+    mis-checked -- `check_call_args` was always told to skip the first declared
+    parameter believing it was `self`, regardless of whether the matched method
+    actually declared one. A wrong argument count went undetected by the checker,
+    and codegen's call site unconditionally passed a receiver pointer as arg0
+    regardless, corrupting the real argument shape at the LLVM level. Fixed by
+    threading a real `has_self` bool (from the method's own declared signature)
+    through both the checker's `self.methods` table and codegen's parallel table,
+    replacing the syntax-shape guess.
+11. `Pattern::Int`/`Pattern::Bool`/`Pattern::Compare` match-arm patterns were never
+    checked against the scrutinee's type at all -- only their *coverage* was
+    validated. Codegen's match-arm lowering hardcodes `icmp eq i32`/`icmp sle i32`
+    for these regardless of the scrutinee's real LLVM type, so e.g. `match a_str:
+    5 -> ...` type-checked cleanly and only failed at the opaque `clang` IR
+    verifier step ("defined with type 'ptr' but expected 'i32'").
+12. `resolve_type`'s `Type::Named` catch-all accepted *any* identifier as a valid
+    type with no lookup against `self.structs` at all -- a typo'd/undeclared type
+    name in a parameter, field, or return position silently "resolved" to a bogus
+    `Ty::Named`, which `resolve_field_type` then treats as "already reported
+    elsewhere" and quietly widens to the `unknown` placeholder, masking what should
+    be a clean "undefined type" diagnostic (with a "did you mean" suggestion,
+    matching `check_impl`'s existing style) right at the declaration.
+13. `codegen_arena_includes_malloc` (a pre-existing test) relied on the bug in
+    #12: its `arena EnemyArena: Point` referenced a `Point` struct that was never
+    declared anywhere in the test's source. Fixed the test fixture rather than the
+    (now-correct) checker behavior.
+
+**Found but deliberately deferred** (a real, confirmed gap, but a missing-feature/
+doc-mismatch rather than a silent-corruption bug, and a larger, riskier change than
+this round's scope): a struct field's declared `= value` default expression
+(`docs/design.md`'s own flagship example: `mut health: i32 = 100`) is parsed and
+type-checked but never consulted by codegen -- `TypedExpr::StructLit`'s
+constructor always zero-fills any field the call site didn't supply, by explicit
+design (this is what lets a `sequence`'s desugared struct trail hoisted-local
+fields the constructor never supplies). Making construction honor a field's own
+declared default instead of zero, only when one exists, is a reasonable follow-up
+but needs its own dedicated round with its own tests.
+
+
 Thorough bug-hunting round across the whole compiler (parser/lexer, type checker,
 codegen), using three parallel research agents (lexer/parser, type checker,
 codegen list/closure/par_pool) plus manual review of file I/O, networking, RC,
