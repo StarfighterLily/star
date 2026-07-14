@@ -322,18 +322,15 @@ impl Codegen {
                     return self.emit_swizzle_read(base, field);
                 }
                 // A `list[idx]` base being read through (not written
-                // through) must not go via `emit_place`'s `ListIndex` arm --
-                // that arm exists for writes and unconditionally clones/
-                // un-aliases the list via `emit_list_ensure_unique` first.
-                // Same bug class as the already-fixed `list_fields`/
-                // `list_index_read_obj` (todo.md item 6), just for a
-                // struct-element field read instead of a scalar/nested-list
-                // element read.
-                let base_ptr = if let TypedExpr::ListIndex { base: inner_base, index, ty: elem_ty, .. } = base.as_ref() {
-                    self.emit_list_index_read_place(inner_base, index, elem_ty)
-                } else {
-                    self.emit_place(base)
-                };
+                // through), at any `Field`-chain nesting depth, must not go
+                // via `emit_place`'s `ListIndex` arm -- that arm exists for
+                // writes and unconditionally clones/un-aliases the list via
+                // `emit_list_ensure_unique` first. Same bug class as the
+                // already-fixed `list_fields`/`list_index_read_obj` (todo.md
+                // item 6), just for a struct-element field read instead of a
+                // scalar/nested-list element read. `emit_read_place` handles
+                // this generally (see its doc comment).
+                let base_ptr = self.emit_read_place(base);
                 let gep = self.tmp_name();
                 let bty = self.llvm_ty(&self.expr_ty(base));
                 let idx = self.field_index(&self.expr_ty(base), field);

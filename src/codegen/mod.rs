@@ -677,7 +677,21 @@ impl Codegen {
             Ty::Named(n) => format!("s_{}", n),
             Ty::GenRef(inner) => format!("genref_{}", self.mangle_ty(inner)),
             Ty::List(inner) => format!("list_{}", self.mangle_ty(inner)),
-            Ty::Map(k, v) => format!("map_{}_{}", self.mangle_ty(k), self.mangle_ty(v)),
+            // Length-prefix the key segment so the K/V boundary is
+            // unambiguous even when a struct name contains the `_`
+            // separator itself (`Ty::Named` mangles as `s_<name>`, and Star
+            // identifiers may contain `_` freely) -- otherwise, e.g.
+            // `Map<a_s_b, c>` and `Map<a, b_s_c>` both mangle to the plain
+            // join `map_s_a_s_b_s_c`, so one's cached release-thunk/eq-fn
+            // would be silently reused for the other's, generated-for-a-
+            // different-layout function. A plain single-argument wrapper
+            // (`List`/`Set`/`GenRef`) has no such boundary to confuse -- the
+            // entire remainder of the string is unambiguously the one inner
+            // type's mangled form, so only the two-argument `Map` needs this.
+            Ty::Map(k, v) => {
+                let km = self.mangle_ty(k);
+                format!("map_{}_{}{}", km.len(), km, self.mangle_ty(v))
+            }
             Ty::Set(inner) => format!("set_{}", self.mangle_ty(inner)),
             Ty::Enum(n) => format!("e_{}", n),
             Ty::Closure(..) => "closure".into(),
@@ -824,6 +838,37 @@ impl Codegen {
         }
     }
 
+    /// Read-only counterpart to `emit_place`: resolves a place pointer
+    /// without ever routing through `emit_place`'s `ListIndex` arm, which is
+    /// a write path that unconditionally CoW-clones the base list via
+    /// `emit_list_ensure_unique` -- correct for a write (`list[i].push(x)`,
+    /// `list[i].field = v`), but a bug for a pure read: `list_fields`'s own
+    /// nested-`ListIndex`-base fast path and `emit_list_index_read_place`
+    /// exist for exactly this reason (see their doc comments), but
+    /// `map_fields`/`set_fields` (`crate::codegen::map`/`crate::codegen::set`)
+    /// and the `TypedExpr::Field` read arm (`crate::codegen::expr`) each need
+    /// the same guard for a receiver reached through a list index, at
+    /// arbitrary `Field` nesting depth (`points[0].my_map.get(k)`,
+    /// `a[i].b.c[j].d`, ...). Delegates to `emit_list_index_read_place` for a
+    /// `ListIndex` base (retain-free, no clone) and recurses through `Field`
+    /// so a chain bottoms out through the read path at every level; anything
+    /// else (`Ident`, `SelfExpr`, `GenRefIndex`, ...) has no CoW-on-read
+    /// hazard, so it's identical to `emit_place`.
+    pub(super) fn emit_read_place(&mut self, expr: &TypedExpr) -> String {
+        match expr {
+            TypedExpr::Field { base, field, .. } => {
+                let base_ptr = self.emit_read_place(base);
+                let gep = self.tmp_name();
+                let bty = self.llvm_ty(&self.expr_ty(base));
+                let idx = self.field_index(&self.expr_ty(base), field);
+                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, bty, bty, base_ptr, idx));
+                gep
+            }
+            TypedExpr::ListIndex { base, index, ty, .. } => self.emit_list_index_read_place(base, index, ty),
+            _ => self.emit_place(expr),
+        }
+    }
+
     fn field_index(&mut self, base_ty: &Ty, field: &str) -> u32 {
         let name = match base_ty {
             Ty::Named(n) => n.clone(),
@@ -960,5 +1005,36 @@ impl Codegen {
             self.line(&format!("  {} = insertvalue {} {}, float {}, {}", reg, t, acc, scalar, i));
         }
         reg
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Ty::Map`'s mangle arm previously joined its key/value segments with
+    /// a bare `_`, ambiguous whenever a struct name itself contains `_`
+    /// (`Ty::Named` mangles as `s_<name>`): `Map<a_s_b, c>` and
+    /// `Map<a, b_s_c>` both mangled to the identical string
+    /// `map_s_a_s_b_s_c` under the old formula. Star's surface syntax
+    /// requires a struct name to start uppercase to be usable as a
+    /// constructor call, so this can't be reproduced by parsing real source
+    /// (see `tests/frontend.rs`'s
+    /// `codegen_map_release_thunk_names_dont_collide_across_underscore_ambiguous_structs`
+    /// for the parseable end-to-end version of this same fix) -- exercised
+    /// directly here instead, against `Ty` values built by hand, so the
+    /// exact colliding names from the bug report can be used verbatim.
+    #[test]
+    fn mangle_ty_map_key_value_boundary_is_unambiguous_across_underscore_names() {
+        let cg = Codegen::new();
+        let m1 = Ty::Map(Box::new(Ty::Named("a_s_b".into())), Box::new(Ty::Named("c".into())));
+        let m2 = Ty::Map(Box::new(Ty::Named("a".into())), Box::new(Ty::Named("b_s_c".into())));
+        let mangled1 = cg.mangle_ty(&m1);
+        let mangled2 = cg.mangle_ty(&m2);
+        assert_ne!(
+            mangled1, mangled2,
+            "Map<a_s_b, c> and Map<a, b_s_c> must not mangle to the same cache key: both got {:?}",
+            mangled1
+        );
     }
 }

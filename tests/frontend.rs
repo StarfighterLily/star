@@ -3720,7 +3720,7 @@ fn checks_list_len_returns_int() {
 /// `list.pop()` resolves to the list's element type.
 #[test]
 fn checks_list_pop_returns_elem_type() {
-    let ty = typed_fn_result_ty("fn t(nums: List<i32>) -> i32:\n    nums.pop()\n");
+    let ty = typed_fn_result_ty("fn t(mut nums: List<i32>) -> i32:\n    nums.pop()\n");
     assert_eq!(ty, Ty::Int);
 }
 
@@ -4160,6 +4160,284 @@ fn runtime_map_set_end_to_end() {
     assert!(stdout.contains("struct set len: 2"), "Set<Point> deduplicates a structurally-equal struct inserted twice: {}", stdout);
     assert!(stdout.contains("contains (1,2): true"), "struct structural-equality match: {}", stdout);
     assert!(stdout.contains("contains (9,9): false"), "struct structural-equality non-match: {}", stdout);
+}
+
+// ===== Map<K,V>/Set<T> bug-hunting round (this pass) =======================
+
+/// A read-only `Map` method (`.get`/`.contains`/`.len`) called on a receiver
+/// reached through a list index (`maps[0].get(k)`) must not trigger the
+/// copy-on-write uniqueness gate on the *outer* list -- same bug class as
+/// the already-fixed `codegen_nested_list_index_read_does_not_trigger_cow_clone`
+/// (`list_fields`'s `ListIndex`-base fast path), just never applied to
+/// `map_fields` when this feature was added: it resolved `base` through
+/// `Codegen::emit_place` directly, whose `ListIndex` arm is a write path
+/// that unconditionally clones/un-aliases the *outer list* via
+/// `emit_list_ensure_unique` (identifiable by the `list_cow_clone` block it
+/// emits -- the receiver here is `List<Map<str,i32>>`, so it's the outer
+/// list's own clone marker, not the inner map's `map_cow_clone`). Fixed by
+/// routing `map_fields` through `Codegen::emit_read_place`.
+#[test]
+fn codegen_map_method_on_list_index_receiver_does_not_trigger_cow_clone() {
+    let src = "fn t(maps: List<Map<str, i32>>) -> i32:\n    let found = maps[0].contains(\"k\")\n    maps[0].len()\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i32 @t(");
+    assert!(!fn_ir.contains("list_cow_clone"), "a pure Map read through a list index must not clone/unshare the outer list: {}", fn_ir);
+}
+
+/// Same nested shape, but a *write* (`maps[0].insert(k, v)`) still must run
+/// the copy-on-write gate on the outer list -- a regression guard alongside
+/// the read test above so the fix doesn't overcorrect into skipping a
+/// uniqueness check a real mutation still needs (mirrors
+/// `codegen_nested_list_index_write_still_triggers_cow_clone`).
+#[test]
+fn codegen_map_method_on_list_index_receiver_write_still_triggers_cow_clone() {
+    let module = Driver::parse("fn t(mut maps: List<Map<str, i32>>):\n    maps[0].insert(\"k\", 1)\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("list_cow_clone"), "a Map mutation through a list index must still uniquify the outer list: {}", ir);
+}
+
+/// The same bug, one level deeper: a `Map` reached through a *struct field*
+/// behind a list index (`points[0].scores.get(k)`) must also not clone the
+/// outer list -- `map_fields` only special-cased `base` itself being a
+/// `ListIndex` directly, not a `Field` wrapping one, so this shape still hit
+/// `emit_place`'s write path even after the direct-`ListIndex` case is
+/// fixed. `Codegen::emit_read_place` recurses through `Field` to close this.
+#[test]
+fn codegen_map_method_on_field_behind_list_index_does_not_trigger_cow_clone() {
+    let src = "struct Player:\n    scores: Map<str, i32>\nfn t(players: List<Player>) -> i32:\n    players[0].scores.len()\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i32 @t(");
+    assert!(!fn_ir.contains("list_cow_clone"), "a Map field read behind a list index must not clone/unshare the outer list: {}", fn_ir);
+}
+
+/// `Set<T>`'s equivalent of the two tests above: a read-only method
+/// (`.contains`/`.len`) on a `Set` reached through a list index
+/// (`sets[0].contains(x)`) must not trigger the outer *list's*
+/// copy-on-write gate (`list_cow_clone`), but a mutation (`.insert`/
+/// `.remove`) still must.
+#[test]
+fn codegen_set_method_on_list_index_receiver_does_not_trigger_cow_clone() {
+    let module = Driver::parse("fn t(sets: List<Set<i32>>) -> i32:\n    sets[0].len()\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define i32 @t(");
+    assert!(!fn_ir.contains("list_cow_clone"), "a pure Set read through a list index must not clone/unshare the outer list: {}", fn_ir);
+}
+
+#[test]
+fn codegen_set_method_on_list_index_receiver_write_still_triggers_cow_clone() {
+    let module = Driver::parse("fn t(mut sets: List<Set<i32>>):\n    sets[0].insert(5)\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("list_cow_clone"), "a Set mutation through a list index must still uniquify the outer list: {}", ir);
+}
+
+/// Functional companion to the codegen-shape tests above (mirrors
+/// `runtime_nested_list_read_then_mutate_preserves_cow_isolation_end_to_end`'s
+/// own reasoning): a pure `Map` read through a list index must not un-alias
+/// two variables sharing the same outer list's buffer, so a subsequent
+/// mutation through one is still invisible through the other, exactly as
+/// plain copy-on-write semantics predict. Can't distinguish "never cloned"
+/// from "cloned-then-still-correctly-isolated" by final values alone --
+/// the `codegen_map_method_on_list_index_receiver_does_not_trigger_cow_clone`
+/// test above is what actually pins the fix; this guards against a botched
+/// fix breaking ordinary COW isolation.
+#[test]
+fn runtime_map_method_on_list_index_receiver_preserves_cow_isolation_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let mut m: List<Map<str, i32>> = [Map<str, i32>()]\n",
+        "    m[0].insert(\"k\", 1)\n",
+        "    let n = m\n",
+        "    let found = n[0].contains(\"k\")\n",
+        "    m[0].insert(\"k2\", 2)\n",
+        "    println(f\"found={found} m0len={m[0].len()} n0len={n[0].len()}\")\n",
+    );
+    let output = compile_and_run("map_list_index_read_then_mutate", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "found=true m0len=2 n0len=1", "{}", stdout);
+}
+
+/// `Map::remove`'s swap-remove (`crate::codegen::map`'s `MapMethod::Remove`)
+/// must not retain the *swapped-in last value* -- it previously called
+/// `emit_retain_at(&val_ptr, val_ty)` *after* storing the last element into
+/// `val_ptr`, so the retain landed on the relocated last value (which needs
+/// none -- same object, same owner, just moved to a new array slot, exactly
+/// like `ListMethod::Pop`'s zero-retain convention) instead of the actually-
+/// removed value (which needs none either -- its map-owned reference
+/// transfers straight into the returned `Some(v)`, a net-zero move). The
+/// bug was a permanent, unbalanced +1 refcount leak on the swapped element
+/// every time a non-last key was removed from an RC-valued `Map`.
+#[test]
+fn codegen_map_remove_swap_does_not_retain_swapped_in_value() {
+    let src = "fn t(mut m: Map<i32, str>):\n    m.remove(1)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define void @t(");
+    // Scoped to the `map_remove_some` block specifically (not the whole
+    // function): `emit_map_ensure_unique`'s own CoW-clone path legitimately
+    // retains every copied element while cloning the map's buffer (a
+    // separate, correct retain loop, unconditionally present in the IR
+    // regardless of whether it's ever taken at runtime) -- that's not the
+    // bug this test pins, so checking the whole function would false-positive
+    // on it.
+    let some_block_start = fn_ir.find("map_remove_some_").expect("expected a map_remove_some block");
+    let some_block_end = fn_ir[some_block_start..].find("map_remove_end_").map(|i| some_block_start + i).unwrap_or(fn_ir.len());
+    let some_block = &fn_ir[some_block_start..some_block_end];
+    assert!(
+        !some_block.contains("star_rc_retain"),
+        "Map::remove's swap-remove must not retain the swapped-in last value: {}",
+        some_block
+    );
+}
+
+/// Runtime companion to the codegen-shape retain test above: removing a
+/// non-last key from a `Map<i32, str>` must still return the *correct*
+/// removed value (not the swapped-in one) and leave the map's remaining
+/// entries intact -- guards against a fix that silently breaks correctness
+/// while chasing the leak (e.g. dropping the removed value's own content
+/// instead of just the erroneous retain).
+#[test]
+fn runtime_map_remove_swap_returns_correct_value_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let mut m: Map<i32, str> = Map<i32, str>()\n",
+        "    m.insert(1, \"one\")\n",
+        "    m.insert(2, \"two\")\n",
+        "    m.insert(3, \"three\")\n",
+        "    match m.remove(1):\n",
+        "        Option::Some(v) -> println(f\"removed={v}\")\n",
+        "        Option::None -> println(\"removed=none\")\n",
+        "    println(f\"len={m.len()} contains3={m.contains(3)} contains2={m.contains(2)}\")\n",
+    );
+    let output = compile_and_run("map_remove_swap_value", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["removed=one", "len=2 contains3=true contains2=true"], "{}", stdout);
+}
+
+/// `Codegen::mangle_ty`'s `Ty::Map` arm previously joined the key/value
+/// mangled segments with a bare `_`, ambiguous whenever a struct name
+/// itself contains `_` (`Ty::Named` mangles as `s_<name>`): e.g.
+/// `Map<a_s_b, c>` and `Map<a, b_s_c>` both mangled to the identical string
+/// `map_s_a_s_b_s_c`, so the second Map's release-thunk cache lookup would
+/// silently reuse the first's already-generated thunk -- a function whose
+/// body is baked with the *wrong* struct's field layout/GEP indices/sizes.
+/// Fixed by length-prefixing the key segment so the K/V boundary is
+/// unambiguous. That exact adversarial pair can't be spelled in real Star
+/// source (a struct name must start uppercase to be usable as a constructor
+/// call), so it's pinned directly against `Codegen::mangle_ty` in
+/// `src/codegen/mod.rs`'s own `#[cfg(test)]` module instead
+/// (`mangle_ty_map_key_value_boundary_is_unambiguous_across_underscore_names`);
+/// this is the parseable end-to-end companion, confirming two structurally
+/// distinct `Map<K,V>` instantiations that share a `_`-containing key/value
+/// name each still get their own, distinct release thunk through the real
+/// pipeline.
+#[test]
+fn codegen_map_release_thunk_names_dont_collide_across_underscore_ambiguous_structs() {
+    let src = concat!(
+        "struct A_s_b:\n    v: i32\n",
+        "struct C:\n    v: i32\n",
+        "struct A:\n    v: i32\n",
+        "struct B_s_c:\n    v: i32\n",
+        "fn t():\n",
+        "    let mut m1 = Map<A_s_b, C>()\n",
+        "    let mut m2 = Map<A, B_s_c>()\n",
+        "    m1.insert(A_s_b(1), C(2))\n",
+        "    m2.insert(A(1), B_s_c(2))\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let thunk_count = ir.matches("define void @map_release_").count();
+    assert_eq!(
+        thunk_count, 2,
+        "Map<A_s_b,C> and Map<A,B_s_c> must each get their own release thunk: {}",
+        ir
+    );
+}
+
+/// `mut` enforcement (todo.md's "mut is required to change state" work) was
+/// never wired up for any mutating *method* call -- only plain `x = value`
+/// assignment was checked, so `List::push`/`pop`, `Map::insert`/`remove`,
+/// and `Set::insert`/`remove` all silently allowed mutating a non-`mut`
+/// binding/parameter/field through a method call. The following tests pin
+/// the fix for every one of those six methods, plus confirm the `mut` case
+/// still type-checks cleanly (no false positives).
+#[test]
+fn rejects_list_push_on_non_mut_receiver() {
+    let module = Driver::parse("fn t(nums: List<i32>):\n    nums.push(1)\n").expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("push on a non-mut List should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("not declared `mut`")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_list_pop_on_non_mut_receiver() {
+    let module = Driver::parse("fn t(nums: List<i32>):\n    nums.pop()\n").expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("pop on a non-mut List should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("not declared `mut`")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_map_insert_on_non_mut_receiver() {
+    let module = Driver::parse("fn t(m: Map<str, i32>):\n    m.insert(\"k\", 1)\n").expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("insert on a non-mut Map should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("not declared `mut`")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_map_remove_on_non_mut_receiver() {
+    let module = Driver::parse("fn t(m: Map<str, i32>):\n    m.remove(\"k\")\n").expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("remove on a non-mut Map should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("not declared `mut`")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_set_insert_on_non_mut_receiver() {
+    let module = Driver::parse("fn t(s: Set<i32>):\n    s.insert(1)\n").expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("insert on a non-mut Set should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("not declared `mut`")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_set_remove_on_non_mut_receiver() {
+    let module = Driver::parse("fn t(s: Set<i32>):\n    s.remove(1)\n").expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("remove on a non-mut Set should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("not declared `mut`")), "{:?}", diags);
+}
+
+/// The positive case for all six methods above: a `mut`-declared receiver
+/// must still type-check cleanly, whether it's a `mut` parameter, a plain
+/// `let mut` local, or `self` on a `mut self` method -- no false positives
+/// from the new check.
+#[test]
+fn accepts_mutating_collection_methods_on_mut_receivers() {
+    let src = concat!(
+        "struct Bag:\n",
+        "    mut items: List<i32>\n",
+        "    mut tags: Set<i32>\n",
+        "impl Bag:\n",
+        "    fn add(mut self, x: i32):\n",
+        "        self.items.push(x)\n",
+        "        self.tags.insert(x)\n",
+        "fn t(mut nums: List<i32>, mut m: Map<str, i32>, mut s: Set<i32>):\n",
+        "    nums.push(1)\n",
+        "    nums.pop()\n",
+        "    m.insert(\"k\", 1)\n",
+        "    m.remove(\"k\")\n",
+        "    s.insert(1)\n",
+        "    s.remove(1)\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "mut receivers should type-check cleanly: {:?}", Driver::check(&module).err());
 }
 
 // ===== List<T> copy-on-write ownership (todo.md's memory-ownership fix) ===

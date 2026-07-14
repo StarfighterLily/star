@@ -49,6 +49,74 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Thorough bug-hunting round targeted at `Map<K,V>`/`Set<T>` (commit "Expanded types 1"),
+the newest, never-yet-reviewed feature -- three parallel research agents (Map/Set/eq
+codegen, type-checker coverage, cross-cutting integration points: RC/reflect/mangling)
+plus manual verification of every finding against the real compiler, including
+reverting each fix individually and confirming the exact predicted regression-test
+failure before restoring it. Found and fixed four real bugs, plus one adjacent
+language-wide gap the type-checker investigation surfaced; all with new regression
+tests (557 -> 583 tests, all green; all 40 examples still `star check` cleanly):
+1. **Real, reachable, silent-corruption class**: `map_fields`/`set_fields`
+   (`src/codegen/map.rs`/`set.rs`, the read paths for `.get`/`.contains`/`.len`)
+   resolved their receiver through `Codegen::emit_place` directly -- exactly the same
+   bug class already fixed twice before for `List<T>` (this file's own history,
+   `list_fields`'s nested-`ListIndex` fast path and `emit_list_index_read_place`), just
+   never applied when Map/Set were added: `emit_place`'s `ListIndex` arm is a *write*
+   path that unconditionally CoW-clones the list via `emit_list_ensure_unique`, so a
+   pure read like `maps[0].get(k)` or `points[0].scores.len()` silently un-aliased the
+   *outer list* as a side effect of a read. `List<Set<T>>`/`List<Map<K,V>>`/a struct
+   field of Map/Set type behind a list index are all ordinary, reachable syntax (the
+   checker's `List<T>` branch never restricts `T` to a hashable type the way
+   `Map`/`Set` themselves do). Fixed generally with a new `Codegen::emit_read_place`
+   (mirrors `emit_place` but recurses through `Field` and routes a `ListIndex` base
+   through the existing retain-free `emit_list_index_read_place`), used by
+   `map_fields`/`set_fields` and simplifying the older single-level-only fix in
+   `TypedExpr::Field`'s own read arm (`src/codegen/expr.rs`) to the fully general case.
+2. `MapMethod::Remove`'s swap-remove (`src/codegen/map.rs`) called
+   `emit_retain_at(&val_ptr, val_ty)` *after* already storing the swapped-in last
+   element into `val_ptr` -- so the retain landed on the *relocated last value*
+   (which needs none: same object, same owner, just moved to a new slot, exactly
+   `ListMethod::Pop`'s zero-retain convention) instead of doing nothing for the
+   actually-removed value (also correctly needs none: its map-owned reference
+   transfers straight into the returned `Some(v)`, a net-zero move). A permanent,
+   unbalanced +1 refcount leak on the swapped element every time a non-last key was
+   removed from an RC-valued `Map`. Fixed by deleting the erroneous retain entirely.
+3. `Codegen::mangle_ty`'s `Ty::Map` arm (used to key the `map_release_thunks`/`eq_fns`
+   caches) joined its key/value mangled segments with a bare `_`, ambiguous whenever a
+   struct name itself contains `_` (`Ty::Named` mangles as `s_<name>`, and identifiers
+   may contain `_` freely): `Map<a_s_b, c>` and `Map<a, b_s_c>` both mangled to the
+   identical string `map_s_a_s_b_s_c`, so the second Map's release-thunk cache lookup
+   would silently reuse the first's already-generated thunk -- a function baked with
+   the *wrong* struct's field layout/GEP indices/sizes, a real type-confusion/memory-
+   safety bug (just narrow: needs an adversarially-chosen pair of struct names).
+   `map_release_thunk_operand` (`src/codegen/map.rs`) built the same ambiguous join
+   independently rather than calling `mangle_ty`, so it needed the identical fix
+   separately; a third instance of the same pattern also existed in the *type
+   checker's own*, unrelated `mangle_ty` (`src/types/mod.rs`, used for generic
+   monomorphization names like `Box__Map_K_V`), reachable via a user generic
+   instantiated with a Map type argument. All three fixed by length-prefixing the key
+   segment so the K/V boundary is unambiguous regardless of what either segment
+   contains -- pinned by a `#[cfg(test)]` unit test directly against `Codegen::mangle_ty`
+   (`src/codegen/mod.rs`) using the exact adversarial names (Star's own surface syntax
+   can't spell them, since a struct name must start uppercase to be a constructor).
+4. **Found while investigating whether `check_hashable_ty` matched `eq.rs`'s Map/Set
+   codegen (it does, cleanly) -- a real, language-wide gap, not Map/Set-specific, but
+   directly affecting Map/Set's own new mutating methods**: `mut` enforcement
+   (`docs/design.md`'s "mut is required to change state", `mut_vars`) was only ever
+   checked at `Stmt::Assign` -- a plain `x = value` -- never at a mutating *method*
+   call. `fn f(m: Map<str,i32>): m.insert("k", 1)` (and the same for `List::push`/
+   `pop`, `Set::insert`/`remove`) type-checked cleanly with no `mut` required
+   anywhere. Fixed with a new `Checker::check_mut_receiver` (mirrors `Stmt::Assign`'s
+   own `assign_root_name`/`mut_vars` check exactly, so it composes for free with the
+   existing `par`/`swarm`-loop-variable and `GenRef`-handle carve-outs already built
+   into that machinery), wired into all six mutating methods across
+   `src/types/expr.rs`. One pre-existing test (`checks_list_pop_returns_elem_type`)
+   needed a `mut` added to its fixture now that the gap it accidentally relied on is
+   closed; all 40 examples were already `mut`-clean and needed no changes.
+
+---
+
 Thorough bug-hunting round across the whole compiler, using four parallel research
 agents (lexer/parser/modules/sequence, type checker, codegen data structures,
 codegen io/net/par_pool/driver) plus manual verification of every finding against

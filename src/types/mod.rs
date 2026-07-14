@@ -1599,6 +1599,26 @@ impl Checker {
         }
     }
 
+    /// `mut` gate for a mutating collection method call (`List::push`/`pop`,
+    /// `Map::insert`/`remove`, `Set::insert`/`remove`) -- the exact same rule
+    /// `Stmt::Assign` enforces on `x = ...` via `assign_root_name`/`mut_vars`
+    /// above, just for a receiver mutated through a method call instead of
+    /// through `=`. Previously unchecked entirely: `fn f(m: Map<str,i32>):
+    /// m.insert("k", 1)` type-checked cleanly with no `mut` required
+    /// anywhere on `m`, the exact gap `docs/design.md`'s "mut is required to
+    /// change state" rule exists to close for a plain assignment.
+    fn check_mut_receiver(&mut self, base: &TypedExpr, method: &str, span: Span) {
+        if let Some(root) = Self::assign_root_name(base) {
+            if !self.mut_vars.contains(root) {
+                let subject = if root == "self" { "self".to_string() } else { format!("`{}`", root) };
+                self.error(
+                    format!("cannot call `{}(..)` on {} -- it was not declared `mut`", method, subject),
+                    span,
+                );
+            }
+        }
+    }
+
     /// Whether `field` is declared `mut` on `base_ty`'s struct -- `None` if
     /// `base_ty` isn't a plain struct or doesn't declare that field (e.g. a
     /// vector's swizzle "field", or an already-errored unknown type), in
@@ -1696,7 +1716,16 @@ fn mangle_ty(ty: &Ty) -> String {
         Ty::Enum(n) => n.clone(),
         Ty::GenRef(inner) => format!("GenRef_{}", mangle_ty(inner)),
         Ty::List(inner) => format!("List_{}", mangle_ty(inner)),
-        Ty::Map(k, v) => format!("Map_{}_{}", mangle_ty(k), mangle_ty(v)),
+        // Length-prefix the key segment so the K/V boundary is unambiguous
+        // even when a name contains `_` -- see `Codegen::mangle_ty`'s `Ty::Map`
+        // arm (src/codegen/mod.rs) for the identical fix and full rationale;
+        // this is a separate mangling scheme (used for generic monomorphization
+        // names) with the same two-argument join, so it needs the same fix
+        // independently.
+        Ty::Map(k, v) => {
+            let km = mangle_ty(k);
+            format!("Map_{}_{}{}", km.len(), km, mangle_ty(v))
+        }
         Ty::Set(inner) => format!("Set_{}", mangle_ty(inner)),
         // Closures are never used as a generic type argument today (no
         // syntax constructs a generic struct/enum/fn call site with a

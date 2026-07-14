@@ -27,7 +27,14 @@ impl Codegen {
     /// Mirrors `Codegen::list_release_thunk_operand`/`set_release_thunk_operand`;
     /// releases every RC-bearing key *and* value before freeing both buffers.
     fn map_release_thunk_operand(&mut self, key_ty: &Ty, val_ty: &Ty) -> String {
-        let key = format!("{}_{}", self.mangle_ty(key_ty), self.mangle_ty(val_ty));
+        // Length-prefixed the same way `Codegen::mangle_ty`'s own `Ty::Map`
+        // arm is, and for the same reason: a bare `mangle_ty(key)_mangle_ty(val)`
+        // join is ambiguous when a struct name contains `_` (see that arm's
+        // doc comment) -- this cache key needs the identical fix
+        // independently, since it's built directly here rather than by
+        // calling `mangle_ty(&Ty::Map(key_ty, val_ty))`.
+        let km = self.mangle_ty(key_ty);
+        let key = format!("{}_{}{}", km.len(), km, self.mangle_ty(val_ty));
         if let Some(name) = self.map_release_thunks.get(&key).cloned() {
             let reg = self.tmp_name();
             self.line(&format!("  {} = bitcast void (i8*)* @{} to i8*", reg, name));
@@ -282,9 +289,14 @@ impl Codegen {
     }
 
     /// Read path: resolve `base`'s `(keys, vals, len)`, no CoW check, `null`
-    /// reading as empty. Mirrors `Codegen::set_fields`.
+    /// reading as empty. Mirrors `Codegen::set_fields`. Resolves `base`
+    /// through `Codegen::emit_read_place`, not `emit_place`, so a receiver
+    /// reached through a list index (`maps[0].get(k)`,
+    /// `points[0].my_map.get(k)`) never spuriously CoW-clones the outer list
+    /// as a side effect of this read (same bug class as the already-fixed
+    /// `list_fields`/`list_index_read_obj`).
     fn map_fields(&mut self, base: &TypedExpr, key_ty: &Ty, val_ty: &Ty) -> (String, String, String) {
-        let slot_ptr = self.emit_place(base);
+        let slot_ptr = self.emit_read_place(base);
         let obj = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** {}", obj, slot_ptr));
 
@@ -550,15 +562,19 @@ impl Codegen {
                 self.line(&format!("  {} = load {}, {}* {}", last_val_val, val_llvm, val_llvm, last_val_ptr));
                 // Swap-remove both parallel arrays in lockstep (harmless
                 // self-store when `idx == new_len`); key/value order is not
-                // preserved. The removed value's own reference (retained
-                // just below into the returned `Some(v)`) is handed to the
-                // caller, so it is *not* released here -- only the removed
-                // key's storage slot is (its RC content, if any, has no
-                // further use once removed).
+                // preserved. `removed_val` was already loaded above (into a
+                // register, unaffected by the stores below) and is moved
+                // straight into the returned `Some(v)` with no retain: the
+                // map's own reference to it is being extinguished by this
+                // removal, so ownership transfers to the caller net-zero,
+                // exactly like `ListMethod::Pop`'s convention. The last
+                // element's value is likewise moved to a new array slot with
+                // no retain -- same object, same owner, just relocated. Only
+                // the removed key's storage slot is released here (its RC
+                // content, if any, has no further use once removed).
                 self.line(&format!("  store {} {}, {}* {}", key_llvm, last_key_val, key_llvm, key_ptr));
                 self.line(&format!("  store {} {}, {}* {}", val_llvm, last_val_val, val_llvm, val_ptr));
                 self.line(&format!("  store i64 {}, i64* {}", new_len, len_field));
-                self.emit_retain_at(&val_ptr, val_ty);
                 let some_val = self.emit_construct_enum_variant(&mangled, "Some", &[(format!("{} {}", val_llvm, removed_val), val_ty.clone())]);
                 let some_reg = self.reg_of(&some_val);
                 let some_pred = self.current_label.clone();

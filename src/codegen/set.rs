@@ -235,12 +235,17 @@ impl Codegen {
     }
 
     /// Read path: resolve `base`'s `(data, len)`, no CoW check, `null`
-    /// reading as `data = null, len = 0`. Mirrors `Codegen::list_fields`
-    /// minus the nested-index-base fast path (`Set<T>` has no `[..]`
-    /// indexing syntax, so a `Set`-typed base is never itself a nested index
-    /// expression).
+    /// reading as `data = null, len = 0`. Mirrors `Codegen::list_fields`.
+    /// Resolves `base` through `Codegen::emit_read_place`, not `emit_place`:
+    /// `Set<T>` has no `[..]` indexing syntax of its own, but a `Set`-typed
+    /// value can still be *reached* through one, as a `List<Set<T>>`
+    /// element (`sets[0].contains(x)`) or a struct field behind one
+    /// (`points[0].my_set.contains(x)`) -- `emit_place`'s `ListIndex` arm is
+    /// a write path that would spuriously CoW-clone the outer list as a
+    /// side effect of this read (same bug class as the already-fixed
+    /// `list_fields`/`list_index_read_obj`).
     fn set_fields(&mut self, base: &TypedExpr, elem_ty: &Ty) -> (String, String) {
-        let slot_ptr = self.emit_place(base);
+        let slot_ptr = self.emit_read_place(base);
         let obj = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** {}", obj, slot_ptr));
 

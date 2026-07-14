@@ -623,6 +623,7 @@ impl Checker {
         let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
         match method {
             "push" => {
+                self.check_mut_receiver(&base, "push", span);
                 if arg_exprs.len() != 1 {
                     self.error(format!("`push(..)` expects 1 argument, found {}", arg_exprs.len()), span);
                 } else {
@@ -634,6 +635,7 @@ impl Checker {
                 TypedExpr::ListMethod { base: Box::new(base), method: ListMethod::Push, args: arg_exprs, ty: Ty::Named("unknown".into()), span }
             }
             "pop" => {
+                self.check_mut_receiver(&base, "pop", span);
                 if !arg_exprs.is_empty() {
                     self.error(format!("`pop()` expects 0 arguments, found {}", arg_exprs.len()), span);
                 }
@@ -708,6 +710,7 @@ impl Checker {
         let option_of = |this: &mut Self, ty: Ty| -> Ty { Ty::Enum(this.instantiate_enum("Option", &[ty])) };
         match method {
             "insert" => {
+                self.check_mut_receiver(&base, "insert", span);
                 if arg_exprs.len() != 2 {
                     self.error(format!("`insert(..)` expects 2 arguments, found {}", arg_exprs.len()), span);
                 } else {
@@ -732,6 +735,7 @@ impl Checker {
                 TypedExpr::MapMethod { base: Box::new(base), method: MapMethod::Get, args: arg_exprs, ty: ret_ty, span }
             }
             "remove" => {
+                self.check_mut_receiver(&base, "remove", span);
                 if arg_exprs.len() != 1 {
                     self.error(format!("`remove(..)` expects 1 argument, found {}", arg_exprs.len()), span);
                 } else if arg_exprs[0].clone().into_ty() != key_ty {
@@ -767,6 +771,7 @@ impl Checker {
         let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
         match method {
             "insert" => {
+                self.check_mut_receiver(&base, "insert", span);
                 if arg_exprs.len() != 1 {
                     self.error(format!("`insert(..)` expects 1 argument, found {}", arg_exprs.len()), span);
                 } else if arg_exprs[0].clone().into_ty() != elem_ty {
@@ -775,6 +780,7 @@ impl Checker {
                 TypedExpr::SetMethod { base: Box::new(base), method: SetMethod::Insert, args: arg_exprs, ty: Ty::Bool, span }
             }
             "remove" => {
+                self.check_mut_receiver(&base, "remove", span);
                 if arg_exprs.len() != 1 {
                     self.error(format!("`remove(..)` expects 1 argument, found {}", arg_exprs.len()), span);
                 } else if arg_exprs[0].clone().into_ty() != elem_ty {
