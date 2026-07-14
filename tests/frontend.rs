@@ -10234,3 +10234,246 @@ fn runtime_table_stress_end_to_end() {
     assert!(stdout.contains("cycler len = 2000"), "{}", stdout);
     assert!(!stdout.contains("unexpected empty pop"), "a pop paired with a preceding push should never see the zero value: {}", stdout);
 }
+
+// ===== Bugfix: `table[i].field = v` (and any mutating collection-method
+// ===== call reached the same way, e.g. `table[i].tags.push(x)`) previously
+// ===== type-checked cleanly and then silently no-op'd at runtime --
+// ===== `Codegen::emit_place` has no arm for `TypedExpr::TableIndex`, so a
+// ===== `Field`/`TupleIndex` chain rooted there fell into the generic rvalue
+// ===== fallback (materialize a disconnected copy, GEP/mutate *that*
+// ===== instead of the real column). `Checker::writes_through_table_index`
+// ===== now rejects this shape outright at type-check time, mirroring the
+// ===== existing `str`-index-assignment rejection just above it in
+// ===== `Checker::check_stmt`'s `Stmt::Assign` arm. `table[i] = v` (the
+// ===== whole element) and `table[i].field` (a *read*) are both unaffected. =
+
+/// `table[i].field = v`: a single field written through a table index must
+/// be rejected at type-check time instead of silently vanishing into a
+/// disconnected temporary at runtime.
+#[test]
+fn rejects_assignment_to_field_through_table_index() {
+    let src = r#"struct Enemy:
+    mut hp: i32
+
+fn main():
+    let mut e = Table<Enemy>()
+    e.push(Enemy(hp = 1))
+    e[0].hp = 99
+    println(f"{e[0].hp}")
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("assigning into a field through a Table<T> index must be a type error, not a silent runtime no-op") };
+    assert!(diags.iter().any(|d| d.message.contains("Table<T>") && d.message.contains("independent columns")), "{:?}", diags);
+}
+
+/// Same rejection, one level deeper: `table[i].nested.field = v` must also
+/// be caught, not just the immediate `table[i].field = v` shape -- the
+/// underlying hazard (`emit_place`'s generic fallback) applies at any
+/// `Field`/`TupleIndex` nesting depth above a `TableIndex` base.
+#[test]
+fn rejects_assignment_to_nested_field_through_table_index() {
+    let src = r#"struct Pos:
+    mut x: i32
+
+struct Enemy:
+    mut pos: Pos
+
+fn main():
+    let mut e = Table<Enemy>()
+    e.push(Enemy(pos = Pos(x = 1)))
+    e[0].pos.x = 99
+    println(f"{e[0].pos.x}")
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("assigning into a nested field through a Table<T> index must be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("Table<T>") && d.message.contains("independent columns")), "{:?}", diags);
+}
+
+/// A mutating collection-method call on a field reached through a table
+/// index (`table[i].tags.push(x)`) is exactly as unsound as a direct field
+/// assignment -- the receiver resolves through the same `emit_place`
+/// fallback -- so it must be rejected the same way, not just plain `=`.
+#[test]
+fn rejects_push_on_list_field_through_table_index() {
+    let src = r#"struct Enemy:
+    mut tags: List<str>
+
+fn main():
+    let mut e = Table<Enemy>()
+    e.push(Enemy(tags = List<str>()))
+    e[0].tags.push("x")
+    println(f"{e[0].tags.len()}")
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("push on a List<T> field reached through a Table<T> index must be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("Table<T>") && d.message.contains("independent columns")), "{:?}", diags);
+}
+
+/// The fix must not overreach: `table[i] = v` (the whole element, the one
+/// genuinely supported write path) must still type-check cleanly.
+#[test]
+fn accepts_whole_element_assignment_to_table_index() {
+    let src = r#"struct Enemy:
+    hp: i32
+
+fn main():
+    let mut e = Table<Enemy>()
+    e.push(Enemy(hp = 1))
+    e[0] = Enemy(hp = 99)
+    println(f"{e[0].hp}")
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "table[i] = v (the whole element) must still type-check cleanly");
+}
+
+/// The fix must not overreach: `table[i].field` (a *read*) must still
+/// type-check cleanly -- only a write through the projection is unsound.
+#[test]
+fn accepts_field_read_through_table_index() {
+    let src = r#"struct Enemy:
+    hp: i32
+
+fn main():
+    let mut e = Table<Enemy>()
+    e.push(Enemy(hp = 1))
+    println(f"{e[0].hp}")
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "table[i].field (a read) must still type-check cleanly");
+}
+
+/// The fix must not overreach in the other direction either: a `Table<T>`
+/// reached *through* another collection's index (`list[i].some_table[j] =
+/// v`) is a bare `TableIndex` target, not a `Field`/`TupleIndex` projection
+/// through one -- it must still type-check, since `table[j] = v` is always
+/// the supported whole-element write regardless of how `table` itself was
+/// reached.
+#[test]
+fn accepts_whole_element_assignment_to_table_reached_through_list_index() {
+    let src = r#"struct Enemy:
+    hp: i32
+
+struct Holder:
+    mut inner: Table<Enemy>
+
+fn main():
+    let mut holders = List<Holder>()
+    holders.push(Holder(inner = Table<Enemy>()))
+    holders[0].inner.push(Enemy(hp = 1))
+    holders[0].inner[0] = Enemy(hp = 42)
+    println(f"{holders[0].inner[0].hp}")
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "table[j] = v must still type-check even when the table itself is reached through a list index: {:?}", Driver::check(&module).err());
+}
+
+/// The rejection isn't limited to plain `=`: a compound assignment
+/// (`table[i].field += v`) reaches `Stmt::Assign` exactly the same way (the
+/// target/op/value are inferred once for every assignment operator), so it
+/// must be rejected too, not just the plain-`=` shape exercised above.
+#[test]
+fn rejects_compound_assignment_to_field_through_table_index() {
+    let src = r#"struct Enemy:
+    mut hp: i32
+
+fn main():
+    let mut e = Table<Enemy>()
+    e.push(Enemy(hp = 1))
+    e[0].hp += 1
+    println(f"{e[0].hp}")
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("compound-assigning into a field through a Table<T> index must be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("Table<T>") && d.message.contains("independent columns")), "{:?}", diags);
+}
+
+// ===== `RingMethod`/`RingIndex` par/swarm-disjointness coverage: mirrors the
+// ===== `Table<T>` coverage above (`accepts_table_index_write_on_body_local_table_inside_par_body`/
+// ===== `rejects_table_index_write_on_captured_table_inside_par_body`), which
+// ===== `src/types/par_analysis.rs` added identical logic for at the same
+// ===== time (`TypedExpr::RingMethod`/`RingIndex` arms in `walk_par_expr`,
+// ===== `RingIndex` in `root_ident`) but the prior test round only ever
+// ===== exercised the `Table<T>` half. ========================================
+
+/// `ring.push(v)`/`ring[i] = v` on a body-local `Ring<T,N>` (declared inside
+/// the loop body itself) must type-check inside a `par`/`swarm` body -- it
+/// can't be shared across threads, so it's exactly as safe as mutating the
+/// loop variable's own fields.
+#[test]
+fn accepts_ring_mutation_on_body_local_ring_inside_par_body() {
+    let src = r#"struct Enemy:
+    mut hp: i32
+
+arena Enemies: Enemy
+
+fn main():
+    par e in Enemies:
+        let mut r: Ring<i32, 3> = Ring<i32, 3>()
+        r.push(1)
+        r.push(2)
+        r[0] = 5
+        e.hp = r[0]
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "mutating a body-local Ring<T,N> inside par/swarm should type-check cleanly: {:?}", Driver::check(&module).err());
+}
+
+/// `ring.push(v)` on a *captured* (outer-scope) `Ring<T,N>` must still be
+/// rejected inside a `par`/`swarm` body -- the fix for the body-local case
+/// above must not weaken this into an unconditionally-accepted mutation.
+#[test]
+fn rejects_ring_push_on_captured_ring_inside_par_body() {
+    let src = r#"struct Enemy:
+    mut hp: i32
+
+arena Enemies: Enemy
+
+fn main():
+    let mut r: Ring<i32, 3> = Ring<i32, 3>()
+    par e in Enemies:
+        r.push(1)
+        e.hp = r[0]
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("mutating a captured Ring<T,N> inside par/swarm should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("cannot mutate a captured ring")), "{:?}", diags);
+}
+
+// ===== Additional wide-coverage runtime test: `Ring<T,N>`/`Table<T>` nested
+// ===== a level deeper than `examples/ring.star`/`examples/table.star`/
+// ===== `examples/ring_table_edge_cases.star` exercise -- a `Ring<T,N>`
+// ===== stored as a *struct field* (exercising `Codegen::type_size`/
+// ===== `type_align`'s `Ty::Ring` arm for real struct-layout offsets, plus
+// ===== plain struct-value-copy independence, since a `Ring<T,N>` has no
+// ===== copy-on-write of its own -- unlike every other collection type here,
+// ===== copying the struct that holds it must deep-copy the ring inline), a
+// ===== `Table<T>` whose element struct has a `Ring<str,N>` field (RC
+// ===== content nested a level deeper than the existing `List<i32>`-field
+// ===== coverage), and a `Ring<Table<T>, N>` (a `Table<T>` -- itself RC'd --
+// ===== as a ring element type, exercising eviction releasing a whole table).
+
+/// `examples/ring_table_nesting.exe`: a `Ring<T,N>` struct field (including
+/// a `Ring<Player,2>` alongside a `Ring<i32,3>` in the same struct) with
+/// struct-copy independence, a `Table<Bag>` whose element has a
+/// `Ring<str,2>` field (copy-on-write, pop), and a `Ring<Table<Item>, 2>`
+/// (eviction of a whole table).
+#[test]
+fn runtime_ring_table_nesting_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/ring_table_nesting.exe").output().expect("failed to execute ring_table_nesting.exe");
+    assert!(output.status.success(), "ring_table_nesting.exe should exit cleanly: stdout={} stderr={}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("snapshot tag=42 hist_len=2 hist=[1, 2]"), "Ring<T,N> struct field: {}", stdout);
+    assert!(stdout.contains("snapshot who_len=1 who0=Hero hp=100"), "Ring<Player,2> struct field: {}", stdout);
+    assert!(stdout.contains("a hist len=3 a=[2, 3]"), "mutating a struct copy's ring field: {}", stdout);
+    assert!(stdout.contains("s hist len=2 s=[1, 2]"), "the original struct's ring field must be unaffected (Ring<T,N> has no CoW, so a plain struct copy must deep-copy it): {}", stdout);
+    assert!(stdout.contains("bags len=2"), "{}", stdout);
+    assert!(stdout.contains("bags[0] tag=1 hist_len=2 h=[a, b]"), "Table<T> with a Ring<str,N> field: {}", stdout);
+    assert!(stdout.contains("bags[1] tag=2 hist_len=1 h0=c"), "{}", stdout);
+    assert!(stdout.contains("bags orig len=3 clone len=2"), "Table<T> copy-on-write with a Ring<str,N>-bearing element: {}", stdout);
+    assert!(stdout.contains("popped tag=3 hist_len=0"), "{}", stdout);
+    assert!(stdout.contains("r len=2 r0 len=1 r0[0].tag=1"), "Ring<Table<Item>, 2>: {}", stdout);
+    assert!(stdout.contains("r1 len=2 r1[0].tag=2 r1[1].tag=3"), "{}", stdout);
+    assert!(stdout.contains("after evict r len=2 r0 len=2 r0[0].tag=2"), "evicting a Ring<Table<T>,N> element must release the whole evicted table: {}", stdout);
+}

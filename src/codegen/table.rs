@@ -24,13 +24,14 @@
 //! independent addresses in independent columns, so `emit_place`'s generic
 //! `Field`-base resolution (which assumes a single base pointer to GEP a
 //! field offset out of) cannot address it without inventing a new place
-//! representation. `table[i].field = v` therefore silently targets a
-//! disconnected temporary instead of the real column -- the same accepted
-//! gap as any other rvalue struct base with no addressable storage of its
-//! own (e.g. a function call's returned-by-value struct) -- while
-//! `table[i].field` (a *read*) still works correctly, since materializing a
-//! temporary copy to read a field out of is exactly what an ordinary value
-//! read does anyway.
+//! representation. Rather than let `table[i].field = v` fall into
+//! `emit_place`'s generic fallback and silently target a disconnected
+//! temporary instead of the real column, `Checker::writes_through_table_index`
+//! rejects it (and any mutating collection-method call reached the same way,
+//! e.g. `table[i].tags.push(x)`) at type-check time with a diagnostic --
+//! `crate::codegen` never actually sees one reach this module. `table[i].field`
+//! (a *read*) still works correctly, since materializing a temporary copy to
+//! read a field out of is exactly what an ordinary value read does anyway.
 
 use crate::types::{TableMethod, Ty, TypedExpr};
 

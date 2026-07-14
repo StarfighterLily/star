@@ -110,12 +110,15 @@ pub enum Ty {
     /// `table[i] = v` read/write the whole element, reassembling it from (or
     /// decomposing it into) every column at index `i`; there is no
     /// dedicated `Codegen::emit_place` support for projecting a single
-    /// field through a table index (`table[i].field = v` silently targets a
-    /// disconnected temporary, the same accepted gap as any other rvalue
-    /// struct base with no addressable storage of its own), since a single
-    /// field's storage in this layout is a real, independently addressable
-    /// column slot -- reaching it correctly would need its own dedicated
-    /// place path, left for a future round.
+    /// field through a table index -- a single field's storage in this
+    /// layout is a real, independently addressable column slot, but reaching
+    /// it correctly would need its own dedicated place path, left for a
+    /// future round; in the meantime `Checker::writes_through_table_index`
+    /// rejects `table[i].field = v` (and any mutating collection-method call
+    /// reached the same way) at type-check time rather than let it silently
+    /// target a disconnected temporary, the naive fallback's behavior (and
+    /// still what happens for any other rvalue struct base with no
+    /// addressable storage of its own).
     Table(Box<Ty>),
     /// A fieldless enum type, lowered to a plain `i32` discriminant.
     Enum(String),
@@ -1755,6 +1758,33 @@ impl Checker {
         }
     }
 
+    /// Whether `target`, if used as a place (an assignment target or a
+    /// mutating method-call receiver), would ultimately resolve through
+    /// `Codegen::emit_place`'s generic rvalue fallback because a `Table<T>`
+    /// index sits somewhere in its unbroken `Field`/`TupleIndex` projection
+    /// chain -- see `Ty::Table`'s doc comment: a table element's fields live
+    /// in independent columns, not one contiguous address, so there is no
+    /// real place to project a field out of, and a write through that
+    /// fallback's disconnected alloca silently vanishes. Only `Field`/
+    /// `TupleIndex` hops are peeled through (mirroring `assign_root_name`'s
+    /// recursion) -- any other base (`ListIndex`, `ArrayIndex`, `RingIndex`,
+    /// `Ident`, ...) has real addressable storage of its own, so a
+    /// `TableIndex` reached *through* one of those (e.g.
+    /// `list[i].some_table[j]`) is unaffected; only a `TableIndex` sitting
+    /// directly beneath an unbroken chain of `Field`/`TupleIndex`
+    /// projections is a silent-no-op hazard. Callers only invoke this once
+    /// `target`/`base` is already known to be a `Field`/`TupleIndex` (a bare
+    /// `table[i] = v` -- the one supported whole-element write -- must not
+    /// be rejected).
+    fn writes_through_table_index(target: &TypedExpr) -> bool {
+        match target {
+            TypedExpr::TableIndex { .. } => true,
+            TypedExpr::Field { base, .. } => Self::writes_through_table_index(base),
+            TypedExpr::TupleIndex { base, .. } => Self::writes_through_table_index(base),
+            _ => false,
+        }
+    }
+
     /// `mut` gate for a mutating collection method call (`List::push`/`pop`,
     /// `Map::insert`/`remove`, `Set::insert`/`remove`) -- the exact same rule
     /// `Stmt::Assign` enforces on `x = ...` via `assign_root_name`/`mut_vars`
@@ -1764,6 +1794,15 @@ impl Checker {
     /// anywhere on `m`, the exact gap `docs/design.md`'s "mut is required to
     /// change state" rule exists to close for a plain assignment.
     fn check_mut_receiver(&mut self, base: &TypedExpr, method: &str, span: Span) {
+        if matches!(base, TypedExpr::Field { .. } | TypedExpr::TupleIndex { .. }) && Self::writes_through_table_index(base) {
+            self.error(
+                format!(
+                    "cannot call `{}(..)` through a `Table<T>` index -- a table element's fields live in independent columns with no addressable storage of their own; assign or read the whole element instead (`table[i] = ...`)",
+                    method
+                ),
+                span,
+            );
+        }
         if let Some(root) = Self::assign_root_name(base) {
             if !self.mut_vars.contains(root) {
                 let subject = if root == "self" { "self".to_string() } else { format!("`{}`", root) };

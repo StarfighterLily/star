@@ -926,12 +926,14 @@ impl Codegen {
             // to the generic fallback below, which materializes it (via
             // `emit_expr`, reassembling every column) into a fresh,
             // disconnected alloca. Correct for a *read* through it
-            // (`table[i].field`, an argument, ...); a write through that
-            // pointer (`table[i].field = v`) silently targets the
-            // disconnected copy instead of the real column, the same
-            // accepted gap as any other rvalue struct base with no
-            // addressable storage of its own (see `store_table_index` for
-            // the one write path -- `table[i] = v` -- that *is* supported).
+            // (`table[i].field`, an argument, ...); a *write* through that
+            // pointer (`table[i].field = v`, or a mutating collection method
+            // reached the same way) would silently target the disconnected
+            // copy instead of the real column, so `Checker::
+            // writes_through_table_index` rejects those at type-check time
+            // instead -- this fallback never actually sees one for a write
+            // (see `store_table_index` for the one write path -- `table[i] =
+            // v` -- that *is* supported).
             TypedExpr::GenRefIndex { base, ty, span, .. } => self.emit_genref_index_place(base, ty, *span),
             // Any other expression (e.g. chaining a field access directly
             // onto a struct returned *by value*) has no existing storage to
