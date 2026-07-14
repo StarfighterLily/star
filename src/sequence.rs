@@ -351,6 +351,10 @@ fn scan_expr_for_nested_yield(expr: &Expr, errors: &mut Vec<Diagnostic>) {
         }
         Expr::TupleIndex { base, .. } => scan_expr_for_nested_yield(base, errors),
         Expr::ArrayRepeat { value, .. } => scan_expr_for_nested_yield(value, errors),
+        // `Ring<T, N>()` has no sub-expressions to recurse into (mirrors
+        // `List<T>()`/`Map<K,V>()`/`Set<T>()`, plain `StructLit`s with an
+        // empty `args` list already covered by the `StructLit` arm above).
+        Expr::RingNew { .. } => {}
         Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Ident(..) | Expr::SelfExpr(..) => {}
     }
 }
@@ -555,5 +559,8 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
         Expr::ArrayRepeat { value, count, span } => {
             Expr::ArrayRepeat { value: Box::new(rewrite_expr(value, hoist)), count: *count, span: *span }
         }
+        // No `Ident`s inside a `Ring<T, N>()` construction to rewrite -- its
+        // only fields are a syntactic `Type` and a compile-time constant.
+        Expr::RingNew { elem_ty, count, span } => Expr::RingNew { elem_ty: elem_ty.clone(), count: *count, span: *span },
     }
 }

@@ -2,6 +2,7 @@
 //! chains, `match`, and the `if` expression form.
 
 use crate::ast::*;
+use crate::diagnostics::Span;
 use crate::lexer::{FStrPart, Lexer, TokenKind};
 
 use super::{starts_uppercase, Parser};
@@ -252,6 +253,75 @@ impl Parser {
         }
     }
 
+    /// Speculatively parse `Ring<T, N>()`'s `<T, N>` turbofish (mirroring
+    /// `Type::Array`'s `[T; N]` handling in `Parser::parse_type_inner`) since
+    /// `N` is a bare integer literal, not a `Type` -- `parse_type_args`'s
+    /// ordinary comma-separated-`Type`-list loop has no way to parse that.
+    /// Assumes the cursor is at `<`, immediately after having consumed the
+    /// `Ring` identifier.
+    ///
+    /// `Ring` isn't a reserved keyword, so `Ring < 3` is just as legitimately
+    /// a comparison against a plain value named `Ring` as it is a
+    /// construction -- like `try_parse_type_args`, this probes the `<T, N>`
+    /// shape (`probe_ring_shape`) and only commits once it's confirmed by an
+    /// immediately-following `(` (the only real continuation a `Ring<T,
+    /// N>()` construction can have). Returns `Ok(None)` on a shape mismatch,
+    /// having already restored the cursor and discarded whatever diagnostics
+    /// the probe raised, so the caller can fall through to ordinary
+    /// identifier/comparison handling instead of cascading into unrelated
+    /// parse errors -- exactly the failure mode `try_parse_type_args`'s own
+    /// doc comment describes. Once shape-confirmed, this is unconditionally
+    /// committed: `Err(())` means a real syntax error (a non-positive count,
+    /// a malformed argument list) that the caller must propagate rather than
+    /// fall through on, mirroring `Option<Expr>`'s usual "real failure"
+    /// convention elsewhere in this parser.
+    fn parse_ring_new(&mut self, start: Span) -> Result<Option<Expr>, ()> {
+        let checkpoint = self.pos;
+        let err_checkpoint = self.errors.len();
+
+        let shape = self.probe_ring_shape();
+        if shape.is_none() || !self.at(&TokenKind::LParen) {
+            self.pos = checkpoint;
+            self.errors.truncate(err_checkpoint);
+            return Ok(None);
+        }
+        let (elem, count, count_span) = shape.unwrap();
+
+        if count <= 0 {
+            self.error("ring capacity must be a positive integer", count_span);
+            return Err(());
+        }
+        let Some(args) = self.parse_call_args() else { return Err(()) };
+        if !args.is_empty() {
+            self.error("`Ring<T, N>()` takes no arguments -- it always starts empty", start.to(self.prev_span()));
+        }
+        let full = start.to(self.prev_span());
+        Ok(Some(Expr::RingNew { elem_ty: elem, count: count as u64, span: full }))
+    }
+
+    /// The shape-only half of [`parse_ring_new`]'s speculation: `< Type ,
+    /// IntLiteral >` with no validation of the count's sign (that's left to
+    /// the caller, once it's known this really is a `Ring<T, N>` construction
+    /// and not a false-positive backtrack candidate) and no argument-list
+    /// parsing. Returns `None` on any shape mismatch; the caller is
+    /// responsible for restoring the cursor/diagnostics in that case.
+    fn probe_ring_shape(&mut self) -> Option<(Type, i64, Span)> {
+        self.advance(); // consume '<'
+        let elem = self.parse_type()?;
+        if !self.eat(&TokenKind::Comma) {
+            return None;
+        }
+        let count_span = self.peek_span();
+        let TokenKind::Int(count) = self.peek_kind() else {
+            return None;
+        };
+        self.advance();
+        if !self.eat(&TokenKind::Gt) {
+            return None;
+        }
+        Some((elem, count, count_span))
+    }
+
     pub(super) fn parse_call_args(&mut self) -> Option<Vec<Expr>> {
         self.expect(&TokenKind::LParen)?;
         let mut args = Vec::new();
@@ -377,6 +447,25 @@ impl Parser {
             }
             TokenKind::Ident(name) => {
                 self.advance();
+                // `Ring<T, N>()` -- see `Expr::RingNew`'s doc comment for why
+                // this can't go through the ordinary `try_parse_type_args`
+                // turbofish machinery below (its second argument is a bare
+                // integer literal, not a `Type`). `parse_ring_new` itself
+                // backtracks on a shape mismatch (`Ok(None)`) rather than
+                // erroring, since `Ring` isn't reserved and `Ring < 3` may
+                // just be a comparison against a plain value named `Ring` --
+                // only `return` out of `parse_primary` entirely once it's
+                // either a confirmed construction (`Ok(Some(_))`) or a real,
+                // committed syntax error (`Err(())`); on `Ok(None)` fall
+                // through to the ordinary identifier handling below so the
+                // `<` reaches `peek_binop` as a comparison operator.
+                if name == "Ring" && self.at(&TokenKind::Lt) {
+                    match self.parse_ring_new(span) {
+                        Ok(Some(expr)) => return Some(expr),
+                        Err(()) => return None,
+                        Ok(None) => {}
+                    }
+                }
                 // Struct literal when an identifier is immediately called and the
                 // name is capitalized (type-like), e.g. `Vec3(0, 0, 0)`.
                 // Explicit generic type arguments: `Box<i32>(...)` or

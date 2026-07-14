@@ -213,6 +213,17 @@ pub enum Type {
     /// LLVM `[N x T]` array laid out inline (no RC header, no heap
     /// allocation of its own), see `Ty::Array`.
     Array(Box<Type>, u64),
+    /// A fixed-capacity ring buffer `Ring<T, N>`: input replay, frame-time
+    /// history, netcode rollback buffers -- a sliding window over the most
+    /// recent `N` pushed elements. Written `Ring<T, N>` (angle brackets, not
+    /// `Array`'s `[T; N]`) since `N` sits alongside a type argument rather
+    /// than after a `;`; parsed by a dedicated special case in
+    /// `crate::parser::Parser::parse_type_inner` (mirroring `Type::Array`'s
+    /// own bracket special case) since this compiler has no general
+    /// const-generic parameter machinery. Lowers to an inline
+    /// `{ [N x T], i64, i64 }` (data, head, len) -- no RC header, no heap
+    /// allocation of its own, like `Ty::Array` -- see `Ty::Ring`.
+    Ring(Box<Type>, u64),
 }
 
 impl Type {
@@ -221,7 +232,7 @@ impl Type {
         match self {
             Type::Named(name) => name == "GenRef",
             Type::Generic(name, _) => name == "GenRef",
-            Type::Fn(..) | Type::Tuple(..) | Type::Array(..) => false,
+            Type::Fn(..) | Type::Tuple(..) | Type::Array(..) | Type::Ring(..) => false,
         }
     }
 }
@@ -486,6 +497,19 @@ pub enum Expr {
         count: u64,
         span: Span,
     },
+    /// `Ring<T, N>()` -- an empty, fixed-capacity ring buffer construction,
+    /// the `Ring<T,N>` counterpart to `List<T>()`/`Map<K,V>()`/`Set<T>()`.
+    /// Unlike those (parsed as an ordinary `Expr::StructLit` naming the
+    /// builtin type, since their turbofish is a plain comma-separated
+    /// `Type` list), `Ring<T, N>`'s second argument is a bare integer
+    /// literal, not a `Type` -- `try_parse_type_args` can't parse it, so
+    /// this gets its own dedicated AST node and parser special case (see
+    /// `Parser::parse_ring_new`).
+    RingNew {
+        elem_ty: Type,
+        count: u64,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -513,6 +537,7 @@ impl Expr {
             | Expr::Try { span: s, .. }
             | Expr::TupleIndex { span: s, .. }
             | Expr::ArrayRepeat { span: s, .. }
+            | Expr::RingNew { span: s, .. }
             | Expr::ListLit(_, s) => *s,
             Expr::TupleLit(_, s) => *s,
         }

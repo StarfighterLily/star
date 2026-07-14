@@ -550,6 +550,14 @@ impl Codegen {
                 let val = self.emit_array_index(base, index, ty, count);
                 self.reg_of(&val)
             }
+            TypedExpr::RingIndex { base, index, ty, .. } => {
+                let Ty::Ring(_, count) = self.expr_ty(base) else { unreachable!("RingIndex base must be Ty::Ring") };
+                let ptr = self.emit_ring_index_read_place(base, index, ty, count);
+                let elem_llvm = self.llvm_ty(ty);
+                let reg = self.tmp_name();
+                self.line(&format!("  {} = load {}, {}* {}", reg, elem_llvm, elem_llvm, ptr));
+                reg
+            }
             TypedExpr::TupleIndex { base, index, ty, .. } => {
                 let base_ptr = self.emit_place(base);
                 let gep = self.tmp_name();
@@ -559,6 +567,10 @@ impl Codegen {
                 let ts = self.llvm_ty(ty);
                 self.line(&format!("  {} = load {}, {}* {}", reg, ts, ts, gep));
                 reg
+            }
+            TypedExpr::TableIndex { base, index, ty, .. } => {
+                let val = self.emit_table_index(base, index, ty);
+                self.reg_of(&val)
             }
             _ => { self.err("cannot load from this expression", Span::dummy()); "%undef".into() }
         }
@@ -600,6 +612,13 @@ impl Codegen {
             TypedExpr::ArrayIndex { base, index, ty, .. } => {
                 let Ty::Array(_, count) = self.expr_ty(base) else { unreachable!("ArrayIndex base must be Ty::Array") };
                 self.store_array_index(base, index, ty, count, val);
+            }
+            TypedExpr::RingIndex { base, index, ty, .. } => {
+                let Ty::Ring(_, count) = self.expr_ty(base) else { unreachable!("RingIndex base must be Ty::Ring") };
+                self.store_ring_index(base, index, ty, count, val);
+            }
+            TypedExpr::TableIndex { base, index, ty, .. } => {
+                self.store_table_index(base, index, ty, val);
             }
             TypedExpr::TupleIndex { base, index, ty, .. } => {
                 let base_ptr = self.emit_place(base);

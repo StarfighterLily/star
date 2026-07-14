@@ -380,6 +380,64 @@ impl Checker {
                 self.walk_par_expr(index, locals);
             }
             TypedExpr::ArrayLen { base, .. } => self.walk_par_expr(base, locals),
+            TypedExpr::RingNew { .. } => {}
+            // Same reasoning as `ListMethod` above: `push`/`pop` mutate the
+            // receiver's own inline storage, so only a body-local receiver
+            // can be proven disjoint across threads; `len` only reads, so
+            // it's exempt.
+            TypedExpr::RingMethod { base, method, args, span, .. } => {
+                if matches!(method, RingMethod::Push | RingMethod::Pop) {
+                    match root_ident(base) {
+                        Some(root) if locals.contains(&root) => {}
+                        _ => self.error(
+                            "cannot mutate a captured ring inside a par/swarm body \
+                             (only the loop variable's own locals may be mutated)",
+                            *span,
+                        ),
+                    }
+                }
+                self.walk_par_expr(base, locals);
+                for a in args {
+                    self.walk_par_expr(a, locals);
+                }
+            }
+            // A read is always fine to walk into (mirrors `ArrayIndex`
+            // above); a ring element *write* goes through a plain
+            // `Stmt::Assign` target, checked generically via `root_ident` in
+            // `walk_par_stmt`.
+            TypedExpr::RingIndex { base, index, .. } => {
+                self.walk_par_expr(base, locals);
+                self.walk_par_expr(index, locals);
+            }
+            TypedExpr::TableNew { .. } => {}
+            // Same reasoning as `ListMethod` above: `push`/`pop` mutate the
+            // receiver's own column buffers in place, so only a body-local
+            // receiver can be proven disjoint across threads; `len` only
+            // reads, so it's exempt.
+            TypedExpr::TableMethod { base, method, args, span, .. } => {
+                if matches!(method, TableMethod::Push | TableMethod::Pop) {
+                    match root_ident(base) {
+                        Some(root) if locals.contains(&root) => {}
+                        _ => self.error(
+                            "cannot mutate a captured table inside a par/swarm body \
+                             (only the loop variable's own locals may be mutated)",
+                            *span,
+                        ),
+                    }
+                }
+                self.walk_par_expr(base, locals);
+                for a in args {
+                    self.walk_par_expr(a, locals);
+                }
+            }
+            // A read is always fine to walk into (mirrors `ListIndex`
+            // above); a table element *write* goes through a plain
+            // `Stmt::Assign` target, checked generically via `root_ident` in
+            // `walk_par_stmt`.
+            TypedExpr::TableIndex { base, index, .. } => {
+                self.walk_par_expr(base, locals);
+                self.walk_par_expr(index, locals);
+            }
             TypedExpr::Int(..)
             | TypedExpr::Float(..)
             | TypedExpr::Str(..)

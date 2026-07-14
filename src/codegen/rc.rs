@@ -62,7 +62,12 @@ impl Codegen {
             // the generated release thunk -- see
             // `crate::codegen::map::map_release_thunk_operand`/
             // `crate::codegen::set::set_release_thunk_operand`).
-            Ty::Str | Ty::Closure(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) => true,
+            // Same reasoning as `Ty::List`/`Ty::Map`/`Ty::Set` -- a `Table<T>`
+            // always owns `N` separately heap-allocated column buffers that
+            // need releasing, regardless of whether any of `T`'s own fields
+            // carry RC content (decided separately, inside the generated
+            // release thunk -- see `crate::codegen::table::table_release_thunk_operand`).
+            Ty::Str | Ty::Closure(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Table(_) => true,
             Ty::Named(n) => self
                 .struct_field_types
                 .get(n)
@@ -70,6 +75,11 @@ impl Codegen {
                 .unwrap_or(false),
             Ty::Tuple(elems) => elems.iter().any(|f| self.contains_rc(f)),
             Ty::Array(elem, count) => *count > 0 && self.contains_rc(elem),
+            // A ring always has `count > 0` (rejected at parse time -- see
+            // `Parser::parse_type_inner`/`parse_ring_new`), so this is just
+            // whether the element type itself carries RC content -- the two
+            // `i64` head/len fields never do.
+            Ty::Ring(elem, _) => self.contains_rc(elem),
             _ => false,
         }
     }
@@ -175,17 +185,36 @@ impl Codegen {
                     self.emit_rc_walk(&gep, elem, retain);
                 }
             }
-            Ty::List(_) | Ty::Map(..) | Ty::Set(_) => {
+            Ty::Ring(elem, count) => {
+                // Same walk as `Ty::Array` above, just GEP-ing into field 0
+                // (`data`) of the `{ [N x T], i64, i64 }` aggregate first --
+                // see `crate::codegen::ring`'s module doc comment for why
+                // walking every one of the `N` slots unconditionally
+                // (regardless of `head`/`len`) is safe: every slot outside
+                // the live `[head, head+len)` window is always the element
+                // type's zero value, so retaining/releasing it is a no-op.
+                let ring_ty = self.llvm_ty(ty);
+                let data_ptr = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0", data_ptr, ring_ty, ring_ty, ptr));
+                let elem_llvm = self.llvm_ty(elem);
+                let arr_ty = format!("[{} x {}]", count, elem_llvm);
+                for i in 0..*count {
+                    let gep = self.tmp_name();
+                    self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i64 {}", gep, arr_ty, arr_ty, data_ptr, i));
+                    self.emit_rc_walk(&gep, elem, retain);
+                }
+            }
+            Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Table(_) => {
                 // Same shape as `Ty::Str`: `ptr` is a storage address
                 // holding the object pointer directly, no extra boxing.
                 // Releasing the elements/keys/values *inside* the buffer
                 // (when the last reference goes away) is the generated
                 // release thunk's job (`Codegen::list_release_thunk_operand`/
-                // `crate::codegen::map`/`crate::codegen::set`'s own
-                // release-thunk generators), not this walker's -- that keeps
-                // retain/release here O(1) regardless of collection size,
-                // since only the object pointer's own refcount changes on
-                // every read/scope-exit.
+                // `crate::codegen::map`/`crate::codegen::set`/
+                // `crate::codegen::table`'s own release-thunk generators),
+                // not this walker's -- that keeps retain/release here O(1)
+                // regardless of collection size, since only the object
+                // pointer's own refcount changes on every read/scope-exit.
                 let real = self.tmp_name();
                 self.line(&format!("  {} = load i8*, i8** {}", real, ptr));
                 self.line(&format!("  call void {}(i8* {})", helper, real));

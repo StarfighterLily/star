@@ -233,6 +233,28 @@ impl Parser {
             let item = self.expect_ident()?;
             name = crate::modules::mangle_name(&name, &item);
         }
+        // `Ring<T, N>` -- `N` is a plain non-negative integer literal (no
+        // const-expression evaluator in this compiler), matching
+        // `Type::Array`'s `[T; N]` restriction just above; special-cased by
+        // name (rather than falling into the ordinary `Type::Generic`
+        // comma-loop below, which only ever parses `Type`s) since there's no
+        // general const-generic parameter machinery here.
+        if name == "Ring" && self.eat(&TokenKind::Lt) {
+            let elem = self.parse_type()?;
+            self.expect(&TokenKind::Comma)?;
+            let count_span = self.peek_span();
+            let TokenKind::Int(count) = self.peek_kind() else {
+                self.error("expected an integer literal capacity after `,` in `Ring<T, N>`", count_span);
+                return None;
+            };
+            self.advance();
+            if count <= 0 {
+                self.error("ring capacity must be a positive integer", count_span);
+                return None;
+            }
+            self.expect(&TokenKind::Gt)?;
+            return Some(Type::Ring(Box::new(elem), count as u64));
+        }
         if self.eat(&TokenKind::Lt) {
             let mut args = Vec::new();
             while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {

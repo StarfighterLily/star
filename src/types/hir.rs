@@ -277,6 +277,28 @@ pub enum TypedExpr {
     /// evaluating it might have -- e.g. a call expression yielding the
     /// array), just never used to compute the result.
     ArrayLen { base: Box<TypedExpr>, count: u64, span: Span },
+    /// `Ring<T, N>()` -- an empty, fixed-capacity ring buffer construction,
+    /// see [`crate::ast::Expr::RingNew`].
+    RingNew { elem_ty: Ty, count: u64, span: Span },
+    /// `ring.push(v)` / `.pop()` / `.len()`, see `Checker::infer_ring_method`.
+    RingMethod { base: Box<TypedExpr>, method: RingMethod, args: Vec<TypedExpr>, ty: Ty, span: Span },
+    /// `ring[idx]`: a bounds-checked (against the ring's current `len`, not
+    /// its static capacity `N`) element read, `0` = the oldest live element.
+    /// `ty` is the element type. See `crate::ast::Expr::GenRefIndex`'s doc
+    /// comment for why this shares that AST node with `GenRef<T>`/`List<T>`/
+    /// `[T; N]` indexing.
+    RingIndex { base: Box<TypedExpr>, index: Box<TypedExpr>, ty: Ty, span: Span },
+    /// `Table<T>()` -- an empty struct-of-arrays table construction, see
+    /// `Checker::infer_table_new`. `elem_ty` is always `Ty::Named(struct)`.
+    TableNew { elem_ty: Ty, span: Span },
+    /// `table.push(v)` / `.pop()` / `.len()`, see `Checker::infer_table_method`.
+    TableMethod { base: Box<TypedExpr>, method: TableMethod, args: Vec<TypedExpr>, ty: Ty, span: Span },
+    /// `table[idx]`: a bounds-checked `Table<T>` element read/write,
+    /// reassembling (or decomposing) the whole struct value from (into)
+    /// every column at `idx`. `ty` is the element type `T`. See
+    /// `crate::ast::Expr::GenRefIndex`'s doc comment for why this shares
+    /// that AST node with `GenRef<T>`/`List<T>`/`[T; N]`/`Ring<T,N>` indexing.
+    TableIndex { base: Box<TypedExpr>, index: Box<TypedExpr>, ty: Ty, span: Span },
     Error(Ty),
 }
 
@@ -324,6 +346,36 @@ pub enum SetMethod {
     Len,
 }
 
+/// The builtin `Ring<T,N>` methods -- see `TypedExpr::RingMethod`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RingMethod {
+    /// `ring.push(v)` -- appends `v` at the back; once `len` reaches the
+    /// ring's static capacity `N`, this evicts the oldest (front) element
+    /// instead of growing (there is nowhere to grow to) or no-op'ing, so a
+    /// full ring always holds a sliding window of the most recent `N` pushes.
+    Push,
+    /// `ring.pop()` -- removes and returns the oldest (front) element, or
+    /// the element type's zero value if the ring is empty (mirrors
+    /// `ListMethod::Pop`'s "safe null equivalent" convention).
+    Pop,
+    /// `ring.len()` -- the current element count as an `i32` (`0..=N`).
+    Len,
+}
+
+/// The builtin `Table<T>` methods -- see `TypedExpr::TableMethod`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TableMethod {
+    /// `table.push(v)` -- appends `v`'s fields, one per column, growing
+    /// every column's backing buffer in lockstep if needed.
+    Push,
+    /// `table.pop()` -- removes and returns the last element (reassembled
+    /// from every column), or the element type's zero value if the table is
+    /// empty (mirrors `ListMethod::Pop`'s "safe null equivalent" convention).
+    Pop,
+    /// `table.len()` -- the current element count as an `i32`.
+    Len,
+}
+
 impl TypedExpr {
     pub fn into_ty(self) -> Ty {
         match self {
@@ -348,6 +400,12 @@ impl TypedExpr {
             TypedExpr::ArrayIndex { ty, .. } => ty,
             TypedExpr::ArrayRepeat { count, elem_ty, .. } => Ty::Array(Box::new(elem_ty), count),
             TypedExpr::ArrayLen { .. } => Ty::Int,
+            TypedExpr::RingNew { elem_ty, count, .. } => Ty::Ring(Box::new(elem_ty), count),
+            TypedExpr::RingMethod { ty, .. } => ty,
+            TypedExpr::RingIndex { ty, .. } => ty,
+            TypedExpr::TableNew { elem_ty, .. } => Ty::Table(Box::new(elem_ty)),
+            TypedExpr::TableMethod { ty, .. } => ty,
+            TypedExpr::TableIndex { ty, .. } => ty,
         }
     }
 
@@ -365,7 +423,10 @@ impl TypedExpr {
             | TypedExpr::MapMethod { span, .. } | TypedExpr::SetMethod { span, .. }
             | TypedExpr::TupleLit { span, .. } | TypedExpr::TupleIndex { span, .. }
             | TypedExpr::ArrayRepeat { span, .. } | TypedExpr::ArrayIndex { span, .. }
-            | TypedExpr::ArrayLen { span, .. } => *span,
+            | TypedExpr::ArrayLen { span, .. } | TypedExpr::RingNew { span, .. }
+            | TypedExpr::RingMethod { span, .. } | TypedExpr::RingIndex { span, .. }
+            | TypedExpr::TableNew { span, .. } | TypedExpr::TableMethod { span, .. }
+            | TypedExpr::TableIndex { span, .. } => *span,
             TypedExpr::SelfExpr(_, s) => *s,
             TypedExpr::Error(_) => Span::dummy(),
         }

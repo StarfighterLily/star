@@ -25,8 +25,10 @@ mod os;
 mod par_pool;
 mod rc;
 mod reflect;
+mod ring;
 mod set;
 mod stmt;
+mod table;
 mod vector_math;
 
 use std::fmt::Write;
@@ -141,6 +143,10 @@ pub struct Codegen {
     /// `"{mangled_key}_{mangled_val}"`, for `Map<K,V>` (see
     /// `crate::codegen::map`).
     map_release_thunks: std::collections::HashMap<String, String>,
+    /// Same purpose as `list_release_thunks`, keyed by `Codegen::mangle_ty`
+    /// of `Ty::Named(struct_name)`, for `Table<T>` (see
+    /// `crate::codegen::table`).
+    table_release_thunks: std::collections::HashMap<String, String>,
     /// Maps a mangled key/element-type key -> the name of the
     /// `eq_<mangled>` structural-equality function generated the first time
     /// a `Map<K,_>`/`Set<T>` of that key/element type is used (see
@@ -213,6 +219,7 @@ impl Codegen {
             list_release_thunks: std::collections::HashMap::new(),
             set_release_thunks: std::collections::HashMap::new(),
             map_release_thunks: std::collections::HashMap::new(),
+            table_release_thunks: std::collections::HashMap::new(),
             eq_fns: std::collections::HashMap::new(),
             par_pool_emitted: false,
             extern_fns: std::collections::HashSet::new(),
@@ -509,7 +516,7 @@ impl Codegen {
         match ty {
             Ty::Int | Ty::Float => 4,
             Ty::Bool => 1,
-            Ty::Str | Ty::Ptr | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Closure(..) => 8,
+            Ty::Str | Ty::Ptr | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Table(_) | Ty::Closure(..) => 8,
             Ty::GenRef(_) => 4,
             Ty::Vec2 => 8,
             Ty::Vec3 | Ty::Vec4 | Ty::Mat4 => 16,
@@ -524,6 +531,10 @@ impl Codegen {
             // An array's alignment is just its element's -- LLVM never pads
             // an array's own alignment wider than its element type's.
             Ty::Array(elem, _) => self.type_align(elem),
+            // `{ [N x T], i64, i64 }` -- the two trailing `i64` fields (head,
+            // len) need 8-byte alignment, same as any other `i64`-bearing
+            // aggregate; wider only if the element type itself needs more.
+            Ty::Ring(elem, _) => self.type_align(elem).max(8),
             // A fieldless enum lowers to a bare `i32` discriminant (align 4,
             // see `llvm_ty`); only a payload enum is the `{ i32, [W x i64] }`
             // tagged union that needs 8-byte alignment.
@@ -595,6 +606,17 @@ impl Codegen {
             // size, tightly packed -- LLVM arrays have no inter-element
             // padding beyond each element's own natural size.
             Ty::Array(elem, count) => self.type_size(elem) * *count as u32,
+            // `{ [N x T], i64, i64 }`: the inline `[N x T]` array (padded up
+            // to 8-byte alignment for the `i64` head/len fields that follow
+            // it, mirroring `padded_struct_size`'s general algorithm), plus
+            // those two `i64` fields (8 bytes each, already 8-aligned), the
+            // whole thing padded up to its own overall alignment.
+            Ty::Ring(elem, count) => {
+                let arr_size = self.type_size(elem) * *count as u32;
+                let align = self.type_align(ty);
+                let after_arr = arr_size.div_ceil(8) * 8;
+                (after_arr + 16).div_ceil(align) * align
+            }
             // A reference-counted object pointer, same as `Ty::Str` -- the
             // `{ T*, i64, i64 }` payload lives on the heap, not inline (see
             // `crate::codegen::list`).
@@ -603,6 +625,10 @@ impl Codegen {
             // (`Map`) / `{ T*, i64, i64 }` (`Set`) payload lives on the heap,
             // this is just the object pointer's own size.
             Ty::Map(..) | Ty::Set(_) => 8,
+            // Same reasoning as `Ty::List`/`Ty::Map` above -- `Table<T>`'s
+            // `{ i64, i64, F0*, F1*, ... }` payload lives on the heap too;
+            // this is just the object pointer's own size.
+            Ty::Table(_) => 8,
             // A fieldless enum is a bare `i32` discriminant. A payload
             // enum is `{ i32 tag, [W x i64] payload }`; the `[W x i64]`
             // array forces 8-byte alignment, so the tag field is padded out
@@ -660,6 +686,11 @@ impl Codegen {
             // shape each points past its `star_rc_alloc` header.
             Ty::Map(..) => "i8*".into(),
             Ty::Set(_) => "i8*".into(),
+            // Same RC'd opaque-object-pointer scheme as `List<T>`/`Map<K,V>`/
+            // `Set<T>` -- see `crate::codegen::table` for the payload shape
+            // (`{ i64 len, i64 cap, F0*, F1*, ... }`, one column per field of
+            // the struct `T`) it points past its `star_rc_alloc` header.
+            Ty::Table(_) => "i8*".into(),
             // An anonymous LLVM literal struct type -- no `%name`
             // declaration needed (unlike a nominal `struct`), since a tuple
             // is never referred to by name at the source level; LLVM
@@ -667,6 +698,11 @@ impl Codegen {
             // a literal struct type exactly like a named one.
             Ty::Tuple(elems) => format!("{{ {} }}", elems.iter().map(|e| self.llvm_ty(e)).collect::<Vec<_>>().join(", ")),
             Ty::Array(elem, count) => format!("[{} x {}]", count, self.llvm_ty(elem)),
+            // `{ data: [N x T], head: i64, len: i64 }` -- an anonymous LLVM
+            // literal struct, same reasoning as `Ty::Tuple` above (no `%name`
+            // declaration needed). See `crate::codegen::ring`'s module doc
+            // comment for the field layout and invariants.
+            Ty::Ring(elem, count) => format!("{{ [{} x {}], i64, i64 }}", count, self.llvm_ty(elem)),
             // A fieldless enum has no LLVM struct declaration of its own --
             // it's just a dense discriminant, so it's represented directly
             // as `i32` (see `enum_variant_index`). A payload enum lowers to
@@ -715,6 +751,9 @@ impl Codegen {
                 format!("map_{}_{}{}", km.len(), km, self.mangle_ty(v))
             }
             Ty::Set(inner) => format!("set_{}", self.mangle_ty(inner)),
+            // `T` is always `Ty::Named`, which mangles with no ambiguous
+            // boundary of its own -- same reasoning as `List`/`Set` above.
+            Ty::Table(inner) => format!("table_{}", self.mangle_ty(inner)),
             // Same length-prefixing reasoning as `Ty::Map` just above --
             // arity plus a length prefix on every element makes the whole
             // string unambiguous regardless of what any element's own
@@ -730,6 +769,8 @@ impl Codegen {
             // No ambiguous boundary to confuse (a single wrapped type plus
             // one integer count), same reasoning as `List`/`Set` above.
             Ty::Array(elem, count) => format!("arr{}_{}", count, self.mangle_ty(elem)),
+            // Same reasoning as `Array` just above.
+            Ty::Ring(elem, count) => format!("ring{}_{}", count, self.mangle_ty(elem)),
             Ty::Enum(n) => format!("e_{}", n),
             Ty::Closure(..) => "closure".into(),
             Ty::Ptr => "ptr".into(),
@@ -800,9 +841,14 @@ impl Codegen {
             Ty::List(_) => "null".into(),
             Ty::Map(..) => "null".into(),
             Ty::Set(_) => "null".into(),
+            Ty::Table(_) => "null".into(),
             Ty::Enum(n) if !self.enum_is_payload(n) => "0".into(),
             Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat4 | Ty::Named(_) | Ty::GenRef(_) | Ty::Enum(_) | Ty::Closure(..) | Ty::Tuple(_)
-            | Ty::Array(..) => "zeroinitializer".into(),
+            // `zeroinitializer` gives `{ data: [N x T] zeroinitializer, head:
+            // 0, len: 0 }` -- exactly an empty ring, per `crate::codegen::ring`'s
+            // invariant that every slot outside the (here, empty) live window
+            // is the element type's zero value.
+            | Ty::Array(..) | Ty::Ring(..) => "zeroinitializer".into(),
         }
     }
 
@@ -869,6 +915,23 @@ impl Codegen {
                 let Ty::Array(_, count) = self.expr_ty(base) else { unreachable!("ArrayIndex base must be Ty::Array") };
                 self.emit_array_index_place(base, index, ty, count)
             }
+            TypedExpr::RingIndex { base, index, ty, .. } => {
+                let Ty::Ring(_, count) = self.expr_ty(base) else { unreachable!("RingIndex base must be Ty::Ring") };
+                self.emit_ring_index_place(base, index, ty, count)
+            }
+            // `TypedExpr::TableIndex` is deliberately *not* matched here: a
+            // `Table<T>` element has no single contiguous storage location
+            // to hand out a real pointer into (its fields live in separate
+            // columns -- see `Ty::Table`'s doc comment), so it falls through
+            // to the generic fallback below, which materializes it (via
+            // `emit_expr`, reassembling every column) into a fresh,
+            // disconnected alloca. Correct for a *read* through it
+            // (`table[i].field`, an argument, ...); a write through that
+            // pointer (`table[i].field = v`) silently targets the
+            // disconnected copy instead of the real column, the same
+            // accepted gap as any other rvalue struct base with no
+            // addressable storage of its own (see `store_table_index` for
+            // the one write path -- `table[i] = v` -- that *is* supported).
             TypedExpr::GenRefIndex { base, ty, span, .. } => self.emit_genref_index_place(base, ty, *span),
             // Any other expression (e.g. chaining a field access directly
             // onto a struct returned *by value*) has no existing storage to
@@ -924,6 +987,10 @@ impl Codegen {
             TypedExpr::ArrayIndex { base, index, ty, .. } => {
                 let Ty::Array(_, count) = self.expr_ty(base) else { unreachable!("ArrayIndex base must be Ty::Array") };
                 self.emit_array_index_read_place(base, index, ty, count)
+            }
+            TypedExpr::RingIndex { base, index, ty, .. } => {
+                let Ty::Ring(_, count) = self.expr_ty(base) else { unreachable!("RingIndex base must be Ty::Ring") };
+                self.emit_ring_index_read_place(base, index, ty, count)
             }
             _ => self.emit_place(expr),
         }
@@ -1010,6 +1077,12 @@ impl Codegen {
             TypedExpr::ArrayRepeat { count, elem_ty, .. } => Ty::Array(Box::new(elem_ty.clone()), *count),
             TypedExpr::ArrayIndex { ty, .. } => ty.clone(),
             TypedExpr::ArrayLen { .. } => Ty::Int,
+            TypedExpr::RingNew { elem_ty, count, .. } => Ty::Ring(Box::new(elem_ty.clone()), *count),
+            TypedExpr::RingMethod { ty, .. } => ty.clone(),
+            TypedExpr::RingIndex { ty, .. } => ty.clone(),
+            TypedExpr::TableNew { elem_ty, .. } => Ty::Table(Box::new(elem_ty.clone())),
+            TypedExpr::TableMethod { ty, .. } => ty.clone(),
+            TypedExpr::TableIndex { ty, .. } => ty.clone(),
         }
     }
 

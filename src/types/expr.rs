@@ -132,6 +132,12 @@ impl Checker {
                     if let Ty::Array(_, count) = base_typed.clone().into_ty() {
                         return Ok(self.infer_array_method(base_typed, field, count, args, vars, *span));
                     }
+                    if let Ty::Ring(elem_ty, count) = base_typed.clone().into_ty() {
+                        return Ok(self.infer_ring_method(base_typed, field, *elem_ty, count, args, vars, *span));
+                    }
+                    if let Ty::Table(elem_ty) = base_typed.clone().into_ty() {
+                        return Ok(self.infer_table_method(base_typed, field, *elem_ty, args, vars, *span));
+                    }
                     // A method call `obj.method(args)` where `method` isn't
                     // also a field on `obj`'s struct: type the callee as a
                     // bare `Field` (`ty: unknown`, resolved below through
@@ -343,6 +349,9 @@ impl Checker {
                 if name == "Set" {
                     return Ok(self.infer_set_new(type_args, &arg_exprs, *span));
                 }
+                if name == "Table" {
+                    return Ok(self.infer_table_new(type_args, &arg_exprs, *span));
+                }
                 if self.generic_structs.contains_key(name) {
                     return Ok(self.infer_generic_struct_lit(name, type_args, arg_exprs, *span));
                 }
@@ -438,6 +447,12 @@ impl Checker {
                     Ty::Array(inner, _) => {
                         Ok(TypedExpr::ArrayIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: *inner, span: *span })
                     }
+                    Ty::Ring(inner, _) => {
+                        Ok(TypedExpr::RingIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: *inner, span: *span })
+                    }
+                    Ty::Table(inner) => {
+                        Ok(TypedExpr::TableIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: *inner, span: *span })
+                    }
                     // `s[i]` -- a bounds-checked byte read (0-255 as `i32`),
                     // not a Python-style length-1 substring; see
                     // `TypedExpr::StrIndex`'s doc comment.
@@ -445,7 +460,7 @@ impl Checker {
                         Ok(TypedExpr::StrIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: Ty::Int, span: *span })
                     }
                     other => {
-                        self.error(format!("`[..]` indexing requires a `GenRef<T>`, `List<T>`, `[T; N]`, or `str`, found `{:?}`", other), *span);
+                        self.error(format!("`[..]` indexing requires a `GenRef<T>`, `List<T>`, `[T; N]`, `Ring<T,N>`, `Table<T>`, or `str`, found `{:?}`", other), *span);
                         Ok(TypedExpr::Error(Ty::Named("unknown".into())))
                     }
                 }
@@ -549,6 +564,10 @@ impl Checker {
                 let value_typed = self.infer_expr(value, vars)?;
                 let elem_ty = value_typed.clone().into_ty();
                 Ok(TypedExpr::ArrayRepeat { value: Box::new(value_typed), count: *count, elem_ty, span: *span })
+            }
+            Expr::RingNew { elem_ty, count, span } => {
+                let elem_ty = self.resolve_type(elem_ty).unwrap_or(Ty::Named("unknown".into()));
+                Ok(TypedExpr::RingNew { elem_ty, count: *count, span: *span })
             }
         }
     }
@@ -712,6 +731,120 @@ impl Checker {
             }
             _ => {
                 self.error(format!("no method `{}` on `[T; N]` (expected `len`)", method), span);
+                TypedExpr::Error(Ty::Named("infer_error".into()))
+            }
+        }
+    }
+
+    /// Type-check a `Ring<T,N>` method call (`push`/`pop`/`len`), called from
+    /// `Expr::Call`'s special-case above once `base`'s type is known to be
+    /// `Ty::Ring(elem_ty, count)`. Mirrors `infer_list_method` almost exactly
+    /// -- `count` (the ring's static capacity) isn't needed for type-checking
+    /// any of the three methods, only by codegen (see
+    /// `crate::codegen::ring`), so it's accepted here purely to match the
+    /// dispatch site's `Ty::Ring(elem_ty, count)` destructure.
+    fn infer_ring_method(&mut self, base: TypedExpr, method: &str, elem_ty: Ty, _count: u64, args: &[Expr], vars: &mut HashMap<String, Ty>, span: Span) -> TypedExpr {
+        let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
+        match method {
+            "push" => {
+                self.check_mut_receiver(&base, "push", span);
+                if arg_exprs.len() != 1 {
+                    self.error(format!("`push(..)` expects 1 argument, found {}", arg_exprs.len()), span);
+                } else {
+                    let arg_ty = arg_exprs[0].clone().into_ty();
+                    if arg_ty != elem_ty {
+                        self.error(format!("`push(..)` expects `{:?}`, found `{:?}`", elem_ty, arg_ty), span);
+                    }
+                }
+                TypedExpr::RingMethod { base: Box::new(base), method: RingMethod::Push, args: arg_exprs, ty: Ty::Named("unknown".into()), span }
+            }
+            "pop" => {
+                self.check_mut_receiver(&base, "pop", span);
+                if !arg_exprs.is_empty() {
+                    self.error(format!("`pop()` expects 0 arguments, found {}", arg_exprs.len()), span);
+                }
+                TypedExpr::RingMethod { base: Box::new(base), method: RingMethod::Pop, args: Vec::new(), ty: elem_ty, span }
+            }
+            "len" => {
+                if !arg_exprs.is_empty() {
+                    self.error(format!("`len()` expects 0 arguments, found {}", arg_exprs.len()), span);
+                }
+                TypedExpr::RingMethod { base: Box::new(base), method: RingMethod::Len, args: Vec::new(), ty: Ty::Int, span }
+            }
+            _ => {
+                self.error(format!("no method `{}` on `Ring<..>` (expected `push`, `pop`, or `len`)", method), span);
+                TypedExpr::Error(Ty::Named("infer_error".into()))
+            }
+        }
+    }
+
+    /// `Table<T>()`: an empty struct-of-arrays table construction, mirroring
+    /// `infer_list_new` -- requires an explicit `<T>` turbofish, and `T`
+    /// must resolve to a plain declared `struct` (enforced by
+    /// `Checker::resolve_type`'s own `"Table"` branch, the same place
+    /// `Map`'s key hashability is enforced).
+    fn infer_table_new(&mut self, type_args: &[Type], arg_exprs: &[TypedExpr], span: Span) -> TypedExpr {
+        if !arg_exprs.is_empty() {
+            self.error("`Table<T>()` takes no arguments", span);
+        }
+        let elem_ty = match type_args.first() {
+            Some(t) => self.resolve_type(t).unwrap_or(Ty::Named("unknown".into())),
+            None => {
+                self.error("`Table<T>()` needs an explicit type argument, e.g. `Table<Player>()`", span);
+                Ty::Named("unknown".into())
+            }
+        };
+        // Mirrors `Checker::resolve_type`'s own `"Table"` branch (which
+        // validates this same requirement for a `Table<T>` *type
+        // annotation*, e.g. `let e: Table<Enemy>`) -- that branch only ever
+        // sees `Type::Generic("Table", [inner])` as a whole, so it can't
+        // catch this turbofish-construction call site, which resolves the
+        // single type argument `inner` directly instead. Skipped for the
+        // `unknown` placeholder (an error was already reported resolving
+        // `inner` itself, e.g. an undefined type name).
+        let is_struct = matches!(&elem_ty, Ty::Named(n) if self.structs.contains_key(n));
+        if !is_struct && !matches!(&elem_ty, Ty::Named(n) if n == "unknown") {
+            self.error(format!("`Table<T>()` requires `T` to be a struct type, found `{:?}`", elem_ty), span);
+        }
+        TypedExpr::TableNew { elem_ty, span }
+    }
+
+    /// Type-check a `Table<T>` method call (`push`/`pop`/`len`), called from
+    /// `Expr::Call`'s special-case above once `base`'s type is known to be
+    /// `Ty::Table(elem_ty)`. Mirrors `infer_list_method` exactly -- `push`'s
+    /// argument and `pop`'s return are both the whole element type `T`
+    /// (`Ty::Named`), decomposed into/reassembled from every column by
+    /// codegen (`crate::codegen::table`), not visible at this layer.
+    fn infer_table_method(&mut self, base: TypedExpr, method: &str, elem_ty: Ty, args: &[Expr], vars: &mut HashMap<String, Ty>, span: Span) -> TypedExpr {
+        let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
+        match method {
+            "push" => {
+                self.check_mut_receiver(&base, "push", span);
+                if arg_exprs.len() != 1 {
+                    self.error(format!("`push(..)` expects 1 argument, found {}", arg_exprs.len()), span);
+                } else {
+                    let arg_ty = arg_exprs[0].clone().into_ty();
+                    if arg_ty != elem_ty {
+                        self.error(format!("`push(..)` expects `{:?}`, found `{:?}`", elem_ty, arg_ty), span);
+                    }
+                }
+                TypedExpr::TableMethod { base: Box::new(base), method: TableMethod::Push, args: arg_exprs, ty: Ty::Named("unknown".into()), span }
+            }
+            "pop" => {
+                self.check_mut_receiver(&base, "pop", span);
+                if !arg_exprs.is_empty() {
+                    self.error(format!("`pop()` expects 0 arguments, found {}", arg_exprs.len()), span);
+                }
+                TypedExpr::TableMethod { base: Box::new(base), method: TableMethod::Pop, args: Vec::new(), ty: elem_ty, span }
+            }
+            "len" => {
+                if !arg_exprs.is_empty() {
+                    self.error(format!("`len()` expects 0 arguments, found {}", arg_exprs.len()), span);
+                }
+                TypedExpr::TableMethod { base: Box::new(base), method: TableMethod::Len, args: Vec::new(), ty: Ty::Int, span }
+            }
+            _ => {
+                self.error(format!("no method `{}` on `Table<..>` (expected `push`, `pop`, or `len`)", method), span);
                 TypedExpr::Error(Ty::Named("infer_error".into()))
             }
         }

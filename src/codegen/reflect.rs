@@ -54,6 +54,8 @@ impl Codegen {
             Ty::Set(inner) => format!("Set<{}>", self.reflect_type_name(inner)),
             Ty::Tuple(elems) => format!("({})", elems.iter().map(|e| self.reflect_type_name(e)).collect::<Vec<_>>().join(", ")),
             Ty::Array(elem, count) => format!("[{}; {}]", self.reflect_type_name(elem), count),
+            Ty::Ring(elem, count) => format!("Ring<{}, {}>", self.reflect_type_name(elem), count),
+            Ty::Table(elem) => format!("Table<{}>", self.reflect_type_name(elem)),
             Ty::Enum(n) => n.clone(),
             Ty::Closure(params, ret) => format!(
                 "Fn({}) -> {}",

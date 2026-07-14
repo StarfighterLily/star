@@ -80,6 +80,43 @@ pub enum Ty {
     /// of its own, `N` a compile-time constant (unlike `List<T>`'s
     /// runtime-growable length).
     Array(Box<Ty>, u64),
+    /// A fixed-capacity ring buffer `Ring<T, N>`: input replay, frame-time
+    /// history, netcode rollback buffers. Lowers to an inline
+    /// `{ [N x T], i64, i64 }` (data, head, len) -- like `Ty::Array`, no RC
+    /// header, no heap allocation of its own, `N` a compile-time constant.
+    /// Unlike `Ty::Array`, it's mutable through dedicated `push`/`pop`
+    /// methods (`RingMethod`) rather than being fully populated up front:
+    /// `push` appends at the back, evicting the oldest element once `len`
+    /// reaches `N` (a sliding window over the most recent `N` pushes,
+    /// matching the "history buffer" use case) rather than silently no-op'ing
+    /// like an out-of-bounds `List` write; `pop` removes and returns the
+    /// oldest (front) element, mirroring a FIFO queue. `ring[i]` reads the
+    /// `i`-th-oldest live element (`0` = oldest), bounds-checked against the
+    /// current `len`, not the static capacity `N` -- see
+    /// `crate::codegen::ring`'s module doc comment for the full invariant
+    /// (every slot outside the live `[head, head+len)` window is always the
+    /// element type's zero value) that keeps this RC-safe under the same
+    /// blanket retain/release walk `Ty::Array` uses.
+    Ring(Box<Ty>, u64),
+    /// A struct-of-arrays table `Table<T>`: complements an arena's
+    /// array-of-structs layout for cache-batch AAA systems -- `T` must be a
+    /// plain (non-generic-template) declared `struct`; its *fields*, not
+    /// `T` itself, are what get stored, one parallel growable column per
+    /// field (`Codegen::table_payload_llvm_ty`: `{ i64 len, i64 cap, F0*,
+    /// F1*, ... }`). Lowers to the same reference-counted, copy-on-write
+    /// `i8*` object pointer scheme as `Ty::List`/`Ty::Map`/`Ty::Set` -- see
+    /// `crate::codegen::table` -- just with `N` parallel data buffers
+    /// (growing/shrinking in lockstep) instead of one. `table[i]`/
+    /// `table[i] = v` read/write the whole element, reassembling it from (or
+    /// decomposing it into) every column at index `i`; there is no
+    /// dedicated `Codegen::emit_place` support for projecting a single
+    /// field through a table index (`table[i].field = v` silently targets a
+    /// disconnected temporary, the same accepted gap as any other rvalue
+    /// struct base with no addressable storage of its own), since a single
+    /// field's storage in this layout is a real, independently addressable
+    /// column slot -- reaching it correctly would need its own dedicated
+    /// place path, left for a future round.
+    Table(Box<Ty>),
     /// A fieldless enum type, lowered to a plain `i32` discriminant.
     Enum(String),
     /// A closure/lambda's type: declared parameter types and return type.
@@ -1264,6 +1301,10 @@ impl Checker {
                 let elem_ty = self.resolve_type(elem)?;
                 Some(Ty::Array(Box::new(elem_ty), *count))
             }
+            Type::Ring(elem, count) => {
+                let elem_ty = self.resolve_type(elem)?;
+                Some(Ty::Ring(Box::new(elem_ty), *count))
+            }
             Type::Fn(params, ret) => {
                 let param_tys: Vec<Ty> = params.iter().filter_map(|p| self.resolve_type(p)).collect();
                 if param_tys.len() != params.len() {
@@ -1338,6 +1379,18 @@ impl Checker {
                         return None;
                     }
                     return Some(Ty::Set(Box::new(inner)));
+                }
+                if name == "Table" {
+                    let inner = args.first().and_then(|a| self.resolve_type(a))?;
+                    let Ty::Named(struct_name) = &inner else {
+                        self.error(format!("`Table<T>` requires `T` to be a struct type, found `{:?}`", inner), Span::dummy());
+                        return None;
+                    };
+                    if !self.structs.contains_key(struct_name) {
+                        self.error(format!("`Table<T>` requires `T` to be a struct type, found `{:?}`", inner), Span::dummy());
+                        return None;
+                    }
+                    return Some(Ty::Table(Box::new(inner)));
                 }
                 if self.generic_structs.contains_key(name) {
                     let resolved_args: Vec<Ty> = args.iter().filter_map(|a| self.resolve_type(a)).collect();
@@ -1584,6 +1637,13 @@ impl Checker {
                     }
                 }
             }
+            Type::Ring(elem, count) => {
+                if let Ty::Ring(arg_elem, arg_count) = arg_ty {
+                    if count == arg_count {
+                        self.unify_ty(elem, arg_elem, type_params, subst, conflicts);
+                    }
+                }
+            }
             Type::Generic(name, args) => {
                 if name == "GenRef" {
                     if let (Some(a0), Ty::GenRef(inner)) = (args.first(), arg_ty) {
@@ -1610,6 +1670,12 @@ impl Checker {
                 }
                 if name == "Set" {
                     if let (Some(a0), Ty::Set(inner)) = (args.first(), arg_ty) {
+                        self.unify_ty(a0, inner, type_params, subst, conflicts);
+                    }
+                    return;
+                }
+                if name == "Table" {
+                    if let (Some(a0), Ty::Table(inner)) = (args.first(), arg_ty) {
                         self.unify_ty(a0, inner, type_params, subst, conflicts);
                     }
                     return;
@@ -1664,6 +1730,18 @@ impl Checker {
             // `mut` declaration of its own, so mutating any element is
             // gated purely by the root binding's own `mut`.
             TypedExpr::ArrayIndex { base, .. } => Self::assign_root_name(base),
+            // Same rule as `ArrayIndex`: a ring element has no per-slot
+            // `mut` declaration of its own, so mutating any element (or
+            // calling `push`/`pop` via `check_mut_receiver`, which also
+            // calls this) is gated purely by the root binding's own `mut`.
+            TypedExpr::RingIndex { base, .. } => Self::assign_root_name(base),
+            // Same rule as `ListIndex`: a `Table<T>` element has no per-slot
+            // `mut` declaration of its own (`Table`'s whole-element write
+            // decomposes into every column, see `Ty::Table`'s doc comment),
+            // so mutating any element (or calling `push`/`pop` via
+            // `check_mut_receiver`, which also calls this) is gated purely
+            // by the root binding's own `mut`.
+            TypedExpr::TableIndex { base, .. } => Self::assign_root_name(base),
             // Deliberately *not* recursed into, unlike `ListIndex` above: a
             // `GenRef<T>` is a handle into arena-owned storage, not a value
             // the binding itself owns (mirrors a Rust `&mut T` reference --
@@ -1839,6 +1917,11 @@ fn mangle_ty(ty: &Ty) -> String {
         // boundary to confuse (same reasoning as `List`/`Set` just above),
         // unlike `Map`/`Tuple`'s multi-argument join.
         Ty::Array(elem, count) => format!("Array{}_{}", count, mangle_ty(elem)),
+        // Same reasoning as `Array` just above.
+        Ty::Ring(elem, count) => format!("Ring{}_{}", count, mangle_ty(elem)),
+        // `T` is always `Ty::Named`, whose own mangling has no ambiguous
+        // boundary to confuse -- same reasoning as `List`/`Set` above.
+        Ty::Table(inner) => format!("Table_{}", mangle_ty(inner)),
         // Closures are never used as a generic type argument today (no
         // syntax constructs a generic struct/enum/fn call site with a
         // closure-typed turbofish argument); this arm exists purely for
@@ -1890,6 +1973,8 @@ fn ty_to_type(ty: &Ty) -> Type {
         Ty::Set(inner) => Type::Generic("Set".into(), vec![ty_to_type(inner)]),
         Ty::Tuple(elems) => Type::Tuple(elems.iter().map(ty_to_type).collect()),
         Ty::Array(elem, count) => Type::Array(Box::new(ty_to_type(elem)), *count),
+        Ty::Ring(elem, count) => Type::Ring(Box::new(ty_to_type(elem)), *count),
+        Ty::Table(inner) => Type::Generic("Table".into(), vec![ty_to_type(inner)]),
         Ty::Closure(params, ret) => Type::Fn(params.iter().map(ty_to_type).collect(), Box::new(ty_to_type(ret))),
         Ty::Ptr => Type::Named("ptr".into()),
     }
@@ -1907,6 +1992,7 @@ fn subst_type(ty: &Type, subst: &HashMap<String, Type>) -> Type {
         Type::Fn(params, ret) => Type::Fn(params.iter().map(|p| subst_type(p, subst)).collect(), Box::new(subst_type(ret, subst))),
         Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| subst_type(e, subst)).collect()),
         Type::Array(elem, count) => Type::Array(Box::new(subst_type(elem, subst)), *count),
+        Type::Ring(elem, count) => Type::Ring(Box::new(subst_type(elem, subst)), *count),
     }
 }
 
@@ -2045,6 +2131,9 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
         }
         Expr::ArrayRepeat { value, count, span } => {
             Expr::ArrayRepeat { value: Box::new(subst_expr(value, subst)), count: *count, span: *span }
+        }
+        Expr::RingNew { elem_ty, count, span } => {
+            Expr::RingNew { elem_ty: subst_type(elem_ty, subst), count: *count, span: *span }
         }
     }
 }
@@ -2251,6 +2340,11 @@ fn scan_expr_for_par_hazards(expr: &Expr, hazard: &mut bool, called: &mut HashSe
         }
         Expr::TupleIndex { base, .. } => scan_expr_for_par_hazards(base, hazard, called),
         Expr::ArrayRepeat { value, .. } => scan_expr_for_par_hazards(value, hazard, called),
+        // `Ring<T, N>()` has no sub-expressions to recurse into (mirrors
+        // `List<T>()`/`Map<K,V>()`/`Set<T>()`, which are plain `StructLit`s
+        // with only an (already-scanned, via the `StructLit` arm above)
+        // empty `args` list).
+        Expr::RingNew { .. } => {}
     }
 }
 
@@ -2269,6 +2363,16 @@ fn root_ident(expr: &TypedExpr) -> Option<String> {
         TypedExpr::Field { base, .. } => root_ident(base),
         TypedExpr::TupleIndex { base, .. } => root_ident(base),
         TypedExpr::ArrayIndex { base, .. } => root_ident(base),
+        TypedExpr::RingIndex { base, .. } => root_ident(base),
+        // Same rule as `ArrayIndex`/`RingIndex` above -- needed so
+        // `table[i] = v` (the one supported `Table<T>` write path, see
+        // `Ty::Table`'s doc comment) inside a `par`/`swarm` body resolves to
+        // the table's own root binding instead of falling into this
+        // function's `_ => None` catch-all, which `walk_par_stmt`'s
+        // `TypedStmt::Assign` arm treats as an unconditionally-rejected
+        // "unsupported mutation target" regardless of whether the table is
+        // actually body-local and safe to mutate.
+        TypedExpr::TableIndex { base, .. } => root_ident(base),
         _ => None,
     }
 }

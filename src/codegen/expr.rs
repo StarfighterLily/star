@@ -345,6 +345,28 @@ impl Codegen {
                 self.emit_expr(base);
                 format!("i32 {}", count)
             }
+            TypedExpr::RingNew { elem_ty, count, .. } => self.emit_ring_new(elem_ty, *count),
+            TypedExpr::RingIndex { base, index, ty, .. } => {
+                // Same shape as `TupleIndex` above: route through the place
+                // resolver (which already does the bounds-checked GEP), then
+                // load + retain -- see `emit_ring_index_read_place`'s doc
+                // comment for why this reuses the pointer path instead of
+                // duplicating a separate value-level phi.
+                let Ty::Ring(_, count) = self.expr_ty(base) else { unreachable!("RingIndex base must be Ty::Ring") };
+                let ptr = self.emit_ring_index_read_place(base, index, ty, count);
+                let elem_llvm = self.llvm_ty(ty);
+                let reg = self.tmp_name();
+                self.line(&format!("  {} = load {}, {}* {}", reg, elem_llvm, elem_llvm, ptr));
+                self.emit_retain_at(&ptr, ty);
+                format!("{} {}", elem_llvm, reg)
+            }
+            TypedExpr::RingMethod { base, method, args, .. } => {
+                let (elem_ty, count) = match self.expr_ty(base) {
+                    Ty::Ring(inner, count) => (*inner, count),
+                    other => { self.err("internal error: ring method receiver is not a Ring<T,N>", Span::dummy()); (other, 0) }
+                };
+                self.emit_ring_method(base, *method, args, &elem_ty, count)
+            }
             TypedExpr::Field { base, field, ty, .. } => {
                 if self.expr_ty(base).is_vec() {
                     return self.emit_swizzle_read(base, field);
@@ -1105,6 +1127,19 @@ impl Codegen {
             }
             TypedExpr::MapNew { key_ty, val_ty, .. } => self.emit_map_new(key_ty, val_ty),
             TypedExpr::SetNew { elem_ty, .. } => self.emit_set_new(elem_ty),
+            TypedExpr::TableNew { elem_ty, .. } => self.emit_table_new(elem_ty),
+            TypedExpr::TableIndex { base, index, ty, .. } => self.emit_table_index(base, index, ty),
+            TypedExpr::TableMethod { base, method, args, .. } => {
+                // `ty` on this node is the *method's return type*, not the
+                // table's element type codegen needs to know its column
+                // layout -- recover that from `base`'s own type, mirroring
+                // `ListMethod`'s identical dispatch just above.
+                let elem_ty = match self.expr_ty(base) {
+                    Ty::Table(inner) => *inner,
+                    other => { self.err("internal error: table method receiver is not a Table<T>", Span::dummy()); other }
+                };
+                self.emit_table_method(base, *method, args, &elem_ty)
+            }
             TypedExpr::MapMethod { base, method, args, ty, .. } => {
                 let (key_ty, val_ty) = match self.expr_ty(base) {
                     Ty::Map(k, v) => (*k, *v),

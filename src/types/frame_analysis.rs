@@ -263,6 +263,22 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>, local_s
                 None
             }
         }
+        // Same reasoning as `ArrayIndex` above: a `Ring<T,N>` is stored
+        // inline (see `Ty::Ring`'s doc comment), so `ring[idx]` is a
+        // positional projection of `base`'s own storage exactly like an
+        // array element, not a copy handed out of an independently
+        // heap-allocated buffer (contrast `ListIndex`, bucketed below with
+        // `ListMethod` as untracked for exactly that reason).
+        TypedExpr::RingIndex { base, ty, .. } => {
+            if matches!(ty, Ty::Named(_)) {
+                match root_ident(base) {
+                    Some(root) if frame_locals.contains(&root) => Some(root),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
         TypedExpr::StructLit { args, ty, .. } => {
             if matches!(ty, Ty::Named(_)) {
                 args.iter().find_map(|a| frame_escape_source(a, frame_locals, local_structs))
@@ -353,6 +369,16 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>, local_s
         | TypedExpr::ListLit { .. }
         | TypedExpr::ListIndex { .. }
         | TypedExpr::ListMethod { .. }
+        // `Ring<T,N>`'s `push`/`pop` (unlike `RingIndex` above) have no
+        // dedicated `Codegen::emit_place` arm, so a method-call receiver
+        // shaped like `ring.pop().make_closure()` resolves through
+        // `emit_place`'s generic fallback -- a fresh, disconnected alloca
+        // holding a copy of the popped value -- severing any connection to
+        // `ring`'s own (possibly frame-buffer-backed) storage, exactly like
+        // `ListMethod` above. `RingNew` constructs a fresh, empty ring with
+        // no frame-local identity to carry forward, same as `ListNew`.
+        | TypedExpr::RingNew { .. }
+        | TypedExpr::RingMethod { .. }
         // `Map<K,V>`/`Set<T>` store keys/values by value into their own
         // independently `malloc`'d buffers (see `crate::codegen::map`/
         // `crate::codegen::set`), same reasoning as `List` above.
@@ -360,6 +386,15 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>, local_s
         | TypedExpr::SetNew { .. }
         | TypedExpr::MapMethod { .. }
         | TypedExpr::SetMethod { .. }
+        // `Table<T>` stores its elements by value, decomposed across its own
+        // independently `malloc`'d column buffers (see `crate::codegen::table`),
+        // same reasoning as `List`/`Map`/`Set` above -- pushing a frame-local
+        // struct into a table copies its fields out, it doesn't reference
+        // this stack frame. `TableIndex` reassembles a fresh copy from those
+        // columns on every read, same as `ListIndex` above.
+        | TypedExpr::TableNew { .. }
+        | TypedExpr::TableMethod { .. }
+        | TypedExpr::TableIndex { .. }
         // A `str` byte read (`s[i]`) yields a plain `i32`, never a
         // frame-local struct's identity -- same reasoning as `ListIndex`
         // just above.
@@ -438,6 +473,18 @@ fn local_struct_receiver(expr: &TypedExpr, local_structs: &HashSet<String>) -> O
             }
         }
         TypedExpr::ArrayIndex { base, ty, .. } => {
+            if matches!(ty, Ty::Named(_)) {
+                match root_ident(base) {
+                    Some(root) if local_structs.contains(&root) => Some(root),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        // Same reasoning as `ArrayIndex` above -- see `frame_escape_source`'s
+        // matching `RingIndex` arm.
+        TypedExpr::RingIndex { base, ty, .. } => {
             if matches!(ty, Ty::Named(_)) {
                 match root_ident(base) {
                     Some(root) if local_structs.contains(&root) => Some(root),
