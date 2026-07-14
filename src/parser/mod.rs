@@ -368,6 +368,44 @@ impl Parser {
             self.advance();
         }
         self.eat(&TokenKind::Newline);
+        // The statement that just failed may have owned an indented body it
+        // never got to claim -- e.g. `if x` missing its `:` bails out of
+        // `parse_if_stmt` before `parse_block` ever runs for the body, but
+        // the lexer already emitted a real Indent/Dedent pair for that
+        // body's physical indentation (an Indent only ever follows a `:`-
+        // terminated line, so one appearing right here can only be fallout
+        // from the line just recovered past, never the start of an
+        // unrelated sibling statement). Left alone, the first Dedent this
+        // function's caller sees would be that orphaned body's closer, not
+        // the enclosing block's own -- indistinguishable from a real
+        // terminator, so the enclosing block would end early and strand
+        // every following sibling statement in cascading "unexpected
+        // token"/"expected a top-level item" errors. Swallow the whole
+        // orphaned span (nesting-aware, since it can itself contain further
+        // nested blocks) so recovery lands right after it, at the next real
+        // sibling statement.
+        if self.at(&TokenKind::Indent) {
+            let mut depth = 0i32;
+            loop {
+                match self.peek_kind() {
+                    TokenKind::Indent => {
+                        depth += 1;
+                        self.advance();
+                    }
+                    TokenKind::Dedent => {
+                        depth -= 1;
+                        self.advance();
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    TokenKind::Eof => break,
+                    _ => {
+                        self.advance();
+                    }
+                }
+            }
+        }
     }
 
     fn error(&mut self, msg: impl Into<String>, span: Span) {

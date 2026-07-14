@@ -162,39 +162,56 @@ impl Parser {
                         let is_handle = name == "Handle";
                         if name == "GenRef" || is_handle {
                             let kind = if is_handle { "Handle" } else { "GenRef" };
-                            // Consume the <
-                            self.advance();
-                            // Parse the inner type <T>
-                            let mut type_args = Vec::new();
-                            while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {
-                                type_args.push(self.parse_type()?);
-                                if !self.eat(&TokenKind::Comma) {
-                                    break;
+                            // Speculative, like `try_parse_type_args`: a
+                            // capitalized identifier followed by `<` is just
+                            // as often a comparison on a shadowed local
+                            // (`if GenRef < 5:`) as a real `GenRef<T>(..)`/
+                            // `Handle<T>(..)` construction. Only commit once
+                            // `<...>` parses cleanly *and* is immediately
+                            // followed by `(` (the only valid continuation);
+                            // otherwise restore the cursor/diagnostics and
+                            // fall through to ordinary comparison handling.
+                            let checkpoint = self.pos;
+                            let err_checkpoint = self.errors.len();
+                            match self.parse_type_args() {
+                                Some(type_args) if self.at(&TokenKind::LParen) => {
+                                    let args_span = expr.span().to(self.prev_span());
+                                    if type_args.len() != 1 {
+                                        self.error(
+                                            format!(
+                                                "`{}` expects exactly one type argument, found {}",
+                                                kind,
+                                                type_args.len()
+                                            ),
+                                            args_span,
+                                        );
+                                        return None;
+                                    }
+                                    let inner_ty = type_args.into_iter().next().unwrap();
+                                    // Now parse the call args (value)
+                                    let args = self.parse_call_args()?;
+                                    let call_span = expr.span().to(self.prev_span());
+                                    if args.len() != 1 {
+                                        self.error(
+                                            format!("`{}<T>(..)` expects exactly one argument, found {}", kind, args.len()),
+                                            call_span,
+                                        );
+                                        return None;
+                                    }
+                                    let value = args.into_iter().next().unwrap();
+                                    let span = expr.span().to(self.prev_span());
+                                    return Some(Expr::GenRefCreate {
+                                        inner_ty,
+                                        value: Box::new(value),
+                                        is_handle,
+                                        span,
+                                    });
+                                }
+                                _ => {
+                                    self.pos = checkpoint;
+                                    self.errors.truncate(err_checkpoint);
                                 }
                             }
-                            let args_span = expr.span().to(self.peek_span());
-                            self.expect(&TokenKind::Gt)?;
-                            if type_args.len() != 1 {
-                                self.error(
-                                    format!("`{}` expects exactly one type argument, found {}", kind, type_args.len()),
-                                    args_span,
-                                );
-                                return None;
-                            }
-                            let inner_ty = type_args.into_iter().next().unwrap();
-                            // Now parse the call args (value)
-                            let args = self.parse_call_args()?;
-                            let call_span = expr.span().to(self.prev_span());
-                            if args.len() != 1 {
-                                self.error(
-                                    format!("`{}<T>(..)` expects exactly one argument, found {}", kind, args.len()),
-                                    call_span,
-                                );
-                                return None;
-                            }
-                            let value = args.into_iter().next().unwrap();
-                            let span = expr.span().to(self.prev_span());
-                            return Some(Expr::GenRefCreate { inner_ty, value: Box::new(value), is_handle, span });
                         }
                     }
                     // Just a comparison operator in a binary expression context
@@ -741,8 +758,54 @@ impl Parser {
             TokenKind::Gt => self.compare_pattern(BinOp::Gt),
             TokenKind::EqEq => self.compare_pattern(BinOp::Eq),
             TokenKind::Int(v) => {
+                let span = self.peek_span();
                 self.advance();
+                // The lexer pre-negates the bare digit magnitude
+                // `2147483648` (the only legal spelling of `i32::MIN`) to
+                // `Int(i32::MIN)` regardless of context (see its own doc
+                // comment) -- `Expr::Int` catches an un-negated one of these
+                // reaching it at the checker level (`types/expr.rs`'s
+                // `Expr::Int` arm), because `Expr::Unary{Neg, Expr::Int}`'s
+                // AST shape still distinguishes "was there a directly-
+                // enclosing `-`" there. `Pattern::Int(i64)` has no such
+                // wrapper -- this function's own `Minus` arm below folds the
+                // negation in immediately -- so a bare (un-negated) pattern
+                // token this exact magnitude must be rejected right here,
+                // or it would silently match as `i32::MIN` with zero
+                // diagnostic, indistinguishable from a real `-2147483648`
+                // pattern by the time it reaches the checker.
+                if v == i32::MIN as i64 {
+                    self.error("integer literal `2147483648` is too large for a 32-bit integer (max 2147483647)", span);
+                }
                 Some(Pattern::Int(v))
+            }
+            // A bare negative-literal pattern (`-1 -> ...`), mirroring
+            // `parse_unary_inner`'s `Minus` handling for ordinary
+            // expressions -- without this, only the `== -1 -> ...` spelling
+            // (routed through `compare_pattern`/`parse_expr`, which does
+            // handle unary minus) could express a negative literal pattern.
+            TokenKind::Minus => {
+                self.advance();
+                match self.peek_kind() {
+                    TokenKind::Int(v) => {
+                        self.advance();
+                        // The lexer pre-negates the bare digit magnitude
+                        // `2147483648` (the only legal spelling of
+                        // `i32::MIN`) to `Int(i32::MIN)` regardless of a
+                        // preceding `-` (see its own doc comment, and
+                        // `Expr::Unary`'s identical special case in
+                        // `types/expr.rs`) -- so a `-` directly in front of
+                        // it must not re-negate, which would overflow back
+                        // out of `i32` range.
+                        let value = if v == i32::MIN as i64 { v } else { -v };
+                        Some(Pattern::Int(value))
+                    }
+                    other => {
+                        let span = self.peek_span();
+                        self.error(format!("unexpected token in pattern after unary `-`: {:?}", other), span);
+                        None
+                    }
+                }
             }
             TokenKind::True => {
                 self.advance();

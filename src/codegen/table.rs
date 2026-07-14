@@ -502,13 +502,38 @@ impl Codegen {
                 format!("i32 {}", len32)
             }
             TableMethod::Push => {
-                let (cols, len, len_field, cap_field, col_fields) = self.table_fields_mut(base, &struct_name);
+                let (_stale_cols, _stale_len, len_field, cap_field, col_fields) = self.table_fields_mut(base, &struct_name);
 
                 let val = self.emit_expr(&args[0]);
                 let clean_val = self.untag(&val, elem_ty);
 
                 let cap = self.tmp_name();
                 self.line(&format!("  {} = load i64, i64* {}", cap, cap_field));
+                // `_stale_len`/`_stale_cols` (from `table_fields_mut`, above)
+                // were captured *before* evaluating `args[0]` -- if that
+                // argument expression mutates this same table (e.g.
+                // `t.push(t.pop())`, or a helper call that pushes to it),
+                // the real `len_field`/column pointers may have already
+                // changed by the time we get here. Reload both fresh
+                // (mirrors `ListMethod::Push`'s identical `len` fix, plus
+                // this type's own extra per-column pointer indirection) --
+                // `cap` above was already reloaded fresh in the pre-existing
+                // code, but `len`/`cols` weren't, so the grow-check and (if
+                // it takes the grow path) the old-buffer `memcpy` source
+                // below would otherwise use a stale length or copy from a
+                // buffer a nested push already reallocated out from under it.
+                let len = self.tmp_name();
+                self.line(&format!("  {} = load i64, i64* {}", len, len_field));
+                let cols: Vec<String> = col_fields
+                    .iter()
+                    .zip(fields.iter())
+                    .map(|(cf, fty)| {
+                        let f_llvm = self.llvm_ty(fty);
+                        let reg = self.tmp_name();
+                        self.line(&format!("  {} = load {}*, {}** {}", reg, f_llvm, f_llvm, cf));
+                        reg
+                    })
+                    .collect();
 
                 let needs_grow = self.tmp_name();
                 self.line(&format!("  {} = icmp sge i64 {}, {}", needs_grow, len, cap));

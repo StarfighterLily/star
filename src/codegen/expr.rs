@@ -740,6 +740,21 @@ impl Codegen {
                             }
                         }
                         Pattern::Wildcard => {
+                            // A `_` arm discards the scrutinee entirely --
+                            // for an RC-bearing scalar scrutinee (e.g. `str`,
+                            // the only pattern kinds that ever type-check
+                            // against one are `Wildcard`/`Binding`), `scrut_val`
+                            // is still the one owned/retained value `emit_expr`
+                            // produced above, and nothing else ever releases
+                            // it (unlike `Pattern::Binding`, which now tracks
+                            // its own spilled copy). Release it here, the same
+                            // "balance the borrow back out" shape a discarded
+                            // `Map`/`Set` key/element uses (`emit_release_bare`'s
+                            // own doc comment). The `needs_scrut_ptr` case is a
+                            // borrowed place, never retained, so nothing to do.
+                            if !needs_scrut_ptr {
+                                self.emit_release_bare(&scrut_val, &scrutinee_ty);
+                            }
                             self.push_scope();
                             let val = self.emit_stmts_value(&arm.body.stmts);
                             let arm_terminates = Self::body_terminates(&arm.body.stmts);
@@ -771,6 +786,18 @@ impl Codegen {
                                 let ptr = self.tmp_name();
                                 self.line(&format!("  {} = alloca {}", ptr, sty));
                                 self.line(&format!("  store {} {}, {}* {}", sty, bare, sty, ptr));
+                                // `scrut_val` came from `self.emit_expr(scrutinee)`
+                                // above, which already returned an owned
+                                // (retained) value for an RC-bearing type --
+                                // this spilled copy is that same owned value,
+                                // not a borrow, so it must be released when
+                                // this arm's scope ends (`Stmt::Let` tracks
+                                // its spilled value identically). The
+                                // `needs_scrut_ptr` branch above is a real
+                                // borrow (a place into existing storage via
+                                // `emit_place`, never retained), so it's
+                                // deliberately left untracked.
+                                self.track_owned(&ptr, &scrutinee_ty);
                                 ptr
                             };
                             self.symbols.push((name.clone(), bind_ptr, scrutinee_ty.clone()));

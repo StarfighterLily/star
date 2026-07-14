@@ -1500,7 +1500,7 @@ impl Checker {
     /// Infer the result type of a binary operator, dispatching on whether
     /// either operand is a builtin vector/matrix type. Falls through to the
     /// original Int/Float/Bool behavior when both operands are scalar.
-    fn infer_binop_ty(&mut self, op: &BinOp, lhs_ty: &Ty, rhs_ty: &Ty, span: Span) -> Ty {
+    pub(super) fn infer_binop_ty(&mut self, op: &BinOp, lhs_ty: &Ty, rhs_ty: &Ty, span: Span) -> Ty {
         if matches!(op, BinOp::And | BinOp::Or) {
             if *lhs_ty != Ty::Bool || *rhs_ty != Ty::Bool {
                 self.error(
@@ -1545,7 +1545,28 @@ impl Checker {
                 );
                 return Ty::Bool;
             }
-            // Original scalar arithmetic behavior, preserved exactly.
+            // Original scalar arithmetic behavior, preserved exactly -- but
+            // only once both operands are actually numeric. Every other
+            // type (`str`, an enum, a struct, `List<T>`, a closure, `bool`,
+            // `GenRef<T>`, or any mismatched pair) previously fell straight
+            // through to the `Ty::Int` fallback below and type-checked
+            // cleanly, only to fail with an unlocated "unsupported operand
+            // types" error once `Codegen::emit_binop` actually saw it --
+            // the exact same class of bug the `is_cmp` branch above was
+            // already hardened against; this mirrors that fix for `+ - * /
+            // %`.
+            let is_scalar = |t: &Ty| matches!(t, Ty::Int | Ty::Float);
+            if !is_scalar(lhs_ty) || !is_scalar(rhs_ty) {
+                let op_str = match op {
+                    BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                    BinOp::Div => "/", BinOp::Rem => "%",
+                    _ => unreachable!("this branch only reaches Add/Sub/Mul/Div/Rem -- And/Or/comparisons return earlier"),
+                };
+                self.error(
+                    format!("`{}` is not supported between `{:?}` and `{:?}`", op_str, lhs_ty, rhs_ty),
+                    span,
+                );
+            }
             return match (lhs_ty, rhs_ty) {
                 (Ty::Float, _) | (_, Ty::Float) => Ty::Float,
                 _ => Ty::Int,

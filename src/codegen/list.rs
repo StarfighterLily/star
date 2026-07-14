@@ -764,7 +764,7 @@ impl Codegen {
                 format!("i32 {}", len32)
             }
             ListMethod::Push => {
-                let (_, data_field, len, len_field, cap_field) = self.list_fields_mut(base, elem_ty);
+                let (_, data_field, _stale_len, len_field, cap_field) = self.list_fields_mut(base, elem_ty);
 
                 let val = self.emit_expr(&args[0]);
                 let clean_val = self.untag(&val, elem_ty);
@@ -773,6 +773,16 @@ impl Codegen {
                 self.line(&format!("  {} = load i64, i64* {}", cap, cap_field));
                 let data = self.tmp_name();
                 self.line(&format!("  {} = load {}*, {}** {}", data, elem_llvm, elem_llvm, data_field));
+                // `_stale_len` (from `list_fields_mut`, above) was captured
+                // *before* evaluating `args[0]` -- if that argument
+                // expression mutates this same list (e.g. `xs.push(xs.pop())`),
+                // the real `len_field` in memory has already changed by the
+                // time we get here, but that captured value hasn't. Reload it
+                // fresh, the same way `cap`/`data` already are just above, or
+                // every grow-check/copy-count/write-index/new-length
+                // computation below would use a stale value.
+                let len = self.tmp_name();
+                self.line(&format!("  {} = load i64, i64* {}", len, len_field));
 
                 let needs_grow = self.tmp_name();
                 self.line(&format!("  {} = icmp sge i64 {}, {}", needs_grow, len, cap));

@@ -288,20 +288,13 @@ impl Codegen {
         ));
         let reused_idx = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", reused_idx, free_slot_ptr));
-        if self.contains_rc(&elem_ty) {
-            // A reused slot's previous contents are a validly-constructed
-            // element from before its `despawn` (unlike a brand-new slot
-            // from the `grow` path below, whose backing memory is
-            // uninitialized `malloc` garbage, never safe to walk) --
-            // release them before this spawn overwrites the slot, or any
-            // RC-bearing field they held would leak forever.
-            let old_slot_ptr = self.tmp_name();
-            self.line(&format!(
-                "  {} = getelementptr inbounds {}, {}* {}, i64 {}",
-                old_slot_ptr, elem_llvm_ty, elem_llvm_ty, data_ready, reused_idx
-            ));
-            self.emit_release_at(&old_slot_ptr, &elem_ty);
-        }
+        // A reused slot's previous RC-bearing contents were already released
+        // by `emit_despawn_stmt` when this slot was freed (the only way a
+        // slot ever reaches the free-list) -- releasing them *again* here
+        // would be a double-release: the slot's raw bytes still hold that
+        // same now-dangling pointer (despawn never zeroes the slot), so a
+        // second `emit_release_at` would use-after-free/double-free the
+        // exact same heap block instead of touching a fresh, valid value.
         let store_label = self.block_label("spawn_store");
         let end_label = self.block_label("spawn_end");
         self.line(&format!("  br label %{}", store_label));

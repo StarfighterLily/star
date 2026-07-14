@@ -116,6 +116,21 @@ impl Checker {
                         format!("cannot assign a value of type `{:?}` to a target of type `{:?}`", value_ty, target_ty),
                         *span,
                     );
+                } else if let Some(binop) = match op {
+                    AssignOp::Eq => None,
+                    AssignOp::Add => Some(BinOp::Add),
+                    AssignOp::Sub => Some(BinOp::Sub),
+                    AssignOp::Mul => Some(BinOp::Mul),
+                    AssignOp::Div => Some(BinOp::Div),
+                } {
+                    // `types_compatible` alone isn't enough for a compound
+                    // op: `s: mut str = "a"; s += "b"` has a compatible
+                    // (`Str`, `Str`) pair but `+=` still isn't defined for
+                    // `str` -- reuse `infer_binop_ty`'s own operand-type
+                    // legality checks (numeric scalars, vec/mat where
+                    // supported) rather than drifting out of sync with what
+                    // plain `x + y` binary expressions already accept/reject.
+                    self.infer_binop_ty(&binop, &target_ty, &value_ty, *span);
                 }
                 TypedStmt::Assign { target: target_typed, op: *op, value: value_typed, span: *span }
             }

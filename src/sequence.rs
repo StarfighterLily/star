@@ -59,6 +59,19 @@ fn desugar_sequence(seq: &SequenceDef) -> Result<(StructDef, ImplBlock), Vec<Dia
     // access throughout the body (nested blocks included), since both must
     // live in the struct to survive across `resume()` calls.
     let mut hoist: HashSet<String> = param_names.clone();
+    // Names already claimed by a param or an earlier top-level `let` -- a
+    // hoisted local becomes exactly one struct field with no renaming, so a
+    // second `let` (or a `let` shadowing a param) of the same name would
+    // silently alias the earlier one's field instead of getting its own
+    // storage. When the two agree on type this "worked" by accident (both
+    // just write the same field); when they disagree it surfaced as a
+    // baffling "cannot assign a value of type X to a target of type Y"
+    // pointing at the second `let` itself, as if it were an ordinary
+    // assignment rather than a name collision. Ordinary `fn` bodies allow
+    // re-`let`-ing a name with a new type (plain shadowing, a fresh stack
+    // slot each time); reject it here instead of pretending sequences
+    // support the same thing when they don't.
+    let mut claimed: HashSet<String> = param_names.clone();
     for stmt in &seq.body.stmts {
         if let Stmt::Let { name, ty, span, .. } = stmt {
             if ty.is_none() {
@@ -81,6 +94,16 @@ fn desugar_sequence(seq: &SequenceDef) -> Result<(StructDef, ImplBlock), Vec<Dia
                 errors.push(Diagnostic::error(
                     "`state` is a reserved field name in a `sequence` (used internally for \
                      resume-dispatch state) -- rename this local",
+                    *span,
+                ));
+            } else if !claimed.insert(name.clone()) {
+                errors.push(Diagnostic::error(
+                    format!(
+                        "`{}` is already a parameter or an earlier hoisted local in this \
+                         sequence -- re-declaring (or shadowing) it isn't supported, since both \
+                         would collide on the same generated struct field",
+                        name
+                    ),
                     *span,
                 ));
             }

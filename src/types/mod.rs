@@ -2221,15 +2221,25 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
 /// `par_analysis::walk_par_expr`'s `TypedExpr::Closure` arm) -- so it can
 /// occasionally reject a call to a function name that happens to share a
 /// name with a hazardous one on an unrelated struct, but it never misses a
-/// real hazard reachable through an ordinary named call chain.
+/// real hazard reachable through an ordinary named call chain. That
+/// soundness claim requires every same-named method (methods share the
+/// free-function namespace here) to be scanned, not just one of them --
+/// `bodies` therefore collects *all* bodies sharing a name rather than
+/// letting a later `impl` block's method silently overwrite an earlier
+/// one's entry, which previously could discard a real hazard entirely
+/// (e.g. `struct A::tick` opening a `frame:` and `struct B::tick` not,
+/// declared in that order, would leave `"tick"` unmarked since `B::tick`'s
+/// insert clobbered `A::tick`'s in the map -- a call through a value
+/// statically typed `A` inside a `par`/`swarm` body would then wrongly
+/// type-check).
 fn compute_unsafe_par_fns(module: &Module) -> HashSet<String> {
-    let mut bodies: HashMap<String, &Block> = HashMap::new();
+    let mut bodies: HashMap<String, Vec<&Block>> = HashMap::new();
     for item in &module.items {
         match item {
-            Item::Fn(f) => { bodies.insert(f.sig.name.clone(), &f.body); }
+            Item::Fn(f) => bodies.entry(f.sig.name.clone()).or_default().push(&f.body),
             Item::Impl(blk) => {
                 for m in &blk.methods {
-                    bodies.insert(m.sig.name.clone(), &m.body);
+                    bodies.entry(m.sig.name.clone()).or_default().push(&m.body);
                 }
             }
             _ => {}
@@ -2238,10 +2248,12 @@ fn compute_unsafe_par_fns(module: &Module) -> HashSet<String> {
 
     let mut unsafe_set: HashSet<String> = HashSet::new();
     let mut call_graph: HashMap<String, HashSet<String>> = HashMap::new();
-    for (name, body) in &bodies {
+    for (name, name_bodies) in &bodies {
         let mut direct_hazard = false;
         let mut called = HashSet::new();
-        scan_block_for_par_hazards(body, &mut direct_hazard, &mut called);
+        for body in name_bodies {
+            scan_block_for_par_hazards(body, &mut direct_hazard, &mut called);
+        }
         if direct_hazard {
             unsafe_set.insert(name.clone());
         }

@@ -402,9 +402,19 @@ impl Codegen {
                 format!("i1 {}", found)
             }
             SetMethod::Insert => {
-                let (_, data_field, len, len_field, cap_field) = self.set_fields_mut(base, elem_ty);
+                let (_, data_field, _stale_len, len_field, cap_field) = self.set_fields_mut(base, elem_ty);
                 let val = self.emit_expr(&args[0]);
                 let clean_val = self.untag(&val, elem_ty);
+
+                // `_stale_len` (from `set_fields_mut`, above) was captured
+                // *before* evaluating `args[0]` -- if that argument
+                // expression mutates this same set, the real `len_field` in
+                // memory has already changed by the time we get here.
+                // Reload it fresh (mirrors `ListMethod::Push`'s identical
+                // fix), or the membership search/grow-check/write-index
+                // below would all use a stale value.
+                let len = self.tmp_name();
+                self.line(&format!("  {} = load i64, i64* {}", len, len_field));
 
                 let data0 = self.tmp_name();
                 self.line(&format!("  {} = load {}*, {}** {}", data0, elem_llvm, elem_llvm, data_field));

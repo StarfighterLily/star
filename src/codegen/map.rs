@@ -612,11 +612,21 @@ impl Codegen {
                 format!("{} {}", opt_ty, result)
             }
             MapMethod::Insert => {
-                let (_, keys_field, _, vals_field, len, len_field, cap_field) = self.map_fields_mut(base, key_ty, val_ty);
+                let (_, keys_field, _, vals_field, _stale_len, len_field, cap_field) = self.map_fields_mut(base, key_ty, val_ty);
                 let key_val = self.emit_expr(&args[0]);
                 let clean_key = self.untag(&key_val, key_ty);
                 let val_val = self.emit_expr(&args[1]);
                 let clean_val = self.untag(&val_val, val_ty);
+
+                // `_stale_len` (from `map_fields_mut`, above) was captured
+                // *before* evaluating `args[0]`/`args[1]` -- if either
+                // argument expression mutates this same map, the real
+                // `len_field` in memory has already changed by the time we
+                // get here. Reload it fresh (mirrors `ListMethod::Push`'s
+                // identical fix), or the key search/grow-check/copy-count/
+                // write-index below would all use a stale value.
+                let len = self.tmp_name();
+                self.line(&format!("  {} = load i64, i64* {}", len, len_field));
 
                 let keys0 = self.tmp_name();
                 self.line(&format!("  {} = load {}*, {}** {}", keys0, key_llvm, key_llvm, keys_field));
