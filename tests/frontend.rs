@@ -4440,6 +4440,59 @@ fn accepts_mutating_collection_methods_on_mut_receivers() {
     assert!(Driver::check(&module).is_ok(), "mut receivers should type-check cleanly: {:?}", Driver::check(&module).err());
 }
 
+/// `check_mut_receiver` checked only the *root* binding (`self`/a variable)
+/// against `mut_vars`, exactly like `Stmt::Assign` -- but `Stmt::Assign` also
+/// separately re-checks the immediate field's own `mut` declaration via
+/// `field_is_mut` (a field can be declared without `mut` even on a `mut`-bound
+/// struct). `check_mut_receiver` never made that second check, so
+/// `self.items.push(x)` on a non-`mut` `items: List<i32>` field silently
+/// type-checked through a `mut self` method -- the exact same field-level
+/// bypass `rejects_assignment_to_struct_field_not_declared_mut` already pins
+/// for plain assignment, just reached through a mutating method call instead.
+#[test]
+fn rejects_list_push_on_non_mut_field_even_through_mut_self() {
+    let src = concat!(
+        "struct Player:\n",
+        "    items: List<i32>\n",
+        "impl Player:\n",
+        "    fn add_item(mut self, x: i32):\n",
+        "        self.items.push(x)\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("push on a non-`mut` field must be rejected even through a `mut self` receiver") };
+    assert!(errs.iter().any(|d| d.message.contains("field `items` is not mutable")), "{:?}", errs);
+}
+
+/// Same gap, `Map<K,V>::insert` variant.
+#[test]
+fn rejects_map_insert_on_non_mut_field_even_through_mut_self() {
+    let src = concat!(
+        "struct Cache:\n",
+        "    entries: Map<str, i32>\n",
+        "impl Cache:\n",
+        "    fn add(mut self, k: str, v: i32):\n",
+        "        self.entries.insert(k, v)\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("insert on a non-`mut` field must be rejected even through a `mut self` receiver") };
+    assert!(errs.iter().any(|d| d.message.contains("field `entries` is not mutable")), "{:?}", errs);
+}
+
+/// Same gap, `Set<T>::remove` variant.
+#[test]
+fn rejects_set_remove_on_non_mut_field_even_through_mut_self() {
+    let src = concat!(
+        "struct Tags:\n",
+        "    values: Set<i32>\n",
+        "impl Tags:\n",
+        "    fn drop_tag(mut self, x: i32):\n",
+        "        self.values.remove(x)\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("remove on a non-`mut` field must be rejected even through a `mut self` receiver") };
+    assert!(errs.iter().any(|d| d.message.contains("field `values` is not mutable")), "{:?}", errs);
+}
+
 // ===== List<T> copy-on-write ownership (todo.md's memory-ownership fix) ===
 
 /// The use-after-free `todo.md` originally flagged, "confirmed empirically":
@@ -8710,6 +8763,50 @@ fn accepts_assignment_through_genref_index_without_mut_binding_on_handle() {
     let src = "struct Entity:\n    mut hp: i32\narena Entities: Entity\nfn main():\n    spawn Entities(100)\n    let r = GenRef<Entity>(0)\n    r[0].hp -= 10\n    println(f\"{r[0].hp}\")\n";
     let module = Driver::parse(src).expect("should parse");
     assert!(Driver::check(&module).is_ok(), "mutating through a `GenRef` should not require the handle binding itself to be `mut`: {:?}", Driver::check(&module).err());
+}
+
+/// Same field-level gap as `rejects_list_push_on_non_mut_field_even_through_mut_self`,
+/// reached through a `GenRef` receiver instead of `self`: `assign_root_name`
+/// deliberately returns `None` for a `GenRefIndex` base (mutating through a
+/// `GenRef` is gated purely by the pointed-to struct's own per-field `mut`
+/// declaration, not by any `mut_vars` check on the handle), so
+/// `check_mut_receiver`'s root-binding check alone can never catch this
+/// case -- only the field-level `field_is_mut` check (added alongside this
+/// test) does.
+#[test]
+fn rejects_list_push_through_genref_on_non_mut_field() {
+    let src = concat!(
+        "struct Entity:\n",
+        "    mut hp: i32\n",
+        "    items: List<i32>\n",
+        "arena Entities: Entity\n",
+        "fn main():\n",
+        "    spawn Entities(hp = 100, items = List<i32>())\n",
+        "    let r = GenRef<Entity>(0)\n",
+        "    r[0].items.push(5)\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("push through a GenRef on a non-`mut` field must be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("field `items` is not mutable")), "{:?}", errs);
+}
+
+/// Positive counterpart: a `mut`-declared field reached through a `GenRef`
+/// still type-checks cleanly -- no false positive from the new check.
+#[test]
+fn accepts_list_push_through_genref_on_mut_field() {
+    let src = concat!(
+        "struct Entity:\n",
+        "    mut hp: i32\n",
+        "    mut items: List<i32>\n",
+        "arena Entities: Entity\n",
+        "fn main():\n",
+        "    spawn Entities(hp = 100, items = List<i32>())\n",
+        "    let r = GenRef<Entity>(0)\n",
+        "    r[0].items.push(5)\n",
+        "    println(f\"{r[0].items.len()}\")\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "push through a GenRef on a `mut` field should type-check cleanly: {:?}", Driver::check(&module).err());
 }
 
 /// `par`/`swarm`'s entire purpose is safe, disjointness-proven in-place

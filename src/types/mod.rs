@@ -1617,6 +1617,23 @@ impl Checker {
                 );
             }
         }
+        // Mirror `Stmt::Assign`'s own `field_is_mut` check: a struct field can
+        // independently be declared without `mut` (`items: List<i32>` vs `mut
+        // items: List<i32>`), so even a `mut`-bound receiver can still have
+        // specific fields that may only ever be set once (at construction).
+        // Previously only a plain `self.items = ...` assignment enforced
+        // this -- `self.items.push(x)` (or `Map`/`Set`'s `insert`/`remove`)
+        // reached only the root-binding check above and silently skipped the
+        // field-level one entirely, letting a non-`mut` field's contents be
+        // mutated through its collection methods.
+        if let TypedExpr::Field { base: inner_base, field, .. } = base {
+            if self.field_is_mut(&inner_base.clone().into_ty(), field) == Some(false) {
+                self.error(
+                    format!("field `{}` is not mutable -- declare it `mut {}: ...` to call `{}(..)`", field, field, method),
+                    span,
+                );
+            }
+        }
     }
 
     /// Whether `field` is declared `mut` on `base_ty`'s struct -- `None` if

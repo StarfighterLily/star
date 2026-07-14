@@ -49,6 +49,44 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Thorough bug-hunting round across the whole compiler, originally planned as five parallel
+research agents (vector_math/eq/arena codegen; reflect/frame_analysis/par_analysis;
+rc/closure/par_pool/list codegen; the core type checker; a third pass over
+parser/lexer/sequence/modules) -- all five hit the session's API usage limit before
+returning findings, so the round pivoted to direct manual review of the same file set
+instead (arena.rs, rc.rs, eq.rs, vector_math.rs, reflect.rs, mod.rs's mangle/size/align
+helpers, list.rs's CoW machinery, closure.rs, par_pool.rs, frame_analysis.rs,
+par_analysis.rs, sequence.rs's yield/hygiene checks) plus targeted `.star` repros compiled
+against the real binary. Most of that surface turned out already heavily hardened by prior
+rounds (well-commented, each prior fix cross-checked against the exact bug class it was
+fixed for) and yielded no new findings. Found and fixed one real, confirmed gap in the same
+"checked at one call site, not an equally reachable other" shape as this file's own
+previous `mut`-enforcement round, with new regression tests (573 -> 578 tests, all green;
+all 40 examples still `star check` cleanly, `map_set`/`player` spot-checked end-to-end):
+1. **Field-level `mut` bypass via mutating collection methods**: `Checker::check_mut_receiver`
+   (the gate on `List::push`/`pop`, `Map::insert`/`remove`, `Set::insert`/`remove`, added in
+   the immediately preceding round) only checked the *root* binding
+   (`assign_root_name`/`mut_vars`) against `mut`, mirroring half of what `Stmt::Assign`
+   does for plain `x.f = v` -- but never the other half, `field_is_mut`, which separately
+   requires the specific field being written to be declared `mut` (a struct can have
+   `mut`-bound `self` while still declaring `items: List<i32>` without `mut`, meaning
+   `self.items = new_list` is correctly rejected but `self.items.push(x)` type-checked
+   with zero diagnostic -- confirmed empirically both ways against the real compiler
+   before fixing). The same gap reaches through a `GenRef` receiver too, since
+   `assign_root_name` deliberately returns `None` for a `GenRefIndex` base (mutating
+   through a `GenRef` is meant to be gated purely by the pointed-to struct's own per-field
+   `mut`, independent of the handle binding) -- `check_mut_receiver`'s root check alone
+   could never catch that path at all, only the missing field check could. Fixed by adding
+   the same `field_is_mut` check `Stmt::Assign` already runs, directly inside
+   `check_mut_receiver` (`src/types/mod.rs`) so it applies uniformly regardless of the
+   receiver's root shape. Verified by reverting the fix and confirming all three new
+   `..._even_through_mut_self` tests fail with the exact predicted symptom before
+   restoring it; five new tests total cover `List`/`Map`/`Set` through both a `mut self`
+   receiver and a `GenRef` receiver (including the positive `mut`-field case, to rule out
+   false positives).
+
+---
+
 Thorough bug-hunting round targeted at `Map<K,V>`/`Set<T>` (commit "Expanded types 1"),
 the newest, never-yet-reviewed feature -- three parallel research agents (Map/Set/eq
 codegen, type-checker coverage, cross-cutting integration points: RC/reflect/mangling)
