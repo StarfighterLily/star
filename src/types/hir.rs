@@ -208,7 +208,10 @@ pub enum TypedExpr {
         ty: Ty,
         span: Span,
     },
-    GenRefCreate { inner_ty: Ty, value: Box<TypedExpr>, span: Span },
+    /// See `Expr::GenRefCreate`'s doc comment: `is_handle` selects
+    /// `Ty::Handle` over `Ty::GenRef` in `into_ty` below; codegen
+    /// (`Codegen::emit_genref_create`) doesn't care either way.
+    GenRefCreate { inner_ty: Ty, value: Box<TypedExpr>, is_handle: bool, span: Span },
     GenRefIndex { base: Box<TypedExpr>, index: Box<TypedExpr>, ty: Ty, span: Span },
     /// An enum variant literal: `EnumName::Variant`, see [`crate::ast::Expr::EnumVariant`].
     EnumVariant { enum_name: String, variant: String, args: Vec<TypedExpr>, ty: Ty, span: Span },
@@ -388,7 +391,9 @@ impl TypedExpr {
             TypedExpr::Ident { ty, .. } => ty,
             TypedExpr::SelfExpr(ty, _) => ty,
             TypedExpr::If { ty, .. } => ty.clone(),
-            TypedExpr::GenRefCreate { inner_ty, .. } => Ty::GenRef(Box::new(inner_ty)),
+            TypedExpr::GenRefCreate { inner_ty, is_handle, .. } => {
+                if is_handle { Ty::Handle(Box::new(inner_ty)) } else { Ty::GenRef(Box::new(inner_ty)) }
+            }
             TypedExpr::ListNew { elem_ty, .. } => Ty::List(Box::new(elem_ty)),
             TypedExpr::ListLit { elem_ty, .. } => Ty::List(Box::new(elem_ty)),
             TypedExpr::MapNew { key_ty, val_ty, .. } => Ty::Map(Box::new(key_ty), Box::new(val_ty)),

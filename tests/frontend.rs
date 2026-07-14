@@ -345,6 +345,150 @@ fn test() -> i32:
     assert!(ir.contains("i32 0, i32 1"), "GenRef should access generation field");
 }
 
+// --- `Handle<T>` (design.md "Resource handles": GenRef's pattern reused
+// for engine resources) ------------------------------------------------------
+
+/// Parse `Handle<T>(value)` creation syntax -- the exact same grammar as
+/// `GenRef<T>(value)`, tagged `is_handle: true`.
+#[test]
+fn parses_handle_create() {
+    let src = "fn test(id: i32):\n    Handle<i32>(id)\n";
+    let module = Driver::parse(src).unwrap();
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn"); };
+    let Stmt::Expr(expr) = &f.body.stmts[0] else { panic!("expected expr"); };
+    assert!(matches!(expr, Expr::GenRefCreate { is_handle: true, .. }));
+}
+
+/// `Handle<T>` reuses `GenRef`'s exact LLVM struct layout (see `Ty::Handle`'s
+/// doc comment) -- no separate `%Handle` type is ever declared.
+#[test]
+fn codegen_handle_reuses_genref_struct_layout() {
+    let src = "struct Point:\n    x: i32\n    y: i32\n\narena Entities: Point\n\nfn follow(h: Handle<Point>) -> Point:\n    h[0]\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+
+    assert!(ir.contains("%GenRef = type { i32, i32 }"), "Handle should reuse the %GenRef type, not declare its own");
+    assert!(!ir.contains("%Handle ="), "no separate %Handle LLVM type should ever be declared");
+    assert!(ir.contains("getelementptr inbounds %GenRef, %GenRef*"), "Handle dereference should GEP through %GenRef");
+}
+
+/// `Handle<T>` creation/dereference through a struct-typed, arena-backed
+/// resource compiles and lowers cleanly end to end, mirroring
+/// `checks_genref_create_and_follow_through_arena`.
+#[test]
+fn checks_handle_create_and_follow_through_arena() {
+    let src = r#"struct Texture:
+    width: i32
+    height: i32
+
+arena Textures: Texture
+
+fn load(idx: i32) -> Handle<Texture>:
+    Handle<Texture>(idx)
+
+fn bind(h: Handle<Texture>) -> i32:
+    h[0].width
+
+fn test() -> i32:
+    frame:
+        spawn Textures(256, 256)
+        let h = Handle<Texture>(0)
+        bind(h)
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+
+    assert!(ir.contains("i32 0, i32 0"), "Handle should access index field");
+    assert!(ir.contains("i32 0, i32 1"), "Handle should access generation field");
+}
+
+/// `Handle<T>` and `GenRef<T>` are nominally distinct types even though they
+/// share every byte of runtime representation -- a function declared to take
+/// a `Handle<T>` must reject a `GenRef<T>` argument (and vice versa), so a
+/// resource handle can never be silently swapped for an entity reference.
+#[test]
+fn rejects_genref_passed_where_handle_expected() {
+    let src = "struct Point:\n    x: i32\n\narena Entities: Point\n\nfn bind(h: Handle<Point>) -> i32:\n    h[0].x\n\nfn t():\n    let r = GenRef<Point>(0)\n    bind(r)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(_) = Driver::check(&module) else { panic!("GenRef<T> should not satisfy a Handle<T> parameter") };
+}
+
+/// `Handle<T>` with no arena declared for `T` is a type error, worded with
+/// `Handle` (not `GenRef`) so the diagnostic points at what the user
+/// actually wrote.
+#[test]
+fn rejects_handle_without_backing_arena() {
+    let src = "struct Texture:\n    w: i32\n\nfn t():\n    Handle<Texture>(0)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("Handle<T> with no backing arena should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("Handle<") && d.message.contains("no backing arena")), "got: {:?}", diags);
+}
+
+/// `Handle<T>` is ambiguous when two arenas both hold element type `T`.
+#[test]
+fn rejects_handle_with_ambiguous_backing_arena() {
+    let src = "struct Texture:\n    w: i32\n\narena A: Texture\narena B: Texture\n\nfn t():\n    Handle<Texture>(0)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("Handle<T> with two backing arenas should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("Handle<") && d.message.contains("ambiguous")), "got: {:?}", diags);
+}
+
+/// Reflection metadata (`@export`/`@tweakable`) spells a `Handle<T>` field as
+/// `Handle<T>`, not `GenRef<T>` -- see `Codegen::reflect_type_name`.
+#[test]
+fn reflect_metadata_names_handle_distinctly_from_genref() {
+    let src = "struct Texture:\n    w: i32\n\narena Textures: Texture\n\nstruct Sprite:\n    @export tex: Handle<Texture>\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("Handle<Texture>"), "reflection metadata should spell the field's type as Handle<Texture>: {}", ir);
+}
+
+/// Runtime test: a `Handle` dereferenced after its backing resource is
+/// unloaded (`despawn`) falls back to the element type's zero value instead
+/// of returning stale data or segfaulting -- the same flagship safety
+/// guarantee `GenRef` gives despawned entities, reused for resources,
+/// proven end to end through a real compiled binary. See
+/// `examples/handle_resource.star`.
+#[test]
+fn runtime_handle_stale_after_unload_falls_back_to_zero() {
+    use std::process::Command;
+
+    let output = Command::new("examples/handle_resource.exe").output().expect("failed to execute handle_resource.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("before unload: 256x256"), "live handle should read real data: {}", stdout);
+    assert!(stdout.contains("after unload: 0x0"), "stale handle should fall back to zero, not crash or read stale data: {}", stdout);
+}
+
+/// `Handle(value)` with no explicit type argument must be a clear parse
+/// error, mirroring `rejects_genref_without_type_args`.
+#[test]
+fn rejects_handle_without_type_args() {
+    let src = "arena Entities: i32\nfn main():\n    let g = Handle(0)\n";
+    let module = Driver::parse(src);
+    let Err(diags) = module else { panic!("bare Handle(..) should be a parse error") };
+    assert!(
+        diags.iter().any(|d| d.message.contains("requires an explicit type argument")),
+        "got: {:?}",
+        diags
+    );
+}
+
+/// `Handle<i32>()` (missing the value argument) must be a clear parse error.
+#[test]
+fn rejects_handle_missing_value_arg() {
+    let src = "arena Entities: i32\nfn main():\n    let g = Handle<i32>()\n";
+    let module = Driver::parse(src);
+    let Err(diags) = module else { panic!("Handle<T>() with no value should be a parse error") };
+    assert!(
+        diags.iter().any(|d| d.message.contains("expects exactly one argument")),
+        "got: {:?}",
+        diags
+    );
+}
+
 /// Runtime test: nested frame scopes work correctly.
 #[test]
 fn runtime_nested_frame_scopes() {

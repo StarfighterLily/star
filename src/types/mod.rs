@@ -120,6 +120,19 @@ pub enum Ty {
     /// still what happens for any other rvalue struct base with no
     /// addressable storage of its own).
     Table(Box<Ty>),
+    /// A generation-checked resource handle: `Handle<T>`. Nominally distinct
+    /// from `Ty::GenRef` (so a function expecting `Handle<Texture>` rejects
+    /// a `GenRef<Player>`-shaped argument, and vice versa) but otherwise a
+    /// full reuse of the exact same arena/slot-map machinery -- same `%GenRef`
+    /// LLVM layout, same generation-check codegen (`Codegen::emit_genref_create`/
+    /// `emit_genref_index`/`emit_genref_index_place`), same `arena Name: T`
+    /// backing declaration. Where `GenRef<T>` models references between
+    /// spatial-arena entities (the "Game Graph"), `Handle<T>` models engine
+    /// resources (`Handle<Texture>`, `Handle<Mesh>`, `Handle<Shader>`,
+    /// `Handle<Sound>`): a freed resource's handle fails the same safe
+    /// generation-check path instead of segfaulting on a dangling GPU/audio
+    /// pointer -- see design.md's "Resource handles" section.
+    Handle(Box<Ty>),
     /// A fieldless enum type, lowered to a plain `i32` discriminant.
     Enum(String),
     /// A closure/lambda's type: declared parameter types and return type.
@@ -1198,20 +1211,22 @@ impl Checker {
         self.arenas.iter().filter(|(_, t)| *t == ty).map(|(n, _)| n).collect()
     }
 
-    /// Validate that exactly one arena backs `GenRef<inner_ty>`, emitting a
-    /// diagnostic otherwise. Codegen independently re-resolves the arena
-    /// name from `inner_ty` (see `Codegen::arena_for_elem_ty`); this check
-    /// only exists to turn a missing/ambiguous backing arena into a friendly
-    /// type error instead of a defensive codegen-time failure.
-    fn require_backing_arena(&mut self, inner_ty: &Ty, span: Span) {
+    /// Validate that exactly one arena backs `GenRef<inner_ty>`/`Handle<inner_ty>`
+    /// (`kind` is `"GenRef"` or `"Handle"`, purely for the diagnostic's
+    /// wording), emitting a diagnostic otherwise. Codegen independently
+    /// re-resolves the arena name from `inner_ty` (see
+    /// `Codegen::arena_for_elem_ty`); this check only exists to turn a
+    /// missing/ambiguous backing arena into a friendly type error instead of
+    /// a defensive codegen-time failure.
+    fn require_backing_arena(&mut self, inner_ty: &Ty, kind: &str, span: Span) {
         match self.arenas_of_elem_ty(inner_ty).len() {
             1 => {}
             0 => self.error(
-                format!("`GenRef<{:?}>` has no backing arena -- declare `arena Name: {:?}`", inner_ty, inner_ty),
+                format!("`{}<{:?}>` has no backing arena -- declare `arena Name: {:?}`", kind, inner_ty, inner_ty),
                 span,
             ),
             _ => self.error(
-                format!("`GenRef<{:?}>` is ambiguous: multiple arenas hold `{:?}`", inner_ty, inner_ty),
+                format!("`{}<{:?}>` is ambiguous: multiple arenas hold `{:?}`", kind, inner_ty, inner_ty),
                 span,
             ),
         }
@@ -1361,6 +1376,13 @@ impl Checker {
                 if name == "GenRef" {
                     let inner = args.first().and_then(|a| self.resolve_type(a)).unwrap_or(Ty::Int);
                     return Some(Ty::GenRef(Box::new(inner)));
+                }
+                // `Handle<T>` -- same arena-backed construction as `GenRef<T>`
+                // (see `Ty::Handle`'s doc comment), just a nominally distinct
+                // wrapper type.
+                if name == "Handle" {
+                    let inner = args.first().and_then(|a| self.resolve_type(a)).unwrap_or(Ty::Int);
+                    return Some(Ty::Handle(Box::new(inner)));
                 }
                 if name == "List" {
                     let inner = args.first().and_then(|a| self.resolve_type(a)).unwrap_or(Ty::Int);
@@ -1927,6 +1949,7 @@ fn mangle_ty(ty: &Ty) -> String {
         Ty::Named(n) => n.clone(),
         Ty::Enum(n) => n.clone(),
         Ty::GenRef(inner) => format!("GenRef_{}", mangle_ty(inner)),
+        Ty::Handle(inner) => format!("Handle_{}", mangle_ty(inner)),
         Ty::List(inner) => format!("List_{}", mangle_ty(inner)),
         // Length-prefix the key segment so the K/V boundary is unambiguous
         // even when a name contains `_` -- see `Codegen::mangle_ty`'s `Ty::Map`
@@ -2007,6 +2030,7 @@ fn ty_to_type(ty: &Ty) -> Type {
         Ty::Named(n) => Type::Named(n.clone()),
         Ty::Enum(n) => Type::Named(n.clone()),
         Ty::GenRef(inner) => Type::Generic("GenRef".into(), vec![ty_to_type(inner)]),
+        Ty::Handle(inner) => Type::Generic("Handle".into(), vec![ty_to_type(inner)]),
         Ty::List(inner) => Type::Generic("List".into(), vec![ty_to_type(inner)]),
         Ty::Map(k, v) => Type::Generic("Map".into(), vec![ty_to_type(k), ty_to_type(v)]),
         Ty::Set(inner) => Type::Generic("Set".into(), vec![ty_to_type(inner)]),
@@ -2137,9 +2161,12 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             else_block: else_block.as_ref().map(|b| subst_block(b, subst)),
             span: *span,
         },
-        Expr::GenRefCreate { inner_ty, value, span } => {
-            Expr::GenRefCreate { inner_ty: subst_type(inner_ty, subst), value: Box::new(subst_expr(value, subst)), span: *span }
-        }
+        Expr::GenRefCreate { inner_ty, value, is_handle, span } => Expr::GenRefCreate {
+            inner_ty: subst_type(inner_ty, subst),
+            value: Box::new(subst_expr(value, subst)),
+            is_handle: *is_handle,
+            span: *span,
+        },
         Expr::GenRefIndex { base, index, span } => {
             Expr::GenRefIndex { base: Box::new(subst_expr(base, subst)), index: Box::new(subst_expr(index, subst)), span: *span }
         }

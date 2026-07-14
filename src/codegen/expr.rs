@@ -1070,7 +1070,7 @@ impl Codegen {
                     format!("{} {}", ty_str, phi)
                 }
             }
-            TypedExpr::GenRefCreate { inner_ty, value, span } => self.emit_genref_create(inner_ty, value, *span),
+            TypedExpr::GenRefCreate { inner_ty, value, span, .. } => self.emit_genref_create(inner_ty, value, *span),
             TypedExpr::GenRefIndex { base, ty, span, .. } => self.emit_genref_index(base, ty, *span),
             TypedExpr::EnumVariant { enum_name, variant, args, .. } => {
                 let idx = self.enum_variant_index(enum_name, variant);

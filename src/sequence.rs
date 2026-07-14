@@ -526,9 +526,12 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
             else_block: else_block.as_ref().map(|b| rewrite_block(b, hoist)),
             span: *span,
         },
-        Expr::GenRefCreate { inner_ty, value, span } => {
-            Expr::GenRefCreate { inner_ty: inner_ty.clone(), value: Box::new(rewrite_expr(value, hoist)), span: *span }
-        }
+        Expr::GenRefCreate { inner_ty, value, is_handle, span } => Expr::GenRefCreate {
+            inner_ty: inner_ty.clone(),
+            value: Box::new(rewrite_expr(value, hoist)),
+            is_handle: *is_handle,
+            span: *span,
+        },
         Expr::GenRefIndex { base, index, span } => {
             Expr::GenRefIndex { base: Box::new(rewrite_expr(base, hoist)), index: Box::new(rewrite_expr(index, hoist)), span: *span }
         }

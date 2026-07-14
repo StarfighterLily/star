@@ -416,9 +416,12 @@ fn rename_expr(expr: &Expr, names: &HashMap<String, String>) -> Expr {
             else_block: else_block.as_ref().map(|b| rename_block(b, names)),
             span: *span,
         },
-        Expr::GenRefCreate { inner_ty, value, span } => {
-            Expr::GenRefCreate { inner_ty: rename_type(inner_ty, names), value: Box::new(rename_expr(value, names)), span: *span }
-        }
+        Expr::GenRefCreate { inner_ty, value, is_handle, span } => Expr::GenRefCreate {
+            inner_ty: rename_type(inner_ty, names),
+            value: Box::new(rename_expr(value, names)),
+            is_handle: *is_handle,
+            span: *span,
+        },
         Expr::GenRefIndex { base, index, span } => {
             Expr::GenRefIndex { base: Box::new(rename_expr(base, names)), index: Box::new(rename_expr(index, names)), span: *span }
         }

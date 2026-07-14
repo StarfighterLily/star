@@ -227,11 +227,12 @@ pub enum Type {
 }
 
 impl Type {
-    /// Check if this type is a GenRef<T>.
+    /// Check if this type is a GenRef<T> or Handle<T> -- both share the same
+    /// construction/dereference grammar (see `Expr::GenRefCreate`).
     pub fn is_genref(&self) -> bool {
         match self {
-            Type::Named(name) => name == "GenRef",
-            Type::Generic(name, _) => name == "GenRef",
+            Type::Named(name) => name == "GenRef" || name == "Handle",
+            Type::Generic(name, _) => name == "GenRef" || name == "Handle",
             Type::Fn(..) | Type::Tuple(..) | Type::Array(..) | Type::Ring(..) => false,
         }
     }
@@ -409,10 +410,18 @@ pub enum Expr {
         else_block: Option<Block>,
         span: Span,
     },
-    /// GenRef creation: `GenRef<T>(expr)` creates a generational reference.
+    /// GenRef/Handle creation: `GenRef<T>(expr)` creates a generational
+    /// reference; `Handle<T>(expr)` (`is_handle: true`) is the same
+    /// generation-checked construction syntax, arena, and codegen path,
+    /// spelled differently for resource types (`Handle<Texture>`,
+    /// `Handle<Mesh>`, ...) so a resource handle and an entity reference
+    /// stay nominally distinct types (see `Ty::Handle`) even though nothing
+    /// about the underlying mechanism differs -- see design.md's "Resource
+    /// handles" section.
     GenRefCreate {
         inner_ty: Type,
         value: Box<Expr>,
+        is_handle: bool,
         span: Span,
     },
     /// A bracketed index `base[idx]`. Despite the name (kept for

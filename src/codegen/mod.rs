@@ -517,7 +517,8 @@ impl Codegen {
             Ty::Int | Ty::Float => 4,
             Ty::Bool => 1,
             Ty::Str | Ty::Ptr | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Table(_) | Ty::Closure(..) => 8,
-            Ty::GenRef(_) => 4,
+            // Same layout as `Ty::GenRef` -- see `Ty::Handle`'s doc comment.
+            Ty::GenRef(_) | Ty::Handle(_) => 4,
             Ty::Vec2 => 8,
             Ty::Vec3 | Ty::Vec4 | Ty::Mat4 => 16,
             Ty::Named(n) => self
@@ -587,7 +588,7 @@ impl Codegen {
             Ty::Int | Ty::Float => 4,
             Ty::Bool => 1,
             Ty::Str => 8,
-            Ty::GenRef(_) => 8, // { i32, i32 }
+            Ty::GenRef(_) | Ty::Handle(_) => 8, // { i32, i32 }
             Ty::Vec2 => 8,
             // `<3 x float>`/`<4 x float>` both occupy 16 bytes of struct
             // layout space on this target (see `type_align`'s doc comment).
@@ -674,7 +675,9 @@ impl Codegen {
             Ty::Vec4 => "<4 x float>".into(),
             Ty::Mat4 => "[4 x <4 x float>]".into(),
             Ty::Named(n) => format!("%{}", n),
-            Ty::GenRef(_) => "%GenRef".into(),
+            // `Handle<T>` reuses the exact same `%GenRef` layout as
+            // `Ty::GenRef` -- see `Ty::Handle`'s doc comment.
+            Ty::GenRef(_) | Ty::Handle(_) => "%GenRef".into(),
             // A reference-counted, copy-on-write object pointer -- same
             // shape as `Ty::Str`, no extra boxing beyond the one pointer.
             // The payload struct `{ T*, i64, i64 }` it points past a
@@ -734,6 +737,7 @@ impl Codegen {
             Ty::Mat4 => "mat4".into(),
             Ty::Named(n) => format!("s_{}", n),
             Ty::GenRef(inner) => format!("genref_{}", self.mangle_ty(inner)),
+            Ty::Handle(inner) => format!("handle_{}", self.mangle_ty(inner)),
             Ty::List(inner) => format!("list_{}", self.mangle_ty(inner)),
             // Length-prefix the key segment so the K/V boundary is
             // unambiguous even when a struct name contains the `_`
@@ -843,7 +847,7 @@ impl Codegen {
             Ty::Set(_) => "null".into(),
             Ty::Table(_) => "null".into(),
             Ty::Enum(n) if !self.enum_is_payload(n) => "0".into(),
-            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat4 | Ty::Named(_) | Ty::GenRef(_) | Ty::Enum(_) | Ty::Closure(..) | Ty::Tuple(_)
+            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat4 | Ty::Named(_) | Ty::GenRef(_) | Ty::Handle(_) | Ty::Enum(_) | Ty::Closure(..) | Ty::Tuple(_)
             // `zeroinitializer` gives `{ data: [N x T] zeroinitializer, head:
             // 0, len: 0 }` -- exactly an empty ring, per `crate::codegen::ring`'s
             // invariant that every slot outside the (here, empty) live window
@@ -1065,7 +1069,9 @@ impl Codegen {
             | TypedExpr::Closure { ty, .. } | TypedExpr::ListIndex { ty, .. } | TypedExpr::ListMethod { ty, .. }
             | TypedExpr::StrIndex { ty, .. } | TypedExpr::Error(ty) => ty.clone(),
             TypedExpr::Ident { ty, .. } => ty.clone(),
-            TypedExpr::GenRefCreate { inner_ty, .. } => Ty::GenRef(Box::new(inner_ty.clone())),
+            TypedExpr::GenRefCreate { inner_ty, is_handle, .. } => {
+                if *is_handle { Ty::Handle(Box::new(inner_ty.clone())) } else { Ty::GenRef(Box::new(inner_ty.clone())) }
+            }
             TypedExpr::ListNew { elem_ty, .. } => Ty::List(Box::new(elem_ty.clone())),
             TypedExpr::ListLit { elem_ty, .. } => Ty::List(Box::new(elem_ty.clone())),
             TypedExpr::MapNew { key_ty, val_ty, .. } => Ty::Map(Box::new(key_ty.clone()), Box::new(val_ty.clone())),

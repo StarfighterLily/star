@@ -388,14 +388,15 @@ impl Checker {
                     span: *span,
                 })
             }
-            Expr::GenRefCreate { inner_ty, value, span } => {
+            Expr::GenRefCreate { inner_ty, value, is_handle, span } => {
+                let kind = if *is_handle { "Handle" } else { "GenRef" };
                 let resolved_inner = self.resolve_type(inner_ty).unwrap_or(Ty::Named("unknown".into()));
-                self.require_backing_arena(&resolved_inner, *span);
+                self.require_backing_arena(&resolved_inner, kind, *span);
                 let value_typed = self.infer_expr(value, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
                 if !matches!(value_typed.clone().into_ty(), Ty::Int) {
-                    self.error("`GenRef<T>(..)` index must be `i32`", *span);
+                    self.error(format!("`{}<T>(..)` index must be `i32`", kind), *span);
                 }
-                Ok(TypedExpr::GenRefCreate { inner_ty: resolved_inner, value: Box::new(value_typed), span: *span })
+                Ok(TypedExpr::GenRefCreate { inner_ty: resolved_inner, value: Box::new(value_typed), is_handle: *is_handle, span: *span })
             }
             Expr::EnumVariant { enum_name, type_args, variant, args, span } => {
                 let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
@@ -438,7 +439,15 @@ impl Checker {
                 // see `Expr::GenRefIndex`'s doc comment in `crate::ast`.
                 match base_expr.clone().into_ty() {
                     Ty::GenRef(inner) => {
-                        self.require_backing_arena(&inner, *span);
+                        self.require_backing_arena(&inner, "GenRef", *span);
+                        Ok(TypedExpr::GenRefIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: *inner, span: *span })
+                    }
+                    // `Handle<T>` dereferences through the exact same
+                    // `TypedExpr::GenRefIndex` node/codegen as `GenRef<T>` --
+                    // see `Ty::Handle`'s doc comment; the only difference is
+                    // which nominal wrapper type `base` had.
+                    Ty::Handle(inner) => {
+                        self.require_backing_arena(&inner, "Handle", *span);
                         Ok(TypedExpr::GenRefIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: *inner, span: *span })
                     }
                     Ty::List(inner) => {
@@ -460,7 +469,7 @@ impl Checker {
                         Ok(TypedExpr::StrIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: Ty::Int, span: *span })
                     }
                     other => {
-                        self.error(format!("`[..]` indexing requires a `GenRef<T>`, `List<T>`, `[T; N]`, `Ring<T,N>`, `Table<T>`, or `str`, found `{:?}`", other), *span);
+                        self.error(format!("`[..]` indexing requires a `GenRef<T>`, `Handle<T>`, `List<T>`, `[T; N]`, `Ring<T,N>`, `Table<T>`, or `str`, found `{:?}`", other), *span);
                         Ok(TypedExpr::Error(Ty::Named("unknown".into())))
                     }
                 }

@@ -137,22 +137,31 @@ impl Parser {
                     expr = Expr::Field { base: Box::new(expr), field, span };
                 }
                 TokenKind::LParen => {
-                    // `GenRef(value)` (no type args) can never reach here:
-                    // `parse_primary`'s `Ident` arm already intercepts any
-                    // capitalized-identifier-followed-by-`(` (including
-                    // `GenRef`) as a struct-literal call and returns before
-                    // `parse_postfix`'s loop ever runs; that call site
-                    // separately rejects a bare `GenRef(` with a clear error
-                    // requiring `GenRef<T>(value)`. `GenRef<T>(value)` (with
-                    // type args) is handled below, in the `Lt` arm.
+                    // `GenRef(value)`/`Handle(value)` (no type args) can
+                    // never reach here: `parse_primary`'s `Ident` arm already
+                    // intercepts any capitalized-identifier-followed-by-`(`
+                    // (including `GenRef`/`Handle`) as a struct-literal call
+                    // and returns before `parse_postfix`'s loop ever runs;
+                    // that call site separately rejects a bare `GenRef(`/
+                    // `Handle(` with a clear error requiring
+                    // `GenRef<T>(value)`/`Handle<T>(value)`. The `<T>(value)`
+                    // form (with type args) is handled below, in the `Lt` arm.
                     let args = self.parse_call_args()?;
                     let span = expr.span().to(self.prev_span());
                     expr = Expr::Call { callee: Box::new(expr), args, span };
                 }
-                // GenRef<T>(value) - handle generic type args before parens
+                // GenRef<T>(value) / Handle<T>(value) - handle generic type
+                // args before parens. `Handle<T>` is `Ty::Handle`'s surface
+                // syntax: the exact same generation-checked construction as
+                // `GenRef<T>`, just a nominally distinct wrapper type for
+                // engine resources rather than arena entities (see
+                // `Ty::Handle`'s doc comment) -- so it reuses this same
+                // parsing path and AST node, tagged via `is_handle`.
                 TokenKind::Lt => {
                     if let Expr::Ident(name, _) = &expr {
-                        if name == "GenRef" {
+                        let is_handle = name == "Handle";
+                        if name == "GenRef" || is_handle {
+                            let kind = if is_handle { "Handle" } else { "GenRef" };
                             // Consume the <
                             self.advance();
                             // Parse the inner type <T>
@@ -167,7 +176,7 @@ impl Parser {
                             self.expect(&TokenKind::Gt)?;
                             if type_args.len() != 1 {
                                 self.error(
-                                    format!("`GenRef` expects exactly one type argument, found {}", type_args.len()),
+                                    format!("`{}` expects exactly one type argument, found {}", kind, type_args.len()),
                                     args_span,
                                 );
                                 return None;
@@ -178,14 +187,14 @@ impl Parser {
                             let call_span = expr.span().to(self.prev_span());
                             if args.len() != 1 {
                                 self.error(
-                                    format!("`GenRef<T>(..)` expects exactly one argument, found {}", args.len()),
+                                    format!("`{}<T>(..)` expects exactly one argument, found {}", kind, args.len()),
                                     call_span,
                                 );
                                 return None;
                             }
                             let value = args.into_iter().next().unwrap();
                             let span = expr.span().to(self.prev_span());
-                            return Some(Expr::GenRefCreate { inner_ty, value: Box::new(value), span });
+                            return Some(Expr::GenRefCreate { inner_ty, value: Box::new(value), is_handle, span });
                         }
                     }
                     // Just a comparison operator in a binary expression context
@@ -471,25 +480,30 @@ impl Parser {
                 // Explicit generic type arguments: `Box<i32>(...)` or
                 // `Option<i32>::Variant(...)`. Only attempted for
                 // capitalized (type-like) names immediately followed by `<`,
-                // mirroring the `GenRef<T>` special case below -- `<` is
-                // otherwise never treated as a binary operator by
+                // mirroring the `GenRef<T>`/`Handle<T>` special case below --
+                // `<` is otherwise never treated as a binary operator by
                 // `peek_binop`, so this can't misfire on a real comparison.
-                // `GenRef` itself is excluded: its own `<T>(value)` syntax is
-                // handled entirely by `parse_postfix` below, and must see the
-                // `<` untouched.
-                let type_args = if name != "GenRef" && starts_uppercase(&name) && self.at(&TokenKind::Lt) {
+                // `GenRef`/`Handle` themselves are excluded: their own
+                // `<T>(value)` syntax is handled entirely by `parse_postfix`
+                // below, and must see the `<` untouched.
+                let type_args = if name != "GenRef" && name != "Handle" && starts_uppercase(&name) && self.at(&TokenKind::Lt) {
                     self.try_parse_type_args()
                 } else {
                     Vec::new()
                 };
                 if self.at(&TokenKind::LParen) && starts_uppercase(&name) {
-                    // `GenRef` always requires an explicit type argument;
-                    // without one this would otherwise fall through to the
-                    // generic `StructLit` case below and construct a
-                    // nonexistent `GenRef` struct, only failing later with a
-                    // confusing, unrelated error at its first use.
+                    // `GenRef`/`Handle` always require an explicit type
+                    // argument; without one this would otherwise fall
+                    // through to the generic `StructLit` case below and
+                    // construct a nonexistent `GenRef`/`Handle` struct, only
+                    // failing later with a confusing, unrelated error at its
+                    // first use.
                     if name == "GenRef" {
                         self.error("`GenRef` requires an explicit type argument: `GenRef<T>(value)`", span);
+                        return None;
+                    }
+                    if name == "Handle" {
+                        self.error("`Handle` requires an explicit type argument: `Handle<T>(value)`", span);
                         return None;
                     }
                     let args = self.parse_call_args()?;

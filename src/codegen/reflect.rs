@@ -49,6 +49,7 @@ impl Codegen {
             Ty::Mat4 => "Mat4".into(),
             Ty::Named(n) => n.clone(),
             Ty::GenRef(inner) => format!("GenRef<{}>", self.reflect_type_name(inner)),
+            Ty::Handle(inner) => format!("Handle<{}>", self.reflect_type_name(inner)),
             Ty::List(inner) => format!("List<{}>", self.reflect_type_name(inner)),
             Ty::Map(k, v) => format!("Map<{}, {}>", self.reflect_type_name(k), self.reflect_type_name(v)),
             Ty::Set(inner) => format!("Set<{}>", self.reflect_type_name(inner)),
