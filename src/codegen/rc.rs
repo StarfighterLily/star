@@ -34,7 +34,11 @@ impl Codegen {
     /// (a fresh construction like a literal or a `concat` call) and
     /// there's nothing to release.
     pub(super) fn is_rc_borrowing_read(e: &TypedExpr) -> bool {
-        matches!(e, TypedExpr::Ident { .. } | TypedExpr::Field { .. } | TypedExpr::ListIndex { .. } | TypedExpr::GenRefIndex { .. })
+        matches!(
+            e,
+            TypedExpr::Ident { .. } | TypedExpr::Field { .. } | TypedExpr::ListIndex { .. }
+                | TypedExpr::GenRefIndex { .. } | TypedExpr::TupleIndex { .. }
+        )
     }
 
     /// True if a value of this type owns, directly or transitively (through
@@ -64,6 +68,8 @@ impl Codegen {
                 .get(n)
                 .map(|fields| fields.iter().any(|f| self.contains_rc(f)))
                 .unwrap_or(false),
+            Ty::Tuple(elems) => elems.iter().any(|f| self.contains_rc(f)),
+            Ty::Array(elem, count) => *count > 0 && self.contains_rc(elem),
             _ => false,
         }
     }
@@ -118,6 +124,33 @@ impl Codegen {
                     let gep = self.tmp_name();
                     self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, struct_ty, struct_ty, ptr, i));
                     self.emit_rc_walk(&gep, fty, retain);
+                }
+            }
+            Ty::Tuple(elems) => {
+                // Same walk as `Ty::Named` above, just with the element
+                // types already in hand instead of a `struct_field_types`
+                // lookup, and the anonymous literal struct type from
+                // `llvm_ty` instead of a `%name`.
+                let struct_ty = self.llvm_ty(ty);
+                for (i, fty) in elems.iter().enumerate() {
+                    if !self.contains_rc(fty) {
+                        continue;
+                    }
+                    let gep = self.tmp_name();
+                    self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, struct_ty, struct_ty, ptr, i));
+                    self.emit_rc_walk(&gep, fty, retain);
+                }
+            }
+            Ty::Array(elem, count) => {
+                // Same walk as `Ty::Tuple` above, unrolled at codegen time
+                // over the compile-time-known `count` instead of a
+                // per-field list.
+                let elem_llvm = self.llvm_ty(elem);
+                let arr_ty = format!("[{} x {}]", count, elem_llvm);
+                for i in 0..*count {
+                    let gep = self.tmp_name();
+                    self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i64 {}", gep, arr_ty, arr_ty, ptr, i));
+                    self.emit_rc_walk(&gep, elem, retain);
                 }
             }
             Ty::List(_) | Ty::Map(..) | Ty::Set(_) => {

@@ -201,6 +201,18 @@ pub enum Type {
     /// the pseudo-keyword `Fn` (a plain, capitalized identifier -- `fn` the
     /// keyword is reserved for declarations and lambda literals).
     Fn(Vec<Type>, Box<Type>),
+    /// A tuple type `(T, U, ...)` of two or more elements, e.g. the declared
+    /// type of a `let` binding holding a multi-return. Only ever produced by
+    /// [`crate::parser::Parser::parse_type`] parsing a parenthesized,
+    /// comma-separated type list -- a single parenthesized type with no
+    /// comma is just that type (grouping), not a 1-tuple.
+    Tuple(Vec<Type>),
+    /// A fixed-size inline array type `[T; N]`: tile grids, palettes,
+    /// register files, vertex layouts -- a compile-time-constant element
+    /// count, unlike `List<T>`'s runtime-growable length. Lowers to an
+    /// LLVM `[N x T]` array laid out inline (no RC header, no heap
+    /// allocation of its own), see `Ty::Array`.
+    Array(Box<Type>, u64),
 }
 
 impl Type {
@@ -209,7 +221,7 @@ impl Type {
         match self {
             Type::Named(name) => name == "GenRef",
             Type::Generic(name, _) => name == "GenRef",
-            Type::Fn(..) => false,
+            Type::Fn(..) | Type::Tuple(..) | Type::Array(..) => false,
         }
     }
 }
@@ -449,6 +461,31 @@ pub enum Expr {
         inner: Box<Expr>,
         span: Span,
     },
+    /// A tuple literal `(e1, e2, ...)` of two or more elements (a single
+    /// parenthesized expression with no comma is just grouping, and stays
+    /// `parse_primary`'s ordinary unwrap -- see its `LParen` arm). A trailing
+    /// comma after exactly one element (`(e1,)`) makes a 1-tuple.
+    TupleLit(Vec<Expr>, Span),
+    /// A tuple index `base.0`, `base.1`, ... -- distinct from `Field` (which
+    /// looks a name up in a *declared* struct's field list) since a tuple's
+    /// "fields" are purely positional and never named.
+    TupleIndex {
+        base: Box<Expr>,
+        index: usize,
+        span: Span,
+    },
+    /// A fixed-size array repeat literal `[value; N]` -- `value` is
+    /// evaluated exactly once (mirrors Rust's own `[expr; N]`) and copied
+    /// into all `N` slots. This is the *only* array literal form (see
+    /// `Type::Array`'s doc comment for why a `[e1, e2, ...]` distinct-
+    /// elements form isn't supported: that syntax is already `ListLit`, and
+    /// there's no expected-type propagation in this checker to
+    /// disambiguate the two by context).
+    ArrayRepeat {
+        value: Box<Expr>,
+        count: u64,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -474,7 +511,10 @@ impl Expr {
             | Expr::EnumVariant { span: s, .. }
             | Expr::Lambda { span: s, .. }
             | Expr::Try { span: s, .. }
+            | Expr::TupleIndex { span: s, .. }
+            | Expr::ArrayRepeat { span: s, .. }
             | Expr::ListLit(_, s) => *s,
+            Expr::TupleLit(_, s) => *s,
         }
     }
 }

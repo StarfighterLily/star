@@ -527,6 +527,21 @@ impl Codegen {
                 let val = self.emit_list_index(base, index, ty);
                 self.reg_of(&val)
             }
+            TypedExpr::ArrayIndex { base, index, ty, .. } => {
+                let Ty::Array(_, count) = self.expr_ty(base) else { unreachable!("ArrayIndex base must be Ty::Array") };
+                let val = self.emit_array_index(base, index, ty, count);
+                self.reg_of(&val)
+            }
+            TypedExpr::TupleIndex { base, index, ty, .. } => {
+                let base_ptr = self.emit_place(base);
+                let gep = self.tmp_name();
+                let bty = self.llvm_ty(&self.expr_ty(base));
+                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, bty, bty, base_ptr, index));
+                let reg = self.tmp_name();
+                let ts = self.llvm_ty(ty);
+                self.line(&format!("  {} = load {}, {}* {}", reg, ts, ts, gep));
+                reg
+            }
             _ => { self.err("cannot load from this expression", Span::dummy()); "%undef".into() }
         }
     }
@@ -563,6 +578,20 @@ impl Codegen {
             }
             TypedExpr::ListIndex { base, index, ty, .. } => {
                 self.store_list_index(base, index, ty, val);
+            }
+            TypedExpr::ArrayIndex { base, index, ty, .. } => {
+                let Ty::Array(_, count) = self.expr_ty(base) else { unreachable!("ArrayIndex base must be Ty::Array") };
+                self.store_array_index(base, index, ty, count, val);
+            }
+            TypedExpr::TupleIndex { base, index, ty, .. } => {
+                let base_ptr = self.emit_place(base);
+                let gep = self.tmp_name();
+                let bty = self.llvm_ty(&self.expr_ty(base));
+                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, bty, bty, base_ptr, index));
+                let ts = self.llvm_ty(ty);
+                let clean_val = val.strip_prefix(&format!("{} ", ts)).unwrap_or(val);
+                self.emit_release_at(&gep, ty);
+                self.line(&format!("  store {} {}, {}* {}", ts, clean_val, ts, gep));
             }
             _ => { self.err("cannot store to this expression", Span::dummy()); }
         }

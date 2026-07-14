@@ -317,6 +317,34 @@ impl Codegen {
                 self.line(&format!("  {} = load {}*, {}** {}", reg, struct_ty, struct_ty, ptr));
                 reg
             }
+            TypedExpr::TupleIndex { base, index, ty, .. } => {
+                // Same reasoning as `Field` below: must not go via
+                // `emit_place`'s `ListIndex` arm on a `list[idx]`-based
+                // tuple, so route through the read-only `emit_read_place`.
+                let base_ptr = self.emit_read_place(base);
+                let struct_ty = self.llvm_ty(&self.expr_ty(base));
+                let gep = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, struct_ty, struct_ty, base_ptr, index));
+                let reg = self.tmp_name();
+                let ts = self.llvm_ty(ty);
+                self.line(&format!("  {} = load {}, {}* {}", reg, ts, ts, gep));
+                self.emit_retain_at(&gep, ty);
+                reg
+            }
+            TypedExpr::ArrayRepeat { value, count, elem_ty, .. } => self.emit_array_repeat(value, *count, elem_ty),
+            TypedExpr::ArrayIndex { base, index, ty, .. } => {
+                let Ty::Array(_, count) = self.expr_ty(base) else { unreachable!("ArrayIndex base must be Ty::Array") };
+                self.emit_array_index(base, index, ty, count)
+            }
+            // `.len()` is resolved entirely by the checker to the array's
+            // static `count` (see `Checker::infer_array_method`) -- `base`
+            // is still evaluated here (discarding the result) purely so any
+            // side effects computing it might have (e.g. a call expression
+            // yielding the array) still happen.
+            TypedExpr::ArrayLen { base, count, .. } => {
+                self.emit_expr(base);
+                format!("i32 {}", count)
+            }
             TypedExpr::Field { base, field, ty, .. } => {
                 if self.expr_ty(base).is_vec() {
                     return self.emit_swizzle_read(base, field);
@@ -836,6 +864,29 @@ impl Codegen {
                         format!("%{} {}", name, loaded)
                     }
                 }
+            }
+            TypedExpr::TupleLit { elems, ty, .. } => {
+                // Mirrors `StructLit`'s generic (non-Vec/Mat4) branch above,
+                // just against an anonymous literal struct type (no `%name`
+                // to alloca) and with no trailing-field zero-fill -- a
+                // tuple literal always supplies every element, unlike a
+                // named struct constructor call that a `sequence` may
+                // deliberately under-supply.
+                let struct_ty = self.llvm_ty(ty);
+                let ptr = self.tmp_name();
+                self.line(&format!("  {} = alloca {}", ptr, struct_ty));
+                for (i, e) in elems.iter().enumerate() {
+                    let val = self.emit_expr(e);
+                    let ety = self.expr_ty(e);
+                    let ets = self.llvm_ty(&ety);
+                    let clean_val = self.untag(&val, &ety);
+                    let gep = self.tmp_name();
+                    self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, struct_ty, struct_ty, ptr, i));
+                    self.line(&format!("  store {} {}, {}* {}", ets, clean_val, ets, gep));
+                }
+                let loaded = self.tmp_name();
+                self.line(&format!("  {} = load {}, {}* {}", loaded, struct_ty, struct_ty, ptr));
+                format!("{} {}", struct_ty, loaded)
             }
             TypedExpr::FStr(parts, _, _) => {
                 // Unlike `emit_print_like`'s special case for an f-string

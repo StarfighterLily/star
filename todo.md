@@ -32,6 +32,10 @@ rather than speculatively.
   `Map<K,V>`/`Set<T>` landed (linear-scan lookup plus a generated
   structural-equality function per key/element type, not a hash table yet --
   see `docs/design.md`'s Type System plan and `examples/map_set.star`).
+- ~~Tuples and fixed-size arrays~~ -- done: `(T, U, ...)` and `[T; N]` landed
+  (both stored inline, no RC header/heap allocation of their own -- see
+  `docs/design.md`'s Type System plan and `examples/tuples_arrays.star`).
+  `Table<T>`/`Ring<T,N>` remain unimplemented.
 - Fill out math builtins as needed (trig, log/exp, etc.).
 
 ### 7. Wire up reflection into an actual runtime feature
@@ -49,6 +53,82 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Feature round continuing the type-system expansion `docs/design.md` laid out and "Expanded
+types 1" began (`Option`/`Result`/`Map`/`Set`): added tuples `(T, U, ...)` and fixed-size
+arrays `[T; N]`, the remaining two items in that section's "lowest-effort, highest-value
+slice." Both land as genuine `Ty` variants (`Ty::Tuple`/`Ty::Array`) stored *inline* -- no
+RC header, no heap allocation of their own, unlike `List`/`Map`/`Set`'s heap-backed,
+copy-on-write buffers -- laid out and accessed exactly like a nominal struct's fields (a
+literal, un-named LLVM aggregate type for tuples; a plain `[N x T]` for arrays). New tests
+in `tests/frontend.rs` (578 -> 606, all green); all 40 pre-existing examples still `star
+check` cleanly, plus a new `examples/tuples_arrays.star` (41 total).
+1. **Tuples `(T, U, ...)`**: `Type::Tuple`/`Ty::Tuple(Vec<Ty>)`, a dedicated `Expr::TupleLit`/
+   `TypedExpr::TupleLit` literal, and a dedicated `Expr::TupleIndex`/`TypedExpr::TupleIndex`
+   for `.0`/`.1`/... (deliberately *not* reusing `Field`, which looks a name up in a
+   *declared* struct's field list -- a tuple's positions are never named). The lexer already
+   tokenizes a standalone `.` as its own `Dot` regardless of what follows (never folded into
+   a following digit the way `1.0` folds a decimal point into a float), so `t.0` needed no
+   lexer change at all, just teaching `parse_postfix` to recognize an `Int` token right after
+   `Dot`. A parenthesized expression/type with no comma stays ordinary grouping (unchanged
+   pre-existing behavior); only a trailing comma after exactly one element (`(x,)`) or two-or-
+   more comma-separated elements make a tuple, mirroring Rust's own disambiguation rule.
+   Codegen reuses `StructLit`'s exact non-Vec/Mat4 branch shape (alloca the aggregate type,
+   GEP+store each element, load the whole thing back out as a value) against an anonymous
+   LLVM literal struct type (`llvm_ty` just formats `"{ T0, T1, ... }"` with no `%name`
+   declaration needed -- `Ty::Closure`'s `"{ i8*, i8* }"` already established that LLVM
+   accepts literal struct types with no declaration at all), so no new codegen primitive was
+   needed. RC-walk (`rc.rs`), structural-equality codegen (`eq.rs`, needed since a tuple of
+   hashable elements is itself a valid `Map`/`Set` key/element type -- `check_hashable_ty`
+   gained a `Ty::Tuple` arm mirroring `Ty::Named`'s struct-field recursion), reflection
+   naming, and every generic-instantiation helper (`mangle_ty` x2, `ty_to_type`, `subst_type`/
+   `subst_expr`, `unify_ty`) all needed a parallel `Tuple` arm, found mechanically by
+   `cargo build`'s non-exhaustive-match errors against the `x86_64-pc-windows-gnu` toolchain
+   (this repo's actual target -- the default `msvc` host toolchain has no linker available in
+   a plain shell here) rather than by grepping for every call site by hand. `mut` enforcement
+   (`assign_root_name`) treats a tuple element exactly like a swizzle write on `Vec2`/`Vec3`/
+   `Vec4`: no per-element `mut` declaration exists to check independently (there's no field
+   syntax to put one on), so the root binding's own `mut` is the only gate. `frame:` escape
+   analysis (`frame_escape_source`) gained a `TupleIndex` arm mirroring `Field`'s chain-
+   following exactly, since a tuple element used as a method-call receiver resolves to a
+   pointer into the tuple's own storage (via `emit_place`) the same way a struct field does --
+   confirmed by reasoning through the *receiver-pointer* path specifically (not the ordinary
+   by-value load/store path every other read uses), since that's the one path where a copy
+   genuinely isn't made.
+2. **Fixed-size arrays `[T; N]`**: `Type::Array(Box<Type>, u64)`/`Ty::Array(Box<Ty>, u64)`,
+   with `N` restricted to a plain integer literal (no const-expression evaluator in this
+   compiler). The literal syntax is deliberately *only* the Rust-style repeat form
+   `[value; N]` (evaluated once, its bytes copied into every slot, with `N-1` extra retains
+   for an RC-bearing element type since one owned value becomes `N` independent owners) --
+   a distinct-elements literal (`[e1, e2, e3]`) was considered and rejected for this round,
+   since that syntax is already `List<T>`'s `ListLit` and this checker has no expected-type
+   propagation to disambiguate the two by context (confirmed by checking: struct-literal type
+   arguments are inferred by unifying *against* the arguments, never propagated *into* them,
+   and no other call site threads an "expected type" down into expression inference either).
+   Required a genuinely new token, `TokenKind::Semi` (`;`) -- the *only* place this grammar
+   ever uses one, since Star has no statement-separator use for it at all. Indexing shares
+   `Expr::GenRefIndex`'s existing `[..]` dispatch (on the base's resolved type) alongside
+   `GenRef<T>`/`List<T>`/`str`, with the same bounds-checked, fails-safe convention as
+   `List<T>`: a zero-value read and a silent-no-op write out of bounds, implemented via one
+   shared `array_index_ptr` helper (new `src/codegen/array.rs`) that every read/write/place
+   function builds on, so those paths can't drift apart on bounds-check behavior the way
+   `list.rs`'s separate read/write implementations already required extra care to keep in
+   sync historically. Unlike `List<T>`, there's no copy-on-write uniqueness gate at all --
+   an array has no separate heap buffer to unique, just a GEP into whatever storage `base`
+   already resolves to -- so `emit_array_index_place`/`_read_place` are each one line
+   (`emit_place`/`emit_read_place` on `base`, then the shared bounds-check-and-GEP helper),
+   far simpler than the list-index equivalents. `.len()` is resolved *entirely* by the
+   checker to the array's static `count` (`TypedExpr::ArrayLen`, a new `Checker::
+   infer_array_method` mirroring `infer_list_method`'s dispatch shape but with only one
+   method) -- codegen still evaluates (and discards) `base` for any side effects computing it
+   might have, but never touches the array's actual runtime storage, confirmed by a dedicated
+   test asserting the emitted IR is a bare `ret i32 7` constant fold with no load at all.
+   Every other touch point (RC-walk, structural equality, hashability, reflection naming,
+   mangling, `mut` enforcement, `par`/`swarm` disjointness, `frame:` escape analysis, module
+   renaming, `sequence` hoisting) mirrors the identical `Tuple` arm added in the same round,
+   found the same way via `cargo build`'s exhaustive-match errors.
+
+---
+
 Thorough bug-hunting round across the whole compiler, originally planned as five parallel
 research agents (vector_math/eq/arena codegen; reflect/frame_analysis/par_analysis;
 rc/closure/par_pool/list codegen; the core type checker; a third pass over

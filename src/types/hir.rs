@@ -250,6 +250,33 @@ pub enum TypedExpr {
     /// `set.insert(v)` / `.remove(v)` / `.contains(v)` / `.len()`, see
     /// `Checker::infer_set_method`.
     SetMethod { base: Box<TypedExpr>, method: SetMethod, args: Vec<TypedExpr>, ty: Ty, span: Span },
+    /// A tuple literal `(e1, e2, ...)`, see [`crate::ast::Expr::TupleLit`].
+    /// `ty` is always `Ty::Tuple(elems.map(into_ty))`.
+    TupleLit { elems: Vec<TypedExpr>, ty: Ty, span: Span },
+    /// `tuple.0`, `tuple.1`, ..., see [`crate::ast::Expr::TupleIndex`]. `ty`
+    /// is the indexed element's type, already bounds-checked at compile time
+    /// against the tuple's arity (unlike `ListIndex`, there's no runtime
+    /// bounds check to lower -- the index is a literal, and the tuple's
+    /// arity is part of its static type).
+    TupleIndex { base: Box<TypedExpr>, index: usize, ty: Ty, span: Span },
+    /// `[value; N]`, see [`crate::ast::Expr::ArrayRepeat`]. `elem_ty` is
+    /// `value`'s own inferred type; `ty` is always `Ty::Array(elem_ty, count)`.
+    ArrayRepeat { value: Box<TypedExpr>, count: u64, elem_ty: Ty, span: Span },
+    /// `arr[idx]`: a bounds-checked fixed-size array element access, sharing
+    /// `Expr::GenRefIndex`'s syntax the same way `ListIndex`/`GenRefIndex`/
+    /// `StrIndex` already do (see `Checker::infer_expr`'s dispatch on the
+    /// base's resolved type). Unlike `List<T>`, there's no copy-on-write
+    /// uniqueness gate -- an array is stored inline as part of its own
+    /// binding's storage, not behind a shared heap pointer.
+    ArrayIndex { base: Box<TypedExpr>, index: Box<TypedExpr>, ty: Ty, span: Span },
+    /// `arr.len()` -- always `count` (the array's compile-time-constant
+    /// size), resolved entirely by the checker with no runtime read of the
+    /// array's storage at all (unlike `ListMethod::Len`, which reads a
+    /// runtime-tracked length out of the list's heap buffer). `base` is
+    /// still carried and still evaluated by codegen (for any side effects
+    /// evaluating it might have -- e.g. a call expression yielding the
+    /// array), just never used to compute the result.
+    ArrayLen { base: Box<TypedExpr>, count: u64, span: Span },
     Error(Ty),
 }
 
@@ -316,6 +343,11 @@ impl TypedExpr {
             TypedExpr::SetNew { elem_ty, .. } => Ty::Set(Box::new(elem_ty)),
             TypedExpr::MapMethod { ty, .. } => ty,
             TypedExpr::SetMethod { ty, .. } => ty,
+            TypedExpr::TupleLit { ty, .. } => ty,
+            TypedExpr::TupleIndex { ty, .. } => ty,
+            TypedExpr::ArrayIndex { ty, .. } => ty,
+            TypedExpr::ArrayRepeat { count, elem_ty, .. } => Ty::Array(Box::new(elem_ty), count),
+            TypedExpr::ArrayLen { .. } => Ty::Int,
         }
     }
 
@@ -330,7 +362,10 @@ impl TypedExpr {
             | TypedExpr::Closure { span, .. } | TypedExpr::ListNew { span, .. } | TypedExpr::ListLit { span, .. }
             | TypedExpr::ListIndex { span, .. } | TypedExpr::ListMethod { span, .. }
             | TypedExpr::StrIndex { span, .. } | TypedExpr::MapNew { span, .. } | TypedExpr::SetNew { span, .. }
-            | TypedExpr::MapMethod { span, .. } | TypedExpr::SetMethod { span, .. } => *span,
+            | TypedExpr::MapMethod { span, .. } | TypedExpr::SetMethod { span, .. }
+            | TypedExpr::TupleLit { span, .. } | TypedExpr::TupleIndex { span, .. }
+            | TypedExpr::ArrayRepeat { span, .. } | TypedExpr::ArrayIndex { span, .. }
+            | TypedExpr::ArrayLen { span, .. } => *span,
             TypedExpr::SelfExpr(_, s) => *s,
             TypedExpr::Error(_) => Span::dummy(),
         }

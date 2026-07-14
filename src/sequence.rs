@@ -344,6 +344,13 @@ fn scan_expr_for_nested_yield(expr: &Expr, errors: &mut Vec<Diagnostic>) {
             }
         }
         Expr::Try { inner, .. } => scan_expr_for_nested_yield(inner, errors),
+        Expr::TupleLit(elems, _) => {
+            for e in elems {
+                scan_expr_for_nested_yield(e, errors);
+            }
+        }
+        Expr::TupleIndex { base, .. } => scan_expr_for_nested_yield(base, errors),
+        Expr::ArrayRepeat { value, .. } => scan_expr_for_nested_yield(value, errors),
         Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Ident(..) | Expr::SelfExpr(..) => {}
     }
 }
@@ -541,5 +548,12 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
         }
         Expr::ListLit(elems, span) => Expr::ListLit(elems.iter().map(|e| rewrite_expr(e, hoist)).collect(), *span),
         Expr::Try { inner, span } => Expr::Try { inner: Box::new(rewrite_expr(inner, hoist)), span: *span },
+        Expr::TupleLit(elems, span) => Expr::TupleLit(elems.iter().map(|e| rewrite_expr(e, hoist)).collect(), *span),
+        Expr::TupleIndex { base, index, span } => {
+            Expr::TupleIndex { base: Box::new(rewrite_expr(base, hoist)), index: *index, span: *span }
+        }
+        Expr::ArrayRepeat { value, count, span } => {
+            Expr::ArrayRepeat { value: Box::new(rewrite_expr(value, hoist)), count: *count, span: *span }
+        }
     }
 }

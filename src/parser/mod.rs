@@ -161,6 +161,51 @@ impl Parser {
     }
 
     fn parse_type_inner(&mut self) -> Option<Type> {
+        // A fixed-size array type `[T; N]` -- `N` is a plain non-negative
+        // integer literal (no const-expression evaluator in this compiler),
+        // matching `Expr::ArrayRepeat`'s own restriction at the value level.
+        if self.at(&TokenKind::LBracket) {
+            self.advance();
+            let elem = self.parse_type()?;
+            self.expect(&TokenKind::Semi)?;
+            let count_span = self.peek_span();
+            let TokenKind::Int(count) = self.peek_kind() else {
+                self.error("expected an integer literal array size after `;`", count_span);
+                return None;
+            };
+            self.advance();
+            if count < 0 {
+                self.error("array size cannot be negative", count_span);
+                return None;
+            }
+            self.expect(&TokenKind::RBracket)?;
+            return Some(Type::Array(Box::new(elem), count as u64));
+        }
+        // A tuple type `(T, U, ...)`, or just a parenthesized type (no
+        // comma) unwrapped back to that type directly -- types have no
+        // infix operators needing grouping, so a lone `(T)` is never itself
+        // meaningful; only a comma makes it a genuine tuple.
+        if self.at(&TokenKind::LParen) {
+            self.advance();
+            let mut elems = Vec::new();
+            let mut trailing_comma = false;
+            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                elems.push(self.parse_type()?);
+                trailing_comma = self.eat(&TokenKind::Comma);
+                if !trailing_comma {
+                    break;
+                }
+            }
+            self.expect(&TokenKind::RParen)?;
+            if elems.len() == 1 && !trailing_comma {
+                return Some(elems.into_iter().next().unwrap());
+            }
+            if elems.is_empty() {
+                self.error("expected a type inside `(...)`", self.prev_span());
+                return None;
+            }
+            return Some(Type::Tuple(elems));
+        }
         // A closure/function type: `Fn(T1, T2, ...) -> Ret`. `Fn` is a plain
         // capitalized identifier here (distinct from the `fn` keyword used
         // for declarations/lambda literals), so it's recognized by name

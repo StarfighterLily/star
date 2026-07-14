@@ -1,0 +1,136 @@
+//! Fixed-size array (`[T; N]`) codegen: the `[value; N]` repeat literal,
+//! indexing, and `.len()` (resolved entirely by the checker as a compile-time
+//! constant -- see `Checker::infer_array_method` -- so there's no codegen
+//! for it at all).
+//!
+//! Unlike `List<T>`, an array has no separate heap allocation and no
+//! copy-on-write uniqueness gate: it's stored inline as part of whatever
+//! binding owns it, exactly like `Ty::Tuple`. Its "place" is just a GEP into
+//! that same storage, gated by a runtime bounds check against its
+//! compile-time-known length `N` (mirroring `List<T>`'s own out-of-bounds
+//! convention: a zero-value fallback on read, a silent no-op on write).
+
+use crate::types::{Ty, TypedExpr};
+
+use super::Codegen;
+
+impl Codegen {
+    /// `[value; N]`: evaluate `value` once and copy its bytes into every
+    /// slot (mirrors Rust's own `[expr; N]` evaluating `expr` exactly once).
+    /// The first slot's store is a plain move of the original evaluation's
+    /// own ownership; every additional slot needs its own retain, since one
+    /// owned value became `N` independent owners (a no-op unless `elem_ty`
+    /// is RC-bearing). Mirrors `TupleLit`'s codegen shape (an anonymous,
+    /// no-`%name` aggregate built via alloca+GEP+store, then loaded back out
+    /// as a value) against `[N x T]` instead of `{ T0, T1, ... }`.
+    pub(super) fn emit_array_repeat(&mut self, value: &TypedExpr, count: u64, elem_ty: &Ty) -> String {
+        let elem_llvm = self.llvm_ty(elem_ty);
+        let arr_ty = format!("[{} x {}]", count, elem_llvm);
+        let ptr = self.tmp_name();
+        self.line(&format!("  {} = alloca {}", ptr, arr_ty));
+        let val = self.emit_expr(value);
+        let clean_val = self.untag(&val, elem_ty);
+        for i in 0..count {
+            let gep = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i64 {}", gep, arr_ty, arr_ty, ptr, i));
+            self.line(&format!("  store {} {}, {}* {}", elem_llvm, clean_val, elem_llvm, gep));
+            if i > 0 {
+                self.emit_retain_at(&gep, elem_ty);
+            }
+        }
+        let loaded = self.tmp_name();
+        self.line(&format!("  {} = load {}, {}* {}", loaded, arr_ty, arr_ty, ptr));
+        format!("{} {}", arr_ty, loaded)
+    }
+
+    /// Bounds-checked pointer to `base_ptr`'s element at `index`: a real GEP
+    /// into the array's own storage when in bounds, or a fresh, zeroed,
+    /// disconnected alloca when not (so a read through it sees a well-defined
+    /// zero value, and a write through it is an observable no-op -- nothing
+    /// else ever points at that dummy slot). Shared by every other function
+    /// in this module so the read/write/place paths can never drift apart on
+    /// bounds-check or out-of-bounds behavior.
+    fn array_index_ptr(&mut self, base_ptr: &str, index: &TypedExpr, elem_ty: &Ty, count: u64, label_prefix: &str) -> String {
+        let elem_llvm = self.llvm_ty(elem_ty);
+        let arr_ty = format!("[{} x {}]", count, elem_llvm);
+
+        let idx_val = self.emit_expr(index);
+        let idx_bare = self.untag(&idx_val, &Ty::Int);
+        let idx64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", idx64, idx_bare));
+
+        // Unsigned compare: a negative index sign-extends/wraps to a huge
+        // unsigned value, so it safely fails this bounds check too (mirrors
+        // `emit_list_index`'s identical trick).
+        let in_bounds = self.tmp_name();
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, count));
+        let ok_label = self.block_label(&format!("{}_ok", label_prefix));
+        let oob_label = self.block_label(&format!("{}_oob", label_prefix));
+        let end_label = self.block_label(&format!("{}_end", label_prefix));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, ok_label, oob_label));
+
+        self.open_block(&ok_label);
+        let ok_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i64 {}", ok_ptr, arr_ty, arr_ty, base_ptr, idx64));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&oob_label);
+        let dummy = self.tmp_name();
+        self.line(&format!("  {} = alloca {}", dummy, elem_llvm));
+        let zero = self.zero_value(elem_ty);
+        self.line(&format!("  store {} {}, {}* {}", elem_llvm, zero, elem_llvm, dummy));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
+        let result = self.tmp_name();
+        self.line(&format!("  {} = phi {}* [ {}, %{} ], [ {}, %{} ]", result, elem_llvm, ok_ptr, ok_label, dummy, oob_label));
+        result
+    }
+
+    /// Place resolution for an `arr[idx]` *base* of a further access
+    /// (`arr[i].field = v`, nested indexing, a mutating method call on the
+    /// element, ...).
+    pub(super) fn emit_array_index_place(&mut self, base: &TypedExpr, index: &TypedExpr, elem_ty: &Ty, count: u64) -> String {
+        let base_ptr = self.emit_place(base);
+        self.array_index_ptr(&base_ptr, index, elem_ty, count, "arr_place")
+    }
+
+    /// Read-only counterpart to `emit_array_index_place`, mirroring
+    /// `emit_list_index_read_place`: routes `base` through `emit_read_place`
+    /// instead of `emit_place`, so a `list[i]`-based array doesn't trigger
+    /// that list's copy-on-write clone-on-read bug for a pure read.
+    pub(super) fn emit_array_index_read_place(&mut self, base: &TypedExpr, index: &TypedExpr, elem_ty: &Ty, count: u64) -> String {
+        let base_ptr = self.emit_read_place(base);
+        self.array_index_ptr(&base_ptr, index, elem_ty, count, "arr_rplace")
+    }
+
+    /// `arr[idx]`: bounds-checked element read, yielding the element type's
+    /// zero value out of bounds instead of reading past the array (mirrors
+    /// `emit_list_index`'s identical convention).
+    pub(super) fn emit_array_index(&mut self, base: &TypedExpr, index: &TypedExpr, elem_ty: &Ty, count: u64) -> String {
+        let ptr = self.emit_array_index_read_place(base, index, elem_ty, count);
+        let elem_llvm = self.llvm_ty(elem_ty);
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = load {}, {}* {}", reg, elem_llvm, elem_llvm, ptr));
+        // Reading an element hands out an independent copy while the array
+        // keeps its own (see `rc.rs`; a no-op unless `elem_ty` is
+        // RC-bearing). The out-of-bounds fallback has no real backing
+        // allocation, so there's nothing to retain there.
+        self.emit_retain_at(&ptr, elem_ty);
+        format!("{} {}", elem_llvm, reg)
+    }
+
+    /// `arr[idx] = v`: bounds-checked element write; an out-of-bounds index
+    /// is a silent no-op (mirrors `store_list_index`), since it only ever
+    /// writes into `array_index_ptr`'s disconnected dummy slot.
+    pub(super) fn store_array_index(&mut self, base: &TypedExpr, index: &TypedExpr, elem_ty: &Ty, count: u64, val: &str) {
+        let ptr = self.emit_array_index_place(base, index, elem_ty, count);
+        let elem_llvm = self.llvm_ty(elem_ty);
+        let clean_val = self.untag(val, elem_ty);
+        // Same reasoning as `Codegen::store_target`'s `Ident`/`Field` arms:
+        // release the old element *after* `val` was already computed (and
+        // retained, if it's a copy), right before overwriting it.
+        self.emit_release_at(&ptr, elem_ty);
+        self.line(&format!("  store {} {}, {}* {}", elem_llvm, clean_val, elem_llvm, ptr));
+    }
+}

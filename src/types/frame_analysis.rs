@@ -211,6 +211,20 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>, local_s
         TypedExpr::Field { base, ty, .. } => {
             if matches!(ty, Ty::Named(_)) { frame_escape_source(base, frame_locals, local_structs) } else { None }
         }
+        // Same reasoning as `Field` above: a tuple element read is just a
+        // positional projection of `base`'s own storage (an anonymous
+        // struct-shaped aggregate, laid out inline exactly like a nominal
+        // struct's fields), so a `Ty::Named`-typed element still needs to
+        // chain back through `base` to find out whether it ultimately
+        // reaches frame-owned storage.
+        TypedExpr::TupleIndex { base, ty, .. } => {
+            if matches!(ty, Ty::Named(_)) { frame_escape_source(base, frame_locals, local_structs) } else { None }
+        }
+        // Same reasoning as `TupleIndex` above: an array element read is a
+        // positional projection of `base`'s own inline storage.
+        TypedExpr::ArrayIndex { base, ty, .. } => {
+            if matches!(ty, Ty::Named(_)) { frame_escape_source(base, frame_locals, local_structs) } else { None }
+        }
         TypedExpr::StructLit { args, ty, .. } => {
             if matches!(ty, Ty::Named(_)) {
                 args.iter().find_map(|a| frame_escape_source(a, frame_locals, local_structs))
@@ -312,6 +326,19 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>, local_s
         // frame-local struct's identity -- same reasoning as `ListIndex`
         // just above.
         | TypedExpr::StrIndex { .. }
+        // A tuple literal's own type is always `Ty::Tuple`, never
+        // `Ty::Named` -- and since a tuple has no user-declared methods at
+        // all, it can never itself be a call receiver, so (unlike
+        // `StructLit`) there's no need to search its elements here; any
+        // `Ty::Named` element that matters is reached individually through
+        // `TupleIndex` above instead.
+        | TypedExpr::TupleLit { .. }
+        // Same reasoning as `TupleLit` above: an array's own type is always
+        // `Ty::Array`, never `Ty::Named`, and has no user-declared methods
+        // either. `ArrayLen`'s result is always `Ty::Int`, irrelevant here
+        // regardless of what its `base` is.
+        | TypedExpr::ArrayRepeat { .. }
+        | TypedExpr::ArrayLen { .. }
         | TypedExpr::Error(_) => None,
     }
 }

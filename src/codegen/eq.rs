@@ -106,6 +106,32 @@ impl Codegen {
                 }
                 acc.unwrap_or_else(|| "true".into())
             }
+            Ty::Tuple(elems) => {
+                let struct_ty = self.llvm_ty(ty);
+                let mut acc: Option<String> = None;
+                for (i, fty) in elems.iter().enumerate() {
+                    let av = self.tmp_name();
+                    self.line(&format!("  {} = extractvalue {} {}, {}", av, struct_ty, a, i));
+                    let bv = self.tmp_name();
+                    self.line(&format!("  {} = extractvalue {} {}, {}", bv, struct_ty, b, i));
+                    let cmp = self.emit_eq_body(&av, &bv, fty);
+                    acc = Some(self.and_acc(acc, &cmp));
+                }
+                acc.unwrap_or_else(|| "true".into())
+            }
+            Ty::Array(elem, count) => {
+                let struct_ty = self.llvm_ty(ty);
+                let mut acc: Option<String> = None;
+                for i in 0..*count {
+                    let av = self.tmp_name();
+                    self.line(&format!("  {} = extractvalue {} {}, {}", av, struct_ty, a, i));
+                    let bv = self.tmp_name();
+                    self.line(&format!("  {} = extractvalue {} {}, {}", bv, struct_ty, b, i));
+                    let cmp = self.emit_eq_body(&av, &bv, elem);
+                    acc = Some(self.and_acc(acc, &cmp));
+                }
+                acc.unwrap_or_else(|| "true".into())
+            }
             // Unreachable in practice -- `Checker::check_hashable_ty` rejects
             // every other `Ty` (GenRef/List/Map/Set/Closure/Ptr/Mat4) as a
             // Map/Set key/element type before codegen ever sees one here.

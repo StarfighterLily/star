@@ -12,6 +12,7 @@
 //! arithmetic), and `builtins` (the `print`/math/string standard library).
 
 mod arena;
+mod array;
 mod builtins;
 mod closure;
 mod eq;
@@ -517,6 +518,12 @@ impl Codegen {
                 .get(n)
                 .map(|fields| fields.iter().map(|f| self.type_align(f)).max().unwrap_or(1))
                 .unwrap_or(8),
+            // Same rule as `Ty::Named` above, just with the element types
+            // already in hand instead of a `struct_field_types` lookup.
+            Ty::Tuple(elems) => elems.iter().map(|f| self.type_align(f)).max().unwrap_or(1),
+            // An array's alignment is just its element's -- LLVM never pads
+            // an array's own alignment wider than its element type's.
+            Ty::Array(elem, _) => self.type_align(elem),
             // A fieldless enum lowers to a bare `i32` discriminant (align 4,
             // see `llvm_ty`); only a payload enum is the `{ i32, [W x i64] }`
             // tagged union that needs 8-byte alignment.
@@ -580,6 +587,14 @@ impl Codegen {
                 Some(fields) => self.padded_struct_size(fields),
                 None => 8,
             },
+            // Same struct-layout algorithm as `Ty::Named` above, just with
+            // the element types already in hand instead of a
+            // `struct_field_types` lookup.
+            Ty::Tuple(elems) => self.padded_struct_size(elems),
+            // `N` copies of the element's own (already alignment-padded)
+            // size, tightly packed -- LLVM arrays have no inter-element
+            // padding beyond each element's own natural size.
+            Ty::Array(elem, count) => self.type_size(elem) * *count as u32,
             // A reference-counted object pointer, same as `Ty::Str` -- the
             // `{ T*, i64, i64 }` payload lives on the heap, not inline (see
             // `crate::codegen::list`).
@@ -645,6 +660,13 @@ impl Codegen {
             // shape each points past its `star_rc_alloc` header.
             Ty::Map(..) => "i8*".into(),
             Ty::Set(_) => "i8*".into(),
+            // An anonymous LLVM literal struct type -- no `%name`
+            // declaration needed (unlike a nominal `struct`), since a tuple
+            // is never referred to by name at the source level; LLVM
+            // supports `getelementptr`/`extractvalue`/`load`/`store` against
+            // a literal struct type exactly like a named one.
+            Ty::Tuple(elems) => format!("{{ {} }}", elems.iter().map(|e| self.llvm_ty(e)).collect::<Vec<_>>().join(", ")),
+            Ty::Array(elem, count) => format!("[{} x {}]", count, self.llvm_ty(elem)),
             // A fieldless enum has no LLVM struct declaration of its own --
             // it's just a dense discriminant, so it's represented directly
             // as `i32` (see `enum_variant_index`). A payload enum lowers to
@@ -693,6 +715,21 @@ impl Codegen {
                 format!("map_{}_{}{}", km.len(), km, self.mangle_ty(v))
             }
             Ty::Set(inner) => format!("set_{}", self.mangle_ty(inner)),
+            // Same length-prefixing reasoning as `Ty::Map` just above --
+            // arity plus a length prefix on every element makes the whole
+            // string unambiguous regardless of what any element's own
+            // mangled form contains.
+            Ty::Tuple(elems) => {
+                let mut s = format!("tuple{}", elems.len());
+                for e in elems {
+                    let m = self.mangle_ty(e);
+                    s.push_str(&format!("_{}_{}", m.len(), m));
+                }
+                s
+            }
+            // No ambiguous boundary to confuse (a single wrapped type plus
+            // one integer count), same reasoning as `List`/`Set` above.
+            Ty::Array(elem, count) => format!("arr{}_{}", count, self.mangle_ty(elem)),
             Ty::Enum(n) => format!("e_{}", n),
             Ty::Closure(..) => "closure".into(),
             Ty::Ptr => "ptr".into(),
@@ -764,7 +801,8 @@ impl Codegen {
             Ty::Map(..) => "null".into(),
             Ty::Set(_) => "null".into(),
             Ty::Enum(n) if !self.enum_is_payload(n) => "0".into(),
-            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat4 | Ty::Named(_) | Ty::GenRef(_) | Ty::Enum(_) | Ty::Closure(..) => "zeroinitializer".into(),
+            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat4 | Ty::Named(_) | Ty::GenRef(_) | Ty::Enum(_) | Ty::Closure(..) | Ty::Tuple(_)
+            | Ty::Array(..) => "zeroinitializer".into(),
         }
     }
 
@@ -810,6 +848,13 @@ impl Codegen {
                 self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, bty, bty, base_ptr, idx));
                 gep
             }
+            TypedExpr::TupleIndex { base, index, .. } => {
+                let base_ptr = self.emit_place(base);
+                let gep = self.tmp_name();
+                let bty = self.llvm_ty(&self.expr_ty(base));
+                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, bty, bty, base_ptr, index));
+                gep
+            }
             // `list[idx]`/`gen_ref[idx]` used as the *base* of a further
             // access (`list[i].field = v`, `list[i].push(x)`,
             // `gen_ref[0].hp -= 10`, `m[i][j] = v`, ...): resolve to a real
@@ -820,6 +865,10 @@ impl Codegen {
             // `emit_genref_index_place`'s own doc comments for the bug this
             // closes.
             TypedExpr::ListIndex { base, index, ty, .. } => self.emit_list_index_place(base, index, ty),
+            TypedExpr::ArrayIndex { base, index, ty, .. } => {
+                let Ty::Array(_, count) = self.expr_ty(base) else { unreachable!("ArrayIndex base must be Ty::Array") };
+                self.emit_array_index_place(base, index, ty, count)
+            }
             TypedExpr::GenRefIndex { base, ty, span, .. } => self.emit_genref_index_place(base, ty, *span),
             // Any other expression (e.g. chaining a field access directly
             // onto a struct returned *by value*) has no existing storage to
@@ -864,7 +913,18 @@ impl Codegen {
                 self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, bty, bty, base_ptr, idx));
                 gep
             }
+            TypedExpr::TupleIndex { base, index, .. } => {
+                let base_ptr = self.emit_read_place(base);
+                let gep = self.tmp_name();
+                let bty = self.llvm_ty(&self.expr_ty(base));
+                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, bty, bty, base_ptr, index));
+                gep
+            }
             TypedExpr::ListIndex { base, index, ty, .. } => self.emit_list_index_read_place(base, index, ty),
+            TypedExpr::ArrayIndex { base, index, ty, .. } => {
+                let Ty::Array(_, count) = self.expr_ty(base) else { unreachable!("ArrayIndex base must be Ty::Array") };
+                self.emit_array_index_read_place(base, index, ty, count)
+            }
             _ => self.emit_place(expr),
         }
     }
@@ -945,6 +1005,11 @@ impl Codegen {
             TypedExpr::SetMethod { ty, .. } => ty.clone(),
             TypedExpr::SelfExpr(ty, _) => ty.clone(),
             TypedExpr::If { ty, .. } => ty.clone(),
+            TypedExpr::TupleLit { ty, .. } => ty.clone(),
+            TypedExpr::TupleIndex { ty, .. } => ty.clone(),
+            TypedExpr::ArrayRepeat { count, elem_ty, .. } => Ty::Array(Box::new(elem_ty.clone()), *count),
+            TypedExpr::ArrayIndex { ty, .. } => ty.clone(),
+            TypedExpr::ArrayLen { .. } => Ty::Int,
         }
     }
 

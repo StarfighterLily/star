@@ -69,6 +69,11 @@ pub enum TokenKind {
     Colon,
     ColonColon, // ::
     Comma,
+    /// `;` -- used exactly once in the grammar, to separate the element
+    /// type/value from the count in a fixed-size array type/expression
+    /// (`[T; N]`/`[value; N]`); Star has no statement separator use for it
+    /// at all (see `docs/design.md`'s "strips away the noise of semicolons").
+    Semi,
     Dot,
     DotDot,     // ..
     Arrow,      // ->
@@ -153,6 +158,7 @@ impl TokenKind {
             TokenKind::Colon => "':'".into(),
             TokenKind::ColonColon => "'::'".into(),
             TokenKind::Comma => "','".into(),
+            TokenKind::Semi => "';'".into(),
             TokenKind::Dot => "'.'".into(),
             TokenKind::DotDot => "'..'".into(),
             TokenKind::Arrow => "'->'".into(),
@@ -607,6 +613,7 @@ impl<'src> Lexer<'src> {
         let kind = match c {
             b':' => TokenKind::Colon,
             b',' => TokenKind::Comma,
+            b';' => TokenKind::Semi,
             b'.' => TokenKind::Dot,
             b'(' => {
                 self.bracket_depth += 1;

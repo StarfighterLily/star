@@ -67,6 +67,19 @@ pub enum Ty {
     /// instead of index-based access. `T` is subject to the same
     /// hashability restriction as `Map`'s `K`.
     Set(Box<Ty>),
+    /// A tuple `(T, U, ...)` of two or more elements. Lowered to an
+    /// anonymous LLVM literal struct type (`{ T, U, ... }`, no `%name`
+    /// declaration) laid out inline exactly like a nominal struct's
+    /// fields -- no RC header, no heap allocation of its own -- see
+    /// `Codegen::llvm_ty`. Positional elements are accessed by
+    /// `TypedExpr::TupleIndex`, never by name.
+    Tuple(Vec<Ty>),
+    /// A fixed-size inline array `[T; N]`: tile grids, palettes, register
+    /// files, vertex layouts. Lowers to an LLVM `[N x T]` array laid out
+    /// inline exactly like `Ty::Tuple` -- no RC header, no heap allocation
+    /// of its own, `N` a compile-time constant (unlike `List<T>`'s
+    /// runtime-growable length).
+    Array(Box<Ty>, u64),
     /// A fieldless enum type, lowered to a plain `i32` discriminant.
     Enum(String),
     /// A closure/lambda's type: declared parameter types and return type.
@@ -1158,6 +1171,14 @@ impl Checker {
     fn check_hashable_ty(&mut self, ty: &Ty, visited: &mut HashSet<String>) -> bool {
         match ty {
             Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Vec2 | Ty::Vec3 | Ty::Vec4 => true,
+            // Every element's own type is already fully concrete here (no
+            // named type to recurse-guard against, unlike `Ty::Named` below
+            // -- a tuple can't be self-referential without going through a
+            // named struct, which already carries its own guard).
+            Ty::Tuple(elems) => elems.iter().all(|t| self.check_hashable_ty(t, visited)),
+            // Same reasoning: an array is stored inline (like a tuple), so
+            // it's structurally comparable exactly when its element type is.
+            Ty::Array(elem, _) => self.check_hashable_ty(elem, visited),
             Ty::Enum(name) => {
                 let fieldless = self.enums.get(name).map(|e| e.variants.iter().all(|v| v.fields.is_empty())).unwrap_or(true);
                 if !fieldless {
@@ -1211,6 +1232,17 @@ impl Checker {
     /// resulting concrete copy is checked like any ordinary declaration.
     fn resolve_type(&mut self, ty: &Type) -> Option<Ty> {
         match ty {
+            Type::Tuple(elems) => {
+                let resolved: Vec<Ty> = elems.iter().filter_map(|e| self.resolve_type(e)).collect();
+                if resolved.len() != elems.len() {
+                    return None;
+                }
+                Some(Ty::Tuple(resolved))
+            }
+            Type::Array(elem, count) => {
+                let elem_ty = self.resolve_type(elem)?;
+                Some(Ty::Array(Box::new(elem_ty), *count))
+            }
             Type::Fn(params, ret) => {
                 let param_tys: Vec<Ty> = params.iter().filter_map(|p| self.resolve_type(p)).collect();
                 if param_tys.len() != params.len() {
@@ -1515,6 +1547,22 @@ impl Checker {
             // way that binds a type parameter); a no-op, like `Type::Named`
             // naming a non-type-parameter type above.
             Type::Fn(..) => {}
+            Type::Tuple(elems) => {
+                if let Ty::Tuple(arg_elems) = arg_ty {
+                    if elems.len() == arg_elems.len() {
+                        for (pe, ae) in elems.iter().zip(arg_elems.iter()) {
+                            self.unify_ty(pe, ae, type_params, subst, conflicts);
+                        }
+                    }
+                }
+            }
+            Type::Array(elem, count) => {
+                if let Ty::Array(arg_elem, arg_count) = arg_ty {
+                    if count == arg_count {
+                        self.unify_ty(elem, arg_elem, type_params, subst, conflicts);
+                    }
+                }
+            }
             Type::Generic(name, args) => {
                 if name == "GenRef" {
                     if let (Some(a0), Ty::GenRef(inner)) = (args.first(), arg_ty) {
@@ -1586,6 +1634,15 @@ impl Checker {
             TypedExpr::SelfExpr(..) => Some("self"),
             TypedExpr::Field { base, .. } => Self::assign_root_name(base),
             TypedExpr::ListIndex { base, .. } => Self::assign_root_name(base),
+            // Same rule as `Field` above: a tuple has no per-element `mut`
+            // declaration to independently gate (there's no field
+            // declaration at all, positional or otherwise), so mutating any
+            // element is gated purely by the root binding's own `mut`.
+            TypedExpr::TupleIndex { base, .. } => Self::assign_root_name(base),
+            // Same rule as `ListIndex`: an array element has no per-slot
+            // `mut` declaration of its own, so mutating any element is
+            // gated purely by the root binding's own `mut`.
+            TypedExpr::ArrayIndex { base, .. } => Self::assign_root_name(base),
             // Deliberately *not* recursed into, unlike `ListIndex` above: a
             // `GenRef<T>` is a handle into arena-owned storage, not a value
             // the binding itself owns (mirrors a Rust `&mut T` reference --
@@ -1744,6 +1801,23 @@ fn mangle_ty(ty: &Ty) -> String {
             format!("Map_{}_{}{}", km.len(), km, mangle_ty(v))
         }
         Ty::Set(inner) => format!("Set_{}", mangle_ty(inner)),
+        // Length-prefix every element so arity/boundaries are unambiguous
+        // regardless of what any element's own mangled form contains --
+        // same defensive reasoning as `Ty::Map`'s fix just above (a plain
+        // join could collide two differently-shaped tuples onto the same
+        // mangled name).
+        Ty::Tuple(elems) => {
+            let mut s = format!("Tuple{}", elems.len());
+            for e in elems {
+                let m = mangle_ty(e);
+                s.push_str(&format!("_{}_{}", m.len(), m));
+            }
+            s
+        }
+        // A single wrapped type plus one integer count has no ambiguous
+        // boundary to confuse (same reasoning as `List`/`Set` just above),
+        // unlike `Map`/`Tuple`'s multi-argument join.
+        Ty::Array(elem, count) => format!("Array{}_{}", count, mangle_ty(elem)),
         // Closures are never used as a generic type argument today (no
         // syntax constructs a generic struct/enum/fn call site with a
         // closure-typed turbofish argument); this arm exists purely for
@@ -1793,6 +1867,8 @@ fn ty_to_type(ty: &Ty) -> Type {
         Ty::List(inner) => Type::Generic("List".into(), vec![ty_to_type(inner)]),
         Ty::Map(k, v) => Type::Generic("Map".into(), vec![ty_to_type(k), ty_to_type(v)]),
         Ty::Set(inner) => Type::Generic("Set".into(), vec![ty_to_type(inner)]),
+        Ty::Tuple(elems) => Type::Tuple(elems.iter().map(ty_to_type).collect()),
+        Ty::Array(elem, count) => Type::Array(Box::new(ty_to_type(elem)), *count),
         Ty::Closure(params, ret) => Type::Fn(params.iter().map(ty_to_type).collect(), Box::new(ty_to_type(ret))),
         Ty::Ptr => Type::Named("ptr".into()),
     }
@@ -1808,6 +1884,8 @@ fn subst_type(ty: &Type, subst: &HashMap<String, Type>) -> Type {
         Type::Named(n) => subst.get(n).cloned().unwrap_or_else(|| ty.clone()),
         Type::Generic(n, args) => Type::Generic(n.clone(), args.iter().map(|a| subst_type(a, subst)).collect()),
         Type::Fn(params, ret) => Type::Fn(params.iter().map(|p| subst_type(p, subst)).collect(), Box::new(subst_type(ret, subst))),
+        Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| subst_type(e, subst)).collect()),
+        Type::Array(elem, count) => Type::Array(Box::new(subst_type(elem, subst)), *count),
     }
 }
 
@@ -1940,6 +2018,13 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
         },
         Expr::ListLit(elems, span) => Expr::ListLit(elems.iter().map(|e| subst_expr(e, subst)).collect(), *span),
         Expr::Try { inner, span } => Expr::Try { inner: Box::new(subst_expr(inner, subst)), span: *span },
+        Expr::TupleLit(elems, span) => Expr::TupleLit(elems.iter().map(|e| subst_expr(e, subst)).collect(), *span),
+        Expr::TupleIndex { base, index, span } => {
+            Expr::TupleIndex { base: Box::new(subst_expr(base, subst)), index: *index, span: *span }
+        }
+        Expr::ArrayRepeat { value, count, span } => {
+            Expr::ArrayRepeat { value: Box::new(subst_expr(value, subst)), count: *count, span: *span }
+        }
     }
 }
 
@@ -2138,6 +2223,13 @@ fn scan_expr_for_par_hazards(expr: &Expr, hazard: &mut bool, called: &mut HashSe
             }
         }
         Expr::Try { inner, .. } => scan_expr_for_par_hazards(inner, hazard, called),
+        Expr::TupleLit(elems, _) => {
+            for e in elems {
+                scan_expr_for_par_hazards(e, hazard, called);
+            }
+        }
+        Expr::TupleIndex { base, .. } => scan_expr_for_par_hazards(base, hazard, called),
+        Expr::ArrayRepeat { value, .. } => scan_expr_for_par_hazards(value, hazard, called),
     }
 }
 
@@ -2148,6 +2240,7 @@ fn root_ident(expr: &TypedExpr) -> Option<String> {
         TypedExpr::Ident { name, .. } => Some(name.clone()),
         TypedExpr::SelfExpr(..) => Some("self".to_string()),
         TypedExpr::Field { base, .. } => root_ident(base),
+        TypedExpr::TupleIndex { base, .. } => root_ident(base),
         _ => None,
     }
 }

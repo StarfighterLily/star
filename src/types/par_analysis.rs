@@ -338,6 +338,23 @@ impl Checker {
                     self.walk_par_expr(a, locals);
                 }
             }
+            TypedExpr::TupleLit { elems, .. } => {
+                for e in elems {
+                    self.walk_par_expr(e, locals);
+                }
+            }
+            TypedExpr::TupleIndex { base, .. } => self.walk_par_expr(base, locals),
+            TypedExpr::ArrayRepeat { value, .. } => self.walk_par_expr(value, locals),
+            // A read is always fine to walk into (mirrors `ListIndex`
+            // above); there's no `push`/`pop`-style mutating method to gate
+            // here at all -- array element writes go through a plain
+            // `Stmt::Assign` target, checked generically via `root_ident` in
+            // `walk_par_stmt`.
+            TypedExpr::ArrayIndex { base, index, .. } => {
+                self.walk_par_expr(base, locals);
+                self.walk_par_expr(index, locals);
+            }
+            TypedExpr::ArrayLen { base, .. } => self.walk_par_expr(base, locals),
             TypedExpr::Int(..)
             | TypedExpr::Float(..)
             | TypedExpr::Str(..)

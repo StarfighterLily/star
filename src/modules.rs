@@ -258,6 +258,8 @@ fn rename_type(ty: &Type, names: &HashMap<String, String>) -> Type {
         Type::Fn(params, ret) => {
             Type::Fn(params.iter().map(|p| rename_type(p, names)).collect(), Box::new(rename_type(ret, names)))
         }
+        Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| rename_type(e, names)).collect()),
+        Type::Array(elem, count) => Type::Array(Box::new(rename_type(elem, names)), *count),
     }
 }
 
@@ -434,5 +436,12 @@ fn rename_expr(expr: &Expr, names: &HashMap<String, String>) -> Expr {
         },
         Expr::ListLit(elems, span) => Expr::ListLit(elems.iter().map(|e| rename_expr(e, names)).collect(), *span),
         Expr::Try { inner, span } => Expr::Try { inner: Box::new(rename_expr(inner, names)), span: *span },
+        Expr::TupleLit(elems, span) => Expr::TupleLit(elems.iter().map(|e| rename_expr(e, names)).collect(), *span),
+        Expr::TupleIndex { base, index, span } => {
+            Expr::TupleIndex { base: Box::new(rename_expr(base, names)), index: *index, span: *span }
+        }
+        Expr::ArrayRepeat { value, count, span } => {
+            Expr::ArrayRepeat { value: Box::new(rename_expr(value, names)), count: *count, span: *span }
+        }
     }
 }

@@ -74,14 +74,14 @@ Notice the match statement—Rust's pattern matching is too good to leave behind
 
 
 # Type System
-Star's pitch is a single language spanning small indie titles, retro remakes/throwbacks and emulated retrocomputer systems, and AAA-quality games. Today's type system (`src/types/mod.rs`'s `Ty` enum) covers only `i32`, `f32`, `str`, `bool`, `Vec2`/`Vec3`/`Vec4`, `Mat4`, `List<T>`, `GenRef<T>`, closures, and nominal structs/enums — everything else (`Option`, `Result`, maps, sets) is user-space library code, and there is exactly one integer width and one float width. That is enough for toy programs but not for the three stated tiers, each of which pulls the type system in a different direction. This section lays out the gap and the additions needed to close it. Nothing below is implemented yet — this is the plan to circle back to.
+Star's pitch is a single language spanning small indie titles, retro remakes/throwbacks and emulated retrocomputer systems, and AAA-quality games. Today's type system (`src/types/mod.rs`'s `Ty` enum) covers `i32`, `f32`, `str`, `bool`, `Vec2`/`Vec3`/`Vec4`, `Mat4`, `List<T>`, `Map<K,V>`/`Set<T>`, `Tuple`/`Array` (`(T, U, ...)`/`[T; N]`), `GenRef<T>`, closures, and nominal structs/enums, plus `Option`/`Result` as true compiler-builtin generic enums with `?`-propagation sugar — but there is still exactly one integer width and one float width. That covers every item in this section's "indie connective tissue" tier (§3's collection/compound types, §9's `Option`/`Result`) and is enough for toy programs, but not yet the retro/AAA tiers, each of which pulls the type system in a different direction. This section lays out the remaining gap and the additions needed to close it; items marked **done** below are implemented and tested (`tests/frontend.rs`), everything else is still the plan to circle back to.
 
 1. Why one type system has to stretch three ways
 Retro/emulation demands *exact-width, wrapping* arithmetic: an 8-bit CPU register or a PSG audio channel must overflow silently at 255 -> 0, which is the opposite of Star's current philosophy of trapping overflow as a bug. It also needs indexed/palette color and packed pixel formats, since that's how the hardware being emulated actually stores a frame.
 
 AAA pulls the other way: `f64` for large-world coordinates without precision loss, quaternions to avoid gimbal lock, HDR linear color, and resource handles for GPU/audio assets that fail safely the way `GenRef` already does for despawned entities, plus string interning so per-frame tag/event comparisons across a huge entity count aren't `strcmp`.
 
-Indie mostly needs the connective tissue both extremes assume already exists: `Option`/`Result` as real primitives (not a hand-rolled generic enum copied into every project), `Map`/`Set`, tuples, fixed-size arrays. Unglamorous, but currently entirely absent.
+Indie mostly needed the connective tissue both extremes assume already exists: `Option`/`Result` as real primitives (not a hand-rolled generic enum copied into every project), `Map`/`Set`, tuples, fixed-size arrays. Unglamorous, but until recently entirely absent — all five are **done** now (see §3/§9's status below), leaving `Table<T>`/`Ring<T,N>` as the remaining indie-tier gaps.
 
 2. Numeric widths and modes
 Add `i8`/`u8`/`i16`/`u16`/`u32`/`i64`/`u64`/`f64` alongside today's `i32`/`f32`, plus `char` (a Unicode scalar, distinct from a raw `str` byte). Keep trap-on-overflow as the *default* for signed/unsigned ints — that's a genuine safety property worth keeping — and add two explicit opt-ins rather than a silent global mode change:
@@ -90,14 +90,14 @@ Add `i8`/`u8`/`i16`/`u16`/`u32`/`i64`/`u64`/`f64` alongside today's `i32`/`f32`,
 
 3. Compound and collection types
 ```Python
-[T; N]          # fixed-size inline array: tile grids, palettes, register files, vertex layouts
-(T, U, ...)     # tuple: lightweight multi-return without declaring a one-off struct
-Map<K, V>       # hash map: asset lookup tables, save data, tag indices
-Set<T>          # hash set
+[T; N]          # fixed-size inline array: tile grids, palettes, register files, vertex layouts -- done
+(T, U, ...)     # tuple: lightweight multi-return without declaring a one-off struct -- done
+Map<K, V>       # hash map: asset lookup tables, save data, tag indices -- done
+Set<T>          # hash set -- done
 Table<T>        # struct-of-arrays, complementing arena's array-of-structs for cache-batch AAA systems
 Ring<T, N>      # fixed-capacity ring buffer: input replay, frame-time history, netcode rollback buffers
 ```
-`Map`/`Set` are already flagged as a known gap in `todo.md`'s roadmap; fixed-size arrays and tuples are new asks that fall out of the retro/AAA tiers respectively.
+`Map<K,V>`/`Set<T>` (linear-scan lookup plus a generated structural-equality function per key/element type, not a hash table yet) landed first — see `examples/map_set.star`. `Tuple`/`Array` landed in the same round as each other: `(T, U, ...)` lowers to an anonymous LLVM literal struct (no `%name` declaration, unlike a nominal `struct`), positional elements read via a dedicated `.0`/`.1`/... `TupleIndex` node (not `Field`, which looks a name up in a *declared* struct); `[T; N]` lowers to a plain inline LLVM array, with the *only* literal form being the `[value; N]` repeat (a new `;` token/`TokenKind::Semi` — the only place the grammar uses one) since a distinct-elements form (`[e1, e2, e3]`) would collide with `List<T>`'s existing bracket literal and this checker has no expected-type propagation to disambiguate the two by context. Both are stored inline (no RC header, no heap allocation of their own) and are structurally hashable — usable as a `Map`/`Set` key/element type — exactly when composed entirely of hashable element types, mirroring a struct. See `examples/tuples_arrays.star`. `Table<T>`/`Ring<T,N>` remain unimplemented.
 
 4. Text and bytes
 `Bytes`, an owned growable byte buffer distinct from `Str`, for asset formats, binary save data, and network payloads that aren't text. `Symbol`, an interned string with O(1) comparison, for entity tags and event names — at AAA entity counts, comparing tags with a byte-for-byte `str` compare every frame is a real cost.
@@ -124,8 +124,8 @@ Generalize the `GenRef<T>` pattern — already generation-checked, already prove
 8. Bit-level types
 `Flags<E: Enum>`, a typed bitflag set for input state, physics collision layers, and render state. `BitField<N>`, a packed bit register for accurate retro CPU flag-register emulation (e.g. Z80/6502 status flags).
 
-9. `Option`/`Result` as compiler primitives
-Promote these from a user-space generic enum (as in the current docs example) to true builtins with `?`-propagation sugar. This matters more as the standard library grows past bare `bool` return codes for file/network I/O.
+9. `Option`/`Result` as compiler primitives -- done
+Promoted from a user-space generic enum (as the docs example used to show) to true builtins: `Checker::check` synthesizes and registers the `Option<T>`/`Result<T,E>` generic-enum templates as if they'd been parsed from source (`src/types/mod.rs`'s `builtin_generic_enums`) before any user code is scanned, and `expr?` desugars to a `match` over their `Some`/`None`/`Ok`/`Err` variants with early `return` (`Expr::Try`) — there is no dedicated codegen path for `?` at all, just the ordinary generated `match`/enum machinery.
 
 10. Sequencing
-The lowest-effort, highest-value slice is `Option`/`Result` as builtins + `Map`/`Set` + fixed-size arrays — all indie-tier gaps that unblock ordinary programs immediately and require no new codegen primitives beyond what generics/`List<T>` already establish. The numeric-width and `Wrapping`/`Fixed` work is the larger lift, since it touches the lexer, parser, checker, and every arithmetic codegen path, and only pays off once a real retro-emulation or netcode example exists to validate it against.
+The lowest-effort, highest-value slice — `Option`/`Result` as builtins + `Map`/`Set` + tuples + fixed-size arrays, all indie-tier gaps that unblock ordinary programs immediately and required no new codegen primitives beyond what generics/`List<T>`/nominal structs already established — is now **done**. The next-lowest-effort remaining indie-tier gaps are `Table<T>` (struct-of-arrays) and `Ring<T,N>` (fixed-capacity ring buffer), both straightforward extensions of patterns this compiler already has (arena's array-of-structs; `List<T>`'s buffer). The numeric-width and `Wrapping`/`Fixed` work is the larger lift, since it touches the lexer, parser, checker, and every arithmetic codegen path, and only pays off once a real retro-emulation or netcode example exists to validate it against.

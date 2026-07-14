@@ -129,6 +129,9 @@ impl Checker {
                     if let Ty::Set(elem_ty) = base_typed.clone().into_ty() {
                         return Ok(self.infer_set_method(base_typed, field, *elem_ty, args, vars, *span));
                     }
+                    if let Ty::Array(_, count) = base_typed.clone().into_ty() {
+                        return Ok(self.infer_array_method(base_typed, field, count, args, vars, *span));
+                    }
                     // A method call `obj.method(args)` where `method` isn't
                     // also a field on `obj`'s struct: type the callee as a
                     // bare `Field` (`ty: unknown`, resolved below through
@@ -429,6 +432,9 @@ impl Checker {
                     Ty::List(inner) => {
                         Ok(TypedExpr::ListIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: *inner, span: *span })
                     }
+                    Ty::Array(inner, _) => {
+                        Ok(TypedExpr::ArrayIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: *inner, span: *span })
+                    }
                     // `s[i]` -- a bounds-checked byte read (0-255 as `i32`),
                     // not a Python-style length-1 substring; see
                     // `TypedExpr::StrIndex`'s doc comment.
@@ -436,7 +442,7 @@ impl Checker {
                         Ok(TypedExpr::StrIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: Ty::Int, span: *span })
                     }
                     other => {
-                        self.error(format!("`[..]` indexing requires a `GenRef<T>`, `List<T>`, or `str`, found `{:?}`", other), *span);
+                        self.error(format!("`[..]` indexing requires a `GenRef<T>`, `List<T>`, `[T; N]`, or `str`, found `{:?}`", other), *span);
                         Ok(TypedExpr::Error(Ty::Named("unknown".into())))
                     }
                 }
@@ -508,6 +514,39 @@ impl Checker {
                 Ok(TypedExpr::ListLit { elems: typed, elem_ty, span: *span })
             }
             Expr::Try { inner, span } => Ok(self.infer_try(inner, vars, *span)),
+            Expr::TupleLit(elems, span) => {
+                let typed: Vec<TypedExpr> = elems.iter()
+                    .map(|e| self.infer_expr(e, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into()))))
+                    .collect();
+                let elem_tys: Vec<Ty> = typed.iter().map(|e| e.clone().into_ty()).collect();
+                Ok(TypedExpr::TupleLit { elems: typed, ty: Ty::Tuple(elem_tys), span: *span })
+            }
+            Expr::TupleIndex { base, index, span } => {
+                let base_typed = self.infer_expr(base, vars)?;
+                let base_ty = base_typed.clone().into_ty();
+                let ty = match &base_ty {
+                    Ty::Tuple(elems) => match elems.get(*index) {
+                        Some(t) => t.clone(),
+                        None => {
+                            self.error(
+                                format!("tuple index `{}` out of range for a {}-element tuple `{:?}`", index, elems.len(), base_ty),
+                                *span,
+                            );
+                            Ty::Named("unknown".into())
+                        }
+                    },
+                    _ => {
+                        self.error(format!("`.{}` requires a tuple, found `{:?}`", index, base_ty), *span);
+                        Ty::Named("unknown".into())
+                    }
+                };
+                Ok(TypedExpr::TupleIndex { base: Box::new(base_typed), index: *index, ty, span: *span })
+            }
+            Expr::ArrayRepeat { value, count, span } => {
+                let value_typed = self.infer_expr(value, vars)?;
+                let elem_ty = value_typed.clone().into_ty();
+                Ok(TypedExpr::ArrayRepeat { value: Box::new(value_typed), count: *count, elem_ty, span: *span })
+            }
         }
     }
 
@@ -649,6 +688,27 @@ impl Checker {
             }
             _ => {
                 self.error(format!("no method `{}` on `List<..>` (expected `push`, `pop`, or `len`)", method), span);
+                TypedExpr::Error(Ty::Named("infer_error".into()))
+            }
+        }
+    }
+
+    /// `arr.len()`: always `count`, the array's static, compile-time-known
+    /// element count -- unlike `infer_list_method`'s `Len`, there's no
+    /// runtime buffer to read a length out of, so this is the only method
+    /// an array supports (no `push`/`pop`: an array's size is fixed, part
+    /// of its type).
+    fn infer_array_method(&mut self, base: TypedExpr, method: &str, count: u64, args: &[Expr], vars: &mut HashMap<String, Ty>, span: Span) -> TypedExpr {
+        let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
+        match method {
+            "len" => {
+                if !arg_exprs.is_empty() {
+                    self.error(format!("`len()` expects 0 arguments, found {}", arg_exprs.len()), span);
+                }
+                TypedExpr::ArrayLen { base: Box::new(base), count, span }
+            }
+            _ => {
+                self.error(format!("no method `{}` on `[T; N]` (expected `len`)", method), span);
                 TypedExpr::Error(Ty::Named("infer_error".into()))
             }
         }

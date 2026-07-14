@@ -114,6 +114,23 @@ impl Parser {
             match self.peek_kind() {
                 TokenKind::Dot => {
                     self.advance();
+                    // `base.0`, `base.1`, ... - a tuple index, distinct from
+                    // an ordinary named `.field` access (see
+                    // `Expr::TupleIndex`'s doc comment). The lexer already
+                    // tokenizes a standalone `.` as its own `Dot` (never
+                    // folded into a following digit, see `Lexer`'s number
+                    // scanning), so an `Int` here unambiguously means a
+                    // tuple index rather than a field name.
+                    if let TokenKind::Int(v) = self.peek_kind() {
+                        self.advance();
+                        let span = expr.span().to(self.prev_span());
+                        if v < 0 {
+                            self.error("tuple index cannot be negative", span);
+                            return None;
+                        }
+                        expr = Expr::TupleIndex { base: Box::new(expr), index: v as usize, span };
+                        continue;
+                    }
                     let field = self.expect_ident()?;
                     let span = expr.span().to(self.prev_span());
                     expr = Expr::Field { base: Box::new(expr), field, span };
@@ -286,9 +303,29 @@ impl Parser {
             TokenKind::Fn => self.parse_lambda(),
             TokenKind::LParen => {
                 self.advance();
-                let inner = self.parse_expr()?;
+                let mut elems = Vec::new();
+                let mut trailing_comma = false;
+                while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                    elems.push(self.parse_expr()?);
+                    trailing_comma = self.eat(&TokenKind::Comma);
+                    if !trailing_comma {
+                        break;
+                    }
+                }
                 self.expect(&TokenKind::RParen)?;
-                Some(inner)
+                let full = span.to(self.prev_span());
+                if elems.is_empty() {
+                    self.error("expected an expression inside `(...)`", full);
+                    return None;
+                }
+                // A single parenthesized expression with no trailing comma
+                // is just grouping, matching pre-existing behavior; a
+                // trailing comma after one element (`(e,)`), or two or more
+                // comma-separated elements, makes a tuple literal.
+                if elems.len() == 1 && !trailing_comma {
+                    return Some(elems.into_iter().next().unwrap());
+                }
+                Some(Expr::TupleLit(elems, full))
             }
             TokenKind::FStr(parts) => {
                 self.advance();
@@ -297,12 +334,42 @@ impl Parser {
             }
             TokenKind::LBracket => {
                 self.advance();
-                let mut elems = Vec::new();
-                while !self.at(&TokenKind::RBracket) && !self.at(&TokenKind::Eof) {
-                    elems.push(self.parse_expr()?);
-                    if !self.eat(&TokenKind::Comma) {
+                // An empty `[]` stays a (checker-rejected, with a helpful
+                // "use `List<T>()`" diagnostic) empty `ListLit` -- there's no
+                // first element to decide the repeat-vs-list-literal question
+                // from, and no array-literal spelling has an empty form
+                // either (an array's size is always in its type/annotation).
+                if self.at(&TokenKind::RBracket) {
+                    self.advance();
+                    let full = span.to(self.prev_span());
+                    return Some(Expr::ListLit(Vec::new(), full));
+                }
+                let first = self.parse_expr()?;
+                // `[value; N]`: a fixed-size array repeat literal, unambiguous
+                // against `ListLit` below since a list literal never contains
+                // a `;` (see `Expr::ArrayRepeat`'s doc comment for why this is
+                // deliberately the *only* array literal form).
+                if self.eat(&TokenKind::Semi) {
+                    let count_span = self.peek_span();
+                    let TokenKind::Int(count) = self.peek_kind() else {
+                        self.error("expected an integer literal array size after `;`", count_span);
+                        return None;
+                    };
+                    self.advance();
+                    if count < 0 {
+                        self.error("array size cannot be negative", count_span);
+                        return None;
+                    }
+                    self.expect(&TokenKind::RBracket)?;
+                    let full = span.to(self.prev_span());
+                    return Some(Expr::ArrayRepeat { value: Box::new(first), count: count as u64, span: full });
+                }
+                let mut elems = vec![first];
+                while self.eat(&TokenKind::Comma) {
+                    if self.at(&TokenKind::RBracket) {
                         break;
                     }
+                    elems.push(self.parse_expr()?);
                 }
                 self.expect(&TokenKind::RBracket)?;
                 let full = span.to(self.prev_span());
