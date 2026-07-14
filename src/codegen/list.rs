@@ -450,7 +450,14 @@ impl Codegen {
             let obj = self.list_index_read_obj(inner_base, index, inner_elem_ty);
             return self.list_fields_from_obj(&obj, elem_ty);
         }
-        let slot_ptr = self.emit_place(base);
+        // `emit_read_place`, not `emit_place`: a `Field` base reached through
+        // a list index at any nesting depth (`players[0].scores.len()`) must
+        // not fall into `emit_place`'s `ListIndex` arm, which is the write
+        // path and unconditionally CoW-clones the *outer* list as a side
+        // effect of this plain read (see this function's own doc comment,
+        // and `map_fields`/`set_fields`, which already route through
+        // `emit_read_place` for exactly this reason).
+        let slot_ptr = self.emit_read_place(base);
         let obj = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** {}", obj, slot_ptr));
         self.list_fields_from_obj(&obj, elem_ty)

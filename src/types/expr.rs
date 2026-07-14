@@ -348,6 +348,7 @@ impl Checker {
                 }
                 let resolved_ty = self.resolve_type(&Type::Named(name.clone())).unwrap_or_else(|| Ty::Named(name.clone()));
                 self.check_builtin_ctor_arity(&resolved_ty, name, &arg_exprs, *span);
+                self.check_struct_ctor_args(name, &arg_exprs, *span);
                 Ok(TypedExpr::StructLit { name: name.clone(), args: arg_exprs, ty: resolved_ty, span: *span })
             }
             Expr::If { cond, then_block, else_block, span } => {
@@ -403,6 +404,8 @@ impl Checker {
                                 ),
                                 *span,
                             );
+                        } else {
+                            self.check_enum_variant_ctor_args(enum_name, variant, &vdef.fields, &arg_exprs, *span);
                         }
                     }
                 }
@@ -1036,8 +1039,9 @@ impl Checker {
 
     /// Validate constructor arity/argument types for the builtin vec/mat
     /// literal forms (`Vec2(x,y)`, `Vec3(x,y,z)`, `Vec4(x,y,z,w)`,
-    /// `Mat4(row0,row1,row2,row3)`). No-op for user-defined structs (`Ty::Named`),
-    /// which are not validated today either.
+    /// `Mat4(row0,row1,row2,row3)`). No-op for user-defined structs
+    /// (`Ty::Named`) -- those are validated separately, by
+    /// `check_struct_ctor_args`.
     fn check_builtin_ctor_arity(&mut self, ty: &Ty, name: &str, args: &[TypedExpr], span: Span) {
         let is_numeric = |t: &Ty| matches!(t, Ty::Int | Ty::Float);
         match ty {
@@ -1055,6 +1059,76 @@ impl Checker {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Validate a struct literal's argument count and per-argument types
+    /// against the struct's declared fields, in declaration order (positional
+    /// construction, no named-argument reordering) -- the same per-argument
+    /// check `check_call_args` already applies to an ordinary function call.
+    /// Previously entirely absent for ordinary (`Ty::Named`) struct
+    /// construction -- see `check_builtin_ctor_arity`'s doc comment, which
+    /// only ever validated the four builtin vec/mat literal forms and
+    /// explicitly no-ops for everything else. Without this, a swapped- or
+    /// wrong-typed constructor argument (`Item(count, kind)` against
+    /// `struct Item: kind: Color, count: i32`) type-checked cleanly and
+    /// either silently miscompiled (same-width fields swapped, e.g. two
+    /// `i32`s) or produced invalid LLVM IR the `clang` step rejected with no
+    /// Star-level diagnostic pointing at the offending call -- `crate::
+    /// codegen::expr`'s `StructLit` codegen stores each argument positionally
+    /// using the struct's declared field type at that index, not the
+    /// argument's own inferred type, so a mismatch here is a real, silent
+    /// codegen hazard rather than a merely cosmetic gap. A no-op if `name`
+    /// isn't a known plain struct (the builtin vec/mat forms and generic
+    /// structs are validated by their own dedicated paths instead).
+    fn check_struct_ctor_args(&mut self, name: &str, arg_exprs: &[TypedExpr], span: Span) {
+        let Some(sdef) = self.structs.get(name).cloned() else { return };
+        // A `sequence`'s desugared struct carries extra fields (hoisted
+        // locals, `state`) beyond its declared parameters -- see
+        // `sequence_param_counts`'s doc comment -- so its constructor call
+        // is only ever expected to supply that leading parameter count, not
+        // the struct's full field list.
+        let expected_len = self.sequence_param_counts.get(name).copied().unwrap_or(sdef.fields.len());
+        if expected_len != arg_exprs.len() {
+            self.error(
+                format!("`{}(..)` expects {} argument(s), found {}", name, expected_len, arg_exprs.len()),
+                span,
+            );
+            return;
+        }
+        for (i, (f, a)) in sdef.fields.iter().zip(arg_exprs.iter()).enumerate() {
+            let declared = self.resolve_type(&f.ty).unwrap_or(Ty::Named("unknown".into()));
+            let actual = a.clone().into_ty();
+            if !Self::types_compatible(&declared, &actual) {
+                self.error(
+                    format!(
+                        "`{}`'s field `{}` (argument {}) expects type `{:?}`, found `{:?}`",
+                        name, f.name, i + 1, declared, actual
+                    ),
+                    span,
+                );
+            }
+        }
+    }
+
+    /// Per-argument type check for a plain (non-generic) enum variant's
+    /// constructor, called only once the caller has already confirmed arity
+    /// matches -- same reasoning and same previously-missing coverage as
+    /// `check_struct_ctor_args` above, for `EnumVariant` construction instead
+    /// of `StructLit`.
+    fn check_enum_variant_ctor_args(&mut self, enum_name: &str, variant: &str, fields: &[EnumFieldDef], arg_exprs: &[TypedExpr], span: Span) {
+        for (i, (f, a)) in fields.iter().zip(arg_exprs.iter()).enumerate() {
+            let declared = self.resolve_type(&f.ty).unwrap_or(Ty::Named("unknown".into()));
+            let actual = a.clone().into_ty();
+            if !Self::types_compatible(&declared, &actual) {
+                self.error(
+                    format!(
+                        "`{}::{}(..)`'s field `{}` (argument {}) expects type `{:?}`, found `{:?}`",
+                        enum_name, variant, f.name, i + 1, declared, actual
+                    ),
+                    span,
+                );
+            }
         }
     }
 

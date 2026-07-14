@@ -944,6 +944,23 @@ impl Codegen {
                                 }
                                 _ => {
                                     fmt_str.push_str("%p");
+                                    // Same reasoning as the `Str` arm above:
+                                    // this hole only prints `bare_val`'s raw
+                                    // address, it doesn't keep the value
+                                    // around, so whatever retain `emit_expr(e)`
+                                    // did on `e`'s behalf must be balanced
+                                    // back out -- generalized to any
+                                    // RC-bearing type (`List`/`Map`/`Set`/
+                                    // `Closure`/struct/payload enum) via
+                                    // `emit_release_bare`, since (unlike
+                                    // `Str`) there's no single flat pointer to
+                                    // release directly here. Previously
+                                    // missing entirely, this leaked one
+                                    // reference per interpolation of any such
+                                    // value.
+                                    if Self::is_rc_borrowing_read(e) {
+                                        self.emit_release_bare(&bare_val, &ty);
+                                    }
                                     call_args.push(format!("i8* {}", bare_val));
                                 }
                             }

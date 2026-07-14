@@ -86,6 +86,28 @@ impl Codegen {
         self.emit_rc_walk(ptr, ty, false);
     }
 
+    /// Release every RC-bearing leaf reachable from a bare (untagged) value
+    /// register that isn't backed by any existing storage slot -- spills it
+    /// into a fresh, scratch `alloca` first so `emit_release_at`'s
+    /// pointer-walking shape has somewhere to read from. For a value that
+    /// `emit_expr` retained on the caller's behalf (see `is_rc_borrowing_read`)
+    /// but which is only used transiently (a `Map`/`Set` key/element compared
+    /// against with `eq_fn` and then discarded, never stored into the
+    /// collection) -- the same "balance the borrow back out" shape
+    /// `emit_raw_str_ptr`/`emit_print_like` already use for a bare `Str`,
+    /// generalized to any RC-bearing type via the same walker `emit_release_at`
+    /// uses for a real slot.
+    pub(super) fn emit_release_bare(&mut self, val: &str, ty: &Ty) {
+        if !self.contains_rc(ty) {
+            return;
+        }
+        let llvm_ty = self.llvm_ty(ty);
+        let tmp = self.tmp_name();
+        self.line(&format!("  {} = alloca {}", tmp, llvm_ty));
+        self.line(&format!("  store {} {}, {}* {}", llvm_ty, val, llvm_ty, tmp));
+        self.emit_release_at(&tmp, ty);
+    }
+
     /// Shared retain/release walker: descend a value's storage exactly the
     /// same way for both (only the runtime helper called on each leaf
     /// differs), so the two can never drift out of sync on which leaves

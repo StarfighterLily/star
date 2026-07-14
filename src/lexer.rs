@@ -571,6 +571,17 @@ impl<'src> Lexer<'src> {
             '\\' => '\\',
             '"' => '"',
             '0' => '\0',
+            // A literal `{`/`}` inside an f-string's literal text -- unescaped,
+            // `{` opens an interpolation hole (see `scan_fstring`), so there
+            // was previously no way to spell a literal brace at all: `\{`
+            // fell through to the `other` arm below as a bogus "unknown
+            // escape sequence", and doubling (`{{`) doesn't work either,
+            // since the first `{` unconditionally opens a hole. Recognized
+            // here (not just inside `scan_fstring`) since plain string
+            // literals share this same escape decoder; harmless there too,
+            // as `{`/`}` are never special outside an f-string.
+            '{' => '{',
+            '}' => '}',
             other => {
                 self.errors.push(Diagnostic::error(
                     format!("unknown escape sequence '\\{}'", other),

@@ -61,6 +61,19 @@ impl Codegen {
                         } else if matches!(ty, Ty::Bool) {
                             self.emit_bool_str(&bare_val)
                         } else {
+                            // Same reasoning as the `Str` arm above,
+                            // generalized to any other RC-bearing type
+                            // (`List`/`Map`/`Set`/`Closure`/struct/payload
+                            // enum) via `emit_release_bare`, since there's no
+                            // single flat pointer to release directly here --
+                            // this `%p` hole only prints the value's raw
+                            // address, it doesn't keep it around. A no-op for
+                            // `Int`/`Float` (neither carries RC content).
+                            // Previously missing entirely, this leaked one
+                            // reference per interpolation of any such value.
+                            if Self::is_rc_borrowing_read(e) {
+                                self.emit_release_bare(&bare_val, &ty);
+                            }
                             bare_val
                         };
                         arg_vals.push((arg_val, ty));

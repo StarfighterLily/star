@@ -380,7 +380,16 @@ impl Codegen {
                 self.open_block(&cond_label);
                 let cond_val = self.emit_expr(cond);
                 let cond_reg = self.reg_of(&cond_val);
-                self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, body_label, end_label));
+                // The condition's false branch must go to `else_label`, not
+                // straight to `end_label` -- `else_label` falls through to
+                // `end_label` on its own a few lines down, so this is the
+                // *only* predecessor that ever reaches it. Previously this
+                // branched directly to `end_label`, making the `else` clause
+                // a permanently unreachable orphan block: `while cond: ...
+                // else: ...` silently never ran its `else` body, even though
+                // it's documented to run whenever the loop exits normally
+                // (not via `break`).
+                self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, body_label, else_label));
                 // Loop body: runs, then jumps back to the condition. `break`
                 // targets `end_label` and `continue` targets `cond_label`
                 // directly (re-evaluating the condition has no side effects).
@@ -405,8 +414,17 @@ impl Codegen {
                         self.emit_stmt(stmt);
                     }
                 }
-                self.pop_scope(true);
-                self.line(&format!("  br label %{}", end_label));
+                // Same reasoning as the `if`-statement's `else` branch above
+                // (and the loop body just above it): an else-clause ending in
+                // `return`/`break`/`continue` already emitted its own
+                // terminator, so falling through to `end_label` unconditionally
+                // here would place further instructions after it -- invalid
+                // LLVM IR.
+                let else_terminates = else_block.as_ref().is_some_and(|b| Self::body_terminates(&b.stmts));
+                self.pop_scope(!else_terminates);
+                if !else_terminates {
+                    self.line(&format!("  br label %{}", end_label));
+                }
                 self.open_block(&end_label);
             }
             TypedStmt::For { var, start, end, body, .. } => {

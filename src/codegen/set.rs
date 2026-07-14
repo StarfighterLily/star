@@ -392,6 +392,13 @@ impl Codegen {
                 let val = self.emit_expr(&args[0]);
                 let needle = self.untag(&val, elem_ty);
                 let (found, _) = self.emit_linear_find(&data, &len, elem_ty, &needle);
+                // `needle` is only ever compared against, never stored --
+                // release the borrow `emit_expr` retained on `args[0]`'s
+                // behalf (a no-op if `args[0]` was a fresh construction, see
+                // `is_rc_borrowing_read`), or it leaks one reference per call.
+                if Self::is_rc_borrowing_read(&args[0]) {
+                    self.emit_release_bare(&needle, elem_ty);
+                }
                 format!("i1 {}", found)
             }
             SetMethod::Insert => {
@@ -402,17 +409,25 @@ impl Codegen {
                 let data0 = self.tmp_name();
                 self.line(&format!("  {} = load {}*, {}** {}", data0, elem_llvm, elem_llvm, data_field));
                 let (found, _) = self.emit_linear_find(&data0, &len, elem_ty, &clean_val);
-                // Capture the block `emit_linear_find` left us in *before*
-                // anything below opens further blocks -- this is the real
-                // predecessor of the "already present" arm of the `phi`
-                // below (mirrors the `then_pred`/`else_pred` capture pattern
-                // `codegen/expr.rs`'s `if`-expression phi merge uses, for
-                // the same reason: `Codegen::current_label`'s doc comment).
-                let found_pred = self.current_label.clone();
 
+                let already_label = self.block_label("set_insert_already_present");
                 let insert_label = self.block_label("set_insert_do");
                 let end_label = self.block_label("set_insert_end");
-                self.line(&format!("  br i1 {}, label %{}, label %{}", found, end_label, insert_label));
+                self.line(&format!("  br i1 {}, label %{}, label %{}", found, already_label, insert_label));
+
+                self.open_block(&already_label);
+                // The set already contains an equal element, so `clean_val`
+                // itself is never stored -- release the borrow `emit_expr`
+                // retained on `args[0]`'s behalf above (a no-op if `args[0]`
+                // was a fresh construction), or it leaks one reference per
+                // no-op `insert` call. The sibling `insert_label` branch below
+                // does store `clean_val` into a fresh slot instead, transferring
+                // that same retained reference to the set rather than releasing it.
+                if Self::is_rc_borrowing_read(&args[0]) {
+                    self.emit_release_bare(&clean_val, elem_ty);
+                }
+                let found_pred = self.current_label.clone();
+                self.line(&format!("  br label %{}", end_label));
 
                 self.open_block(&insert_label);
                 let cap = self.tmp_name();
@@ -485,6 +500,13 @@ impl Codegen {
                 let data = self.tmp_name();
                 self.line(&format!("  {} = load {}*, {}** {}", data, elem_llvm, elem_llvm, data_field));
                 let (found, idx) = self.emit_linear_find(&data, &len, elem_ty, &needle);
+                // `needle` is only ever compared against here, never stored
+                // (the element actually stored in the set is released
+                // separately, below, when the removed slot itself is torn
+                // down) -- same reasoning as `SetMethod::Contains`.
+                if Self::is_rc_borrowing_read(&args[0]) {
+                    self.emit_release_bare(&needle, elem_ty);
+                }
 
                 let do_label = self.block_label("set_remove_do");
                 let end_label = self.block_label("set_remove_end");

@@ -218,7 +218,33 @@ fn find_clang_on(path_var: Option<&std::ffi::OsStr>) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_clang_on, link_args, opt_flag};
+    use super::{emit_llvm_ir, find_clang_on, link_args, opt_flag};
+
+    /// `star emit llvm` on a file with an `import` must resolve it exactly
+    /// like `star check`/`star build` do (both go through `Driver::compile`,
+    /// which calls `star::modules::resolve`) -- previously `cmd_emit`'s
+    /// `EmitKind::Llvm` branch inlined its own parse-then-check pipeline that
+    /// skipped `star::modules::resolve` entirely, so every `alias::name`
+    /// reference (already mangled to `alias__name` by the parser) failed as
+    /// "undefined" even though the identical program built fine with `star
+    /// build`. Exercises `emit_llvm_ir` (the extracted, testable pipeline)
+    /// directly against real files on disk, since import resolution is
+    /// inherently file-based.
+    #[test]
+    fn emit_llvm_resolves_imports_like_check_and_build_do() {
+        let dir = std::env::temp_dir().join("star_main_tests").join("emit_llvm_resolves_imports");
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        std::fs::write(dir.join("lib.star"), "fn helper() -> i32:\n    return 42\n").expect("write lib.star");
+        let main_path = dir.join("main.star");
+        std::fs::write(&main_path, "import \"lib.star\" as lib\nfn main() -> i32:\n    return lib::helper()\n").expect("write main.star");
+
+        let source = std::fs::read_to_string(&main_path).unwrap();
+        let ir = emit_llvm_ir(main_path.to_str().unwrap(), &source).expect("should resolve the import and codegen cleanly");
+        assert!(ir.contains("define i32 @lib__helper("), "expected the imported fn to be mangled and defined: {}", ir);
+        assert!(ir.contains("call i32 @lib__helper()"), "expected main to call the mangled imported fn: {}", ir);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// `star build` with no flags at all defaults to `-O2` -- previously
     /// every build (including every shipped example) was fully unoptimized.
@@ -346,37 +372,38 @@ fn cmd_emit(what: EmitKind, file: &str) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        EmitKind::Llvm => {
-            let module = match Driver::parse(&source) {
-                Ok(m) => m,
-                Err(diags) => {
-                    for d in diags {
-                        eprintln!("{}", d.message);
-                    }
-                    return ExitCode::FAILURE;
+        EmitKind::Llvm => match emit_llvm_ir(file, &source) {
+            Ok(ir) => {
+                println!("{}", ir);
+                ExitCode::SUCCESS
+            }
+            Err(diags) => {
+                for d in diags {
+                    eprintln!("{}", d.message);
                 }
-            };
-            let mut checker = star::types::Checker::new();
-            let typed = match checker.check(&module) {
-                Ok(t) => t,
-                Err(diags) => {
-                    for d in diags {
-                        eprintln!("{}", d.message);
-                    }
-                    return ExitCode::FAILURE;
-                }
-            };
-            let ir = match Driver::codegen(&typed) {
-                Ok(ir) => ir,
-                Err(diags) => {
-                    for d in diags {
-                        eprintln!("codegen error: {}", d.message);
-                    }
-                    return ExitCode::FAILURE;
-                }
-            };
-            println!("{}", ir);
-            ExitCode::SUCCESS
-        }
+                ExitCode::FAILURE
+            }
+        },
     }
+}
+
+/// Parse, resolve imports, type-check, and generate LLVM IR for `source`
+/// (read from `file`, used only to anchor relative import paths) -- the same
+/// pipeline `Driver::compile` runs for `check`/`build`, split out so `star
+/// emit llvm` shares it exactly rather than drifting out of sync (previously
+/// this inlined a copy that skipped `star::modules::resolve` entirely, so a
+/// multi-file program's `alias::name` references -- already mangled to
+/// `alias__name` by the parser -- failed as "undefined" instead of resolving,
+/// even though `star check`/`star build` on the same file worked fine).
+fn emit_llvm_ir(file: &str, source: &str) -> Result<String, Vec<star::diagnostics::Diagnostic>> {
+    let module = Driver::parse(source)?;
+    let module = star::modules::resolve(module, Path::new(file))?;
+    let mut checker = star::types::Checker::new();
+    let typed = checker.check(&module)?;
+    Driver::codegen(&typed).map_err(|diags| {
+        diags
+            .into_iter()
+            .map(|d| star::diagnostics::Diagnostic::error(format!("codegen error: {}", d.message), d.span))
+            .collect()
+    })
 }

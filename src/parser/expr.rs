@@ -539,12 +539,20 @@ impl Parser {
                     // Carry the outer parser's nesting counters into the
                     // fresh sub-parser -- otherwise a chain of nested
                     // f-string interpolations (`f"{f"{f"{...}"}"}"`) resets
-                    // `expr_depth`/`block_depth` to 0 at every level, so
-                    // `MAX_EXPR_DEPTH`/`MAX_BLOCK_DEPTH` never actually
-                    // accumulate across levels and only the real (unbounded)
-                    // Rust call stack does, defeating the guard entirely.
+                    // `expr_depth`/`block_depth`/`match_depth` to 0 at every
+                    // level, so `MAX_EXPR_DEPTH`/`MAX_BLOCK_DEPTH`/
+                    // `MAX_MATCH_DEPTH` never actually accumulate across
+                    // levels and only the real (unbounded) Rust call stack
+                    // does, defeating the guard entirely. `match_depth` was
+                    // previously missing here despite the same reasoning
+                    // applying to it as to the other two -- a `match` nested
+                    // inside an f-string hole, itself containing a further
+                    // f-string hole with its own nested `match`, repeated
+                    // enough times, could reach the real stack limit before
+                    // `MAX_MATCH_DEPTH` ever tripped.
                     sub.expr_depth = self.expr_depth;
                     sub.block_depth = self.block_depth;
+                    sub.match_depth = self.match_depth;
                     let parsed = sub.parse_expr();
                     // Merge the sub-parser's errors *before* handling a
                     // `None` result -- `parse_expr` can fail (bad syntax,

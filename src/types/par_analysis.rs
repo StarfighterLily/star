@@ -166,6 +166,31 @@ impl Checker {
                 // precomputed (transitively, through the whole call graph)
                 // before any body is checked, so this catches the hazard
                 // regardless of declaration order or how many calls deep it is.
+                // A call whose *callee itself* is closure-typed (a captured
+                // `let`-bound lambda, a closure-typed field/parameter, or an
+                // immediately-invoked lambda literal) is a call to a value
+                // whose body was never a top-level `fn`/`impl` declaration at
+                // all -- `compute_unsafe_par_fns` only ever walks named
+                // function/method bodies (see its own doc comment on why it
+                // skips `Expr::Lambda`), so `unsafe_par_fns` can never
+                // recognize a closure body's hazards, and the `called_name`
+                // check below silently passes regardless of what the closure
+                // actually does. `rejects_closure_inside_par_body` already
+                // bans *defining* a closure literal in a par/swarm body for
+                // exactly this "can't prove its body disjoint" reason (see
+                // `TypedExpr::Closure`'s arm below); *invoking* one captured
+                // from the outer scope is the same hazard reached a
+                // different way -- e.g. a closure defined outside a `par`
+                // that itself calls `spawn`, then invoked from inside the
+                // body, previously type-checked cleanly and raced all four
+                // worker threads on the arena's globals.
+                if matches!(callee.clone().into_ty(), Ty::Closure(..)) {
+                    self.error(
+                        "cannot call a closure value inside a par/swarm body (its body cannot be proven \
+                         disjoint across worker threads -- only a plain, named function/method call is allowed)",
+                        *span,
+                    );
+                }
                 if let Some(name) = called_name {
                     // `unsafe_par_fns` is keyed by each hazardous function's
                     // *declared* (template) name, computed from the raw AST

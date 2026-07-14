@@ -420,6 +420,16 @@ pub struct Checker {
     /// looking source, with no diagnostic at all. This bounds that
     /// recursion to a clean error instead (see `MAX_MONO_DEPTH`).
     mono_depth: u32,
+    /// Struct name -> declared parameter count, for every `sequence`
+    /// (before `crate::sequence::desugar_module` turns it into a plain
+    /// `struct`+`impl` pair -- see that module's doc comment). A sequence's
+    /// desugared struct also carries its hoisted top-level locals and a
+    /// trailing `state: i32` field, none of which the `Name(...)` call site
+    /// ever supplies (codegen zero-fills them, see `Codegen::zero_value`), so
+    /// `check_struct_ctor_args` needs this to validate only the leading
+    /// parameter fields' types/arity against a sequence constructor call
+    /// rather than the full desugared field list.
+    sequence_param_counts: HashMap<String, usize>,
 }
 
 impl Checker {
@@ -445,6 +455,7 @@ impl Checker {
             current_ret_ty: None,
             extern_fn_names_seen: HashSet::new(),
             mono_depth: 0,
+            sequence_param_counts: HashMap::new(),
         }
     }
 
@@ -456,6 +467,16 @@ impl Checker {
     const MAX_MONO_DEPTH: u32 = 64;
 
     pub fn check(&mut self, module: &Module) -> Result<TypedModule, Vec<Diagnostic>> {
+        // Record each `sequence`'s declared parameter count from the raw
+        // AST *before* desugaring erases the distinction between a sequence's
+        // struct and an ordinary one (see `sequence_param_counts`'s own doc
+        // comment) -- `check_struct_ctor_args` needs this to validate a
+        // sequence constructor call correctly.
+        for item in &module.items {
+            if let Item::Sequence(seq) = item {
+                self.sequence_param_counts.insert(seq.name.clone(), seq.params.len());
+            }
+        }
         // `sequence` items are pure syntax sugar over struct+impl (see
         // `crate::sequence`); desugar them before any of the checks below
         // ever see an `Item::Sequence`.
@@ -2233,14 +2254,21 @@ fn scan_expr_for_par_hazards(expr: &Expr, hazard: &mut bool, called: &mut HashSe
     }
 }
 
-/// The root identifier a place expression (`x`, `x.a.b`, `self.a`) writes
-/// through, or `None` if it isn't a simple identifier/field chain.
+/// The root identifier a place expression (`x`, `x.a.b`, `self.a`, `x.0`,
+/// `x[0]`) writes through, or `None` if it isn't a simple identifier/
+/// field/tuple-index/array-index chain. Deliberately ungated on any
+/// intermediate expression's own type (unlike `frame_analysis`'s
+/// `frame_escape_source`/`local_struct_receiver`, which only care about
+/// `Ty::Named` values) -- a tuple/array projection's *base* is never itself
+/// `Ty::Named` (it's `Ty::Tuple`/`Ty::Array`), so this just needs to find
+/// the ultimate root binding, leaving any type-relevance gating to the caller.
 fn root_ident(expr: &TypedExpr) -> Option<String> {
     match expr {
         TypedExpr::Ident { name, .. } => Some(name.clone()),
         TypedExpr::SelfExpr(..) => Some("self".to_string()),
         TypedExpr::Field { base, .. } => root_ident(base),
         TypedExpr::TupleIndex { base, .. } => root_ident(base),
+        TypedExpr::ArrayIndex { base, .. } => root_ident(base),
         _ => None,
     }
 }

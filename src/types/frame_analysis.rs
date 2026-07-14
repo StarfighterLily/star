@@ -82,10 +82,24 @@ impl Checker {
         tail: bool,
     ) {
         match stmt {
-            TypedStmt::Let { name, ty, .. } => {
-                if matches!(ty, Ty::Named(_)) {
-                    local_structs.insert(name.clone());
-                }
+            TypedStmt::Let { name, .. } => {
+                // Registered regardless of `ty` -- not just a `Ty::Named`
+                // local -- mirroring `frame_locals`'s own unconditional
+                // insert just below. A tuple/array-typed local (`let pair:
+                // (Point, Point) = (..)`) is itself backed by this
+                // function's own storage exactly like a plain struct local
+                // is, and a `Ty::Named` *element* of it (`pair.0`) is just a
+                // positional projection into that same storage (see
+                // `local_struct_receiver`'s `TupleIndex`/`ArrayIndex` arms) --
+                // every consumer of `local_structs` already re-checks the
+                // *access site*'s own type is `Ty::Named` before treating a
+                // hit as a hazard, so registering non-`Ty::Named` names here
+                // too can only close gaps, never introduce a false positive.
+                // Previously gating this insert on `ty` itself meant a
+                // tuple/array-typed local's struct-typed element could never
+                // be found in `local_structs` at all, regardless of how
+                // `local_struct_receiver` chained through it.
+                local_structs.insert(name.clone());
                 if in_frame {
                     frame_locals.insert(name.clone());
                 }
@@ -216,14 +230,38 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>, local_s
         // struct-shaped aggregate, laid out inline exactly like a nominal
         // struct's fields), so a `Ty::Named`-typed element still needs to
         // chain back through `base` to find out whether it ultimately
-        // reaches frame-owned storage.
+        // reaches frame-owned storage. Uses `root_ident` (an *ungated*
+        // structural walk), not a recursive `frame_escape_source(base, ..)`
+        // call: `base`'s own type here is `Ty::Tuple`, never `Ty::Named`, so
+        // dispatching back through this function would hit the `Ident` arm's
+        // `matches!(ty, Ty::Named(_))` gate on `base` itself and always fail
+        // it -- even though *this* `TupleIndex` expression's own type (just
+        // confirmed above) is exactly the `Ty::Named` this whole check cares
+        // about. Previously, a `frame:`-scoped tuple's struct-typed element
+        // (`frame: let pair: (Point, Point) = (..); pair.0.<escapes>`) was
+        // silently never recognized as reaching frame-owned storage at all.
         TypedExpr::TupleIndex { base, ty, .. } => {
-            if matches!(ty, Ty::Named(_)) { frame_escape_source(base, frame_locals, local_structs) } else { None }
+            if matches!(ty, Ty::Named(_)) {
+                match root_ident(base) {
+                    Some(root) if frame_locals.contains(&root) => Some(root),
+                    _ => None,
+                }
+            } else {
+                None
+            }
         }
         // Same reasoning as `TupleIndex` above: an array element read is a
-        // positional projection of `base`'s own inline storage.
+        // positional projection of `base`'s own inline storage, and `base`'s
+        // own type (`Ty::Array`) is never itself `Ty::Named` either.
         TypedExpr::ArrayIndex { base, ty, .. } => {
-            if matches!(ty, Ty::Named(_)) { frame_escape_source(base, frame_locals, local_structs) } else { None }
+            if matches!(ty, Ty::Named(_)) {
+                match root_ident(base) {
+                    Some(root) if frame_locals.contains(&root) => Some(root),
+                    _ => None,
+                }
+            } else {
+                None
+            }
         }
         TypedExpr::StructLit { args, ty, .. } => {
             if matches!(ty, Ty::Named(_)) {
@@ -365,6 +403,49 @@ fn local_struct_receiver(expr: &TypedExpr, local_structs: &HashSet<String>) -> O
         }
         TypedExpr::Field { base, ty, .. } => {
             if matches!(ty, Ty::Named(_)) { local_struct_receiver(base, local_structs) } else { None }
+        }
+        // Same reasoning as `Field` above, and mirroring
+        // `frame_escape_source`'s own `TupleIndex`/`ArrayIndex` arms: a
+        // tuple/array element read is just a positional projection of
+        // `base`'s own inline storage, so a `Ty::Named`-typed element
+        // (`pair.0`, `points[0]`) still needs to chain back through `base`
+        // to find out whether it's ultimately backed by a `local_structs`
+        // binding. Previously missing here (this function's `_ => None`
+        // fallback silently swallowed both), a plain local (non-`frame:`)
+        // tuple/array's struct-typed element used as a method-call receiver
+        // that returns a closure went undetected: `let pair: (Point, Point)
+        // = (..)` then `pair.0.make_closure()`, where `make_closure` returns
+        // a closure capturing `self` by pointer, escaped this check entirely.
+        //
+        // Uses `root_ident` (an *ungated* structural walk) rather than
+        // recursing back through `local_struct_receiver` itself: `base`'s
+        // own type here is `Ty::Tuple`/`Ty::Array`, never `Ty::Named`, so a
+        // recursive call would hit this function's own `Ident` arm's
+        // `matches!(ty, Ty::Named(_))` gate on `base` and always fail it --
+        // even though this `TupleIndex`/`ArrayIndex` expression's own type
+        // (just confirmed above) is exactly the `Ty::Named` this check cares
+        // about. A first attempt at this fix added these two arms but kept
+        // the recursive-`local_struct_receiver` call, which silently
+        // continued to miss every tuple/array case for exactly this reason.
+        TypedExpr::TupleIndex { base, ty, .. } => {
+            if matches!(ty, Ty::Named(_)) {
+                match root_ident(base) {
+                    Some(root) if local_structs.contains(&root) => Some(root),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        TypedExpr::ArrayIndex { base, ty, .. } => {
+            if matches!(ty, Ty::Named(_)) {
+                match root_ident(base) {
+                    Some(root) if local_structs.contains(&root) => Some(root),
+                    _ => None,
+                }
+            } else {
+                None
+            }
         }
         _ => None,
     }

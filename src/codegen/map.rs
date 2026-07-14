@@ -484,6 +484,13 @@ impl Codegen {
                 let val = self.emit_expr(&args[0]);
                 let needle = self.untag(&val, key_ty);
                 let (found, _) = self.emit_linear_find_key(&keys, &len, key_ty, &needle);
+                // `needle` is only ever compared against, never stored --
+                // release the borrow `emit_expr` retained on `args[0]`'s
+                // behalf (a no-op if `args[0]` was a fresh construction, see
+                // `is_rc_borrowing_read`), or it leaks one reference per call.
+                if Self::is_rc_borrowing_read(&args[0]) {
+                    self.emit_release_bare(&needle, key_ty);
+                }
                 format!("i1 {}", found)
             }
             MapMethod::Get => {
@@ -495,6 +502,11 @@ impl Codegen {
                 let key_val = self.emit_expr(&args[0]);
                 let needle = self.untag(&key_val, key_ty);
                 let (found, idx) = self.emit_linear_find_key(&keys, &len, key_ty, &needle);
+                // Same reasoning as `MapMethod::Contains` above: `needle` is
+                // only ever compared against here, never stored.
+                if Self::is_rc_borrowing_read(&args[0]) {
+                    self.emit_release_bare(&needle, key_ty);
+                }
 
                 let some_label = self.block_label("map_get_some");
                 let none_label = self.block_label("map_get_none");
@@ -536,6 +548,13 @@ impl Codegen {
                 let key_val = self.emit_expr(&args[0]);
                 let needle = self.untag(&key_val, key_ty);
                 let (found, idx) = self.emit_linear_find_key(&keys, &len, key_ty, &needle);
+                // Same reasoning as `MapMethod::Contains` above: `needle` is
+                // only ever compared against here, never stored (the key
+                // actually stored in the map is released separately, below,
+                // when the removed slot itself is torn down).
+                if Self::is_rc_borrowing_read(&args[0]) {
+                    self.emit_release_bare(&needle, key_ty);
+                }
 
                 let some_label = self.block_label("map_remove_some");
                 let none_label = self.block_label("map_remove_none");
@@ -609,6 +628,18 @@ impl Codegen {
                 self.line(&format!("  br i1 {}, label %{}, label %{}", found, overwrite_label, insert_label));
 
                 self.open_block(&overwrite_label);
+                // The map already has an equal key in this slot, so `clean_key`
+                // itself is never stored (only `clean_val` replaces the old
+                // value below) -- release the borrow `emit_expr` retained on
+                // `args[0]`'s behalf above, same reasoning as
+                // `MapMethod::Contains`, or it leaks one reference per
+                // overwriting `insert` call. Scoped to just this branch: the
+                // sibling `insert_label` branch below does store `clean_key`
+                // into a fresh slot, transferring that same retained
+                // reference to the map instead of releasing it.
+                if Self::is_rc_borrowing_read(&args[0]) {
+                    self.emit_release_bare(&clean_key, key_ty);
+                }
                 let vals0 = self.tmp_name();
                 self.line(&format!("  {} = load {}*, {}** {}", vals0, val_llvm, val_llvm, vals_field));
                 let old_val_ptr = self.tmp_name();
