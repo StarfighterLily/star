@@ -1,6 +1,6 @@
 //! Expression type inference.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diagnostics::{suggest, Span};
@@ -122,6 +122,12 @@ impl Checker {
                     let base_typed = self.infer_expr(base, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
                     if let Ty::List(elem_ty) = base_typed.clone().into_ty() {
                         return Ok(self.infer_list_method(base_typed, field, *elem_ty, args, vars, *span));
+                    }
+                    if let Ty::Map(key_ty, val_ty) = base_typed.clone().into_ty() {
+                        return Ok(self.infer_map_method(base_typed, field, *key_ty, *val_ty, args, vars, *span));
+                    }
+                    if let Ty::Set(elem_ty) = base_typed.clone().into_ty() {
+                        return Ok(self.infer_set_method(base_typed, field, *elem_ty, args, vars, *span));
                     }
                     // A method call `obj.method(args)` where `method` isn't
                     // also a field on `obj`'s struct: type the callee as a
@@ -328,6 +334,12 @@ impl Checker {
                 if name == "List" {
                     return Ok(self.infer_list_new(type_args, &arg_exprs, *span));
                 }
+                if name == "Map" {
+                    return Ok(self.infer_map_new(type_args, &arg_exprs, *span));
+                }
+                if name == "Set" {
+                    return Ok(self.infer_set_new(type_args, &arg_exprs, *span));
+                }
                 if self.generic_structs.contains_key(name) {
                     return Ok(self.infer_generic_struct_lit(name, type_args, arg_exprs, *span));
                 }
@@ -495,7 +507,94 @@ impl Checker {
                 }
                 Ok(TypedExpr::ListLit { elems: typed, elem_ty, span: *span })
             }
+            Expr::Try { inner, span } => Ok(self.infer_try(inner, vars, *span)),
         }
+    }
+
+    /// Desugar `inner?` into a `TypedExpr::Match` over `inner`'s `Option`/
+    /// `Result` variants, reusing the exact tagged-union enum/pattern
+    /// machinery an ordinary hand-written `match` already produces -- there
+    /// is no dedicated codegen path for `Expr::Try` at all (see its doc
+    /// comment in `crate::ast`). The "unwrap" arm (`Some`/`Ok`) evaluates to
+    /// the payload value; the "propagate" arm (`None`/`Err`) `return`s the
+    /// same variant back out of the enclosing function unchanged.
+    fn infer_try(&mut self, inner: &Expr, vars: &mut HashMap<String, Ty>, span: Span) -> TypedExpr {
+        let inner_expr = self.infer_expr(inner, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
+        let inner_ty = inner_expr.clone().into_ty();
+        let Ty::Enum(mangled) = &inner_ty else {
+            self.error(format!("`?` requires an `Option<T>` or `Result<T,E>`, found `{:?}`", inner_ty), span);
+            return TypedExpr::Error(Ty::Named("infer_error".into()));
+        };
+        let Some((template, _ty_args)) = self.mono_enum_of.get(mangled).cloned() else {
+            self.error(format!("`?` requires an `Option<T>` or `Result<T,E>`, found `{}`", mangled), span);
+            return TypedExpr::Error(Ty::Named("infer_error".into()));
+        };
+        if template != "Option" && template != "Result" {
+            self.error(format!("`?` requires an `Option<T>` or `Result<T,E>`, found `{}`", mangled), span);
+            return TypedExpr::Error(Ty::Named("infer_error".into()));
+        }
+        // Star has no `From`/`Into` conversion machinery to reconcile e.g. a
+        // `Result<T,E1>` being propagated out of a `Result<T,E2>`-returning
+        // function, so `?`'s enum type must exactly match the enclosing
+        // function's declared return type.
+        match &self.current_ret_ty {
+            None => self.error("`?` cannot be used inside a closure, which has no declared return type to propagate out of", span),
+            Some(None) => self.error(
+                format!("`?` requires the enclosing function to declare a return type of `{}`", mangled),
+                span,
+            ),
+            Some(Some(Ty::Enum(ret_mangled))) if ret_mangled == mangled => {}
+            Some(Some(other)) => self.error(
+                format!("`?` on `{}` requires the enclosing function to return the exact same type, found `{:?}`", mangled, other),
+                span,
+            ),
+        }
+        let (ok_variant, err_variant) = if template == "Option" { ("Some", "None") } else { ("Ok", "Err") };
+        let variant_field_ty = |this: &mut Self, variant: &str| -> Ty {
+            this.enums.get(mangled)
+                .and_then(|e| e.variants.iter().find(|v| v.name == variant).cloned())
+                .and_then(|v| v.fields.first().cloned())
+                .and_then(|f| this.resolve_type(&f.ty))
+                .unwrap_or(Ty::Named("unknown".into()))
+        };
+        let value_ty = variant_field_ty(self, ok_variant);
+        let ok_arm = TypedMatchArm {
+            pattern: Pattern::EnumVariant(mangled.clone(), ok_variant.to_string(), vec!["__try_val".to_string()]),
+            body: TypedBlock {
+                stmts: vec![TypedStmt::Expr(TypedExpr::Ident { name: "__try_val".to_string(), ty: value_ty.clone(), span })],
+                span,
+            },
+            ty: value_ty.clone(),
+            span,
+        };
+        let (err_bindings, propagated_args) = if template == "Option" {
+            (Vec::new(), Vec::new())
+        } else {
+            let err_ty = variant_field_ty(self, "Err");
+            (
+                vec!["__try_err".to_string()],
+                vec![TypedExpr::Ident { name: "__try_err".to_string(), ty: err_ty, span }],
+            )
+        };
+        let err_arm = TypedMatchArm {
+            pattern: Pattern::EnumVariant(mangled.clone(), err_variant.to_string(), err_bindings),
+            body: TypedBlock {
+                stmts: vec![TypedStmt::Return {
+                    value: Some(TypedExpr::EnumVariant {
+                        enum_name: mangled.clone(),
+                        variant: err_variant.to_string(),
+                        args: propagated_args,
+                        ty: Ty::Enum(mangled.clone()),
+                        span,
+                    }),
+                    span,
+                }],
+                span,
+            },
+            ty: Ty::Named("unknown".into()),
+            span,
+        };
+        TypedExpr::Match { scrutinee: Box::new(inner_expr), arms: vec![ok_arm, err_arm], ty: value_ty, span }
     }
 
     /// `List<T>()`: an empty list construction, the syntactic counterpart to
@@ -548,6 +647,157 @@ impl Checker {
             }
             _ => {
                 self.error(format!("no method `{}` on `List<..>` (expected `push`, `pop`, or `len`)", method), span);
+                TypedExpr::Error(Ty::Named("infer_error".into()))
+            }
+        }
+    }
+
+    /// `Map<K,V>()`: an empty map construction, mirroring `infer_list_new` --
+    /// requires an explicit `<K,V>` turbofish, since there's nothing to
+    /// infer a type from otherwise.
+    fn infer_map_new(&mut self, type_args: &[Type], arg_exprs: &[TypedExpr], span: Span) -> TypedExpr {
+        if !arg_exprs.is_empty() {
+            self.error("`Map<K,V>()` takes no arguments", span);
+        }
+        if type_args.len() != 2 {
+            self.error("`Map<K,V>()` needs explicit type arguments, e.g. `Map<str, i32>()`", span);
+            return TypedExpr::Error(Ty::Named("infer_error".into()));
+        }
+        let key_ty = self.resolve_type(&type_args[0]).unwrap_or(Ty::Named("unknown".into()));
+        let val_ty = self.resolve_type(&type_args[1]).unwrap_or(Ty::Named("unknown".into()));
+        // `resolve_type` only runs `Checker::check_hashable_ty` when *itself*
+        // resolving a `Map<K,V>` type reference (a param/field/return type
+        // spelled out directly) -- here it's invoked on `key_ty`/`val_ty`
+        // individually (e.g. `Type::Named("i32")`, `Type::Generic("List",
+        // ...)`), never on a `Type::Generic("Map", ...)` node, so that
+        // branch's check never runs for a bare `Map<K,V>()` construction.
+        // Re-check explicitly so `Map<List<i32>, i32>()` is still rejected.
+        let mut visited = HashSet::new();
+        self.check_hashable_ty(&key_ty, &mut visited);
+        TypedExpr::MapNew { key_ty, val_ty, span }
+    }
+
+    /// `Set<T>()`: an empty set construction, mirroring `infer_list_new`.
+    fn infer_set_new(&mut self, type_args: &[Type], arg_exprs: &[TypedExpr], span: Span) -> TypedExpr {
+        if !arg_exprs.is_empty() {
+            self.error("`Set<T>()` takes no arguments", span);
+        }
+        let elem_ty = match type_args.first() {
+            Some(t) => self.resolve_type(t).unwrap_or(Ty::Named("unknown".into())),
+            None => {
+                self.error("`Set<T>()` needs an explicit type argument, e.g. `Set<i32>()`", span);
+                Ty::Named("unknown".into())
+            }
+        };
+        // See `infer_map_new`'s matching comment on why this re-check is
+        // necessary here too.
+        let mut visited = HashSet::new();
+        self.check_hashable_ty(&elem_ty, &mut visited);
+        TypedExpr::SetNew { elem_ty, span }
+    }
+
+    /// Type-check a `Map<K,V>` method call (`insert`/`get`/`remove`/
+    /// `contains`/`len`), called from `Expr::Call`'s special-case above once
+    /// `base`'s type is known to be `Ty::Map(key_ty, val_ty)`. `get`/
+    /// `remove` return `Option<V>` -- a real, checker-instantiated
+    /// monomorphization of the builtin `Option<T>` template (see
+    /// `Checker::instantiate_enum`), the same as if the user had written
+    /// `Option<V>` themselves.
+    fn infer_map_method(&mut self, base: TypedExpr, method: &str, key_ty: Ty, val_ty: Ty, args: &[Expr], vars: &mut HashMap<String, Ty>, span: Span) -> TypedExpr {
+        let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
+        let option_of = |this: &mut Self, ty: Ty| -> Ty { Ty::Enum(this.instantiate_enum("Option", &[ty])) };
+        match method {
+            "insert" => {
+                if arg_exprs.len() != 2 {
+                    self.error(format!("`insert(..)` expects 2 arguments, found {}", arg_exprs.len()), span);
+                } else {
+                    let k = arg_exprs[0].clone().into_ty();
+                    let v = arg_exprs[1].clone().into_ty();
+                    if k != key_ty {
+                        self.error(format!("`insert(..)` key expects `{:?}`, found `{:?}`", key_ty, k), span);
+                    }
+                    if v != val_ty {
+                        self.error(format!("`insert(..)` value expects `{:?}`, found `{:?}`", val_ty, v), span);
+                    }
+                }
+                TypedExpr::MapMethod { base: Box::new(base), method: MapMethod::Insert, args: arg_exprs, ty: Ty::Named("unknown".into()), span }
+            }
+            "get" => {
+                if arg_exprs.len() != 1 {
+                    self.error(format!("`get(..)` expects 1 argument, found {}", arg_exprs.len()), span);
+                } else if arg_exprs[0].clone().into_ty() != key_ty {
+                    self.error(format!("`get(..)` expects a key of `{:?}`, found `{:?}`", key_ty, arg_exprs[0].clone().into_ty()), span);
+                }
+                let ret_ty = option_of(self, val_ty);
+                TypedExpr::MapMethod { base: Box::new(base), method: MapMethod::Get, args: arg_exprs, ty: ret_ty, span }
+            }
+            "remove" => {
+                if arg_exprs.len() != 1 {
+                    self.error(format!("`remove(..)` expects 1 argument, found {}", arg_exprs.len()), span);
+                } else if arg_exprs[0].clone().into_ty() != key_ty {
+                    self.error(format!("`remove(..)` expects a key of `{:?}`, found `{:?}`", key_ty, arg_exprs[0].clone().into_ty()), span);
+                }
+                let ret_ty = option_of(self, val_ty);
+                TypedExpr::MapMethod { base: Box::new(base), method: MapMethod::Remove, args: arg_exprs, ty: ret_ty, span }
+            }
+            "contains" => {
+                if arg_exprs.len() != 1 {
+                    self.error(format!("`contains(..)` expects 1 argument, found {}", arg_exprs.len()), span);
+                } else if arg_exprs[0].clone().into_ty() != key_ty {
+                    self.error(format!("`contains(..)` expects a key of `{:?}`, found `{:?}`", key_ty, arg_exprs[0].clone().into_ty()), span);
+                }
+                TypedExpr::MapMethod { base: Box::new(base), method: MapMethod::Contains, args: arg_exprs, ty: Ty::Bool, span }
+            }
+            "len" => {
+                if !arg_exprs.is_empty() {
+                    self.error(format!("`len()` expects 0 arguments, found {}", arg_exprs.len()), span);
+                }
+                TypedExpr::MapMethod { base: Box::new(base), method: MapMethod::Len, args: Vec::new(), ty: Ty::Int, span }
+            }
+            _ => {
+                self.error(format!("no method `{}` on `Map<..>` (expected `insert`, `get`, `remove`, `contains`, or `len`)", method), span);
+                TypedExpr::Error(Ty::Named("infer_error".into()))
+            }
+        }
+    }
+
+    /// Type-check a `Set<T>` method call (`insert`/`remove`/`contains`/
+    /// `len`), mirroring `infer_map_method`.
+    fn infer_set_method(&mut self, base: TypedExpr, method: &str, elem_ty: Ty, args: &[Expr], vars: &mut HashMap<String, Ty>, span: Span) -> TypedExpr {
+        let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
+        match method {
+            "insert" => {
+                if arg_exprs.len() != 1 {
+                    self.error(format!("`insert(..)` expects 1 argument, found {}", arg_exprs.len()), span);
+                } else if arg_exprs[0].clone().into_ty() != elem_ty {
+                    self.error(format!("`insert(..)` expects `{:?}`, found `{:?}`", elem_ty, arg_exprs[0].clone().into_ty()), span);
+                }
+                TypedExpr::SetMethod { base: Box::new(base), method: SetMethod::Insert, args: arg_exprs, ty: Ty::Bool, span }
+            }
+            "remove" => {
+                if arg_exprs.len() != 1 {
+                    self.error(format!("`remove(..)` expects 1 argument, found {}", arg_exprs.len()), span);
+                } else if arg_exprs[0].clone().into_ty() != elem_ty {
+                    self.error(format!("`remove(..)` expects `{:?}`, found `{:?}`", elem_ty, arg_exprs[0].clone().into_ty()), span);
+                }
+                TypedExpr::SetMethod { base: Box::new(base), method: SetMethod::Remove, args: arg_exprs, ty: Ty::Bool, span }
+            }
+            "contains" => {
+                if arg_exprs.len() != 1 {
+                    self.error(format!("`contains(..)` expects 1 argument, found {}", arg_exprs.len()), span);
+                } else if arg_exprs[0].clone().into_ty() != elem_ty {
+                    self.error(format!("`contains(..)` expects `{:?}`, found `{:?}`", elem_ty, arg_exprs[0].clone().into_ty()), span);
+                }
+                TypedExpr::SetMethod { base: Box::new(base), method: SetMethod::Contains, args: arg_exprs, ty: Ty::Bool, span }
+            }
+            "len" => {
+                if !arg_exprs.is_empty() {
+                    self.error(format!("`len()` expects 0 arguments, found {}", arg_exprs.len()), span);
+                }
+                TypedExpr::SetMethod { base: Box::new(base), method: SetMethod::Len, args: Vec::new(), ty: Ty::Int, span }
+            }
+            _ => {
+                self.error(format!("no method `{}` on `Set<..>` (expected `insert`, `remove`, `contains`, or `len`)", method), span);
                 TypedExpr::Error(Ty::Named("infer_error".into()))
             }
         }

@@ -2348,11 +2348,12 @@ fn codegen_match_payload_variant_binds_field_via_bitcast_gep() {
     assert!(ir.contains("unreachable"), "exhaustive all-return match should close its join block with `unreachable`: {}", ir);
 }
 
-/// Runtime test: `examples/option_result.exe` exercises payload-carrying
-/// `enum` variants end to end -- constructing `Ok`/`Err`/`Some`/`None`-style
-/// variants, destructuring their payload fields through `match`, and a
-/// multi-field variant (`Rect(width, height)`) -- through a real
-/// clang-compiled executable.
+/// Runtime test: `examples/option_result.exe` exercises the builtin
+/// `Option<T>`/`Result<T,E>` generic enums end to end -- constructing
+/// `Ok`/`Err`/`Some`/`None` variants, destructuring their payload fields
+/// through `match`, a multi-field variant (`Rect(width, height)`), and
+/// `?`-propagation over both `Result` (short-circuiting `Err`) and `Option`
+/// (short-circuiting `None`) -- through a real clang-compiled executable.
 #[test]
 fn runtime_option_result_end_to_end() {
     use std::process::Command;
@@ -2365,6 +2366,79 @@ fn runtime_option_result_end_to_end() {
     assert!(stdout.contains("found: -1"), "None fallback: {}", stdout);
     assert!(stdout.contains("circle area: 12"), "single-field variant: {}", stdout);
     assert!(stdout.contains("rect area: 12"), "multi-field variant: {}", stdout);
+    assert!(stdout.contains("checked_double ok: 10"), "`?` unwraps a `Result::Ok` payload and keeps executing: {}", stdout);
+    assert!(stdout.contains("checked_double err: 1"), "`?` short-circuits a `Result::Err` straight out of the function: {}", stdout);
+    assert!(stdout.contains("first_even_doubled: 8"), "`?` unwraps an `Option::Some` payload and keeps executing: {}", stdout);
+    assert!(stdout.contains("first_even_doubled: none"), "`?` short-circuits an `Option::None` straight out of the function: {}", stdout);
+}
+
+// ===== Option/Result builtins and `?`-propagation ==========================
+
+/// `expr?` parses as a postfix `Expr::Try` wrapping the inner expression, at
+/// the same precedence tier as `.field`/call/index (binds tighter than any
+/// binary operator: `f()? + 1` is `(f()?) + 1`, not `f()?(+1)`).
+#[test]
+fn parses_try_operator_postfix() {
+    let src = "fn t() -> Result<i32, i32>:\n    let v = safe_div(1, 2)?\n    Result<i32, i32>::Ok(v)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected let") };
+    match value {
+        Expr::Try { inner, .. } => assert!(matches!(inner.as_ref(), Expr::Call { .. }), "expected Call inside Try, found {:?}", inner),
+        other => panic!("expected Expr::Try, found {:?}", other),
+    }
+}
+
+/// `Option<T>`/`Result<T,E>` are pre-registered compiler builtins: a user
+/// module is free to *use* them (construct/match/`?`) without declaring them
+/// itself, and a user module that *does* redeclare `enum Option<T>` hits the
+/// same "declared more than once" diagnostic as any other name collision,
+/// rather than silently shadowing the builtin.
+#[test]
+fn rejects_user_redeclaration_of_builtin_option() {
+    let src = "enum Option<T>:\n    None\n    Some(value: T)\n\nfn t():\n    Option::Some(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("redeclaring the builtin `Option<T>` should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("declared more than once")), "{:?}", diags);
+}
+
+/// `?` requires its operand to be an `Option<T>`/`Result<T,E>` -- using it on
+/// an ordinary payload enum is a clear type error, not a confusing downstream
+/// codegen failure.
+#[test]
+fn rejects_try_on_non_option_result_enum() {
+    let src = "enum Shape:\n    Circle(radius: i32)\n\nfn t(s: Shape) -> i32:\n    let r = s?\n    r\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("`?` on a non-Option/Result enum should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("requires an `Option<T>` or `Result<T,E>`")), "{:?}", diags);
+}
+
+/// `?`'s enum type must exactly match the enclosing function's declared
+/// return type -- Star has no `From`/`Into` conversion machinery to reconcile
+/// e.g. a `Result<i32,i32>` being propagated out of an `Option<i32>`-returning
+/// function.
+#[test]
+fn rejects_try_return_type_family_mismatch() {
+    let src = "fn safe_div(a: i32, b: i32) -> Result<i32, i32>:\n    Result<i32, i32>::Ok(a)\n\nfn t(a: i32, b: i32) -> Option<i32>:\n    let v = safe_div(a, b)?\n    Option::Some(v)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("`?` on a `Result` inside an `Option`-returning function should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("requires the enclosing function to return")), "{:?}", diags);
+}
+
+/// `?` desugars entirely to the existing tagged-union `match` codegen (no
+/// dedicated codegen path of its own): the emitted IR for a `Result<i32,i32>`
+/// `?` looks exactly like a hand-written `match` over `Ok`/`Err` -- a tag
+/// load/compare, a branch, and (on the `Err` path) an early `ret`.
+#[test]
+fn codegen_try_desugars_to_match_over_ok_err() {
+    let src = "fn safe_div(a: i32, b: i32) -> Result<i32, i32>:\n    Result<i32, i32>::Ok(a)\n\nfn t(a: i32, b: i32) -> Result<i32, i32>:\n    let v = safe_div(a, b)?\n    Result<i32, i32>::Ok(v)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let body = extract_fn_body(&ir, "@t(");
+    assert!(body.contains("icmp"), "`?` should lower to the same tag-compare a hand-written `match` emits: {}", body);
+    assert!(body.contains("br "), "`?` should lower to a branch between the unwrap/propagate arms: {}", body);
+    assert!(body.contains("ret "), "the `Err` arm should `ret` the propagated variant straight out of the function: {}", body);
 }
 
 // ===== struct destructuring in match patterns ==============================
@@ -2803,7 +2877,13 @@ fn parses_generic_enum_variant_turbofish() {
 }
 
 const GENERIC_BOX_SRC: &str = "struct Box<T>:\n    value: T\n\n";
-const GENERIC_OPTION_SRC: &str = "enum Option<T>:\n    None\n    Some(value: T)\n\n";
+// `Option<T>` is now a compiler builtin (pre-registered by `Checker::check`,
+// see `builtin_generic_enums`), so tests exercising generic-enum
+// monomorphization/pattern-matching no longer declare their own copy -- doing
+// so would collide with the builtin ("the type `Option` is declared more than
+// once"). Kept as an (empty) constant purely so the `format!("{}fn t()...`
+// call sites below don't need editing.
+const GENERIC_OPTION_SRC: &str = "";
 
 /// A generic struct's template declaration produces no typed item of its
 /// own; only a concrete instantiation (triggered by a use with an inferable
@@ -3910,6 +3990,176 @@ fn runtime_lists_end_to_end() {
     assert!(stdout.contains("words len = 3"), "List<String>: {}", stdout);
     assert!(stdout.contains("words[1] = beta"), "{}", stdout);
     assert!(stdout.contains("points[1] = (3, 4)"), "List<Point> (struct element type): {}", stdout);
+}
+
+// ===== match-statement label uniqueness (found while testing Map/Set) =====
+
+/// A function containing more than one `match` (of two or more arms each)
+/// previously corrupted the emitted IR: `TypedExpr::Match`'s per-arm
+/// `then`/`next` block labels (`codegen/expr.rs`) were named only by the
+/// arm's index (`match_then_0`, `match_next_0`, ...) with no uniqueness
+/// suffix, so a *second* `match` statement in the same function reused the
+/// exact same label text as the first, producing "Terminator found in the
+/// middle of a basic block!" once LLVM's parser saw two logically distinct
+/// blocks sharing one name. Two ordinary matches in one function is enough
+/// to trigger it, with no `Map`/`Set` involved at all -- this is a codegen
+/// bug found incidentally while writing `examples/map_set.star` (which has
+/// several `match` statements in `main()`), not specific to those types.
+#[test]
+fn codegen_multiple_matches_in_one_function_use_distinct_block_labels() {
+    let src = "fn main():\n    let a = 5\n    match a:\n        1 -> println(\"one\")\n        _ -> println(\"other\")\n    let b = 7\n    match b:\n        1 -> println(\"one-b\")\n        _ -> println(\"other-b\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    // Every `match_then_0_<N>:` label *definition* line must be distinct --
+    // previously both matches' first arm reused the identical
+    // `match_then_0` label with no uniqueness suffix at all, which LLVM's
+    // parser rejects as a terminator appearing mid-block once the two
+    // same-named blocks' instructions get concatenated (see this test
+    // section's own doc comment above).
+    let then_0_labels: std::collections::HashSet<&str> = ir
+        .lines()
+        .filter_map(|l| l.trim().strip_suffix(':'))
+        .filter(|l| l.starts_with("match_then_0_"))
+        .collect();
+    assert_eq!(then_0_labels.len(), 2, "expected two distinct `match_then_0_*` labels (one per match statement), found {:?} in:\n{}", then_0_labels, ir);
+}
+
+// ===== Map<K,V> / Set<T> ====================================================
+
+/// `Map<K,V>()`/`Set<T>()` need an explicit turbofish -- there's nothing to
+/// infer a type from otherwise (mirrors `rejects_list_new_without_type_arg`).
+#[test]
+fn rejects_map_new_without_type_args() {
+    let module = Driver::parse("fn t():\n    let m = Map()\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "`Map()` with no type arguments should be a type error");
+}
+
+#[test]
+fn rejects_set_new_without_type_arg() {
+    let module = Driver::parse("fn t():\n    let s = Set()\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "`Set()` with no type argument should be a type error");
+}
+
+/// A `Map`/`Set` key/element type must be structurally hashable
+/// (`Checker::check_hashable_ty`); `List<T>`/`GenRef<T>` have no
+/// hashing/equality story and are rejected with a clear diagnostic instead
+/// of an opaque later failure.
+#[test]
+fn rejects_non_hashable_map_key() {
+    let module = Driver::parse("fn t():\n    let m = Map<List<i32>, i32>()\n").expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("List<T> as a Map key should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("cannot be used as a")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_non_hashable_set_element() {
+    let module = Driver::parse("arena Entities: i32\nfn t():\n    let s = Set<GenRef<i32>>()\n").expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("GenRef<T> as a Set element should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("cannot be used as a")), "{:?}", diags);
+}
+
+/// A payload-carrying enum is not yet a supported `Map`/`Set` key type (see
+/// `Checker::check_hashable_ty`'s doc comment on the current scope cut); a
+/// fieldless enum is fine (exercised end-to-end by `Set<Point>` below, which
+/// covers the struct-key path -- a fieldless-enum key is the same
+/// `icmp eq i32` shape as a plain `i32` key, so no separate runtime test).
+#[test]
+fn rejects_payload_enum_as_map_key() {
+    let src = "enum Shape:\n    Circle(radius: i32)\nfn t():\n    let m = Map<Shape, i32>()\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("a payload enum as a Map key should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("payload-carrying enums")), "{:?}", diags);
+}
+
+/// A struct is a hashable key only if every one of its fields, recursively,
+/// is itself hashable.
+#[test]
+fn rejects_struct_with_non_hashable_field_as_map_key() {
+    let src = "struct Bag:\n    items: List<i32>\nfn t():\n    let m = Map<Bag, i32>()\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "a struct with a non-hashable field should be a type error as a Map key");
+}
+
+/// `.get(k)` on a `Map<K,V>` returns a real `Option<V>` -- the same builtin
+/// generic enum `?`/`match` already work with, not a bespoke type.
+#[test]
+fn checks_map_get_returns_option_of_value_type() {
+    let module = Driver::parse("fn t(m: Map<str, i32>) -> i32:\n    match m.get(\"k\"):\n        Option::Some(v) -> v\n        Option::None -> -1\n").expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "Map::get's Option<V> should match against Option::Some/None: {:?}", Driver::check(&module).err());
+}
+
+/// Passing the wrong key type to `.insert`/`.get`/`.contains`/`.remove` is a
+/// type error (mirrors `rejects_list_push_wrong_type`).
+#[test]
+fn rejects_map_insert_wrong_key_type() {
+    let module = Driver::parse("fn t(mut m: Map<str, i32>):\n    m.insert(5, 1)\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "inserting a mismatched key type should be a type error");
+}
+
+/// An unrecognized method name on a `Map<K,V>`/`Set<T>` receiver is a type
+/// error (mirrors `rejects_unknown_list_method`).
+#[test]
+fn rejects_unknown_map_method() {
+    let module = Driver::parse("fn t(m: Map<str, i32>):\n    m.keys()\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "an unknown Map<K,V> method should be a type error");
+}
+
+#[test]
+fn rejects_unknown_set_method() {
+    let module = Driver::parse("fn t(s: Set<i32>):\n    s.sort()\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "an unknown Set<T> method should be a type error");
+}
+
+/// Codegen-shape: a `Map<str,i32>`'s `.get`/`.insert` generate the
+/// structural-equality function for `str` keys (`@eq_str`, calling
+/// `@strcmp`) and the release thunk, rather than any hashing/bucketing
+/// machinery -- confirming the documented linear-scan implementation
+/// strategy (`crate::codegen::eq`/`crate::codegen::map`'s doc comments).
+#[test]
+fn codegen_map_generates_str_eq_fn_using_strcmp() {
+    let src = "fn t(mut m: Map<str, i32>):\n    m.insert(\"k\", 1)\n    m.get(\"k\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("define i1 @eq_str("), "{}", ir);
+    assert!(ir.contains("call i32 @strcmp("), "{}", ir);
+    assert!(ir.contains("define void @map_release_"), "{}", ir);
+}
+
+/// Runtime test: `examples/map_set.exe` exercises `Map<str,i32>` (insert,
+/// overwrite-on-duplicate-key, get-hit/get-miss via `Option<V>`, contains,
+/// remove) and `Set<T>` for both a primitive element type (`i32`,
+/// insert/dup-insert/contains/remove) and a struct element type (`Point`,
+/// exercising the recursive structural-equality codegen path) end to end
+/// through a real clang-compiled executable.
+#[test]
+fn runtime_map_set_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/map_set.exe").output().expect("failed to execute map_set.exe");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("len after 2 inserts: 2"), "{}", stdout);
+    assert!(stdout.contains("alice: 30"), "Map::get hit: {}", stdout);
+    assert!(stdout.contains("carol: missing"), "Map::get miss: {}", stdout);
+    assert!(stdout.contains("len after overwrite: 2"), "insert on an existing key overwrites rather than growing: {}", stdout);
+    assert!(stdout.contains("alice after overwrite: 31"), "{}", stdout);
+    assert!(stdout.contains("contains bob: true"), "{}", stdout);
+    assert!(stdout.contains("removed bob: 25"), "Map::remove returns the removed value: {}", stdout);
+    assert!(stdout.contains("contains bob after remove: false"), "{}", stdout);
+    assert!(stdout.contains("len after remove: 1"), "{}", stdout);
+    assert!(stdout.contains("insert 1 (new): true"), "Set::insert reports true for a new element: {}", stdout);
+    assert!(stdout.contains("insert 2 (new): true"), "{}", stdout);
+    assert!(stdout.contains("insert 1 (dup): false"), "Set::insert reports false for a duplicate: {}", stdout);
+    assert!(stdout.contains("set len: 2"), "duplicate insert does not grow the set: {}", stdout);
+    assert!(stdout.contains("contains 2: true"), "{}", stdout);
+    assert!(stdout.contains("remove 2: true"), "{}", stdout);
+    assert!(stdout.contains("contains 2 after remove: false"), "{}", stdout);
+    assert!(stdout.contains("remove 2 again: false"), "Set::remove reports false when the element is absent: {}", stdout);
+    assert!(stdout.contains("set len after removes: 1"), "{}", stdout);
+    assert!(stdout.contains("struct set len: 2"), "Set<Point> deduplicates a structurally-equal struct inserted twice: {}", stdout);
+    assert!(stdout.contains("contains (1,2): true"), "struct structural-equality match: {}", stdout);
+    assert!(stdout.contains("contains (9,9): false"), "struct structural-equality non-match: {}", stdout);
 }
 
 // ===== List<T> copy-on-write ownership (todo.md's memory-ownership fix) ===

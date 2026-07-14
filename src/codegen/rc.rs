@@ -51,7 +51,14 @@ impl Codegen {
     /// `Codegen::list_release_thunk_operand`), not here.
     pub(super) fn contains_rc(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Str | Ty::Closure(..) | Ty::List(_) => true,
+            // Same reasoning as `Ty::List` -- `Map`/`Set` always own a
+            // separately heap-allocated backing buffer (or two, for `Map`)
+            // that needs releasing, regardless of whether `K`/`V`/`T`
+            // themselves carry RC content (that's decided separately, inside
+            // the generated release thunk -- see
+            // `crate::codegen::map::map_release_thunk_operand`/
+            // `crate::codegen::set::set_release_thunk_operand`).
+            Ty::Str | Ty::Closure(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) => true,
             Ty::Named(n) => self
                 .struct_field_types
                 .get(n)
@@ -113,15 +120,17 @@ impl Codegen {
                     self.emit_rc_walk(&gep, fty, retain);
                 }
             }
-            Ty::List(_) => {
+            Ty::List(_) | Ty::Map(..) | Ty::Set(_) => {
                 // Same shape as `Ty::Str`: `ptr` is a storage address
                 // holding the object pointer directly, no extra boxing.
-                // Releasing the elements *inside* the buffer (when the last
-                // reference goes away) is the generated release thunk's job
-                // (`Codegen::list_release_thunk_operand`), not this walker's
-                // -- that keeps retain/release here O(1) regardless of list
-                // length, since only the object pointer's own refcount
-                // changes on every read/scope-exit.
+                // Releasing the elements/keys/values *inside* the buffer
+                // (when the last reference goes away) is the generated
+                // release thunk's job (`Codegen::list_release_thunk_operand`/
+                // `crate::codegen::map`/`crate::codegen::set`'s own
+                // release-thunk generators), not this walker's -- that keeps
+                // retain/release here O(1) regardless of collection size,
+                // since only the object pointer's own refcount changes on
+                // every read/scope-exit.
                 let real = self.tmp_name();
                 self.line(&format!("  {} = load i8*, i8** {}", real, ptr));
                 self.line(&format!("  call void {}(i8* {})", helper, real));

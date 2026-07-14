@@ -439,6 +439,16 @@ pub enum Expr {
     /// builtin `List` type, see `Checker::infer_list_new`) to construct an
     /// empty list.
     ListLit(Vec<Expr>, Span),
+    /// `expr?` - propagates an `Option<T>`/`Result<T,E>`'s "empty" variant
+    /// (`None`/`Err(e)`) out of the enclosing function via an early `return`,
+    /// otherwise evaluating to the wrapped value (`T`). Desugared entirely in
+    /// the checker (see `Checker::infer_expr`'s `Expr::Try` arm) into a
+    /// `TypedExpr::Match` over the existing `Some`/`None` (or `Ok`/`Err`)
+    /// variants -- there is no dedicated codegen path for this node at all.
+    Try {
+        inner: Box<Expr>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -463,6 +473,7 @@ impl Expr {
             | Expr::GenRefIndex { span: s, .. }
             | Expr::EnumVariant { span: s, .. }
             | Expr::Lambda { span: s, .. }
+            | Expr::Try { span: s, .. }
             | Expr::ListLit(_, s) => *s,
         }
     }

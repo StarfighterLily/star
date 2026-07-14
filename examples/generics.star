@@ -1,14 +1,6 @@
 struct Box<T>:
     value: T
 
-enum Option<T>:
-    None
-    Some(value: T)
-
-enum Result<T, E>:
-    Ok(value: T)
-    Err(error: E)
-
 fn identity<T>(x: T) -> T:
     return x
 

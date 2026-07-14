@@ -49,6 +49,24 @@ pub enum Ty {
     /// arena, even though the underlying storage may be shared under the
     /// hood until a mutation forces a copy.
     List(Box<Ty>),
+    /// A growable key/value map: `Map<K, V>`. Lowers to the same kind of
+    /// reference-counted, copy-on-write `i8*` object pointer as `List<T>`
+    /// (see `crate::codegen::map`), holding two parallel arrays searched
+    /// linearly via a generated structural-equality function -- there is no
+    /// hashing/bucketing yet (see that module's doc comment for the
+    /// rationale). `K` must be a "hashable" type per
+    /// `Checker::check_hashable_ty`: `i32`/`f32`/`bool`/`str`/a fieldless
+    /// `enum`/`Vec2`/`Vec3`/`Vec4`, or a `struct` composed entirely of such
+    /// fields (recursively) -- payload enums, `GenRef`/`List`/`Map`/`Set`/
+    /// closures/`ptr` are rejected as key types.
+    Map(Box<Ty>, Box<Ty>),
+    /// A growable set: `Set<T>`, same representation/search strategy as
+    /// `Map<K, V>` (see `crate::codegen::set`) minus the parallel value
+    /// array -- structurally identical to `List<T>`'s payload shape, with
+    /// `insert`/`remove`/`contains` doing a linear structural-equality scan
+    /// instead of index-based access. `T` is subject to the same
+    /// hashability restriction as `Map`'s `K`.
+    Set(Box<Ty>),
     /// A fieldless enum type, lowered to a plain `i32` discriminant.
     Enum(String),
     /// A closure/lambda's type: declared parameter types and return type.
@@ -94,6 +112,47 @@ impl Ty {
             _ => None,
         }
     }
+}
+
+/// Synthesizes the `Option<T>`/`Result<T,E>` generic-enum templates as if
+/// they'd been parsed from source (`enum Option<T>: None / Some(value: T)`,
+/// `enum Result<T,E>: Ok(value: T) / Err(error: E)`), so `Checker::check` can
+/// register them into `generic_enums` before any user code is scanned. See
+/// that call site's doc comment for why this makes them true compiler
+/// builtins rather than user-space library code.
+fn builtin_generic_enums() -> Vec<EnumDef> {
+    vec![
+        EnumDef {
+            name: "Option".into(),
+            type_params: vec!["T".into()],
+            variants: vec![
+                EnumVariantDef { name: "None".into(), fields: Vec::new(), span: Span::dummy() },
+                EnumVariantDef {
+                    name: "Some".into(),
+                    fields: vec![EnumFieldDef { name: "value".into(), ty: Type::Named("T".into()) }],
+                    span: Span::dummy(),
+                },
+            ],
+            span: Span::dummy(),
+        },
+        EnumDef {
+            name: "Result".into(),
+            type_params: vec!["T".into(), "E".into()],
+            variants: vec![
+                EnumVariantDef {
+                    name: "Ok".into(),
+                    fields: vec![EnumFieldDef { name: "value".into(), ty: Type::Named("T".into()) }],
+                    span: Span::dummy(),
+                },
+                EnumVariantDef {
+                    name: "Err".into(),
+                    fields: vec![EnumFieldDef { name: "error".into(), ty: Type::Named("E".into()) }],
+                    span: Span::dummy(),
+                },
+            ],
+            span: Span::dummy(),
+        },
+    ]
 }
 
 /// Names and return-type rules for the compiler's built-in standard library
@@ -203,6 +262,8 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     "main",
     "printf", "puts", "malloc", "free", "exit", "strlen", "getchar", "memcpy", "strcpy", "strcat",
     "fopen", "fclose", "fread", "fwrite", "fseek", "ftell", "fgetc",
+    // `str`-keyed `Map`/`Set` structural equality -- see `crate::codegen::eq`.
+    "strcmp",
     "CreateThread", "WaitForSingleObject", "CloseHandle",
     "CreateSemaphoreA", "ReleaseSemaphore", "GetCurrentThreadId",
     "star_rc_alloc", "star_rc_retain", "star_rc_release",
@@ -419,6 +480,20 @@ impl Checker {
         let mut type_names_seen: HashSet<String> = HashSet::new();
         let mut value_names_seen: HashSet<String> = HashSet::new();
         let mut arena_names_seen: HashSet<String> = HashSet::new();
+
+        // Pre-register `Option<T>`/`Result<T,E>` as compiler builtins (see
+        // docs/design.md's "Type System" §9): ordinary generic-enum
+        // templates, synthesized here in Rust instead of parsed from source,
+        // so they share 100% of the existing generic-enum monomorphization
+        // (`instantiate_enum`) and tagged-union codegen machinery -- no new
+        // mechanism at all. Seeding `type_names_seen` up front means a user
+        // module that also declares `enum Option<T>`/`enum Result<T,E>` hits
+        // the ordinary "declared more than once" diagnostic below (pass 0)
+        // instead of silently shadowing or overwriting the builtin.
+        for def in builtin_generic_enums() {
+            type_names_seen.insert(def.name.clone());
+            self.generic_enums.insert(def.name.clone(), def);
+        }
 
         // First pass (0): register every struct/enum/fn *name* -- generic
         // templates into `generic_structs`/`generic_enums`/`generic_fns`,
@@ -1068,6 +1143,64 @@ impl Checker {
         }
     }
 
+    /// True if `ty` is structurally hashable/comparable, i.e. legal as a
+    /// `Map<K,V>` key or `Set<T>` element: `i32`/`f32`/`bool`/`str`/a
+    /// fieldless `enum`/`Vec2`/`Vec3`/`Vec4`, or a `struct` composed
+    /// entirely of such fields, recursively. Rejects (with a diagnostic)
+    /// payload-carrying enums, and anything owning a `GenRef`/`List`/`Map`/
+    /// `Set`/closure/`ptr` -- `Map`/`Set` have no hashing/equality story for
+    /// those today (see `crate::codegen::map`'s doc comment on the current
+    /// linear-scan-plus-structural-equality implementation strategy).
+    /// `visited` guards against infinite recursion on a struct that (would)
+    /// contain itself by value -- `check_no_recursive_structs` catches that
+    /// as its own error only *after* every item has been checked, so this
+    /// must not assume that pass has already run.
+    fn check_hashable_ty(&mut self, ty: &Ty, visited: &mut HashSet<String>) -> bool {
+        match ty {
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Vec2 | Ty::Vec3 | Ty::Vec4 => true,
+            Ty::Enum(name) => {
+                let fieldless = self.enums.get(name).map(|e| e.variants.iter().all(|v| v.fields.is_empty())).unwrap_or(true);
+                if !fieldless {
+                    self.error(
+                        format!("`{}` cannot be used as a `Map`/`Set` key: payload-carrying enums are not yet supported", name),
+                        Span::dummy(),
+                    );
+                }
+                fieldless
+            }
+            Ty::Named(name) => {
+                if !visited.insert(name.clone()) {
+                    // Already on the current path -- a self-referential
+                    // struct will be reported separately by
+                    // `check_no_recursive_structs`; just stop recursing.
+                    return false;
+                }
+                let ok = match self.structs.get(name).cloned() {
+                    // Not found is already reported elsewhere (undefined
+                    // type); don't cascade a second diagnostic here.
+                    None => true,
+                    Some(sdef) => sdef.fields.iter().all(|f| {
+                        let fty = self.resolve_type(&f.ty).unwrap_or(Ty::Named("unknown".into()));
+                        self.check_hashable_ty(&fty, visited)
+                    }),
+                };
+                visited.remove(name);
+                ok
+            }
+            _ => {
+                self.error(
+                    format!(
+                        "`{:?}` cannot be used as a `Map`/`Set` key -- only i32/f32/bool/str/fieldless-enum/Vec2/Vec3/Vec4, \
+                         or a struct composed entirely of such fields, are supported",
+                        ty
+                    ),
+                    Span::dummy(),
+                );
+                false
+            }
+        }
+    }
+
     /// Resolve a syntactic [`Type`] to a [`Ty`]. A `Type::Generic` naming a
     /// generic struct/enum template (`Box<i32>`) triggers monomorphization
     /// on demand (see `instantiate_struct`/`instantiate_enum`), memoized by
@@ -1135,6 +1268,23 @@ impl Checker {
                 if name == "List" {
                     let inner = args.first().and_then(|a| self.resolve_type(a)).unwrap_or(Ty::Int);
                     return Some(Ty::List(Box::new(inner)));
+                }
+                if name == "Map" {
+                    let key_ty = args.first().and_then(|a| self.resolve_type(a)).unwrap_or(Ty::Int);
+                    let val_ty = args.get(1).and_then(|a| self.resolve_type(a)).unwrap_or(Ty::Int);
+                    let mut visited = HashSet::new();
+                    if !self.check_hashable_ty(&key_ty, &mut visited) {
+                        return None;
+                    }
+                    return Some(Ty::Map(Box::new(key_ty), Box::new(val_ty)));
+                }
+                if name == "Set" {
+                    let inner = args.first().and_then(|a| self.resolve_type(a)).unwrap_or(Ty::Int);
+                    let mut visited = HashSet::new();
+                    if !self.check_hashable_ty(&inner, &mut visited) {
+                        return None;
+                    }
+                    return Some(Ty::Set(Box::new(inner)));
                 }
                 if self.generic_structs.contains_key(name) {
                     let resolved_args: Vec<Ty> = args.iter().filter_map(|a| self.resolve_type(a)).collect();
@@ -1378,6 +1528,23 @@ impl Checker {
                     }
                     return;
                 }
+                if name == "Map" {
+                    if let Ty::Map(k, v) = arg_ty {
+                        if let Some(a0) = args.first() {
+                            self.unify_ty(a0, k, type_params, subst, conflicts);
+                        }
+                        if let Some(a1) = args.get(1) {
+                            self.unify_ty(a1, v, type_params, subst, conflicts);
+                        }
+                    }
+                    return;
+                }
+                if name == "Set" {
+                    if let (Some(a0), Ty::Set(inner)) = (args.first(), arg_ty) {
+                        self.unify_ty(a0, inner, type_params, subst, conflicts);
+                    }
+                    return;
+                }
                 let instantiated = match arg_ty {
                     Ty::Named(mangled) => self.mono_struct_of.get(mangled),
                     Ty::Enum(mangled) => self.mono_enum_of.get(mangled),
@@ -1529,6 +1696,8 @@ fn mangle_ty(ty: &Ty) -> String {
         Ty::Enum(n) => n.clone(),
         Ty::GenRef(inner) => format!("GenRef_{}", mangle_ty(inner)),
         Ty::List(inner) => format!("List_{}", mangle_ty(inner)),
+        Ty::Map(k, v) => format!("Map_{}_{}", mangle_ty(k), mangle_ty(v)),
+        Ty::Set(inner) => format!("Set_{}", mangle_ty(inner)),
         // Closures are never used as a generic type argument today (no
         // syntax constructs a generic struct/enum/fn call site with a
         // closure-typed turbofish argument); this arm exists purely for
@@ -1576,6 +1745,8 @@ fn ty_to_type(ty: &Ty) -> Type {
         Ty::Enum(n) => Type::Named(n.clone()),
         Ty::GenRef(inner) => Type::Generic("GenRef".into(), vec![ty_to_type(inner)]),
         Ty::List(inner) => Type::Generic("List".into(), vec![ty_to_type(inner)]),
+        Ty::Map(k, v) => Type::Generic("Map".into(), vec![ty_to_type(k), ty_to_type(v)]),
+        Ty::Set(inner) => Type::Generic("Set".into(), vec![ty_to_type(inner)]),
         Ty::Closure(params, ret) => Type::Fn(params.iter().map(ty_to_type).collect(), Box::new(ty_to_type(ret))),
         Ty::Ptr => Type::Named("ptr".into()),
     }
@@ -1722,6 +1893,7 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             span: *span,
         },
         Expr::ListLit(elems, span) => Expr::ListLit(elems.iter().map(|e| subst_expr(e, subst)).collect(), *span),
+        Expr::Try { inner, span } => Expr::Try { inner: Box::new(subst_expr(inner, subst)), span: *span },
     }
 }
 
@@ -1919,6 +2091,7 @@ fn scan_expr_for_par_hazards(expr: &Expr, hazard: &mut bool, called: &mut HashSe
                 scan_expr_for_par_hazards(e, hazard, called);
             }
         }
+        Expr::Try { inner, .. } => scan_expr_for_par_hazards(inner, hazard, called),
     }
 }
 

@@ -240,6 +240,16 @@ pub enum TypedExpr {
     /// this never appears as an assignment target (rejected in
     /// `Checker::check_stmt`'s `Stmt::Assign` arm).
     StrIndex { base: Box<TypedExpr>, index: Box<TypedExpr>, ty: Ty, span: Span },
+    /// `Map<K,V>()` -- an empty map construction, see `Checker::infer_map_new`.
+    MapNew { key_ty: Ty, val_ty: Ty, span: Span },
+    /// `Set<T>()` -- an empty set construction, see `Checker::infer_set_new`.
+    SetNew { elem_ty: Ty, span: Span },
+    /// `map.insert(k,v)` / `.get(k)` / `.remove(k)` / `.contains(k)` /
+    /// `.len()`, see `Checker::infer_map_method`.
+    MapMethod { base: Box<TypedExpr>, method: MapMethod, args: Vec<TypedExpr>, ty: Ty, span: Span },
+    /// `set.insert(v)` / `.remove(v)` / `.contains(v)` / `.len()`, see
+    /// `Checker::infer_set_method`.
+    SetMethod { base: Box<TypedExpr>, method: SetMethod, args: Vec<TypedExpr>, ty: Ty, span: Span },
     Error(Ty),
 }
 
@@ -253,6 +263,37 @@ pub enum ListMethod {
     /// null equivalent" convention rather than a `Result`/`Option` type).
     Pop,
     /// `list.len()` -- the current element count as an `i32`.
+    Len,
+}
+
+/// The builtin `Map<K,V>` methods -- see `TypedExpr::MapMethod`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MapMethod {
+    /// `map.insert(k, v)` -- inserts or overwrites the value for `k`.
+    Insert,
+    /// `map.get(k) -> Option<V>` -- `Some(v)` if present, `None` otherwise.
+    Get,
+    /// `map.remove(k) -> Option<V>` -- removes and returns the value if
+    /// present (via swap-remove, so remaining key order is not preserved).
+    Remove,
+    /// `map.contains(k) -> bool`.
+    Contains,
+    /// `map.len() -> i32`.
+    Len,
+}
+
+/// The builtin `Set<T>` methods -- see `TypedExpr::SetMethod`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SetMethod {
+    /// `set.insert(v) -> bool` -- `true` if newly inserted, `false` if `v`
+    /// was already present.
+    Insert,
+    /// `set.remove(v) -> bool` -- `true` if `v` was present and removed
+    /// (via swap-remove, so remaining element order is not preserved).
+    Remove,
+    /// `set.contains(v) -> bool`.
+    Contains,
+    /// `set.len() -> i32`.
     Len,
 }
 
@@ -271,6 +312,10 @@ impl TypedExpr {
             TypedExpr::GenRefCreate { inner_ty, .. } => Ty::GenRef(Box::new(inner_ty)),
             TypedExpr::ListNew { elem_ty, .. } => Ty::List(Box::new(elem_ty)),
             TypedExpr::ListLit { elem_ty, .. } => Ty::List(Box::new(elem_ty)),
+            TypedExpr::MapNew { key_ty, val_ty, .. } => Ty::Map(Box::new(key_ty), Box::new(val_ty)),
+            TypedExpr::SetNew { elem_ty, .. } => Ty::Set(Box::new(elem_ty)),
+            TypedExpr::MapMethod { ty, .. } => ty,
+            TypedExpr::SetMethod { ty, .. } => ty,
         }
     }
 
@@ -284,7 +329,8 @@ impl TypedExpr {
             | TypedExpr::GenRefIndex { span, .. } | TypedExpr::EnumVariant { span, .. }
             | TypedExpr::Closure { span, .. } | TypedExpr::ListNew { span, .. } | TypedExpr::ListLit { span, .. }
             | TypedExpr::ListIndex { span, .. } | TypedExpr::ListMethod { span, .. }
-            | TypedExpr::StrIndex { span, .. } => *span,
+            | TypedExpr::StrIndex { span, .. } | TypedExpr::MapNew { span, .. } | TypedExpr::SetNew { span, .. }
+            | TypedExpr::MapMethod { span, .. } | TypedExpr::SetMethod { span, .. } => *span,
             TypedExpr::SelfExpr(_, s) => *s,
             TypedExpr::Error(_) => Span::dummy(),
         }

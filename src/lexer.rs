@@ -100,6 +100,7 @@ pub enum TokenKind {
     OrOr,       // || (also `or`)
     At,         // @ (decorators)
     Underscore, // _ (wildcard pattern)
+    Question,   // ? (Option/Result `?`-propagation)
 
     /// End of input.
     Eof,
@@ -183,6 +184,7 @@ impl TokenKind {
             TokenKind::OrOr => "'||'".into(),
             TokenKind::At => "'@'".into(),
             TokenKind::Underscore => "'_'".into(),
+            TokenKind::Question => "'?'".into(),
             TokenKind::Eof => "end of file".into(),
         }
     }
@@ -640,6 +642,7 @@ impl<'src> Lexer<'src> {
             b'>' => TokenKind::Gt,
             b'!' => TokenKind::Not,
             b'@' => TokenKind::At,
+            b'?' => TokenKind::Question,
             _ => {
                 // `c` may be the lead byte of a multi-byte UTF-8 codepoint
                 // (e.g. an accented identifier or stray symbol); consuming

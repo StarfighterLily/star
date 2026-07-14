@@ -487,8 +487,20 @@ impl Codegen {
                 // "no match" branch to chain to).
                 let mut dangling_next_block = false;
                 for (i, arm) in arms.iter().enumerate() {
-                    let then_label = format!("match_then_{}", i);
-                    let next_label = format!("match_next_{}", i);
+                    // Suffixed with `self.tmp` (like `end_label`/`entry_label`
+                    // just above), not just the arm index `i` alone -- a
+                    // function with more than one `match` (or, previously,
+                    // any second `match` reached at all after the first)
+                    // would otherwise have every one of its arms' `then`/
+                    // `next` blocks collide on the exact same label text
+                    // (`match_then_0`, `match_next_0`, ...), corrupting the
+                    // emitted IR into what LLVM's parser sees as one block
+                    // holding two terminators instead of two distinct
+                    // blocks -- see `runtime_multiple_matches_in_one_function_end_to_end`.
+                    let then_label = format!("match_then_{}_{}", i, self.tmp);
+                    self.tmp += 1;
+                    let next_label = format!("match_next_{}_{}", i, self.tmp);
+                    self.tmp += 1;
                     dangling_next_block = matches!(arm.pattern, Pattern::Compare(..) | Pattern::EnumVariant(..) | Pattern::Int(..) | Pattern::Bool(..));
                     match &arm.pattern {
                         // `Int`/`Bool` are plain equality patterns (`43 -> ...`,
@@ -1025,6 +1037,22 @@ impl Codegen {
                     other => { self.err("internal error: list method receiver is not a List<T>", Span::dummy()); other }
                 };
                 self.emit_list_method(base, *method, args, &elem_ty)
+            }
+            TypedExpr::MapNew { key_ty, val_ty, .. } => self.emit_map_new(key_ty, val_ty),
+            TypedExpr::SetNew { elem_ty, .. } => self.emit_set_new(elem_ty),
+            TypedExpr::MapMethod { base, method, args, ty, .. } => {
+                let (key_ty, val_ty) = match self.expr_ty(base) {
+                    Ty::Map(k, v) => (*k, *v),
+                    other => { self.err("internal error: map method receiver is not a Map<K,V>", Span::dummy()); (other, Ty::Int) }
+                };
+                self.emit_map_method(base, *method, args, &key_ty, &val_ty, ty)
+            }
+            TypedExpr::SetMethod { base, method, args, .. } => {
+                let elem_ty = match self.expr_ty(base) {
+                    Ty::Set(inner) => *inner,
+                    other => { self.err("internal error: set method receiver is not a Set<T>", Span::dummy()); other }
+                };
+                self.emit_set_method(base, *method, args, &elem_ty)
             }
             TypedExpr::Error(_) => "%undef".into(),
         }

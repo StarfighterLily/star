@@ -301,6 +301,13 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>, local_s
         | TypedExpr::ListLit { .. }
         | TypedExpr::ListIndex { .. }
         | TypedExpr::ListMethod { .. }
+        // `Map<K,V>`/`Set<T>` store keys/values by value into their own
+        // independently `malloc`'d buffers (see `crate::codegen::map`/
+        // `crate::codegen::set`), same reasoning as `List` above.
+        | TypedExpr::MapNew { .. }
+        | TypedExpr::SetNew { .. }
+        | TypedExpr::MapMethod { .. }
+        | TypedExpr::SetMethod { .. }
         // A `str` byte read (`s[i]`) yields a plain `i32`, never a
         // frame-local struct's identity -- same reasoning as `ListIndex`
         // just above.

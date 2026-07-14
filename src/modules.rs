@@ -433,5 +433,6 @@ fn rename_expr(expr: &Expr, names: &HashMap<String, String>) -> Expr {
             span: *span,
         },
         Expr::ListLit(elems, span) => Expr::ListLit(elems.iter().map(|e| rename_expr(e, names)).collect(), *span),
+        Expr::Try { inner, span } => Expr::Try { inner: Box::new(rename_expr(inner, names)), span: *span },
     }
 }

@@ -235,14 +235,13 @@ enum Direction:
     East
     West
 
-enum Option<T>:
-    None
-    Some(value: T)
-
 enum Shape:
     Circle(radius: i32)
     Rect(width: i32, height: i32)
 ```
+
+`Option<T>` and `Result<T, E>` are compiler builtins (see [Generics](#generics)
+below) -- they're always available and never need to be declared.
 
 ### Enum Variants
 
@@ -256,12 +255,22 @@ let none = Option<i32>::None
 
 ## Generics
 
-### Generic Structs and Enums
+### Generic Structs
 
 ```star
 struct Box<T>:
     value: T
+```
 
+### `Option<T>` and `Result<T, E>`
+
+`Option<T>` and `Result<T, E>` are pre-registered generic enums built into the
+compiler -- functionally identical to a hand-declared generic `enum`, but
+always available without declaring them yourself (and a module that tries to
+declare its own `enum Option<T>`/`enum Result<T, E>` gets a "declared more
+than once" error, the same as redeclaring any other name):
+
+```star
 enum Option<T>:
     None
     Some(value: T)
@@ -281,6 +290,27 @@ fn unwrap_or<T>(o: Option<T>, default: T) -> T:
     match o:
         Option::Some(v) -> return v
         Option::None -> return default
+```
+
+### `?`-propagation
+
+A postfix `?` on an `Option<T>`/`Result<T, E>` expression unwraps the
+"success" variant (`Some(v)`/`Ok(v)`) to `v`, or immediately `return`s the
+"empty" variant (`None`/`Err(e)`) unchanged out of the enclosing function --
+no explicit `match` needed at the call site. The enclosing function's
+declared return type must be the exact same `Option`/`Result` instantiation
+(Star has no `From`/`Into` conversions to reconcile, say, a `Result<i32, i32>`
+being propagated out of a function returning `Result<i32, str>`):
+
+```star
+fn safe_div(a: i32, b: i32) -> Result<i32, i32>:
+    if b == 0:
+        return Result<i32, i32>::Err(1)
+    Result<i32, i32>::Ok(a / b)
+
+fn checked_double(a: i32, b: i32) -> Result<i32, i32>:
+    let h = safe_div(a, b)?
+    Result<i32, i32>::Ok(h * 2)
 ```
 
 ---
@@ -354,6 +384,54 @@ let v = nums[0]   # Access element
 nums[0] = 100     # Modify element
 let popped = nums.pop()  # Remove and return last element
 ```
+
+---
+
+## Maps and Sets
+
+### `Map<K, V>`
+
+```star
+let mut ages: Map<str, i32> = Map<str, i32>()
+ages.insert("alice", 30)   # insert or overwrite
+ages.insert("bob", 25)
+
+match ages.get("alice"):   # -> Option<V>
+    Option::Some(v) -> println(f"alice: {v}")
+    Option::None -> println("alice: missing")
+
+ages.contains("bob")       # -> bool
+ages.remove("bob")         # -> Option<V>, the removed value if present
+ages.len()                 # -> i32
+```
+
+### `Set<T>`
+
+```star
+let mut tags: Set<i32> = Set<i32>()
+tags.insert(1)     # -> bool, true if newly inserted
+tags.insert(1)     # -> false, already present
+tags.contains(1)   # -> bool
+tags.remove(1)     # -> bool, true if it was present
+tags.len()         # -> i32
+```
+
+### Key/element type restrictions
+
+A `Map`/`Set` key or element type must be *structurally hashable*: `i32`,
+`f32`, `bool`, `str`, a fieldless `enum`, `Vec2`/`Vec3`/`Vec4`, or a `struct`
+composed entirely of such fields (recursively). Payload-carrying enums,
+`GenRef<T>`, `List<T>`, `Map<K,V>`, `Set<T>`, closures, and `ptr` are not
+supported as key/element types today, and are rejected at compile time.
+
+There is no hashing/bucketing yet: `insert`/`get`/`remove`/`contains` are all
+`O(n)` in the current size, comparing against each stored key/element with a
+generated structural-equality function rather than a hash table. This is a
+deliberate first-cut scope decision (see `docs/design.md`) that fully
+supports arbitrary hashable key/element types today, including nested
+structs, without needing a hash function at all -- a real hash table is a
+purely internal follow-up optimization that would not change any of the
+syntax or semantics documented above.
 
 ---
 
@@ -753,6 +831,8 @@ The `examples/` directory contains working demonstrations:
 | `math_builtins.star` | Built-in math functions |
 | `control_flow.star` | If/for/while/break/continue |
 | `generics.star` | Generic types and functions |
+| `option_result.star` | Builtin `Option`/`Result`, `?`-propagation, payload enums |
+| `map_set.star` | `Map<K,V>`/`Set<T>`, including a struct element type |
 | `closures.star` | Lambda expressions |
 | `memory_models.star` | Frame/Arena/GenRef demonstration |
 | `modules_main.star` | Module imports |

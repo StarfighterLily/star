@@ -28,7 +28,10 @@ The current 28 builtins cover almost no string/collection manipulation beyond
 `List<T>`. Grow incrementally as real programs (see #8) expose actual gaps
 rather than speculatively.
 - String ops: split/join/trim/replace/contains/format beyond f-strings
-- A `Map`/`Dict` and `Set` type to complement `List<T>`.
+- ~~A `Map`/`Dict` and `Set` type to complement `List<T>`~~ -- done:
+  `Map<K,V>`/`Set<T>` landed (linear-scan lookup plus a generated
+  structural-equality function per key/element type, not a hash table yet --
+  see `docs/design.md`'s Type System plan and `examples/map_set.star`).
 - Fill out math builtins as needed (trig, log/exp, etc.).
 
 ### 7. Wire up reflection into an actual runtime feature

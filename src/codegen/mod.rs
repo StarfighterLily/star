@@ -14,14 +14,17 @@
 mod arena;
 mod builtins;
 mod closure;
+mod eq;
 mod expr;
 mod file_io;
 mod list;
+mod map;
 mod net;
 mod os;
 mod par_pool;
 mod rc;
 mod reflect;
+mod set;
 mod stmt;
 mod vector_math;
 
@@ -130,6 +133,20 @@ pub struct Codegen {
     /// `define` (see `Codegen::list_release_thunk_operand`,
     /// `crate::codegen::list`).
     list_release_thunks: std::collections::HashMap<String, String>,
+    /// Same purpose as `list_release_thunks`, keyed by `Codegen::mangle_ty`
+    /// of the element type, for `Set<T>` (see `crate::codegen::set`).
+    set_release_thunks: std::collections::HashMap<String, String>,
+    /// Same purpose as `list_release_thunks`, keyed by
+    /// `"{mangled_key}_{mangled_val}"`, for `Map<K,V>` (see
+    /// `crate::codegen::map`).
+    map_release_thunks: std::collections::HashMap<String, String>,
+    /// Maps a mangled key/element-type key -> the name of the
+    /// `eq_<mangled>` structural-equality function generated the first time
+    /// a `Map<K,_>`/`Set<T>` of that key/element type is used (see
+    /// `crate::codegen::eq`), so every `Map`/`Set` sharing a key/element
+    /// type reuses one generated function instead of each emitting a
+    /// duplicate `define`.
+    eq_fns: std::collections::HashMap<String, String>,
     /// True once the persistent `par`/`swarm` worker-thread pool's static
     /// machinery (globals, `@par.pool.worker_main`, `@par.pool.ensure_init`)
     /// has been pushed to `pending_top`. Guards against re-emitting it for a
@@ -193,6 +210,9 @@ impl Codegen {
             owned_stack: Vec::new(),
             fn_value_thunks: std::collections::HashMap::new(),
             list_release_thunks: std::collections::HashMap::new(),
+            set_release_thunks: std::collections::HashMap::new(),
+            map_release_thunks: std::collections::HashMap::new(),
+            eq_fns: std::collections::HashMap::new(),
             par_pool_emitted: false,
             extern_fns: std::collections::HashSet::new(),
             current_label: "entry".to_string(),
@@ -305,6 +325,9 @@ impl Codegen {
         self.line("declare i8* @memcpy(i8*, i8*, i64)");
         self.line("declare i8* @strcpy(i8*, i8*)");
         self.line("declare i8* @strcat(i8*, i8*)");
+        // `str`-keyed `Map`/`Set` structural equality -- see
+        // `crate::codegen::eq`.
+        self.line("declare i32 @strcmp(i8*, i8*)");
         // `file_open`/`file_read`/`file_read_line`/`file_write`/
         // `file_close`/`file_exists` builtins -- see `crate::codegen::file_io`.
         self.line("declare i8* @fopen(i8*, i8*)");
@@ -485,7 +508,7 @@ impl Codegen {
         match ty {
             Ty::Int | Ty::Float => 4,
             Ty::Bool => 1,
-            Ty::Str | Ty::Ptr | Ty::List(_) | Ty::Closure(..) => 8,
+            Ty::Str | Ty::Ptr | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Closure(..) => 8,
             Ty::GenRef(_) => 4,
             Ty::Vec2 => 8,
             Ty::Vec3 | Ty::Vec4 | Ty::Mat4 => 16,
@@ -561,6 +584,10 @@ impl Codegen {
             // `{ T*, i64, i64 }` payload lives on the heap, not inline (see
             // `crate::codegen::list`).
             Ty::List(_) => 8,
+            // Same reasoning as `Ty::List` above: the `{ K*, V*, i64, i64 }`
+            // (`Map`) / `{ T*, i64, i64 }` (`Set`) payload lives on the heap,
+            // this is just the object pointer's own size.
+            Ty::Map(..) | Ty::Set(_) => 8,
             // A fieldless enum is a bare `i32` discriminant. A payload
             // enum is `{ i32 tag, [W x i64] payload }`; the `[W x i64]`
             // array forces 8-byte alignment, so the tag field is padded out
@@ -613,6 +640,11 @@ impl Codegen {
             // `star_rc_alloc` header lives at `Codegen::list_payload_llvm_ty`
             // (see `crate::codegen::list`).
             Ty::List(_) => "i8*".into(),
+            // Same RC'd opaque-object-pointer scheme as `List<T>` -- see
+            // `crate::codegen::map`/`crate::codegen::set` for the payload
+            // shape each points past its `star_rc_alloc` header.
+            Ty::Map(..) => "i8*".into(),
+            Ty::Set(_) => "i8*".into(),
             // A fieldless enum has no LLVM struct declaration of its own --
             // it's just a dense discriminant, so it's represented directly
             // as `i32` (see `enum_variant_index`). A payload enum lowers to
@@ -645,6 +677,8 @@ impl Codegen {
             Ty::Named(n) => format!("s_{}", n),
             Ty::GenRef(inner) => format!("genref_{}", self.mangle_ty(inner)),
             Ty::List(inner) => format!("list_{}", self.mangle_ty(inner)),
+            Ty::Map(k, v) => format!("map_{}_{}", self.mangle_ty(k), self.mangle_ty(v)),
+            Ty::Set(inner) => format!("set_{}", self.mangle_ty(inner)),
             Ty::Enum(n) => format!("e_{}", n),
             Ty::Closure(..) => "closure".into(),
             Ty::Ptr => "ptr".into(),
@@ -713,6 +747,8 @@ impl Codegen {
             Ty::Str => "null".into(),
             Ty::Ptr => "null".into(),
             Ty::List(_) => "null".into(),
+            Ty::Map(..) => "null".into(),
+            Ty::Set(_) => "null".into(),
             Ty::Enum(n) if !self.enum_is_payload(n) => "0".into(),
             Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat4 | Ty::Named(_) | Ty::GenRef(_) | Ty::Enum(_) | Ty::Closure(..) => "zeroinitializer".into(),
         }
@@ -858,6 +894,10 @@ impl Codegen {
             TypedExpr::GenRefCreate { inner_ty, .. } => Ty::GenRef(Box::new(inner_ty.clone())),
             TypedExpr::ListNew { elem_ty, .. } => Ty::List(Box::new(elem_ty.clone())),
             TypedExpr::ListLit { elem_ty, .. } => Ty::List(Box::new(elem_ty.clone())),
+            TypedExpr::MapNew { key_ty, val_ty, .. } => Ty::Map(Box::new(key_ty.clone()), Box::new(val_ty.clone())),
+            TypedExpr::SetNew { elem_ty, .. } => Ty::Set(Box::new(elem_ty.clone())),
+            TypedExpr::MapMethod { ty, .. } => ty.clone(),
+            TypedExpr::SetMethod { ty, .. } => ty.clone(),
             TypedExpr::SelfExpr(ty, _) => ty.clone(),
             TypedExpr::If { ty, .. } => ty.clone(),
         }

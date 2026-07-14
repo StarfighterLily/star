@@ -300,6 +300,44 @@ impl Checker {
                     self.walk_par_expr(a, locals);
                 }
             }
+            TypedExpr::MapNew { .. } => {}
+            TypedExpr::SetNew { .. } => {}
+            // Same reasoning as `ListMethod` above: `insert`/`remove` mutate
+            // the receiver's backing buffer in place, so only a body-local
+            // receiver can be proven disjoint across threads; `get`/
+            // `contains`/`len` only read, so they're exempt.
+            TypedExpr::MapMethod { base, method, args, span, .. } => {
+                if matches!(method, MapMethod::Insert | MapMethod::Remove) {
+                    match root_ident(base) {
+                        Some(root) if locals.contains(&root) => {}
+                        _ => self.error(
+                            "cannot mutate a captured map inside a par/swarm body \
+                             (only the loop variable's own locals may be mutated)",
+                            *span,
+                        ),
+                    }
+                }
+                self.walk_par_expr(base, locals);
+                for a in args {
+                    self.walk_par_expr(a, locals);
+                }
+            }
+            TypedExpr::SetMethod { base, method, args, span, .. } => {
+                if matches!(method, SetMethod::Insert | SetMethod::Remove) {
+                    match root_ident(base) {
+                        Some(root) if locals.contains(&root) => {}
+                        _ => self.error(
+                            "cannot mutate a captured set inside a par/swarm body \
+                             (only the loop variable's own locals may be mutated)",
+                            *span,
+                        ),
+                    }
+                }
+                self.walk_par_expr(base, locals);
+                for a in args {
+                    self.walk_par_expr(a, locals);
+                }
+            }
             TypedExpr::Int(..)
             | TypedExpr::Float(..)
             | TypedExpr::Str(..)

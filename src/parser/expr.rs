@@ -182,6 +182,14 @@ impl Parser {
                     let span = start.to(self.prev_span());
                     expr = Expr::GenRefIndex { base: Box::new(expr), index: Box::new(index), span };
                 }
+                // `expr?` - Option/Result propagation sugar, same postfix
+                // precedence tier as `.field`/call/index above (binds
+                // tighter than any binary operator).
+                TokenKind::Question => {
+                    self.advance();
+                    let span = expr.span().to(self.prev_span());
+                    expr = Expr::Try { inner: Box::new(expr), span };
+                }
                 _ => break,
             }
         }

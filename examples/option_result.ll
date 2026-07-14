@@ -21,6 +21,14 @@ declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
 declare i32 @_putenv(i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -106,10 +114,10 @@ done:
   ret void
 }
 
-%IntOption = type { i32, [1 x i64] }
-%DivResult = type { i32, [1 x i64] }
 %Shape = type { i32, [1 x i64] }
-define %DivResult @safe_div(i32 %a, i32 %b) {
+%Result__i32__i32 = type { i32, [1 x i64] }
+%Option__i32 = type { i32, [1 x i64] }
+define %Result__i32__i32 @safe_div(i32 %a, i32 %b) {
 entry:
   %t0 = alloca i32
   store i32 %a, i32* %t0
@@ -119,22 +127,22 @@ entry:
   %t3 = icmp eq i32 %t2, 0
   br i1 %t3, label %if_then_0, label %if_else_1
 if_then_0:
-  %t4 = alloca %DivResult
-  %t5 = getelementptr inbounds %DivResult, %DivResult* %t4, i32 0, i32 0
+  %t4 = alloca %Result__i32__i32
+  %t5 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t4, i32 0, i32 0
   store i32 1, i32* %t5
-  %t6 = getelementptr inbounds %DivResult, %DivResult* %t4, i32 0, i32 1
+  %t6 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t4, i32 0, i32 1
   %t7 = bitcast [1 x i64]* %t6 to { i32 }*
   %t8 = getelementptr inbounds { i32 }, { i32 }* %t7, i32 0, i32 0
   store i32 1, i32* %t8
-  %t9 = load %DivResult, %DivResult* %t4
-  ret %DivResult %t9
+  %t9 = load %Result__i32__i32, %Result__i32__i32* %t4
+  ret %Result__i32__i32 %t9
 if_else_1:
   br label %if_end_2
 if_end_2:
-  %t10 = alloca %DivResult
-  %t11 = getelementptr inbounds %DivResult, %DivResult* %t10, i32 0, i32 0
+  %t10 = alloca %Result__i32__i32
+  %t11 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t10, i32 0, i32 0
   store i32 0, i32* %t11
-  %t12 = getelementptr inbounds %DivResult, %DivResult* %t10, i32 0, i32 1
+  %t12 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t10, i32 0, i32 1
   %t13 = bitcast [1 x i64]* %t12 to { i32 }*
   %t14 = load i32, i32* %t0
   %t15 = load i32, i32* %t1
@@ -153,11 +161,11 @@ int_div_ok_4:
   %t22 = sdiv i32 %t14, %t15
   %t23 = getelementptr inbounds { i32 }, { i32 }* %t13, i32 0, i32 0
   store i32 %t22, i32* %t23
-  %t24 = load %DivResult, %DivResult* %t10
-  ret %DivResult %t24
+  %t24 = load %Result__i32__i32, %Result__i32__i32* %t10
+  ret %Result__i32__i32 %t24
 }
 
-define %IntOption @first_even(i32 %a, i32 %b, i32 %c) {
+define %Option__i32 @first_even(i32 %a, i32 %b, i32 %c) {
 entry:
   %t0 = alloca i32
   store i32 %a, i32* %t0
@@ -182,16 +190,16 @@ int_div_ok_6:
   %t11 = icmp eq i32 %t10, 0
   br i1 %t11, label %if_then_7, label %if_else_8
 if_then_7:
-  %t12 = alloca %IntOption
-  %t13 = getelementptr inbounds %IntOption, %IntOption* %t12, i32 0, i32 0
+  %t12 = alloca %Option__i32
+  %t13 = getelementptr inbounds %Option__i32, %Option__i32* %t12, i32 0, i32 0
   store i32 1, i32* %t13
-  %t14 = getelementptr inbounds %IntOption, %IntOption* %t12, i32 0, i32 1
+  %t14 = getelementptr inbounds %Option__i32, %Option__i32* %t12, i32 0, i32 1
   %t15 = bitcast [1 x i64]* %t14 to { i32 }*
   %t16 = load i32, i32* %t0
   %t17 = getelementptr inbounds { i32 }, { i32 }* %t15, i32 0, i32 0
   store i32 %t16, i32* %t17
-  %t18 = load %IntOption, %IntOption* %t12
-  ret %IntOption %t18
+  %t18 = load %Option__i32, %Option__i32* %t12
+  ret %Option__i32 %t18
 if_else_8:
   br label %if_end_9
 if_end_9:
@@ -212,16 +220,16 @@ int_div_ok_11:
   %t27 = icmp eq i32 %t26, 0
   br i1 %t27, label %if_then_12, label %if_else_13
 if_then_12:
-  %t28 = alloca %IntOption
-  %t29 = getelementptr inbounds %IntOption, %IntOption* %t28, i32 0, i32 0
+  %t28 = alloca %Option__i32
+  %t29 = getelementptr inbounds %Option__i32, %Option__i32* %t28, i32 0, i32 0
   store i32 1, i32* %t29
-  %t30 = getelementptr inbounds %IntOption, %IntOption* %t28, i32 0, i32 1
+  %t30 = getelementptr inbounds %Option__i32, %Option__i32* %t28, i32 0, i32 1
   %t31 = bitcast [1 x i64]* %t30 to { i32 }*
   %t32 = load i32, i32* %t1
   %t33 = getelementptr inbounds { i32 }, { i32 }* %t31, i32 0, i32 0
   store i32 %t32, i32* %t33
-  %t34 = load %IntOption, %IntOption* %t28
-  ret %IntOption %t34
+  %t34 = load %Option__i32, %Option__i32* %t28
+  ret %Option__i32 %t34
 if_else_13:
   br label %if_end_14
 if_end_14:
@@ -242,44 +250,161 @@ int_div_ok_16:
   %t43 = icmp eq i32 %t42, 0
   br i1 %t43, label %if_then_17, label %if_else_18
 if_then_17:
-  %t44 = alloca %IntOption
-  %t45 = getelementptr inbounds %IntOption, %IntOption* %t44, i32 0, i32 0
+  %t44 = alloca %Option__i32
+  %t45 = getelementptr inbounds %Option__i32, %Option__i32* %t44, i32 0, i32 0
   store i32 1, i32* %t45
-  %t46 = getelementptr inbounds %IntOption, %IntOption* %t44, i32 0, i32 1
+  %t46 = getelementptr inbounds %Option__i32, %Option__i32* %t44, i32 0, i32 1
   %t47 = bitcast [1 x i64]* %t46 to { i32 }*
   %t48 = load i32, i32* %t2
   %t49 = getelementptr inbounds { i32 }, { i32 }* %t47, i32 0, i32 0
   store i32 %t48, i32* %t49
-  %t50 = load %IntOption, %IntOption* %t44
-  ret %IntOption %t50
+  %t50 = load %Option__i32, %Option__i32* %t44
+  ret %Option__i32 %t50
 if_else_18:
   br label %if_end_19
 if_end_19:
-  %t51 = alloca %IntOption
-  %t52 = getelementptr inbounds %IntOption, %IntOption* %t51, i32 0, i32 0
+  %t51 = alloca %Option__i32
+  %t52 = getelementptr inbounds %Option__i32, %Option__i32* %t51, i32 0, i32 0
   store i32 0, i32* %t52
-  %t53 = load %IntOption, %IntOption* %t51
-  ret %IntOption %t53
+  %t53 = load %Option__i32, %Option__i32* %t51
+  ret %Option__i32 %t53
 }
 
-define i32 @describe_option(%IntOption %o) {
+define %Result__i32__i32 @checked_double(i32 %a, i32 %b) {
 entry:
-  %t0 = alloca %IntOption
-  store %IntOption %o, %IntOption* %t0
+  %t0 = alloca i32
+  store i32 %a, i32* %t0
+  %t1 = alloca i32
+  store i32 %b, i32* %t1
+  %t2 = alloca i32
+  %t3 = load i32, i32* %t0
+  %t4 = load i32, i32* %t1
+  %t5 = call %Result__i32__i32 @safe_div(i32 %t3, i32 %t4)
+  %t6 = alloca %Result__i32__i32
+  store %Result__i32__i32 %t5, %Result__i32__i32* %t6
+  br label %match_scrutinee_8
+match_scrutinee_8:
+  %t10 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t6, i32 0, i32 0
+  %t11 = load i32, i32* %t10
+  %t9 = icmp eq i32 %t11, 0
+  br i1 %t9, label %match_then_0, label %match_next_0
+match_then_0:
+  %t12 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t6, i32 0, i32 1
+  %t13 = bitcast [1 x i64]* %t12 to { i32 }*
+  %t14 = getelementptr inbounds { i32 }, { i32 }* %t13, i32 0, i32 0
+  %t15 = load i32, i32* %t14
+  br label %match_end_7
+match_next_0:
+  %t17 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t6, i32 0, i32 0
+  %t18 = load i32, i32* %t17
+  %t16 = icmp eq i32 %t18, 1
+  br i1 %t16, label %match_then_1, label %match_next_1
+match_then_1:
+  %t19 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t6, i32 0, i32 1
+  %t20 = bitcast [1 x i64]* %t19 to { i32 }*
+  %t21 = getelementptr inbounds { i32 }, { i32 }* %t20, i32 0, i32 0
+  %t22 = alloca %Result__i32__i32
+  %t23 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t22, i32 0, i32 0
+  store i32 1, i32* %t23
+  %t24 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t22, i32 0, i32 1
+  %t25 = bitcast [1 x i64]* %t24 to { i32 }*
+  %t26 = load i32, i32* %t21
+  %t27 = getelementptr inbounds { i32 }, { i32 }* %t25, i32 0, i32 0
+  store i32 %t26, i32* %t27
+  %t28 = load %Result__i32__i32, %Result__i32__i32* %t22
+  ret %Result__i32__i32 %t28
+match_next_1:
+  br label %match_end_7
+match_end_7:
+  %t29 = phi i32 [ %t15, %match_then_0 ], [ undef, %match_next_1 ]
+  store i32 %t29, i32* %t2
+  %t30 = alloca %Result__i32__i32
+  %t31 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t30, i32 0, i32 0
+  store i32 0, i32* %t31
+  %t32 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t30, i32 0, i32 1
+  %t33 = bitcast [1 x i64]* %t32 to { i32 }*
+  %t34 = load i32, i32* %t2
+  %t35 = mul i32 %t34, 2
+  %t36 = getelementptr inbounds { i32 }, { i32 }* %t33, i32 0, i32 0
+  store i32 %t35, i32* %t36
+  %t37 = load %Result__i32__i32, %Result__i32__i32* %t30
+  ret %Result__i32__i32 %t37
+}
+
+define %Option__i32 @first_even_doubled(i32 %a, i32 %b, i32 %c) {
+entry:
+  %t0 = alloca i32
+  store i32 %a, i32* %t0
+  %t1 = alloca i32
+  store i32 %b, i32* %t1
+  %t2 = alloca i32
+  store i32 %c, i32* %t2
+  %t3 = alloca i32
+  %t4 = load i32, i32* %t0
+  %t5 = load i32, i32* %t1
+  %t6 = load i32, i32* %t2
+  %t7 = call %Option__i32 @first_even(i32 %t4, i32 %t5, i32 %t6)
+  %t8 = alloca %Option__i32
+  store %Option__i32 %t7, %Option__i32* %t8
+  br label %match_scrutinee_10
+match_scrutinee_10:
+  %t12 = getelementptr inbounds %Option__i32, %Option__i32* %t8, i32 0, i32 0
+  %t13 = load i32, i32* %t12
+  %t11 = icmp eq i32 %t13, 1
+  br i1 %t11, label %match_then_0, label %match_next_0
+match_then_0:
+  %t14 = getelementptr inbounds %Option__i32, %Option__i32* %t8, i32 0, i32 1
+  %t15 = bitcast [1 x i64]* %t14 to { i32 }*
+  %t16 = getelementptr inbounds { i32 }, { i32 }* %t15, i32 0, i32 0
+  %t17 = load i32, i32* %t16
+  br label %match_end_9
+match_next_0:
+  %t19 = getelementptr inbounds %Option__i32, %Option__i32* %t8, i32 0, i32 0
+  %t20 = load i32, i32* %t19
+  %t18 = icmp eq i32 %t20, 0
+  br i1 %t18, label %match_then_1, label %match_next_1
+match_then_1:
+  %t21 = alloca %Option__i32
+  %t22 = getelementptr inbounds %Option__i32, %Option__i32* %t21, i32 0, i32 0
+  store i32 0, i32* %t22
+  %t23 = load %Option__i32, %Option__i32* %t21
+  ret %Option__i32 %t23
+match_next_1:
+  br label %match_end_9
+match_end_9:
+  %t24 = phi i32 [ %t17, %match_then_0 ], [ undef, %match_next_1 ]
+  store i32 %t24, i32* %t3
+  %t25 = alloca %Option__i32
+  %t26 = getelementptr inbounds %Option__i32, %Option__i32* %t25, i32 0, i32 0
+  store i32 1, i32* %t26
+  %t27 = getelementptr inbounds %Option__i32, %Option__i32* %t25, i32 0, i32 1
+  %t28 = bitcast [1 x i64]* %t27 to { i32 }*
+  %t29 = load i32, i32* %t3
+  %t30 = mul i32 %t29, 2
+  %t31 = getelementptr inbounds { i32 }, { i32 }* %t28, i32 0, i32 0
+  store i32 %t30, i32* %t31
+  %t32 = load %Option__i32, %Option__i32* %t25
+  ret %Option__i32 %t32
+}
+
+define i32 @describe_option(%Option__i32 %o) {
+entry:
+  %t0 = alloca %Option__i32
+  store %Option__i32 %o, %Option__i32* %t0
   br label %match_scrutinee_2
 match_scrutinee_2:
-  %t4 = getelementptr inbounds %IntOption, %IntOption* %t0, i32 0, i32 0
+  %t4 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 0
   %t5 = load i32, i32* %t4
   %t3 = icmp eq i32 %t5, 1
   br i1 %t3, label %match_then_0, label %match_next_0
 match_then_0:
-  %t6 = getelementptr inbounds %IntOption, %IntOption* %t0, i32 0, i32 1
+  %t6 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 1
   %t7 = bitcast [1 x i64]* %t6 to { i32 }*
   %t8 = getelementptr inbounds { i32 }, { i32 }* %t7, i32 0, i32 0
   %t9 = load i32, i32* %t8
   ret i32 %t9
 match_next_0:
-  %t11 = getelementptr inbounds %IntOption, %IntOption* %t0, i32 0, i32 0
+  %t11 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 0
   %t12 = load i32, i32* %t11
   %t10 = icmp eq i32 %t12, 0
   br i1 %t10, label %match_then_1, label %match_next_1
@@ -292,26 +417,26 @@ match_end_1:
   unreachable
 }
 
-define i32 @unwrap_or(%IntOption %o, i32 %default) {
+define i32 @unwrap_or(%Option__i32 %o, i32 %default) {
 entry:
-  %t0 = alloca %IntOption
-  store %IntOption %o, %IntOption* %t0
+  %t0 = alloca %Option__i32
+  store %Option__i32 %o, %Option__i32* %t0
   %t1 = alloca i32
   store i32 %default, i32* %t1
   br label %match_scrutinee_3
 match_scrutinee_3:
-  %t5 = getelementptr inbounds %IntOption, %IntOption* %t0, i32 0, i32 0
+  %t5 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 0
   %t6 = load i32, i32* %t5
   %t4 = icmp eq i32 %t6, 1
   br i1 %t4, label %match_then_0, label %match_next_0
 match_then_0:
-  %t7 = getelementptr inbounds %IntOption, %IntOption* %t0, i32 0, i32 1
+  %t7 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 1
   %t8 = bitcast [1 x i64]* %t7 to { i32 }*
   %t9 = getelementptr inbounds { i32 }, { i32 }* %t8, i32 0, i32 0
   %t10 = load i32, i32* %t9
   br label %match_end_2
 match_next_0:
-  %t12 = getelementptr inbounds %IntOption, %IntOption* %t0, i32 0, i32 0
+  %t12 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 0
   %t13 = load i32, i32* %t12
   %t11 = icmp eq i32 %t13, 0
   br i1 %t11, label %match_then_1, label %match_next_1
@@ -354,18 +479,18 @@ match_end_2:
   ret void
 }
 
-define void @print_div(%DivResult %r) {
+define void @print_div(%Result__i32__i32 %r) {
 entry:
-  %t0 = alloca %DivResult
-  store %DivResult %r, %DivResult* %t0
+  %t0 = alloca %Result__i32__i32
+  store %Result__i32__i32 %r, %Result__i32__i32* %t0
   br label %match_scrutinee_2
 match_scrutinee_2:
-  %t4 = getelementptr inbounds %DivResult, %DivResult* %t0, i32 0, i32 0
+  %t4 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t0, i32 0, i32 0
   %t5 = load i32, i32* %t4
   %t3 = icmp eq i32 %t5, 0
   br i1 %t3, label %match_then_0, label %match_next_0
 match_then_0:
-  %t6 = getelementptr inbounds %DivResult, %DivResult* %t0, i32 0, i32 1
+  %t6 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t0, i32 0, i32 1
   %t7 = bitcast [1 x i64]* %t6 to { i32 }*
   %t8 = getelementptr inbounds { i32 }, { i32 }* %t7, i32 0, i32 0
   %t9 = load i32, i32* %t8
@@ -373,17 +498,89 @@ match_then_0:
   call i32 (i8*, ...) @printf(i8* %t10, i32 %t9)
   br label %match_end_1
 match_next_0:
-  %t12 = getelementptr inbounds %DivResult, %DivResult* %t0, i32 0, i32 0
+  %t12 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t0, i32 0, i32 0
   %t13 = load i32, i32* %t12
   %t11 = icmp eq i32 %t13, 1
   br i1 %t11, label %match_then_1, label %match_next_1
 match_then_1:
-  %t14 = getelementptr inbounds %DivResult, %DivResult* %t0, i32 0, i32 1
+  %t14 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t0, i32 0, i32 1
   %t15 = bitcast [1 x i64]* %t14 to { i32 }*
   %t16 = getelementptr inbounds { i32 }, { i32 }* %t15, i32 0, i32 0
   %t17 = load i32, i32* %t16
   %t18 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.11, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t18, i32 %t17)
+  br label %match_end_1
+match_next_1:
+  br label %match_end_1
+match_end_1:
+  ret void
+}
+
+define void @print_doubled(%Result__i32__i32 %r) {
+entry:
+  %t0 = alloca %Result__i32__i32
+  store %Result__i32__i32 %r, %Result__i32__i32* %t0
+  br label %match_scrutinee_2
+match_scrutinee_2:
+  %t4 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t0, i32 0, i32 0
+  %t5 = load i32, i32* %t4
+  %t3 = icmp eq i32 %t5, 0
+  br i1 %t3, label %match_then_0, label %match_next_0
+match_then_0:
+  %t6 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t0, i32 0, i32 1
+  %t7 = bitcast [1 x i64]* %t6 to { i32 }*
+  %t8 = getelementptr inbounds { i32 }, { i32 }* %t7, i32 0, i32 0
+  %t9 = load i32, i32* %t8
+  %t10 = getelementptr inbounds [23 x i8], [23 x i8]* @.str.12, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t10, i32 %t9)
+  br label %match_end_1
+match_next_0:
+  %t12 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t0, i32 0, i32 0
+  %t13 = load i32, i32* %t12
+  %t11 = icmp eq i32 %t13, 1
+  br i1 %t11, label %match_then_1, label %match_next_1
+match_then_1:
+  %t14 = getelementptr inbounds %Result__i32__i32, %Result__i32__i32* %t0, i32 0, i32 1
+  %t15 = bitcast [1 x i64]* %t14 to { i32 }*
+  %t16 = getelementptr inbounds { i32 }, { i32 }* %t15, i32 0, i32 0
+  %t17 = load i32, i32* %t16
+  %t18 = getelementptr inbounds [24 x i8], [24 x i8]* @.str.13, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t18, i32 %t17)
+  br label %match_end_1
+match_next_1:
+  br label %match_end_1
+match_end_1:
+  ret void
+}
+
+define void @print_option(%Option__i32 %o) {
+entry:
+  %t0 = alloca %Option__i32
+  store %Option__i32 %o, %Option__i32* %t0
+  br label %match_scrutinee_2
+match_scrutinee_2:
+  %t4 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 0
+  %t5 = load i32, i32* %t4
+  %t3 = icmp eq i32 %t5, 1
+  br i1 %t3, label %match_then_0, label %match_next_0
+match_then_0:
+  %t6 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 1
+  %t7 = bitcast [1 x i64]* %t6 to { i32 }*
+  %t8 = getelementptr inbounds { i32 }, { i32 }* %t7, i32 0, i32 0
+  %t9 = load i32, i32* %t8
+  %t10 = getelementptr inbounds [24 x i8], [24 x i8]* @.str.14, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t10, i32 %t9)
+  br label %match_end_1
+match_next_0:
+  %t12 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 0
+  %t13 = load i32, i32* %t12
+  %t11 = icmp eq i32 %t13, 0
+  br i1 %t11, label %match_then_1, label %match_next_1
+match_then_1:
+  %t14 = getelementptr inbounds { i64, i8*, [25 x i8] }, { i64, i8*, [25 x i8] }* @.str.15, i64 0, i32 2, i64 0
+  call i32 (i8*, ...) @printf(i8* %t14)
+  %t15 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.16, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t15)
   br label %match_end_1
 match_next_1:
   br label %match_end_1
@@ -434,17 +631,17 @@ define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t0 = call %DivResult @safe_div(i32 10, i32 2)
-  call void @print_div(%DivResult %t0)
-  %t1 = call %DivResult @safe_div(i32 10, i32 0)
-  call void @print_div(%DivResult %t1)
-  %t2 = call %IntOption @first_even(i32 1, i32 3, i32 4)
-  %t3 = call i32 @describe_option(%IntOption %t2)
-  %t4 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.12, i64 0, i64 0
+  %t0 = call %Result__i32__i32 @safe_div(i32 10, i32 2)
+  call void @print_div(%Result__i32__i32 %t0)
+  %t1 = call %Result__i32__i32 @safe_div(i32 10, i32 0)
+  call void @print_div(%Result__i32__i32 %t1)
+  %t2 = call %Option__i32 @first_even(i32 1, i32 3, i32 4)
+  %t3 = call i32 @describe_option(%Option__i32 %t2)
+  %t4 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.17, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t4, i32 %t3)
-  %t5 = call %IntOption @first_even(i32 1, i32 3, i32 5)
-  %t6 = call i32 @describe_option(%IntOption %t5)
-  %t7 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.13, i64 0, i64 0
+  %t5 = call %Option__i32 @first_even(i32 1, i32 3, i32 5)
+  %t6 = call i32 @describe_option(%Option__i32 %t5)
+  %t7 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.18, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t7, i32 %t6)
   %t8 = alloca %Shape
   %t9 = getelementptr inbounds %Shape, %Shape* %t8, i32 0, i32 0
@@ -455,7 +652,7 @@ entry:
   store i32 2, i32* %t12
   %t13 = load %Shape, %Shape* %t8
   %t14 = call i32 @area(%Shape %t13)
-  %t15 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.14, i64 0, i64 0
+  %t15 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.19, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t15, i32 %t14)
   %t16 = alloca %Shape
   %t17 = getelementptr inbounds %Shape, %Shape* %t16, i32 0, i32 0
@@ -468,31 +665,39 @@ entry:
   store i32 4, i32* %t21
   %t22 = load %Shape, %Shape* %t16
   %t23 = call i32 @area(%Shape %t22)
-  %t24 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.15, i64 0, i64 0
+  %t24 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.20, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t24, i32 %t23)
-  %t25 = alloca %IntOption
-  %t26 = getelementptr inbounds %IntOption, %IntOption* %t25, i32 0, i32 0
+  %t25 = alloca %Option__i32
+  %t26 = getelementptr inbounds %Option__i32, %Option__i32* %t25, i32 0, i32 0
   store i32 1, i32* %t26
-  %t27 = getelementptr inbounds %IntOption, %IntOption* %t25, i32 0, i32 1
+  %t27 = getelementptr inbounds %Option__i32, %Option__i32* %t25, i32 0, i32 1
   %t28 = bitcast [1 x i64]* %t27 to { i32 }*
   %t29 = getelementptr inbounds { i32 }, { i32 }* %t28, i32 0, i32 0
   store i32 7, i32* %t29
-  %t30 = load %IntOption, %IntOption* %t25
+  %t30 = load %Option__i32, %Option__i32* %t25
   %t31 = sub i32 0, 1
-  %t32 = call i32 @unwrap_or(%IntOption %t30, i32 %t31)
-  %t33 = getelementptr inbounds [29 x i8], [29 x i8]* @.str.16, i64 0, i64 0
+  %t32 = call i32 @unwrap_or(%Option__i32 %t30, i32 %t31)
+  %t33 = getelementptr inbounds [29 x i8], [29 x i8]* @.str.21, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t33, i32 %t32)
-  %t34 = alloca %IntOption
-  %t35 = getelementptr inbounds %IntOption, %IntOption* %t34, i32 0, i32 0
+  %t34 = alloca %Option__i32
+  %t35 = getelementptr inbounds %Option__i32, %Option__i32* %t34, i32 0, i32 0
   store i32 0, i32* %t35
-  %t36 = load %IntOption, %IntOption* %t34
+  %t36 = load %Option__i32, %Option__i32* %t34
   %t37 = sub i32 0, 1
-  %t38 = call i32 @unwrap_or(%IntOption %t36, i32 %t37)
-  %t39 = getelementptr inbounds [26 x i8], [26 x i8]* @.str.17, i64 0, i64 0
+  %t38 = call i32 @unwrap_or(%Option__i32 %t36, i32 %t37)
+  %t39 = getelementptr inbounds [26 x i8], [26 x i8]* @.str.22, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t39, i32 %t38)
   %t40 = sub i32 0, 3
   call void @describe_sign(i32 %t40)
   call void @describe_sign(i32 4)
+  %t41 = call %Result__i32__i32 @checked_double(i32 10, i32 2)
+  call void @print_doubled(%Result__i32__i32 %t41)
+  %t42 = call %Result__i32__i32 @checked_double(i32 10, i32 0)
+  call void @print_doubled(%Result__i32__i32 %t42)
+  %t43 = call %Option__i32 @first_even_doubled(i32 1, i32 3, i32 4)
+  call void @print_option(%Option__i32 %t43)
+  %t44 = call %Option__i32 @first_even_doubled(i32 1, i32 3, i32 5)
+  call void @print_option(%Option__i32 %t44)
   ret i32 0
 }
 
@@ -510,9 +715,14 @@ entry:
 @.str.9 = private unnamed_addr constant [2 x i8] c"\0A\00"
 @.str.10 = private unnamed_addr constant [8 x i8] c"ok: %d\0A\00"
 @.str.11 = private unnamed_addr constant [9 x i8] c"err: %d\0A\00"
-@.str.12 = private unnamed_addr constant [11 x i8] c"found: %d\0A\00"
-@.str.13 = private unnamed_addr constant [11 x i8] c"found: %d\0A\00"
-@.str.14 = private unnamed_addr constant [17 x i8] c"circle area: %d\0A\00"
-@.str.15 = private unnamed_addr constant [15 x i8] c"rect area: %d\0A\00"
-@.str.16 = private unnamed_addr constant [29 x i8] c"unwrap_or(Some(7), -1) = %d\0A\00"
-@.str.17 = private unnamed_addr constant [26 x i8] c"unwrap_or(None, -1) = %d\0A\00"
+@.str.12 = private unnamed_addr constant [23 x i8] c"checked_double ok: %d\0A\00"
+@.str.13 = private unnamed_addr constant [24 x i8] c"checked_double err: %d\0A\00"
+@.str.14 = private unnamed_addr constant [24 x i8] c"first_even_doubled: %d\0A\00"
+@.str.15 = private unnamed_addr constant { i64, i8*, [25 x i8] } { i64 -1, i8* null, [25 x i8] c"first_even_doubled: none\00" }
+@.str.16 = private unnamed_addr constant [2 x i8] c"\0A\00"
+@.str.17 = private unnamed_addr constant [11 x i8] c"found: %d\0A\00"
+@.str.18 = private unnamed_addr constant [11 x i8] c"found: %d\0A\00"
+@.str.19 = private unnamed_addr constant [17 x i8] c"circle area: %d\0A\00"
+@.str.20 = private unnamed_addr constant [15 x i8] c"rect area: %d\0A\00"
+@.str.21 = private unnamed_addr constant [29 x i8] c"unwrap_or(Some(7), -1) = %d\0A\00"
+@.str.22 = private unnamed_addr constant [26 x i8] c"unwrap_or(None, -1) = %d\0A\00"

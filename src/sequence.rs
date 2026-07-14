@@ -343,6 +343,7 @@ fn scan_expr_for_nested_yield(expr: &Expr, errors: &mut Vec<Diagnostic>) {
                 scan_expr_for_nested_yield(e, errors);
             }
         }
+        Expr::Try { inner, .. } => scan_expr_for_nested_yield(inner, errors),
         Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Ident(..) | Expr::SelfExpr(..) => {}
     }
 }
@@ -539,5 +540,6 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
             Expr::Lambda { params: params.clone(), ret: ret.clone(), body: rewrite_block(body, &inner_hoist), span: *span }
         }
         Expr::ListLit(elems, span) => Expr::ListLit(elems.iter().map(|e| rewrite_expr(e, hoist)).collect(), *span),
+        Expr::Try { inner, span } => Expr::Try { inner: Box::new(rewrite_expr(inner, hoist)), span: *span },
     }
 }
