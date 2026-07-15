@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,15 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -34,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -115,8 +145,8 @@ entry:
 define i8* @fresh_concat(i8* %a, i8* %b) {
 entry:
   %t0 = alloca i8*
-  store i8* %a, i8** %t0
   %t1 = alloca i8*
+  store i8* %a, i8** %t0
   store i8* %b, i8** %t1
   %t2 = load i8*, i8** %t0
   %t3 = load i8*, i8** %t0
@@ -143,6 +173,8 @@ entry:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  %t6 = alloca i8*
+  %t52 = alloca { i8*, i8* }
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @fresh_literal()
@@ -155,7 +187,6 @@ entry:
   call i32 (i8*, ...) @printf(i8* %t4)
   %t5 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.4, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t5)
-  %t6 = alloca i8*
   %t7 = getelementptr i8*, i8** null, i32 1
   %t8 = ptrtoint i8** %t7 to i64
   %t9 = mul i64 %t8, 3
@@ -212,7 +243,6 @@ list_idx_end_8:
   call i32 (i8*, ...) @printf(i8* %t50)
   %t51 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.8, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t51)
-  %t52 = alloca { i8*, i8* }
   %t65 = getelementptr inbounds { i8* }, { i8* }* null, i32 1
   %t66 = ptrtoint { i8* }* %t65 to i64
   %t70 = bitcast void (i8*)* @closure_9_release_env to i8*
@@ -251,12 +281,12 @@ list_idx_end_8:
 ; par/swarm worker functions
 define void @list_release_str(i8* %objp) {
 entry:
+  %t23 = alloca i64
   %t18 = bitcast i8* %objp to { i8**, i64, i64 }*
   %t19 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t18, i32 0, i32 0
   %t20 = load i8**, i8*** %t19
   %t21 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t18, i32 0, i32 1
   %t22 = load i64, i64* %t21
-  %t23 = alloca i64
   store i64 0, i64* %t23
   br label %list_release_cond_0
 list_release_cond_0:
@@ -279,10 +309,10 @@ list_release_end_2:
 
 define i8* @closure_9(i8* %envp) {
 entry:
+  %t56 = alloca i8*
   %t53 = bitcast i8* %envp to { i8* }*
   %t54 = getelementptr inbounds { i8* }, { i8* }* %t53, i32 0, i32 0
   %t55 = load i8*, i8** %t54
-  %t56 = alloca i8*
   store i8* %t55, i8** %t56
   %t57 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.9, i64 0, i32 2, i64 0
   %t58 = getelementptr inbounds { i64, i8*, [20 x i8] }, { i64, i8*, [20 x i8] }* @.str.10, i64 0, i32 2, i64 0

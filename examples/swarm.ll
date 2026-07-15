@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,15 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -34,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -116,6 +146,16 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  %t79 = alloca { i64, i64 }
+  %t92 = alloca { i64, i64 }
+  %t105 = alloca { i64, i64 }
+  %t118 = alloca { i64, i64 }
+  %t144 = alloca { i64, i64 }
+  %t190 = alloca { i64, i64 }
+  %t203 = alloca { i64, i64 }
+  %t216 = alloca { i64, i64 }
+  %t229 = alloca { i64, i64 }
+  %t255 = alloca { i64, i64 }
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   call void @par.pool.ensure_init()
@@ -144,7 +184,6 @@ par_pooled_6:
   %t76 = sdiv i64 %t75, 4
   %t77 = mul i64 %t74, 1
   %t78 = sdiv i64 %t77, 4
-  %t79 = alloca { i64, i64 }
   %t80 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t79, i32 0, i32 0
   store i64 %t76, i64* %t80
   %t81 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t79, i32 0, i32 1
@@ -161,7 +200,6 @@ par_pooled_6:
   %t89 = sdiv i64 %t88, 4
   %t90 = mul i64 %t74, 2
   %t91 = sdiv i64 %t90, 4
-  %t92 = alloca { i64, i64 }
   %t93 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t92, i32 0, i32 0
   store i64 %t89, i64* %t93
   %t94 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t92, i32 0, i32 1
@@ -178,7 +216,6 @@ par_pooled_6:
   %t102 = sdiv i64 %t101, 4
   %t103 = mul i64 %t74, 3
   %t104 = sdiv i64 %t103, 4
-  %t105 = alloca { i64, i64 }
   %t106 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t105, i32 0, i32 0
   store i64 %t102, i64* %t106
   %t107 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t105, i32 0, i32 1
@@ -195,7 +232,6 @@ par_pooled_6:
   %t115 = sdiv i64 %t114, 4
   %t116 = mul i64 %t74, 4
   %t117 = sdiv i64 %t116, 4
-  %t118 = alloca { i64, i64 }
   %t119 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t118, i32 0, i32 0
   store i64 %t115, i64* %t119
   %t120 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t118, i32 0, i32 1
@@ -232,7 +268,6 @@ par_acquire_8:
   br label %par_run_9
 par_run_9:
   %t143 = load i64, i64* @arena.Enemies.count
-  %t144 = alloca { i64, i64 }
   %t145 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t144, i32 0, i32 0
   store i64 0, i64* %t145
   %t146 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t144, i32 0, i32 1
@@ -272,7 +307,6 @@ par_pooled_18:
   %t187 = sdiv i64 %t186, 4
   %t188 = mul i64 %t185, 1
   %t189 = sdiv i64 %t188, 4
-  %t190 = alloca { i64, i64 }
   %t191 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t190, i32 0, i32 0
   store i64 %t187, i64* %t191
   %t192 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t190, i32 0, i32 1
@@ -289,7 +323,6 @@ par_pooled_18:
   %t200 = sdiv i64 %t199, 4
   %t201 = mul i64 %t185, 2
   %t202 = sdiv i64 %t201, 4
-  %t203 = alloca { i64, i64 }
   %t204 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t203, i32 0, i32 0
   store i64 %t200, i64* %t204
   %t205 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t203, i32 0, i32 1
@@ -306,7 +339,6 @@ par_pooled_18:
   %t213 = sdiv i64 %t212, 4
   %t214 = mul i64 %t185, 3
   %t215 = sdiv i64 %t214, 4
-  %t216 = alloca { i64, i64 }
   %t217 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t216, i32 0, i32 0
   store i64 %t213, i64* %t217
   %t218 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t216, i32 0, i32 1
@@ -323,7 +355,6 @@ par_pooled_18:
   %t226 = sdiv i64 %t225, 4
   %t227 = mul i64 %t185, 4
   %t228 = sdiv i64 %t227, 4
-  %t229 = alloca { i64, i64 }
   %t230 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t229, i32 0, i32 0
   store i64 %t226, i64* %t230
   %t231 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t229, i32 0, i32 1
@@ -360,7 +391,6 @@ par_acquire_20:
   br label %par_run_21
 par_run_21:
   %t254 = load i64, i64* @arena.Enemies.count
-  %t255 = alloca { i64, i64 }
   %t256 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t255, i32 0, i32 0
   store i64 0, i64* %t256
   %t257 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t255, i32 0, i32 1
@@ -383,13 +413,13 @@ par_join_23:
 ; par/swarm worker functions
 define i32 @par_worker_0(i8* %argp) {
 entry:
+  %t6 = alloca i64
   %t0 = bitcast i8* %argp to { i64, i64 }*
   %t1 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t0, i32 0, i32 0
   %t2 = load i64, i64* %t1
   %t3 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t0, i32 0, i32 1
   %t4 = load i64, i64* %t3
   %t5 = load %Enemy*, %Enemy** @arena.Enemies.data
-  %t6 = alloca i64
   store i64 %t2, i64* %t6
   br label %par_cond_1
 par_cond_1:
@@ -495,13 +525,13 @@ par_pool_already:
 
 define i32 @par_worker_12(i8* %argp) {
 entry:
+  %t157 = alloca i64
   %t151 = bitcast i8* %argp to { i64, i64 }*
   %t152 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t151, i32 0, i32 0
   %t153 = load i64, i64* %t152
   %t154 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t151, i32 0, i32 1
   %t155 = load i64, i64* %t154
   %t156 = load %Enemy*, %Enemy** @arena.Enemies.data
-  %t157 = alloca i64
   store i64 %t153, i64* %t157
   br label %par_cond_13
 par_cond_13:

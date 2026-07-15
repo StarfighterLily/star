@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,15 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -34,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -108,19 +138,28 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  %t0 = alloca <3 x float>
+  %t4 = alloca <3 x float>
+  %t8 = alloca <3 x float>
+  %t22 = alloca <3 x float>
+  %t38 = alloca <4 x float>
+  %t43 = alloca <4 x float>
+  %t48 = alloca <4 x float>
+  %t65 = alloca <3 x float>
+  %t78 = alloca [4 x <4 x float>]
+  %t99 = alloca <4 x float>
+  %t155 = alloca <4 x float>
+  %t169 = alloca <2 x float>
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t0 = alloca <3 x float>
   %t1 = insertelement <3 x float> undef, float 0x3FF0000000000000, i32 0
   %t2 = insertelement <3 x float> %t1, float 0x4000000000000000, i32 1
   %t3 = insertelement <3 x float> %t2, float 0x4008000000000000, i32 2
   store <3 x float> %t3, <3 x float>* %t0
-  %t4 = alloca <3 x float>
   %t5 = insertelement <3 x float> undef, float 0x4024000000000000, i32 0
   %t6 = insertelement <3 x float> %t5, float 0x4034000000000000, i32 1
   %t7 = insertelement <3 x float> %t6, float 0x403E000000000000, i32 2
   store <3 x float> %t7, <3 x float>* %t4
-  %t8 = alloca <3 x float>
   %t9 = load <3 x float>, <3 x float>* %t0
   %t10 = load <3 x float>, <3 x float>* %t4
   %t11 = fadd <3 x float> %t9, %t10
@@ -136,7 +175,6 @@ entry:
   %t20 = fpext float %t15 to double
   %t21 = fpext float %t17 to double
   call i32 (i8*, ...) @printf(i8* %t18, double %t19, double %t20, double %t21)
-  %t22 = alloca <3 x float>
   %t23 = load <3 x float>, <3 x float>* %t0
   %t24 = insertelement <3 x float> undef, float 0x4000000000000000, i32 0
   %t25 = insertelement <3 x float> %t24, float 0x4000000000000000, i32 1
@@ -154,19 +192,16 @@ entry:
   %t36 = fpext float %t31 to double
   %t37 = fpext float %t33 to double
   call i32 (i8*, ...) @printf(i8* %t34, double %t35, double %t36, double %t37)
-  %t38 = alloca <4 x float>
   %t39 = insertelement <4 x float> undef, float 0x3FF0000000000000, i32 0
   %t40 = insertelement <4 x float> %t39, float 0x0000000000000000, i32 1
   %t41 = insertelement <4 x float> %t40, float 0x0000000000000000, i32 2
   %t42 = insertelement <4 x float> %t41, float 0x0000000000000000, i32 3
   store <4 x float> %t42, <4 x float>* %t38
-  %t43 = alloca <4 x float>
   %t44 = insertelement <4 x float> undef, float 0x0000000000000000, i32 0
   %t45 = insertelement <4 x float> %t44, float 0x3FF0000000000000, i32 1
   %t46 = insertelement <4 x float> %t45, float 0x0000000000000000, i32 2
   %t47 = insertelement <4 x float> %t46, float 0x0000000000000000, i32 3
   store <4 x float> %t47, <4 x float>* %t43
-  %t48 = alloca <4 x float>
   %t49 = load <4 x float>, <4 x float>* %t38
   %t50 = load <4 x float>, <4 x float>* %t43
   %t51 = fadd <4 x float> %t49, %t50
@@ -185,7 +220,6 @@ entry:
   %t63 = fpext float %t57 to double
   %t64 = fpext float %t59 to double
   call i32 (i8*, ...) @printf(i8* %t60, double %t61, double %t62, double %t63, double %t64)
-  %t65 = alloca <3 x float>
   %t66 = load <3 x float>, <3 x float>* %t8
   %t67 = shufflevector <3 x float> %t66, <3 x float> undef, <3 x i32> <i32 2, i32 1, i32 0>
   store <3 x float> %t67, <3 x float>* %t65
@@ -200,7 +234,6 @@ entry:
   %t76 = fpext float %t71 to double
   %t77 = fpext float %t73 to double
   call i32 (i8*, ...) @printf(i8* %t74, double %t75, double %t76, double %t77)
-  %t78 = alloca [4 x <4 x float>]
   %t79 = insertelement <4 x float> undef, float 0x3FF0000000000000, i32 0
   %t80 = insertelement <4 x float> %t79, float 0x0000000000000000, i32 1
   %t81 = insertelement <4 x float> %t80, float 0x0000000000000000, i32 2
@@ -222,7 +255,6 @@ entry:
   %t97 = insertelement <4 x float> %t96, float 0x3FF0000000000000, i32 3
   %t98 = insertvalue [4 x <4 x float>] %t93, <4 x float> %t97, 3
   store [4 x <4 x float>] %t98, [4 x <4 x float>]* %t78
-  %t99 = alloca <4 x float>
   %t100 = load [4 x <4 x float>], [4 x <4 x float>]* %t78
   %t101 = load <4 x float>, <4 x float>* %t38
   %t102 = extractvalue [4 x <4 x float>] %t100, 0
@@ -280,7 +312,6 @@ entry:
   %t153 = fpext float %t147 to double
   %t154 = fpext float %t149 to double
   call i32 (i8*, ...) @printf(i8* %t150, double %t151, double %t152, double %t153, double %t154)
-  %t155 = alloca <4 x float>
   %t156 = insertelement <4 x float> undef, float 0x3FF0000000000000, i32 0
   %t157 = insertelement <4 x float> %t156, float 0x3FF0000000000000, i32 1
   %t158 = insertelement <4 x float> %t157, float 0x3FF0000000000000, i32 2
@@ -297,7 +328,6 @@ entry:
   %t167 = fpext float %t163 to double
   %t168 = fpext float %t165 to double
   call i32 (i8*, ...) @printf(i8* %t166, double %t167, double %t168)
-  %t169 = alloca <2 x float>
   %t170 = insertelement <2 x float> undef, float 0x3FF0000000000000, i32 0
   %t171 = insertelement <2 x float> %t170, float 0x3FF0000000000000, i32 1
   store <2 x float> %t171, <2 x float>* %t169

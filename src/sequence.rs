@@ -121,6 +121,40 @@ fn desugar_sequence(seq: &SequenceDef) -> Result<(StructDef, ImplBlock), Vec<Dia
         return Err(errors);
     }
 
+    // Every top-level local is hoisted into a struct field (`hoist`, built
+    // above) up front, before this body is walked in the order it actually
+    // executes -- so, without this pass, a `let`'s own initializer (or any
+    // other top-level statement) referencing a *later* top-level `let`'s
+    // name would already resolve as `self.<name>`, silently reading that
+    // field's zero-initialized value instead of getting a "used before
+    // declaration" error the same reference would get in an ordinary `fn`
+    // body. Walk the body in source order, tracking which hoisted names are
+    // actually declared *so far*, and reject any reference to one that
+    // isn't yet.
+    let mut declared_so_far: HashSet<String> = param_names.clone();
+    for stmt in &seq.body.stmts {
+        let undeclared: HashSet<String> = hoist.difference(&declared_so_far).cloned().collect();
+        if !undeclared.is_empty() {
+            if let Some((name, span)) = find_forward_ref_stmt(stmt, &undeclared) {
+                errors.push(Diagnostic::error(
+                    format!(
+                        "`{}` is used here before its own `let` later in this sequence's body -- \
+                         every top-level local is hoisted into the coroutine's resume state up front, \
+                         so this would silently read its zero-initialized value instead of being an error",
+                        name
+                    ),
+                    span,
+                ));
+            }
+        }
+        if let Stmt::Let { name, .. } = stmt {
+            declared_so_far.insert(name.clone());
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
     // Split the top-level statements into segments at each top-level `yield`,
     // rewriting hoisted identifiers to `self.<name>` as we go.
     let mut segments: Vec<Vec<Stmt>> = vec![Vec::new()];
@@ -590,5 +624,89 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
         // only fields are a syntactic `Type` and a compile-time constant.
         Expr::RingNew { elem_ty, count, span } => Expr::RingNew { elem_ty: elem_ty.clone(), count: *count, span: *span },
         Expr::Cast { expr, ty, span } => Expr::Cast { expr: Box::new(rewrite_expr(expr, hoist)), ty: ty.clone(), span: *span },
+    }
+}
+
+/// The first reference to a name in `undeclared` found anywhere in `stmt`
+/// (including nested blocks/lambdas/match arms/`for` bodies), or `None` if
+/// every hoisted name it touches is already declared or is locally shadowed
+/// at that point -- mirrors `rewrite_stmt`'s exact traversal and shadow-
+/// narrowing shape (`without()`), checking membership instead of
+/// substituting. Used by `desugar_sequence`'s use-before-declaration pass,
+/// above.
+fn find_forward_ref_stmt(stmt: &Stmt, undeclared: &HashSet<String>) -> Option<(String, Span)> {
+    match stmt {
+        Stmt::Let { value, .. } => find_forward_ref_expr(value, undeclared),
+        Stmt::Assign { target, value, .. } => {
+            find_forward_ref_expr(target, undeclared).or_else(|| find_forward_ref_expr(value, undeclared))
+        }
+        Stmt::Return { value, .. } => value.as_ref().and_then(|v| find_forward_ref_expr(v, undeclared)),
+        Stmt::Expr(e) => find_forward_ref_expr(e, undeclared),
+        Stmt::If { cond, then_block, else_block, .. } => find_forward_ref_expr(cond, undeclared)
+            .or_else(|| find_forward_ref_block(then_block, undeclared))
+            .or_else(|| else_block.as_ref().and_then(|b| find_forward_ref_block(b, undeclared))),
+        Stmt::While { cond, body, else_block, .. } => find_forward_ref_expr(cond, undeclared)
+            .or_else(|| find_forward_ref_block(body, undeclared))
+            .or_else(|| else_block.as_ref().and_then(|b| find_forward_ref_block(b, undeclared))),
+        Stmt::For { var, start, end, body, .. } => {
+            let inner_undeclared = without(undeclared, std::slice::from_ref(var));
+            find_forward_ref_expr(start, undeclared)
+                .or_else(|| find_forward_ref_expr(end, undeclared))
+                .or_else(|| find_forward_ref_block(body, &inner_undeclared))
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } | Stmt::Yield { .. } => None,
+        Stmt::Frame { body, .. } => find_forward_ref_block(body, undeclared),
+        Stmt::Par { body, .. } => find_forward_ref_block(body, undeclared),
+        Stmt::Spawn { args, .. } => args.iter().find_map(|a| find_forward_ref_expr(a, undeclared)),
+        Stmt::Despawn { index, .. } => find_forward_ref_expr(index, undeclared),
+    }
+}
+
+fn find_forward_ref_block(block: &Block, undeclared: &HashSet<String>) -> Option<(String, Span)> {
+    block.stmts.iter().find_map(|s| find_forward_ref_stmt(s, undeclared))
+}
+
+fn find_forward_ref_expr(expr: &Expr, undeclared: &HashSet<String>) -> Option<(String, Span)> {
+    match expr {
+        Expr::Ident(name, span) if undeclared.contains(name) => Some((name.clone(), *span)),
+        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Char(..) | Expr::Ident(..) | Expr::SelfExpr(..) => None,
+        Expr::FStr(parts, _) => parts.iter().find_map(|p| match p {
+            FStrExpr::Expr(e) => find_forward_ref_expr(e, undeclared),
+            FStrExpr::Literal(_) => None,
+        }),
+        Expr::Field { base, .. } => find_forward_ref_expr(base, undeclared),
+        Expr::Call { callee, args, .. } => {
+            find_forward_ref_expr(callee, undeclared).or_else(|| args.iter().find_map(|a| find_forward_ref_expr(a, undeclared)))
+        }
+        Expr::Binary { lhs, rhs, .. } => find_forward_ref_expr(lhs, undeclared).or_else(|| find_forward_ref_expr(rhs, undeclared)),
+        Expr::Unary { operand, .. } => find_forward_ref_expr(operand, undeclared),
+        Expr::Match { scrutinee, arms, .. } => find_forward_ref_expr(scrutinee, undeclared).or_else(|| {
+            arms.iter().find_map(|a| {
+                let bound = pattern_bound_names(&a.pattern);
+                let inner_undeclared = without(undeclared, &bound);
+                find_forward_ref_block(&a.body, &inner_undeclared)
+            })
+        }),
+        Expr::StructLit { args, .. } => args.iter().find_map(|a| find_forward_ref_expr(a, undeclared)),
+        Expr::If { cond, then_block, else_block, .. } => find_forward_ref_expr(cond, undeclared)
+            .or_else(|| find_forward_ref_block(then_block, undeclared))
+            .or_else(|| else_block.as_ref().and_then(|b| find_forward_ref_block(b, undeclared))),
+        Expr::GenRefCreate { value, .. } => find_forward_ref_expr(value, undeclared),
+        Expr::GenRefIndex { base, index, .. } => {
+            find_forward_ref_expr(base, undeclared).or_else(|| find_forward_ref_expr(index, undeclared))
+        }
+        Expr::EnumVariant { args, .. } => args.iter().find_map(|a| find_forward_ref_expr(a, undeclared)),
+        Expr::Lambda { params, body, .. } => {
+            let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+            let inner_undeclared = without(undeclared, &param_names);
+            find_forward_ref_block(body, &inner_undeclared)
+        }
+        Expr::ListLit(elems, _) => elems.iter().find_map(|e| find_forward_ref_expr(e, undeclared)),
+        Expr::Try { inner, .. } => find_forward_ref_expr(inner, undeclared),
+        Expr::TupleLit(elems, _) => elems.iter().find_map(|e| find_forward_ref_expr(e, undeclared)),
+        Expr::TupleIndex { base, .. } => find_forward_ref_expr(base, undeclared),
+        Expr::ArrayRepeat { value, .. } => find_forward_ref_expr(value, undeclared),
+        Expr::RingNew { .. } => None,
+        Expr::Cast { expr, .. } => find_forward_ref_expr(expr, undeclared),
     }
 }

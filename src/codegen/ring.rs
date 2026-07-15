@@ -92,19 +92,30 @@ impl Codegen {
         (data_ptr, head_ptr, head, len_ptr, len)
     }
 
+    /// Evaluates `index` to a bare, sign-extended `i64` register -- factored
+    /// out of `ring_index_ptr` so callers can evaluate the index expression
+    /// *before* (re-)reading `head`/`len`: the index expression can itself
+    /// mutate this same ring via a nested `push`/`pop` (e.g. `ring[ring.pop()
+    /// as i32]`), and `head`/`len` read beforehand would then be a stale
+    /// snapshot -- same hazard class as `RingMethod::Push`'s fix below.
+    fn ring_index_to_i64(&mut self, index: &TypedExpr) -> String {
+        let idx_val = self.emit_expr(index);
+        let idx_bare = self.untag(&idx_val, &Ty::Int);
+        let idx64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", idx64, idx_bare));
+        idx64
+    }
+
     /// Bounds-checked (against the dynamic `len`, not the static capacity
     /// `count`) pointer to the logical `index`-th live element (`0` =
     /// oldest), mapping it to its physical slot `(head + index) mod count`.
     /// Out of bounds yields a pointer to a fresh, zeroed, disconnected
     /// alloca, mirroring `crate::codegen::array::array_index_ptr`'s identical
-    /// convention.
-    fn ring_index_ptr(&mut self, data_ptr: &str, head: &str, len: &str, index: &TypedExpr, elem_ty: &Ty, count: u64, label_prefix: &str) -> String {
+    /// convention. `idx64` must already be evaluated (see
+    /// `ring_index_to_i64`) and `head`/`len` must already reflect any
+    /// mutation that evaluation performed.
+    fn ring_index_ptr(&mut self, data_ptr: &str, head: &str, len: &str, idx64: &str, elem_ty: &Ty, count: u64, label_prefix: &str) -> String {
         let elem_llvm = self.llvm_ty(elem_ty);
-
-        let idx_val = self.emit_expr(index);
-        let idx_bare = self.untag(&idx_val, &Ty::Int);
-        let idx64 = self.tmp_name();
-        self.line(&format!("  {} = sext i32 {} to i64", idx64, idx_bare));
 
         // Unsigned compare: a negative index sign-extends/wraps to a huge
         // unsigned value, so it safely fails this bounds check too (mirrors
@@ -143,8 +154,16 @@ impl Codegen {
     /// (`ring[i].field = v`, a mutating method call on the element, ...), or
     /// the direct target of `ring[idx] = v` -- see `Codegen::store_target`.
     pub(super) fn emit_ring_index_place(&mut self, base: &TypedExpr, index: &TypedExpr, elem_ty: &Ty, count: u64) -> String {
-        let (data_ptr, _, head, _, len) = self.ring_fields_mut(base, elem_ty, count);
-        self.ring_index_ptr(&data_ptr, &head, &len, index, elem_ty, count, "ring_place")
+        let (data_ptr, head_ptr, _, len_ptr, _) = self.ring_fields_mut(base, elem_ty, count);
+        let idx64 = self.ring_index_to_i64(index);
+        // Reload `head`/`len` *after* evaluating `index` -- see
+        // `ring_index_ptr`'s doc comment for why the values `ring_fields_mut`
+        // loaded above can already be stale by this point.
+        let head = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", head, head_ptr));
+        let len = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", len, len_ptr));
+        self.ring_index_ptr(&data_ptr, &head, &len, &idx64, elem_ty, count, "ring_place")
     }
 
     /// Read-only counterpart to `emit_ring_index_place`, for a `ring[idx]`
@@ -155,8 +174,17 @@ impl Codegen {
     /// shape rather than duplicating a separate value-level phi the way
     /// `crate::codegen::array::emit_array_index` does).
     pub(super) fn emit_ring_index_read_place(&mut self, base: &TypedExpr, index: &TypedExpr, elem_ty: &Ty, count: u64) -> String {
-        let (data_ptr, head, len) = self.ring_fields_read(base, elem_ty, count);
-        self.ring_index_ptr(&data_ptr, &head, &len, index, elem_ty, count, "ring_rplace")
+        let ring_ty = self.ring_payload_llvm_ty(elem_ty, count);
+        let base_ptr = self.emit_read_place(base);
+        let (data_ptr, head_ptr, _, len_ptr, _) = self.ring_field_ptrs(&base_ptr, &ring_ty);
+        let idx64 = self.ring_index_to_i64(index);
+        // Reload `head`/`len` *after* evaluating `index` -- same hazard and
+        // fix as `emit_ring_index_place`.
+        let head = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", head, head_ptr));
+        let len = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", len, len_ptr));
+        self.ring_index_ptr(&data_ptr, &head, &len, &idx64, elem_ty, count, "ring_rplace")
     }
 
     /// `ring[idx] = v`: bounds-checked (against `len`) element write; an
@@ -188,10 +216,15 @@ impl Codegen {
                 format!("i32 {}", len32)
             }
             RingMethod::Push => {
-                let (data_ptr, head_ptr, head, len_ptr, len) = self.ring_fields_mut(base, elem_ty, count);
-
                 let val = self.emit_expr(&args[0]);
                 let clean_val = self.untag(&val, elem_ty);
+                // Read `head`/`len` *after* evaluating `args[0]` -- if it
+                // mutates this same ring (e.g. `ring.push(ring.pop())`), a
+                // snapshot taken beforehand would be stale, causing the
+                // is-full/grow/eviction logic below to corrupt the length
+                // and the "every non-live slot is zero" invariant (mirrors
+                // `MapMethod::Insert`'s identical fix).
+                let (data_ptr, head_ptr, head, len_ptr, len) = self.ring_fields_mut(base, elem_ty, count);
 
                 let arr_ty = format!("[{} x {}]", count, elem_llvm);
                 let is_full = self.tmp_name();

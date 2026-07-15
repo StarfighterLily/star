@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,15 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -34,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -125,8 +155,10 @@ done:
 define i32 @calculate_path(i32 %start_x, i32 %start_y) {
 entry:
   %t0 = alloca i32
-  store i32 %start_x, i32* %t0
   %t1 = alloca i32
+  %t12 = alloca %Point
+  %t25 = alloca %Point
+  store i32 %start_x, i32* %t0
   store i32 %start_y, i32* %t1
   %t2 = load i64, i64* @frame.off
   %t3 = getelementptr %Point, %Point* null, i32 1
@@ -145,7 +177,6 @@ frame_alloc_ok_1:
   %t9 = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0
   %t10 = getelementptr inbounds i8, i8* %t9, i64 %t5
   %t11 = bitcast i8* %t10 to %Point*
-  %t12 = alloca %Point
   %t13 = getelementptr inbounds %Point, %Point* %t12, i32 0, i32 0
   store i32 0, i32* %t13
   %t14 = getelementptr inbounds %Point, %Point* %t12, i32 0, i32 1
@@ -168,7 +199,6 @@ frame_alloc_ok_3:
   %t22 = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0
   %t23 = getelementptr inbounds i8, i8* %t22, i64 %t18
   %t24 = bitcast i8* %t23 to %Point*
-  %t25 = alloca %Point
   %t26 = load i32, i32* %t0
   %t27 = getelementptr inbounds %Point, %Point* %t25, i32 0, i32 0
   store i32 %t26, i32* %t27
@@ -189,8 +219,8 @@ frame_alloc_ok_3:
 define i32 @spawn_enemy(i32 %x, i32 %y) {
 entry:
   %t0 = alloca i32
-  store i32 %x, i32* %t0
   %t1 = alloca i32
+  store i32 %x, i32* %t0
   store i32 %y, i32* %t1
   %t2 = load i32, i32* %t0
   ret i32 %t2
@@ -199,8 +229,8 @@ entry:
 define i32 @spawn_projectile(i32 %x, i32 %y) {
 entry:
   %t0 = alloca i32
-  store i32 %x, i32* %t0
   %t1 = alloca i32
+  store i32 %x, i32* %t0
   store i32 %y, i32* %t1
   %t2 = load i32, i32* %t1
   ret i32 %t2
@@ -209,6 +239,7 @@ entry:
 define %GenRef @create_entity_reference(i32 %idx) {
 entry:
   %t0 = alloca i32
+  %t7 = alloca %GenRef
   store i32 %idx, i32* %t0
   %t1 = load i32, i32* %t0
   %t2 = sext i32 %t1 to i64
@@ -222,7 +253,6 @@ genref_create_oob_5:
   br label %genref_create_end_6
 genref_create_end_6:
   %t6 = phi i32 [ %t5, %genref_create_ok_4 ], [ 0, %genref_create_oob_5 ]
-  %t7 = alloca %GenRef
   %t8 = getelementptr inbounds %GenRef, %GenRef* %t7, i32 0, i32 0
   store i32 %t1, i32* %t8
   %t9 = getelementptr inbounds %GenRef, %GenRef* %t7, i32 0, i32 1
@@ -234,6 +264,7 @@ genref_create_end_6:
 define i32 @follow_reference(%GenRef %gen_ref) {
 entry:
   %t0 = alloca %GenRef
+  %t15 = alloca %Point
   store %GenRef %gen_ref, %GenRef* %t0
   %t1 = getelementptr inbounds %GenRef, %GenRef* %t0, i32 0, i32 0
   %t2 = load i32, i32* %t1
@@ -255,7 +286,6 @@ genref_place_ok_8:
   %t14 = getelementptr inbounds %Point, %Point* %t13, i64 %t5
   br label %genref_place_end_10
 genref_place_stale_9:
-  %t15 = alloca %Point
   store %Point zeroinitializer, %Point* %t15
   br label %genref_place_end_10
 genref_place_end_10:
@@ -267,6 +297,7 @@ genref_place_end_10:
 
 define void @game_tick() {
 entry:
+  %t19 = alloca %Point
   %t0 = load i64, i64* @frame.off
   %t1 = load %Point*, %Point** @arena.EnemyArena.data
   %t2 = icmp eq %Point* %t1, null
@@ -304,7 +335,6 @@ spawn_grow_ok_17:
   br label %spawn_store_15
 spawn_store_15:
   %t18 = phi i64 [ %t13, %spawn_reuse_13 ], [ %t14, %spawn_grow_ok_17 ]
-  %t19 = alloca %Point
   %t20 = getelementptr inbounds %Point, %Point* %t19, i32 0, i32 0
   store i32 42, i32* %t20
   %t21 = getelementptr inbounds %Point, %Point* %t19, i32 0, i32 1
@@ -363,9 +393,9 @@ frame_alloc_ok_22:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  %t0 = alloca i32
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t0 = alloca i32
   %t1 = call i32 @calculate_path(i32 5, i32 10)
   store i32 %t1, i32* %t0
   %t2 = load i32, i32* %t0

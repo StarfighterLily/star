@@ -21,7 +21,7 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
 declare i32 @WSAStartup(i16, i8*)
 declare i8* @socket(i32, i32, i32)
 declare i32 @connect(i8*, i8*, i32)
@@ -139,10 +139,18 @@ done:
 %Registers = type { i8, i16, i32 }
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  store i32 %.argc, i32* @star.argc
-  store i8** %.argv, i8*** @star.argv
   %t0 = alloca %Registers
   %t1 = alloca %Registers
+  %t18 = alloca i8
+  %t20 = alloca i8
+  %t30 = alloca i64
+  %t32 = alloca i64
+  %t41 = alloca double
+  %t43 = alloca double
+  %t49 = alloca i32
+  %t51 = alloca i32
+  store i32 %.argc, i32* @star.argc
+  store i8** %.argv, i8*** @star.argv
   %t2 = trunc i32 200 to i8
   %t3 = getelementptr inbounds %Registers, %Registers* %t1, i32 0, i32 0
   store i8 %t2, i8* %t3
@@ -164,10 +172,8 @@ entry:
   %t16 = zext i8 %t10 to i32
   %t17 = sext i16 %t12 to i32
   call i32 (i8*, ...) @printf(i8* %t15, i32 %t16, i32 %t17, i32 %t14)
-  %t18 = alloca i8
   %t19 = trunc i32 250 to i8
   store i8 %t19, i8* %t18
-  %t20 = alloca i8
   %t21 = trunc i32 5 to i8
   store i8 %t21, i8* %t20
   %t22 = load i8, i8* %t18
@@ -185,10 +191,8 @@ int_overflow_ok_1:
   %t28 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.2, i64 0, i64 0
   %t29 = zext i8 %t25 to i32
   call i32 (i8*, ...) @printf(i8* %t28, i32 %t29)
-  %t30 = alloca i64
   %t31 = sext i32 1000000000 to i64
   store i64 %t31, i64* %t30
-  %t32 = alloca i64
   %t33 = sext i32 8 to i64
   store i64 %t33, i64* %t32
   %t34 = load i64, i64* %t30
@@ -205,10 +209,8 @@ int_overflow_fail_2:
 int_overflow_ok_3:
   %t40 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.4, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t40, i64 %t37)
-  %t41 = alloca double
   %t42 = sitofp i32 22 to double
   store double %t42, double* %t41
-  %t43 = alloca double
   %t44 = sitofp i32 7 to double
   store double %t44, double* %t43
   %t45 = load double, double* %t41
@@ -216,10 +218,8 @@ int_overflow_ok_3:
   %t47 = fdiv double %t45, %t46
   %t48 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.5, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t48, double %t47)
-  %t49 = alloca i32
   %t50 = add i32 65, 1
   store i32 %t50, i32* %t49
-  %t51 = alloca i32
   %t52 = load i32, i32* %t49
   store i32 %t52, i32* %t51
   %t53 = load i32, i32* %t51
@@ -246,4 +246,3 @@ int_overflow_ok_3:
 @.str.7 = private unnamed_addr constant [5 x i8] c"true\00"
 @.str.8 = private unnamed_addr constant [6 x i8] c"false\00"
 @.str.9 = private unnamed_addr constant [17 x i8] c"'a' < 'b' is %s\0A\00"
-

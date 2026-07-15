@@ -21,7 +21,7 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
 declare i32 @WSAStartup(i16, i8*)
 declare i8* @socket(i32, i32, i32)
 declare i32 @connect(i8*, i8*, i32)
@@ -43,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -119,8 +140,10 @@ done:
 define { i32, i32 } @min_max(i32 %a, i32 %b) {
 entry:
   %t0 = alloca i32
-  store i32 %a, i32* %t0
   %t1 = alloca i32
+  %t10 = alloca { i32, i32 }
+  %t19 = alloca { i32, i32 }
+  store i32 %a, i32* %t0
   store i32 %b, i32* %t1
   %t2 = load i32, i32* %t0
   %t3 = load i32, i32* %t1
@@ -130,7 +153,6 @@ match_scrutinee_6:
   %t9 = icmp eq i1 %t4, true
   br i1 %t9, label %match_then_0_7, label %match_next_0_8
 match_then_0_7:
-  %t10 = alloca { i32, i32 }
   %t11 = load i32, i32* %t0
   %t12 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t10, i32 0, i32 0
   store i32 %t11, i32* %t12
@@ -143,7 +165,6 @@ match_next_0_8:
   %t18 = icmp eq i1 %t4, false
   br i1 %t18, label %match_then_1_16, label %match_next_1_17
 match_then_1_16:
-  %t19 = alloca { i32, i32 }
   %t20 = load i32, i32* %t1
   %t21 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t19, i32 0, i32 0
   store i32 %t20, i32* %t21
@@ -161,10 +182,35 @@ match_end_5:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  store i32 %.argc, i32* @star.argc
-  store i8** %.argv, i8*** @star.argv
   %t0 = alloca { i32, i32 }
   %t1 = alloca { i32, i32 }
+  %t16 = alloca { i32, i32 }
+  %t23 = alloca { %Player, i8* }
+  %t24 = alloca { %Player, i8* }
+  %t25 = alloca %Player
+  %t51 = alloca i32
+  %t54 = alloca { i32 }
+  %t55 = alloca { i32 }
+  %t61 = alloca [5 x i32]
+  %t62 = alloca [5 x i32]
+  %t74 = alloca i32
+  %t79 = alloca i32
+  %t85 = alloca i32
+  %t91 = alloca i32
+  %t97 = alloca i32
+  %t103 = alloca i32
+  %t110 = alloca i32
+  %t117 = alloca i32
+  %t122 = alloca i32
+  %t126 = alloca [3 x %Player]
+  %t127 = alloca [3 x %Player]
+  %t128 = alloca %Player
+  %t144 = alloca %Player
+  %t152 = alloca %Player
+  %t158 = alloca %Player
+  %t165 = alloca %Player
+  store i32 %.argc, i32* @star.argc
+  store i8** %.argv, i8*** @star.argv
   %t2 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t1, i32 0, i32 0
   store i32 3, i32* %t2
   %t3 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t1, i32 0, i32 1
@@ -185,7 +231,6 @@ entry:
   %t14 = load i32, i32* %t13
   %t15 = getelementptr inbounds [33 x i8], [33 x i8]* @.str.1, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t15, i32 %t12, i32 %t14)
-  %t16 = alloca { i32, i32 }
   %t17 = call { i32, i32 } @min_max(i32 7, i32 2)
   store { i32, i32 } %t17, { i32, i32 }* %t16
   %t18 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t16, i32 0, i32 0
@@ -194,9 +239,6 @@ entry:
   %t21 = load i32, i32* %t20
   %t22 = getelementptr inbounds [26 x i8], [26 x i8]* @.str.2, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t22, i32 %t19, i32 %t21)
-  %t23 = alloca { %Player, i8* }
-  %t24 = alloca { %Player, i8* }
-  %t25 = alloca %Player
   %t26 = getelementptr inbounds %Player, %Player* %t25, i32 0, i32 0
   store i32 100, i32* %t26
   %t27 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.3, i64 0, i32 2, i64 0
@@ -233,13 +275,10 @@ entry:
   call void @star_rc_release(i8* %t48)
   %t50 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.5, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t50, i8* %t42, i32 %t46, i8* %t48)
-  %t51 = alloca i32
   store i32 5, i32* %t51
   %t52 = load i32, i32* %t51
   %t53 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.6, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t53, i32 %t52)
-  %t54 = alloca { i32 }
-  %t55 = alloca { i32 }
   %t56 = getelementptr inbounds { i32 }, { i32 }* %t55, i32 0, i32 0
   store i32 9, i32* %t56
   %t57 = load { i32 }, { i32 }* %t55
@@ -248,8 +287,6 @@ entry:
   %t59 = load i32, i32* %t58
   %t60 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.7, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t60, i32 %t59)
-  %t61 = alloca [5 x i32]
-  %t62 = alloca [5 x i32]
   %t63 = getelementptr inbounds [5 x i32], [5 x i32]* %t62, i32 0, i64 0
   store i32 0, i32* %t63
   %t64 = getelementptr inbounds [5 x i32], [5 x i32]* %t62, i32 0, i64 1
@@ -272,7 +309,6 @@ arr_place_ok_0:
   %t73 = getelementptr inbounds [5 x i32], [5 x i32]* %t61, i32 0, i64 %t71
   br label %arr_place_end_2
 arr_place_oob_1:
-  %t74 = alloca i32
   store i32 0, i32* %t74
   br label %arr_place_end_2
 arr_place_end_2:
@@ -285,7 +321,6 @@ arr_rplace_ok_3:
   %t78 = getelementptr inbounds [5 x i32], [5 x i32]* %t61, i32 0, i64 %t76
   br label %arr_rplace_end_5
 arr_rplace_oob_4:
-  %t79 = alloca i32
   store i32 0, i32* %t79
   br label %arr_rplace_end_5
 arr_rplace_end_5:
@@ -298,7 +333,6 @@ arr_rplace_ok_6:
   %t84 = getelementptr inbounds [5 x i32], [5 x i32]* %t61, i32 0, i64 %t82
   br label %arr_rplace_end_8
 arr_rplace_oob_7:
-  %t85 = alloca i32
   store i32 0, i32* %t85
   br label %arr_rplace_end_8
 arr_rplace_end_8:
@@ -311,7 +345,6 @@ arr_rplace_ok_9:
   %t90 = getelementptr inbounds [5 x i32], [5 x i32]* %t61, i32 0, i64 %t88
   br label %arr_rplace_end_11
 arr_rplace_oob_10:
-  %t91 = alloca i32
   store i32 0, i32* %t91
   br label %arr_rplace_end_11
 arr_rplace_end_11:
@@ -324,7 +357,6 @@ arr_rplace_ok_12:
   %t96 = getelementptr inbounds [5 x i32], [5 x i32]* %t61, i32 0, i64 %t94
   br label %arr_rplace_end_14
 arr_rplace_oob_13:
-  %t97 = alloca i32
   store i32 0, i32* %t97
   br label %arr_rplace_end_14
 arr_rplace_end_14:
@@ -337,7 +369,6 @@ arr_rplace_ok_15:
   %t102 = getelementptr inbounds [5 x i32], [5 x i32]* %t61, i32 0, i64 %t100
   br label %arr_rplace_end_17
 arr_rplace_oob_16:
-  %t103 = alloca i32
   store i32 0, i32* %t103
   br label %arr_rplace_end_17
 arr_rplace_end_17:
@@ -352,7 +383,6 @@ arr_rplace_ok_18:
   %t109 = getelementptr inbounds [5 x i32], [5 x i32]* %t61, i32 0, i64 %t107
   br label %arr_rplace_end_20
 arr_rplace_oob_19:
-  %t110 = alloca i32
   store i32 0, i32* %t110
   br label %arr_rplace_end_20
 arr_rplace_end_20:
@@ -367,7 +397,6 @@ arr_place_ok_21:
   %t116 = getelementptr inbounds [5 x i32], [5 x i32]* %t61, i32 0, i64 %t114
   br label %arr_place_end_23
 arr_place_oob_22:
-  %t117 = alloca i32
   store i32 0, i32* %t117
   br label %arr_place_end_23
 arr_place_end_23:
@@ -380,7 +409,6 @@ arr_rplace_ok_24:
   %t121 = getelementptr inbounds [5 x i32], [5 x i32]* %t61, i32 0, i64 %t119
   br label %arr_rplace_end_26
 arr_rplace_oob_25:
-  %t122 = alloca i32
   store i32 0, i32* %t122
   br label %arr_rplace_end_26
 arr_rplace_end_26:
@@ -388,9 +416,6 @@ arr_rplace_end_26:
   %t124 = load i32, i32* %t123
   %t125 = getelementptr inbounds [54 x i8], [54 x i8]* @.str.11, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t125, i32 %t124)
-  %t126 = alloca [3 x %Player]
-  %t127 = alloca [3 x %Player]
-  %t128 = alloca %Player
   %t129 = getelementptr inbounds %Player, %Player* %t128, i32 0, i32 0
   store i32 50, i32* %t129
   %t130 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.12, i64 0, i32 2, i64 0
@@ -418,7 +443,6 @@ arr_place_ok_27:
   %t143 = getelementptr inbounds [3 x %Player], [3 x %Player]* %t126, i32 0, i64 %t141
   br label %arr_place_end_29
 arr_place_oob_28:
-  %t144 = alloca %Player
   store %Player zeroinitializer, %Player* %t144
   br label %arr_place_end_29
 arr_place_end_29:
@@ -433,7 +457,6 @@ arr_place_ok_30:
   %t151 = getelementptr inbounds [3 x %Player], [3 x %Player]* %t126, i32 0, i64 %t149
   br label %arr_place_end_32
 arr_place_oob_31:
-  %t152 = alloca %Player
   store %Player zeroinitializer, %Player* %t152
   br label %arr_place_end_32
 arr_place_end_32:
@@ -447,7 +470,6 @@ arr_rplace_ok_33:
   %t157 = getelementptr inbounds [3 x %Player], [3 x %Player]* %t126, i32 0, i64 %t155
   br label %arr_rplace_end_35
 arr_rplace_oob_34:
-  %t158 = alloca %Player
   store %Player zeroinitializer, %Player* %t158
   br label %arr_rplace_end_35
 arr_rplace_end_35:
@@ -461,7 +483,6 @@ arr_rplace_ok_36:
   %t164 = getelementptr inbounds [3 x %Player], [3 x %Player]* %t126, i32 0, i64 %t162
   br label %arr_rplace_end_38
 arr_rplace_oob_37:
-  %t165 = alloca %Player
   store %Player zeroinitializer, %Player* %t165
   br label %arr_rplace_end_38
 arr_rplace_end_38:

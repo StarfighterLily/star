@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,15 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -34,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -108,15 +138,21 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  %t0 = alloca i8*
+  %t2 = alloca i8*
+  %t4 = alloca i8*
+  %t33 = alloca i1
+  %t39 = alloca i1
+  %t55 = alloca i8*
+  %t65 = alloca i8*
+  %t70 = alloca i64
+  %t85 = alloca i8*
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t0 = alloca i8*
   %t1 = getelementptr inbounds { i64, i8*, [33 x i8] }, { i64, i8*, [33 x i8] }* @.str.0, i64 0, i32 2, i64 0
   store i8* %t1, i8** %t0
-  %t2 = alloca i8*
   %t3 = getelementptr inbounds { i64, i8*, [33 x i8] }, { i64, i8*, [33 x i8] }* @.str.1, i64 0, i32 2, i64 0
   store i8* %t3, i8** %t2
-  %t4 = alloca i8*
   %t5 = load i8*, i8** %t0
   %t6 = load i8*, i8** %t0
   call void @star_rc_retain(i8* %t6)
@@ -176,7 +212,6 @@ file_null_handle_7:
   unreachable
 file_handle_ok_8:
   call i32 @fclose(i8* %t30)
-  %t33 = alloca i1
   %t34 = load i8*, i8** %t0
   %t35 = load i8*, i8** %t0
   call void @star_rc_retain(i8* %t35)
@@ -190,7 +225,6 @@ file_exists_close_9:
   br label %file_exists_end_10
 file_exists_end_10:
   store i1 %t38, i1* %t33
-  %t39 = alloca i1
   %t40 = load i8*, i8** %t2
   %t41 = load i8*, i8** %t2
   call void @star_rc_retain(i8* %t41)
@@ -216,7 +250,6 @@ file_exists_end_12:
   %t53 = select i1 %t50, i8* %t51, i8* %t52
   %t54 = getelementptr inbounds [31 x i8], [31 x i8]* @.str.16, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t54, i8* %t53)
-  %t55 = alloca i8*
   %t56 = load i8*, i8** %t0
   %t57 = load i8*, i8** %t0
   call void @star_rc_retain(i8* %t57)
@@ -238,7 +271,6 @@ if_then_13:
 if_else_14:
   br label %if_end_15
 if_end_15:
-  %t65 = alloca i8*
   %t66 = load i8*, i8** %t55
   %t67 = icmp eq i8* %t66, null
   br i1 %t67, label %file_null_handle_16, label %file_handle_ok_17
@@ -249,7 +281,6 @@ file_null_handle_16:
   unreachable
 file_handle_ok_17:
   %t69 = call i8* @star_rc_alloc(i64 1024, i8* null)
-  %t70 = alloca i64
   store i64 0, i64* %t70
   br label %file_read_line_cond_18
 file_read_line_cond_18:
@@ -280,7 +311,6 @@ file_read_line_end_21:
   call void @star_rc_release(i8* %t82)
   %t84 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.20, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t84, i8* %t82)
-  %t85 = alloca i8*
   %t86 = load i8*, i8** %t55
   %t87 = icmp eq i8* %t86, null
   br i1 %t87, label %file_null_handle_22, label %file_handle_ok_23
@@ -296,36 +326,38 @@ file_handle_ok_23:
   call i32 @fseek(i8* %t86, i32 %t89, i32 0)
   %t91 = sub i32 %t90, %t89
   %t92 = sext i32 %t91 to i64
-  %t93 = add i64 %t92, 1
-  %t94 = call i8* @star_rc_alloc(i64 %t93, i8* null)
-  %t95 = call i64 @fread(i8* %t94, i64 1, i64 %t92, i8* %t86)
-  %t96 = getelementptr inbounds i8, i8* %t94, i64 %t95
-  store i8 0, i8* %t96
-  store i8* %t94, i8** %t85
-  %t97 = load i8*, i8** %t85
-  %t98 = load i8*, i8** %t85
-  call void @star_rc_retain(i8* %t98)
-  call void @star_rc_release(i8* %t97)
-  %t99 = getelementptr inbounds [10 x i8], [10 x i8]* @.str.22, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t99, i8* %t97)
-  %t100 = load i8*, i8** %t55
-  %t101 = icmp eq i8* %t100, null
-  br i1 %t101, label %file_null_handle_24, label %file_handle_ok_25
+  %t93 = icmp sge i64 %t92, 0
+  %t94 = select i1 %t93, i64 %t92, i64 0
+  %t95 = add i64 %t94, 1
+  %t96 = call i8* @star_rc_alloc(i64 %t95, i8* null)
+  %t97 = call i64 @fread(i8* %t96, i64 1, i64 %t94, i8* %t86)
+  %t98 = getelementptr inbounds i8, i8* %t96, i64 %t97
+  store i8 0, i8* %t98
+  store i8* %t96, i8** %t85
+  %t99 = load i8*, i8** %t85
+  %t100 = load i8*, i8** %t85
+  call void @star_rc_retain(i8* %t100)
+  call void @star_rc_release(i8* %t99)
+  %t101 = getelementptr inbounds [10 x i8], [10 x i8]* @.str.22, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t101, i8* %t99)
+  %t102 = load i8*, i8** %t55
+  %t103 = icmp eq i8* %t102, null
+  br i1 %t103, label %file_null_handle_24, label %file_handle_ok_25
 file_null_handle_24:
-  %t102 = getelementptr inbounds [74 x i8], [74 x i8]* @.str.23, i64 0, i64 0
-  call i32 @puts(i8* %t102)
+  %t104 = getelementptr inbounds [74 x i8], [74 x i8]* @.str.23, i64 0, i64 0
+  call i32 @puts(i8* %t104)
   call void @exit(i32 1)
   unreachable
 file_handle_ok_25:
-  call i32 @fclose(i8* %t100)
-  %t103 = load i8*, i8** %t85
-  call void @star_rc_release(i8* %t103)
-  %t104 = load i8*, i8** %t65
-  call void @star_rc_release(i8* %t104)
-  %t105 = load i8*, i8** %t2
+  call i32 @fclose(i8* %t102)
+  %t105 = load i8*, i8** %t85
   call void @star_rc_release(i8* %t105)
-  %t106 = load i8*, i8** %t0
+  %t106 = load i8*, i8** %t65
   call void @star_rc_release(i8* %t106)
+  %t107 = load i8*, i8** %t2
+  call void @star_rc_release(i8* %t107)
+  %t108 = load i8*, i8** %t0
+  call void @star_rc_release(i8* %t108)
   ret i32 0
 }
 

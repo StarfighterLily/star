@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,15 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -34,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -114,12 +144,12 @@ entry:
   store %Point %p, %Point* %t0
   br label %match_scrutinee_2
 match_scrutinee_2:
-  %t3 = getelementptr inbounds %Point, %Point* %t0, i32 0, i32 0
-  %t4 = getelementptr inbounds %Point, %Point* %t0, i32 0, i32 1
-  %t5 = load i32, i32* %t3
-  %t6 = load i32, i32* %t4
-  %t7 = add i32 %t5, %t6
-  ret i32 %t7
+  %t5 = getelementptr inbounds %Point, %Point* %t0, i32 0, i32 0
+  %t6 = getelementptr inbounds %Point, %Point* %t0, i32 0, i32 1
+  %t7 = load i32, i32* %t5
+  %t8 = load i32, i32* %t6
+  %t9 = add i32 %t7, %t8
+  ret i32 %t9
 match_end_1:
   unreachable
 }
@@ -127,42 +157,45 @@ match_end_1:
 define i32 @length_sq(%Line %l) {
 entry:
   %t0 = alloca %Line
+  %t7 = alloca i32
+  %t13 = alloca i32
   store %Line %l, %Line* %t0
   br label %match_scrutinee_2
 match_scrutinee_2:
-  %t3 = getelementptr inbounds %Line, %Line* %t0, i32 0, i32 0
-  %t4 = getelementptr inbounds %Line, %Line* %t0, i32 0, i32 1
-  %t5 = alloca i32
-  %t6 = getelementptr inbounds %Point, %Point* %t4, i32 0, i32 0
-  %t7 = load i32, i32* %t6
-  %t8 = getelementptr inbounds %Point, %Point* %t3, i32 0, i32 0
+  %t5 = getelementptr inbounds %Line, %Line* %t0, i32 0, i32 0
+  %t6 = getelementptr inbounds %Line, %Line* %t0, i32 0, i32 1
+  %t8 = getelementptr inbounds %Point, %Point* %t6, i32 0, i32 0
   %t9 = load i32, i32* %t8
-  %t10 = sub i32 %t7, %t9
-  store i32 %t10, i32* %t5
-  %t11 = alloca i32
-  %t12 = getelementptr inbounds %Point, %Point* %t4, i32 0, i32 1
-  %t13 = load i32, i32* %t12
-  %t14 = getelementptr inbounds %Point, %Point* %t3, i32 0, i32 1
+  %t10 = getelementptr inbounds %Point, %Point* %t5, i32 0, i32 0
+  %t11 = load i32, i32* %t10
+  %t12 = sub i32 %t9, %t11
+  store i32 %t12, i32* %t7
+  %t14 = getelementptr inbounds %Point, %Point* %t6, i32 0, i32 1
   %t15 = load i32, i32* %t14
-  %t16 = sub i32 %t13, %t15
-  store i32 %t16, i32* %t11
-  %t17 = load i32, i32* %t5
-  %t18 = load i32, i32* %t5
-  %t19 = mul i32 %t17, %t18
-  %t20 = load i32, i32* %t11
-  %t21 = load i32, i32* %t11
-  %t22 = mul i32 %t20, %t21
-  %t23 = add i32 %t19, %t22
-  ret i32 %t23
+  %t16 = getelementptr inbounds %Point, %Point* %t5, i32 0, i32 1
+  %t17 = load i32, i32* %t16
+  %t18 = sub i32 %t15, %t17
+  store i32 %t18, i32* %t13
+  %t19 = load i32, i32* %t7
+  %t20 = load i32, i32* %t7
+  %t21 = mul i32 %t19, %t20
+  %t22 = load i32, i32* %t13
+  %t23 = load i32, i32* %t13
+  %t24 = mul i32 %t22, %t23
+  %t25 = add i32 %t21, %t24
+  ret i32 %t25
 match_end_1:
   unreachable
 }
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  %t0 = alloca %Point
+  %t6 = alloca %Line
+  %t7 = alloca %Point
+  %t12 = alloca %Point
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t0 = alloca %Point
   %t1 = getelementptr inbounds %Point, %Point* %t0, i32 0, i32 0
   store i32 3, i32* %t1
   %t2 = getelementptr inbounds %Point, %Point* %t0, i32 0, i32 1
@@ -171,8 +204,6 @@ entry:
   %t4 = call i32 @manhattan(%Point %t3)
   %t5 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.0, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t5, i32 %t4)
-  %t6 = alloca %Line
-  %t7 = alloca %Point
   %t8 = getelementptr inbounds %Point, %Point* %t7, i32 0, i32 0
   store i32 0, i32* %t8
   %t9 = getelementptr inbounds %Point, %Point* %t7, i32 0, i32 1
@@ -180,7 +211,6 @@ entry:
   %t10 = load %Point, %Point* %t7
   %t11 = getelementptr inbounds %Line, %Line* %t6, i32 0, i32 0
   store %Point %t10, %Point* %t11
-  %t12 = alloca %Point
   %t13 = getelementptr inbounds %Point, %Point* %t12, i32 0, i32 0
   store i32 3, i32* %t13
   %t14 = getelementptr inbounds %Point, %Point* %t12, i32 0, i32 1

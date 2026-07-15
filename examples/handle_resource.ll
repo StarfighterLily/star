@@ -21,7 +21,7 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
 declare i32 @WSAStartup(i16, i8*)
 declare i8* @socket(i32, i32, i32)
 declare i32 @connect(i8*, i8*, i32)
@@ -43,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -125,6 +146,11 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  %t18 = alloca %Texture
+  %t26 = alloca %GenRef
+  %t32 = alloca %GenRef
+  %t36 = alloca %Texture
+  %t68 = alloca %Texture
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = load %Texture*, %Texture** @arena.Textures.data
@@ -163,7 +189,6 @@ spawn_grow_ok_6:
   br label %spawn_store_4
 spawn_store_4:
   %t17 = phi i64 [ %t12, %spawn_reuse_2 ], [ %t13, %spawn_grow_ok_6 ]
-  %t18 = alloca %Texture
   %t19 = getelementptr inbounds %Texture, %Texture* %t18, i32 0, i32 0
   store i32 256, i32* %t19
   %t20 = getelementptr inbounds %Texture, %Texture* %t18, i32 0, i32 1
@@ -177,7 +202,6 @@ spawn_store_4:
   store i32 %t25, i32* %t23
   br label %spawn_end_5
 spawn_end_5:
-  %t26 = alloca %GenRef
   %t27 = sext i32 0 to i64
   %t28 = icmp ult i64 %t27, 1024
   br i1 %t28, label %genref_create_ok_8, label %genref_create_oob_9
@@ -189,14 +213,12 @@ genref_create_oob_9:
   br label %genref_create_end_10
 genref_create_end_10:
   %t31 = phi i32 [ %t30, %genref_create_ok_8 ], [ 0, %genref_create_oob_9 ]
-  %t32 = alloca %GenRef
   %t33 = getelementptr inbounds %GenRef, %GenRef* %t32, i32 0, i32 0
   store i32 0, i32* %t33
   %t34 = getelementptr inbounds %GenRef, %GenRef* %t32, i32 0, i32 1
   store i32 %t31, i32* %t34
   %t35 = load %GenRef, %GenRef* %t32
   store %GenRef %t35, %GenRef* %t26
-  %t36 = alloca %Texture
   %t37 = getelementptr inbounds %GenRef, %GenRef* %t26, i32 0, i32 0
   %t38 = load i32, i32* %t37
   %t39 = getelementptr inbounds %GenRef, %GenRef* %t26, i32 0, i32 1
@@ -247,7 +269,6 @@ despawn_live_17:
   store i64 %t67, i64* @arena.Textures.free_top
   br label %despawn_end_16
 despawn_end_16:
-  %t68 = alloca %Texture
   %t69 = getelementptr inbounds %GenRef, %GenRef* %t26, i32 0, i32 0
   %t70 = load i32, i32* %t69
   %t71 = getelementptr inbounds %GenRef, %GenRef* %t26, i32 0, i32 1

@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,15 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -34,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -179,10 +209,15 @@ if_else_10:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  store i32 %.argc, i32* @star.argc
-  store i8** %.argv, i8*** @star.argv
   %t0 = alloca %Countdown
   %t1 = alloca %Countdown
+  %t6 = alloca i1
+  %t7 = alloca i32
+  %t14 = alloca %Countdown
+  %t15 = alloca %Countdown
+  %t21 = alloca i1
+  store i32 %.argc, i32* @star.argc
+  store i8** %.argv, i8*** @star.argv
   %t2 = getelementptr inbounds %Countdown, %Countdown* %t1, i32 0, i32 0
   store i32 1, i32* %t2
   %t3 = getelementptr inbounds %Countdown, %Countdown* %t1, i32 0, i32 1
@@ -191,14 +226,12 @@ entry:
   store i32 0, i32* %t4
   %t5 = load %Countdown, %Countdown* %t1
   store %Countdown %t5, %Countdown* %t0
-  %t6 = alloca i1
   store i1 true, i1* %t6
-  %t7 = alloca i32
   store i32 0, i32* %t7
   br label %while_cond_12
 while_cond_12:
   %t8 = load i1, i1* %t6
-  br i1 %t8, label %while_body_13, label %while_end_15
+  br i1 %t8, label %while_body_13, label %while_else_14
 while_body_13:
   %t9 = call i1 @Countdown__resume(%Countdown* %t0)
   store i1 %t9, i1* %t6
@@ -212,8 +245,6 @@ while_end_15:
   %t12 = load i32, i32* %t7
   %t13 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.0, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t13, i32 %t12)
-  %t14 = alloca %Countdown
-  %t15 = alloca %Countdown
   %t16 = sub i32 0, 1
   %t17 = getelementptr inbounds %Countdown, %Countdown* %t15, i32 0, i32 0
   store i32 %t16, i32* %t17
@@ -223,7 +254,6 @@ while_end_15:
   store i32 0, i32* %t19
   %t20 = load %Countdown, %Countdown* %t15
   store %Countdown %t20, %Countdown* %t14
-  %t21 = alloca i1
   %t22 = call i1 @Countdown__resume(%Countdown* %t14)
   store i1 %t22, i1* %t21
   %t23 = load i1, i1* %t21

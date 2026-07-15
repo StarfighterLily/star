@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,15 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -34,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -108,14 +138,20 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  %t0 = alloca <3 x float>
+  %t4 = alloca <3 x float>
+  %t18 = alloca <3 x float>
+  %t37 = alloca <3 x float>
+  %t80 = alloca float
+  %t91 = alloca float
+  %t119 = alloca i32
+  %t144 = alloca float
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t0 = alloca <3 x float>
   %t1 = insertelement <3 x float> undef, float 0x3FF0000000000000, i32 0
   %t2 = insertelement <3 x float> %t1, float 0x0000000000000000, i32 1
   %t3 = insertelement <3 x float> %t2, float 0x0000000000000000, i32 2
   store <3 x float> %t3, <3 x float>* %t0
-  %t4 = alloca <3 x float>
   %t5 = insertelement <3 x float> undef, float 0x0000000000000000, i32 0
   %t6 = insertelement <3 x float> %t5, float 0x3FF0000000000000, i32 1
   %t7 = insertelement <3 x float> %t6, float 0x0000000000000000, i32 2
@@ -131,7 +167,6 @@ entry:
   %t16 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.0, i64 0, i64 0
   %t17 = fpext float %t15 to double
   call i32 (i8*, ...) @printf(i8* %t16, double %t17)
-  %t18 = alloca <3 x float>
   %t19 = insertelement <3 x float> undef, float 0x4008000000000000, i32 0
   %t20 = insertelement <3 x float> %t19, float 0x4010000000000000, i32 1
   %t21 = insertelement <3 x float> %t20, float 0x0000000000000000, i32 2
@@ -153,7 +188,6 @@ entry:
   %t35 = getelementptr inbounds [16 x i8], [16 x i8]* @.str.2, i64 0, i64 0
   %t36 = fpext float %t34 to double
   call i32 (i8*, ...) @printf(i8* %t35, double %t36)
-  %t37 = alloca <3 x float>
   %t38 = load <3 x float>, <3 x float>* %t0
   %t39 = load <3 x float>, <3 x float>* %t18
   %t40 = extractelement <3 x float> %t38, i32 0
@@ -201,7 +235,6 @@ entry:
   %t78 = icmp eq i32 42, 0
   %t79 = select i1 %t78, i32 1, i32 42
   store i32 %t79, i32* @rng.state
-  %t80 = alloca float
   %t81 = load i32, i32* @rng.state
   %t82 = shl i32 %t81, 13
   %t83 = xor i32 %t81, %t82
@@ -214,7 +247,6 @@ entry:
   %t89 = uitofp i32 %t88 to float
   %t90 = fdiv float %t89, 0x4170000000000000
   store float %t90, float* %t80
-  %t91 = alloca float
   %t92 = load i32, i32* @rng.state
   %t93 = shl i32 %t92, 13
   %t94 = xor i32 %t92, %t93
@@ -257,7 +289,6 @@ logic_end_5:
   %t117 = select i1 %t114, i8* %t115, i8* %t116
   %t118 = getelementptr inbounds [22 x i8], [22 x i8]* @.str.10, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t118, i8* %t109, i8* %t117)
-  %t119 = alloca i32
   %t120 = sub i32 20, 10
   %t121 = icmp sle i32 %t120, 0
   %t122 = select i1 %t121, i32 1, i32 %t120
@@ -292,7 +323,6 @@ logic_end_8:
   %t142 = icmp eq i32 42, 0
   %t143 = select i1 %t142, i32 1, i32 42
   store i32 %t143, i32* @rng.state
-  %t144 = alloca float
   %t145 = load i32, i32* @rng.state
   %t146 = shl i32 %t145, 13
   %t147 = xor i32 %t145, %t146

@@ -113,7 +113,7 @@ impl Codegen {
         self.line("}");
         self.line("");
         let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
-        self.pending_top.push(fn_ir);
+        self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir));
 
         let reg = self.tmp_name();
         self.line(&format!("  {} = bitcast void (i8*)* @{} to i8*", reg, name));

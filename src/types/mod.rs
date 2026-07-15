@@ -406,7 +406,7 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     "CreateSemaphoreA", "ReleaseSemaphore", "GetCurrentThreadId",
     "star_rc_alloc", "star_rc_retain", "star_rc_release",
     // `env_get`/`env_set` builtins -- see `crate::codegen::os`.
-    "getenv", "_putenv",
+    "getenv", "_putenv_s",
     // `tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close` builtins -- see
     // `crate::codegen::net`.
     "WSAStartup", "socket", "connect", "send", "recv", "closesocket", "htons", "inet_addr",
@@ -2416,6 +2416,30 @@ fn scan_stmt_for_par_hazards(stmt: &Stmt, hazard: &mut bool, called: &mut HashSe
         Stmt::Assign { target, value, .. } => {
             scan_expr_for_par_hazards(target, hazard, called);
             scan_expr_for_par_hazards(value, hazard, called);
+            // Writing through a `[..]` index (`Expr::GenRefIndex` -- see its
+            // own doc comment for why this one AST node covers every
+            // bracketed index syntax, `GenRef`/`List`/`Array`/`Ring`/`Table`
+            // alike, until the checker later disambiguates it by type) can
+            // reach a `GenRef` dereference into *another*, shared arena slot
+            // -- e.g. `self.target[0].hp -= dmg` where `self.target:
+            // GenRef<Player>` -- rather than the receiver's own disjoint-
+            // per-iteration fields. Two different loop items' `target`
+            // fields can point at the same arena slot, so this races across
+            // worker threads exactly like `spawn`/`despawn`/`frame:` above,
+            // but was previously undetected: `par_analysis.rs`'s typed
+            // disjointness proof only ever looks at the `par`/`swarm` body's
+            // *own* statements, not at what a called function does. This
+            // syntactic pre-pass has no type information yet (it runs on the
+            // raw AST before any body is checked -- see
+            // `compute_unsafe_par_fns`'s own doc comment), so it can't tell
+            // a genuinely-safe index write (into a `List`/`Array`/`Ring`/
+            // `Table` this function built and owns outright) apart from an
+            // unsafe `GenRef` dereference -- so, like those three, *any*
+            // index write reached through a called function is
+            // conservatively treated as unprovable disjoint.
+            if contains_index_write(target) {
+                *hazard = true;
+            }
         }
         Stmt::Return { value, .. } => {
             if let Some(v) = value {
@@ -2464,6 +2488,20 @@ fn scan_stmt_for_par_hazards(stmt: &Stmt, hazard: &mut bool, called: &mut HashSe
             *hazard = true;
             scan_expr_for_par_hazards(index, hazard, called);
         }
+    }
+}
+
+/// True if `expr` (an assignment target's place-expression, e.g. `self.a.b`,
+/// `x[0].y`, `x.y[0]`) writes through a `[..]` index anywhere in its base
+/// chain -- see `Expr::GenRefIndex`'s doc comment for why the same untyped
+/// AST node covers every bracketed index syntax regardless of what it turns
+/// out to mean once the checker resolves `base`'s type. Used by
+/// `scan_stmt_for_par_hazards`'s `Stmt::Assign` arm above.
+fn contains_index_write(expr: &Expr) -> bool {
+    match expr {
+        Expr::GenRefIndex { .. } => true,
+        Expr::Field { base, .. } | Expr::TupleIndex { base, .. } => contains_index_write(base),
+        _ => false,
     }
 }
 
@@ -2562,6 +2600,14 @@ fn root_ident(expr: &TypedExpr) -> Option<String> {
         TypedExpr::TupleIndex { base, .. } => root_ident(base),
         TypedExpr::ArrayIndex { base, .. } => root_ident(base),
         TypedExpr::RingIndex { base, .. } => root_ident(base),
+        // Same rule as `ArrayIndex`/`RingIndex`/`TableIndex` above -- a
+        // body-local `List<T>` write (`t[0] = v` where `t` is declared
+        // inside the `par`/`swarm` body) was previously rejected as an
+        // "unsupported mutation target" even though it's exactly as safe as
+        // the other three inline/heap collection index-write cases (see
+        // `accepts_table_index_write_on_body_local_table_inside_par_body`
+        // for the identical bug already fixed for `Table<T>`).
+        TypedExpr::ListIndex { base, .. } => root_ident(base),
         // Same rule as `ArrayIndex`/`RingIndex` above -- needed so
         // `table[i] = v` (the one supported `Table<T>` write path, see
         // `Ty::Table`'s doc comment) inside a `par`/`swarm` body resolves to

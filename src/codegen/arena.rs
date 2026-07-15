@@ -206,7 +206,7 @@ impl Codegen {
         self.line("");
 
         let worker_ir = std::mem::replace(&mut self.ir, saved_ir);
-        self.pending_top.push(worker_ir);
+        self.pending_top.push(Self::hoist_allocas_to_entry(&worker_ir));
         self.symbols = saved_symbols;
         self.in_frame = saved_in_frame;
         self.in_main = saved_in_main;

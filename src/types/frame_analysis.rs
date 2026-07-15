@@ -201,7 +201,9 @@ impl Checker {
 /// unsafe here because a closure captured it as `self` by pointer -- see
 /// this module's doc comment) so the diagnostic stays accurate either way.
 fn escape_reason(name: &str, frame_locals: &HashSet<String>) -> String {
-    if frame_locals.contains(name) {
+    if name == ANONYMOUS_CALL_RESULT {
+        "a temporary struct with no binding of its own, whose method was called by a closure that captured it as `self` by pointer".to_string()
+    } else if frame_locals.contains(name) {
         "a struct allocated inside a `frame:` scope (or a closure that captured it as `self` by pointer)".to_string()
     } else {
         "a local struct (or by-value parameter) whose method was called by a closure that captured it as `self` by pointer".to_string()
@@ -499,9 +501,33 @@ fn local_struct_receiver(expr: &TypedExpr, local_structs: &HashSet<String>) -> O
                 None
             }
         }
+        // A method/function call's own return value, if it's a `Ty::Named`
+        // struct, is *always* spilled by `Codegen::emit_place` into a fresh,
+        // function-scoped alloca -- there is no other storage for a bare
+        // call-expression result to live in (see this module's own
+        // `TypedExpr::Call` doc comment above). So using it as a further
+        // method-call receiver that itself returns a closure
+        // (`Holder(777).identity().get_closure()`, where `identity()`
+        // returns `Holder` by value and `get_closure()` captures *that*
+        // `self` by pointer) is exactly as unsafe as using a named local or
+        // by-value parameter -- just with no `let`/param name to attribute
+        // the escape to, since it's an anonymous temporary. This was
+        // previously the one receiver shape this function's `_ => None`
+        // catch-all silently let through (see this function's own doc
+        // comment on why -- `frame_escape_source`'s recursion into it always
+        // falls through as well, since a struct-returning call's own type
+        // is never `Ty::Closure`).
+        TypedExpr::Call { ty, .. } if matches!(ty, Ty::Named(_)) => Some(ANONYMOUS_CALL_RESULT.to_string()),
         _ => None,
     }
 }
+
+/// Sentinel "name" `local_struct_receiver` reports for a receiver that's a
+/// call's return value rather than a real `let`/param binding -- there's no
+/// source identifier to point at, but the escape is exactly as real. See
+/// `escape_reason`'s matching special case, which phrases the diagnostic
+/// around this sentinel instead of treating it as a literal variable name.
+const ANONYMOUS_CALL_RESULT: &str = "this method call's result";
 
 /// The frame-escape source of a block used in value position (an `if`/
 /// `match` arm): only its trailing expression contributes a value, mirroring

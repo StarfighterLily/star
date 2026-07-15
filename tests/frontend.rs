@@ -6007,6 +6007,124 @@ fn runtime_rc_stress_memory_stays_bounded() {
     let _ = std::fs::remove_file(&stdout_file);
 }
 
+/// Regression test for the RC leak fixed in `Codegen::emit_stmt`'s
+/// `TypedStmt::Expr` arm: a bare-statement expression whose value is a
+/// fresh, already-owned RC reference (`List<str>::pop()`, here) was never
+/// released, since nothing else held onto it -- every `.pop()`-and-discard
+/// leaked one heap block. Mirrors `runtime_rc_stress_memory_stays_bounded`'s
+/// Working-Set-sampling technique just above, but builds its own throwaway
+/// executable (1,000,000,000 push-then-discarded-pop iterations) instead of
+/// relying on a checked-in example.
+#[test]
+fn runtime_discarded_list_pop_statement_does_not_leak_end_to_end() {
+    use std::process::Command;
+
+    let src = "fn main():\n    let mut xs: List<str> = List<str>()\n    xs.push(\"seed\")\n    let mut i: i32 = 0\n    while i < 1000000000:\n        xs.push(\"x\")\n        xs.pop()\n        i += 1\n    println(\"done\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_discarded_pop_leak.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+
+    let stdout_file = std::env::temp_dir().join("discarded_pop_leak_stdout.txt");
+    let script = format!(
+        "$p = Start-Process -FilePath '{}' -PassThru -RedirectStandardOutput '{}'; \
+         $samples = New-Object System.Collections.ArrayList; \
+         while (-not $p.HasExited) {{ try {{ $p.Refresh(); [void]$samples.Add($p.WorkingSet64) }} catch {{}}; Start-Sleep -Milliseconds 100 }}; \
+         $samples -join ','",
+        exe.display(),
+        stdout_file.display()
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .expect("failed to run the PowerShell memory-sampling script");
+    assert!(output.status.success(), "sampling script failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    let program_stdout = std::fs::read_to_string(&stdout_file).unwrap_or_default();
+    assert!(program_stdout.contains("done"), "program should finish normally: {}", program_stdout);
+
+    let samples_raw = String::from_utf8_lossy(&output.stdout);
+    let samples: Vec<i64> = samples_raw.trim().split(',').filter_map(|s| s.trim().parse().ok()).collect();
+
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    let _ = std::fs::remove_file(&stdout_file);
+
+    if samples.len() < 3 {
+        // Ran too fast to sample meaningfully on this machine -- a
+        // successful, fast exit over 1,000,000,000 iterations is itself
+        // still strong evidence against an unbounded per-iteration leak.
+        return;
+    }
+    let settled = &samples[1..];
+    let min = *settled.iter().min().unwrap();
+    let max = *settled.iter().max().unwrap();
+    assert!(
+        (max - min) < 20 * 1024 * 1024,
+        "Working Set grew by {}MB across the run (samples: {:?}) -- a discarded `list.pop()` statement is leaking",
+        (max - min) / (1024 * 1024),
+        samples
+    );
+}
+
+// ===== Regression: this codegen emits every local's/temporary's `alloca`
+// ===== inline, wherever it's first needed (not hoisted to the function's
+// ===== own entry block the way a typical C frontend like Clang always
+// ===== does). An `alloca` inside a loop body is not free of runtime cost
+// ===== the way a fixed-size stack slot declared once at entry is: at `-O0`
+// ===== (which this whole test suite always builds at, via `compile_and_run`),
+// ===== each pass through that loop iteration's block consumed *more* stack
+// ===== space, so a long-running loop containing so much as one `let`/
+// ===== temporary eventually overflowed the stack -- confirmed via a real
+// ===== `STATUS_STACK_OVERFLOW` after ~100,000 iterations of a trivial `let
+// ===== s: str = concat("a", "b")` inside a `while` loop, discovered on a
+// ===== clean checkout with none of this round's other fixes applied (a
+// ===== pre-existing bug, not introduced by them) while writing a stress
+// ===== test for the `TypedStmt::Expr` RC-release fix above. Fixed by
+// ===== `Codegen::hoist_allocas_to_entry`, a per-function textual pass that
+// ===== moves every `alloca` line to immediately follow its `entry:` label. ==
+
+/// Every `alloca` in a function containing a `while` loop must appear
+/// *before* the loop's own block label in the emitted IR -- confirms
+/// `hoist_allocas_to_entry` actually moved the loop-body `let`'s `alloca`
+/// out of the repeatedly-executed block, rather than merely masking the
+/// problem some other way.
+#[test]
+fn codegen_hoists_loop_local_allocas_to_entry_block() {
+    let src = "fn main():\n    let mut i: i32 = 0\n    while i < 3:\n        let s: str = concat(\"a\", \"b\")\n        i += 1\n    println(\"done\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let body = extract_fn_body(&ir, "define i32 @main(");
+    let loop_start = body.find("while_cond").expect("function should contain a while-loop block");
+    let after_loop_starts = &body[loop_start..];
+    assert!(
+        !after_loop_starts.contains("= alloca"),
+        "found an `alloca` at or after the loop's own block -- it wasn't hoisted to entry: {}",
+        body
+    );
+}
+
+/// Full runtime round trip: 200,000 iterations of a `while` loop each
+/// containing a `let` (comfortably above the ~100,000-iteration threshold
+/// that reproduced the stack overflow pre-fix, while staying fast enough to
+/// run as an ordinary, non-memory-sampling test) must complete normally.
+#[test]
+fn runtime_loop_with_many_local_lets_does_not_overflow_stack_end_to_end() {
+    let src = "fn main():\n    let mut i: i32 = 0\n    while i < 200000:\n        let s: str = concat(\"a\", \"b\")\n        i += 1\n    println(\"done\")\n";
+    let output = compile_and_run("loop_with_many_local_lets", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "done", "{}", stdout);
+}
+
 // ===== Compiler-audit regression tests ======================================
 //
 // One test per bug found and fixed in a full lexer/parser/checker/codegen
@@ -8171,6 +8289,27 @@ fn runtime_env_set_overwrites_existing_value_end_to_end() {
     assert_eq!(lines, vec!["true", "new value"], "{}", stdout);
 }
 
+/// Regression test for a use-after-free previously in `emit_env_set`: it
+/// built a `"NAME=VALUE"` buffer, handed it to `_putenv`, then immediately
+/// `free`d it -- but (unlike `_putenv_s`) `_putenv` stores the exact pointer
+/// it's given directly in the process's environment block rather than
+/// copying it, so any later heap activity reusing that freed block corrupted
+/// the environment entry silently. Calls `env_set` on 20 different
+/// variables, each followed by unrelated heap churn (building/filling a
+/// fresh `List<str>`) that would be likely to reuse a freed `env_set` buffer
+/// if the bug were still present, then reads every variable back -- every
+/// value must still be exactly what was set.
+#[test]
+fn runtime_env_set_survives_heap_churn_after_repeated_calls_end_to_end() {
+    let src = "fn main():\n    let mut i: i32 = 0\n    while i < 20:\n        let name = f\"STAR_TEST_ENV_STRESS_{i}\"\n        let val = f\"value_{i}\"\n        env_set(name, val)\n        let mut xs: List<str> = List<str>()\n        let mut j: i32 = 0\n        while j < 50:\n            xs.push(f\"churn_{j}\")\n            j += 1\n        i += 1\n    i = 0\n    while i < 20:\n        let name = f\"STAR_TEST_ENV_STRESS_{i}\"\n        println(env_get(name))\n        i += 1\n";
+    let output = compile_and_run("env_set_survives_heap_churn", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    let expected: Vec<String> = (0..20).map(|i| format!("value_{}", i)).collect();
+    assert_eq!(lines, expected, "{}", stdout);
+}
+
 /// An f-string used as an ordinary value (bound to a `let`, not passed
 /// directly as `print`/`println`'s sole argument) must actually substitute
 /// its interpolated values, not just return the raw, unformatted
@@ -8779,7 +8918,7 @@ fn rejects_compare_pattern_against_non_int_scrutinee() {
     let src = "fn f(s: str) -> i32:\n    match s:\n        <= 5 -> 1\n        _ -> 0\n";
     let module = Driver::parse(src).expect("should parse");
     let Err(errs) = Driver::check(&module) else { panic!("a comparison pattern against a non-int scrutinee must be rejected") };
-    assert!(errs.iter().any(|d| d.message.contains("requires an `i32` scrutinee")), "{:?}", errs);
+    assert!(errs.iter().any(|d| d.message.contains("requires an integer scrutinee")), "{:?}", errs);
 }
 
 /// Sanity/no-false-positive guard alongside the three rejection tests above.
@@ -8788,6 +8927,52 @@ fn accepts_int_and_compare_patterns_against_int_scrutinee() {
     let src = "fn f(n: i32) -> i32:\n    match n:\n        0 -> 1\n        <= 5 -> 2\n        _ -> 3\n";
     let module = Driver::parse(src).expect("should parse");
     assert!(Driver::check(&module).is_ok(), "int/compare patterns against an int scrutinee should type-check cleanly");
+}
+
+// ===== Regression: `Pattern::Int`/`Pattern::Compare` were checked (and
+// ===== lowered) as if every integer scrutinee were the original `i32`
+// ===== `Ty::Int`, unconditionally rejecting every explicit-width type
+// ===== (`i8`/`u8`/`i16`/`u16`/`u32`/`i64`/`u64`) added since -- `match x: 5
+// ===== -> ..` against a `u8`/`i64`/etc. scrutinee was a compile error, and
+// ===== codegen hardcoded `icmp eq i32` regardless of the scrutinee's real
+// ===== width even if the checker had let it through. ========================
+
+/// A literal-int match pattern against every explicit-width integer
+/// scrutinee (not just the original `i32`) type-checks cleanly.
+#[test]
+fn accepts_int_pattern_against_every_sized_int_scrutinee() {
+    for ty in ["i8", "u8", "i16", "u16", "u32", "i64", "u64"] {
+        let src = format!("fn f(n: {}) -> i32:\n    match n:\n        0 -> 1\n        _ -> 2\n", ty);
+        let module = Driver::parse(&src).expect("should parse");
+        assert!(Driver::check(&module).is_ok(), "int pattern against a `{}` scrutinee should type-check cleanly", ty);
+    }
+}
+
+/// Same widening for a comparison pattern (`<=`/`>=`/`<`/`>`), against both a
+/// signed and an unsigned explicit-width scrutinee -- codegen must pick the
+/// right signed/unsigned `icmp` predicate for each.
+#[test]
+fn accepts_compare_pattern_against_signed_and_unsigned_sized_int_scrutinees() {
+    for ty in ["i8", "u8", "i64", "u32"] {
+        let src = format!("fn f(n: {}) -> i32:\n    match n:\n        <= 5 -> 1\n        _ -> 2\n", ty);
+        let module = Driver::parse(&src).expect("should parse");
+        assert!(Driver::check(&module).is_ok(), "compare pattern against a `{}` scrutinee should type-check cleanly", ty);
+    }
+}
+
+/// Full runtime round trip: a literal pattern against a `u8` scrutinee whose
+/// value only fits because the pattern is compared at `u8`'s own width (`200`
+/// doesn't fit a signed `i8`), a `<=` compare pattern against a negative
+/// `i64` scrutinee, and a `>=` compare pattern against a `u32` scrutinee --
+/// covering both signed and unsigned `icmp` lowering.
+#[test]
+fn runtime_match_int_and_compare_patterns_against_sized_int_scrutinees_end_to_end() {
+    let src = "fn main():\n    let x: u8 = 200 as u8\n    match x:\n        200 -> println(\"two hundred\")\n        _ -> println(\"other\")\n    let y: i64 = -5 as i64\n    match y:\n        <= -1 -> println(\"negative\")\n        _ -> println(\"non-negative\")\n    let z: u32 = 40 as u32\n    match z:\n        >= 30 -> println(\"big unsigned\")\n        _ -> println(\"small\")\n";
+    let output = compile_and_run("match_sized_int_patterns", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["two hundred", "negative", "big unsigned"], "{}", stdout);
 }
 
 /// A method declaring no `self` at all (an "associated function" still
@@ -10024,6 +10209,60 @@ fn make() -> Fn() -> i32:
     assert!(errs.iter().any(|d| d.message.contains("ring")), "{:?}", errs);
 }
 
+// ===== Regression: `local_struct_receiver` had no `TypedExpr::Call` arm, so
+// ===== a method-call receiver that is itself another call's return value
+// ===== (`Holder(777).identity().get_closure()`, where `identity()` returns
+// ===== `Holder` by value) fell through to its `_ => None` catch-all --
+// ===== even though that returned struct is spilled by `Codegen::emit_place`
+// ===== into a fresh, function-scoped alloca exactly like a named local, so
+// ===== a closure capturing it as `self` by pointer (`get_closure()`) dangles
+// ===== the moment `make()` returns, identically to every other receiver
+// ===== shape this check already covers. =====================================
+
+/// A closure escaping with `self` captured from a method call chained one
+/// level deeper (the receiver is itself another call's return value, not a
+/// named local/field/tuple/array/ring projection) must still be rejected.
+#[test]
+fn rejects_closure_capturing_self_via_chained_method_call_receiver() {
+    let src = r#"struct Holder:
+    val: i32
+
+impl Holder:
+    fn identity(self) -> Holder:
+        Holder(self.val)
+    fn get_closure(self) -> Fn() -> i32:
+        fn(): self.val
+
+fn make() -> Fn() -> i32:
+    return Holder(777).identity().get_closure()
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("a closure escaping with a call-result receiver's self pointer should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("method call's result")), "{:?}", errs);
+}
+
+/// Sanity/no-false-positive guard: a chained method call that does *not*
+/// return a closure (just an ordinary value) must still type-check cleanly --
+/// the fix above must not turn every chained method call into a rejection.
+#[test]
+fn accepts_chained_method_call_receiver_when_result_is_not_a_closure() {
+    let src = r#"struct Holder:
+    val: i32
+
+impl Holder:
+    fn identity(self) -> Holder:
+        Holder(self.val)
+    fn double(self) -> i32:
+        self.val * 2
+
+fn main():
+    let x = Holder(21).identity().double()
+    println(f"{x}")
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "a harmless chained method call should still type-check cleanly: {:?}", Driver::check(&module).err());
+}
+
 /// Full runtime round trip via `examples/ring.exe`: construction, `push`
 /// filling to capacity, `push` past capacity evicting the oldest element
 /// (sliding-window semantics), `pop` (FIFO, oldest first), the safe
@@ -10299,6 +10538,78 @@ fn main():
     let module = Driver::parse(src).expect("should parse");
     let Err(diags) = Driver::check(&module) else { panic!("writing into a captured Table<T>'s index inside par/swarm should be a type error") };
     assert!(diags.iter().any(|d| d.message.contains("cannot be proven disjoint across threads")), "{:?}", diags);
+}
+
+/// Same `root_ident` gap as `Table<T>` above, but for `List<T>`: `root_ident`
+/// had `ArrayIndex`/`RingIndex`/`TableIndex` arms but no `ListIndex` one, so
+/// `xs[0] = v` on a `List<T>` declared and only ever touched inside the loop
+/// body itself was wrongly rejected as an "unsupported mutation target" --
+/// even though it's exactly as safe as the identical `Table`/`Ring`/`Array`
+/// cases right next to it.
+#[test]
+fn accepts_list_index_write_on_body_local_list_inside_par_body() {
+    let src = r#"struct Enemy:
+    mut hp: i32
+
+arena Enemies: Enemy
+
+fn main():
+    par e in Enemies:
+        let mut xs: List<i32> = List<i32>()
+        xs.push(1)
+        xs[0] = 2
+        e.hp = xs[0]
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "writing into a body-local List<T>'s index inside par/swarm should type-check cleanly");
+}
+
+// ===== Regression: `compute_unsafe_par_fns`'s syntactic pre-pass (over the
+// ===== raw AST, before any type-checking) treated `spawn`/`despawn`/`frame:`
+// ===== as hazards that make a called function unsafe to invoke inside a
+// ===== `par`/`swarm` body, but never treated an assignment written through a
+// ===== `[..]` index (`Expr::GenRefIndex` -- the one AST node backing every
+// ===== bracketed index syntax, `GenRef` included, until the checker later
+// ===== disambiguates it by type) as a hazard at all. So a helper method that
+// ===== mutates a field reached through a `GenRef` dereference (e.g.
+// ===== `self.target[0].hp -= dmg`, where `self.target: GenRef<Player>` looks
+// ===== into a shared arena, not the receiver's own disjoint-per-iteration
+// ===== storage) type-checked cleanly when called from inside a `par` body,
+// ===== racing every worker thread on that shared `Player` slot with zero
+// ===== diagnostic. =========================================================
+
+/// A method that writes through a `GenRef` field dereference (`self.target[0]
+/// .hp -= dmg`) must be rejected when called inside a `par`/`swarm` body --
+/// two different loop items' `target` fields can alias the same arena slot,
+/// so this can't be proven disjoint across worker threads.
+#[test]
+fn rejects_genref_index_write_hidden_behind_helper_function_call_inside_par() {
+    let src = r#"struct Player:
+    mut hp: i32
+
+struct Enemy:
+    target: GenRef<Player>
+
+impl Enemy:
+    fn damage_target(mut self, dmg: i32):
+        self.target[0].hp -= dmg
+
+arena Players: Player
+arena Enemies: Enemy
+
+fn main():
+    spawn Players(Player(100))
+    let p = GenRef<Player>(0)
+    spawn Enemies(Enemy(p))
+    spawn Enemies(Enemy(p))
+    par e in Enemies:
+        e.damage_target(1)
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else {
+        panic!("a GenRef-index write hidden behind a helper function call inside par/swarm should be a type error")
+    };
+    assert!(diags.iter().any(|d| d.message.contains("damage_target")), "{:?}", diags);
 }
 
 // ===== Additional wide-coverage runtime tests: edge cases not exercised by
@@ -10794,6 +11105,49 @@ fn rejects_let_shadowing_sequence_param_name() {
     );
 }
 
+// ===== Regression: every top-level `let` in a `sequence` body is hoisted
+// ===== into a struct field up front (`hoist`, built by scanning the whole
+// ===== body before any segment is rewritten), so a `let`'s own initializer
+// ===== referencing a *later* top-level `let`'s name was already rewritten to
+// ===== `self.<name>` regardless of program order -- silently reading that
+// ===== field's zero-initialized value instead of getting a "used before
+// ===== declaration" error the same reference would get in an ordinary `fn`
+// ===== body. =================================================================
+
+/// A hoisted local's own initializer referencing another hoisted local
+/// declared *later* in the same sequence body must be a compile error, not a
+/// silent read of that later local's zero-initialized value.
+#[test]
+fn rejects_sequence_forward_reference_to_later_hoisted_local() {
+    let src = "sequence Counter():\n    let a: i32 = b + 1\n    yield\n    let mut b: i32 = 5\n    yield\n\nfn main():\n    let mut c = Counter()\n";
+    let module = Driver::parse(src).expect("should parse");
+    let err = Driver::check(&module).expect_err("referencing a later top-level local before its own `let` should be rejected");
+    assert!(err.iter().any(|d| d.message.contains("used here before its own `let`")), "{:?}", err);
+}
+
+/// A forward reference nested one level inside an `if` (not directly in
+/// another `let`'s initializer) is the same hazard and must also be caught --
+/// the check walks the whole body, not just top-level `let` initializers.
+#[test]
+fn rejects_sequence_forward_reference_nested_inside_if() {
+    let src = "sequence S(cond: bool):\n    if cond:\n        println(b)\n    yield\n    let mut b: i32 = 5\n    yield\n\nfn main():\n    let mut s = S(true)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let err = Driver::check(&module).expect_err("a forward reference nested inside an `if` should be rejected");
+    assert!(err.iter().any(|d| d.message.contains("used here before its own `let`")), "{:?}", err);
+}
+
+/// Sanity/no-false-positive guard: a `for` loop's own induction variable
+/// legitimately shadows a same-named hoisted local declared later in the
+/// body -- this must *not* be flagged as a forward reference, mirroring
+/// `runtime_sequence_for_loop_var_shadowing_hoisted_field_end_to_end`'s
+/// runtime coverage of the same shadowing rule.
+#[test]
+fn accepts_sequence_for_loop_var_shadowing_later_hoisted_local_no_false_positive() {
+    let src = "sequence S():\n    let mut total: i32 = 0\n    for b in 0..3:\n        total = total + b\n    yield\n    let mut b: i32 = 99\n    print(f\"{b}\")\n    yield\n\nfn main():\n    let mut s = S()\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "a for-loop var shadowing a later hoisted local should not be flagged as a forward reference: {:?}", Driver::check(&module).err());
+}
+
 // ===== Regression: `emit_spawn_stmt`'s free-list slot-reuse path double-
 // ===== released an RC-bearing element's content. `emit_despawn_stmt`
 // ===== already releases a slot's content when it's freed (the only way a
@@ -11012,6 +11366,99 @@ fn runtime_set_insert_of_own_remove_does_not_desync_length_end_to_end() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines, vec!["len=3", "true false true true"], "{}", stdout);
+}
+
+// ===== Regression: `MapMethod::Contains`/`Get`/`Remove` and `SetMethod::
+// ===== Contains`/`Remove` read their keys/values/length *before* evaluating
+// ===== the key argument expression, unlike `Insert` (fixed earlier, see the
+// ===== tests just above) -- so a key expression that itself mutates the same
+// ===== map/set (e.g. a nested `.remove(..)`) desyncs membership/lookup
+// ===== against the *pre*-mutation snapshot. `remove`'s swap-remove leaves
+// ===== the vacated (now out-of-range) slot's bytes untouched, so a stale
+// ===== length lets a phantom slot's leftover data resurface. ===============
+
+/// `map.contains(..)` evaluated with a key expression that removes the very
+/// key being queried must report `false` (the key is really gone), not
+/// `true` from re-scanning the phantom vacated slot with a stale `len`.
+#[test]
+fn runtime_map_contains_of_own_remove_does_not_desync_end_to_end() {
+    let src = "fn extract(o: Option<i32>) -> i32:\n    match o:\n        Option::Some(v) -> v\n        Option::None -> 0\n\nfn main():\n    let mut m: Map<i32, i32> = Map<i32, i32>()\n    m.insert(1, 100)\n    m.insert(2, 200)\n    m.insert(3, 3)\n    let r = m.contains(extract(m.remove(3)))\n    println(f\"{r}\")\n    println(f\"len={m.len()}\")\n";
+    let output = compile_and_run("map_contains_of_own_remove", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["false", "len=2"], "{}", stdout);
+}
+
+/// Same hazard in `map.get(..)`: querying the just-removed key must yield
+/// `None`, not `Some(..)` read out of the stale phantom slot.
+#[test]
+fn runtime_map_get_of_own_remove_does_not_return_removed_value_end_to_end() {
+    let src = "fn extract(o: Option<i32>) -> i32:\n    match o:\n        Option::Some(v) -> v\n        Option::None -> 0\n\nfn main():\n    let mut m: Map<i32, i32> = Map<i32, i32>()\n    m.insert(1, 100)\n    m.insert(2, 200)\n    m.insert(3, 3)\n    let got = m.get(extract(m.remove(3)))\n    match got:\n        Option::Some(v) -> println(f\"got {v}\")\n        Option::None -> println(\"got none\")\n    println(f\"len={m.len()}\")\n";
+    let output = compile_and_run("map_get_of_own_remove", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["got none", "len=2"], "{}", stdout);
+}
+
+/// Same hazard in `set.contains(..)`.
+#[test]
+fn runtime_set_contains_of_own_remove_does_not_desync_end_to_end() {
+    let src = "fn pick(removed: bool) -> i32:\n    return if removed:\n        3\n    else:\n        -1\n\nfn main():\n    let mut s: Set<i32> = Set<i32>()\n    s.insert(1)\n    s.insert(2)\n    s.insert(3)\n    let r = s.contains(pick(s.remove(3)))\n    println(f\"{r}\")\n    println(f\"len={s.len()}\")\n";
+    let output = compile_and_run("set_contains_of_own_remove", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["false", "len=2"], "{}", stdout);
+}
+
+/// `Ring<T,N>::push` had the same stale-snapshot bug as `List`/`Map`/`Set`'s
+/// `push`/`insert` before those were fixed: `head`/`len` were read *before*
+/// evaluating the pushed value, so `ring.push(ring.pop())` (a full ring: pop
+/// the oldest, then push it back) used the pre-`pop` `head`/`len`, corrupting
+/// the length and reintroducing a value into a slot the nested `pop` had
+/// already zeroed (violating this module's "every non-live slot is zero"
+/// invariant that its blanket RC release-walk relies on).
+#[test]
+fn runtime_ring_push_of_own_pop_does_not_desync_length_end_to_end() {
+    let src = "fn main():\n    let mut r: Ring<i32, 3> = Ring<i32, 3>()\n    r.push(1)\n    r.push(2)\n    r.push(3)\n    r.push(r.pop())\n    println(f\"len={r.len()}\")\n    println(f\"{r[0]} {r[1]} {r[2]}\")\n";
+    let output = compile_and_run("ring_push_of_own_pop", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["len=3", "2 3 1"], "{}", stdout);
+}
+
+/// `Table<T>` index read/write resolved columns/`len` before evaluating the
+/// index expression, same class of bug: `t[t.pop().hp - 28]` shrinks the
+/// table via the nested `pop` *while the index is being computed*, so the
+/// resulting index (`2`) is out of bounds against the *post*-pop length (`2`)
+/// and must read the zero value, not the stale (already-popped) row's
+/// leftover data.
+#[test]
+fn runtime_table_index_read_of_own_pop_does_not_resurface_popped_element_end_to_end() {
+    let src = "struct Enemy:\n    hp: i32\n\nfn main():\n    let mut t: Table<Enemy> = Table<Enemy>()\n    t.push(Enemy(10))\n    t.push(Enemy(20))\n    t.push(Enemy(30))\n    let e = t[t.pop().hp - 28]\n    println(f\"{e.hp}\")\n    println(f\"len={t.len()}\")\n";
+    let output = compile_and_run("table_index_read_of_own_pop", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["0", "len=2"], "{}", stdout);
+}
+
+/// Same hazard in `Ring<T,N>` index reads: `r[r.pop()]`'s index expression
+/// itself mutates `r`'s `head`/`len` via the nested `pop`, so the bounds
+/// check and physical-slot mapping for the outer index must use the
+/// *post*-pop `head`/`len`, not a snapshot taken before the index was
+/// evaluated.
+#[test]
+fn runtime_ring_index_read_of_own_pop_does_not_use_stale_head_end_to_end() {
+    let src = "fn main():\n    let mut r: Ring<i32, 3> = Ring<i32, 3>()\n    r.push(1)\n    r.push(2)\n    r.push(3)\n    let v = r[r.pop()]\n    println(f\"{v}\")\n    println(f\"len={r.len()}\")\n";
+    let output = compile_and_run("ring_index_read_of_own_pop", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["3", "len=2"], "{}", stdout);
 }
 
 // ===== Numeric widths and `char` (docs/design.md's Type System §2) =========

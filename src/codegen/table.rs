@@ -127,7 +127,7 @@ impl Codegen {
         self.line("}");
         self.line("");
         let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
-        self.pending_top.push(fn_ir);
+        self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir));
 
         let reg = self.tmp_name();
         self.line(&format!("  {} = bitcast void (i8*)* @{} to i8*", reg, name));
@@ -397,12 +397,18 @@ impl Codegen {
         let struct_name = struct_name.clone();
         let struct_llvm = format!("%{}", struct_name);
         let fields = self.table_field_types(&struct_name);
-        let (cols, len) = self.table_fields(base, &struct_name);
 
         let idx_val = self.emit_expr(index);
         let idx_bare = self.untag(&idx_val, &Ty::Int);
         let idx64 = self.tmp_name();
         self.line(&format!("  {} = sext i32 {} to i64", idx64, idx_bare));
+
+        // Read columns/len *after* evaluating `index` -- if it mutates this
+        // same table (e.g. `t[t.pop().hp - 28]`), a snapshot taken beforehand
+        // would be stale, including the column pointers themselves if a
+        // nested `push` reallocated them (mirrors `MapMethod::Insert`'s
+        // identical fix, and `TableMethod::Push`'s existing reload below).
+        let (cols, len) = self.table_fields(base, &struct_name);
 
         // Allocated up front (before branching) so both arms can store into
         // the same scratch slot -- mirrors `Codegen::emit_expr`'s ordinary
@@ -454,12 +460,15 @@ impl Codegen {
         let struct_name = struct_name.clone();
         let struct_llvm = format!("%{}", struct_name);
         let fields = self.table_field_types(&struct_name);
-        let (cols, len, _len_field, _cap_field, _col_fields) = self.table_fields_mut(base, &struct_name);
 
         let idx_val = self.emit_expr(index);
         let idx_bare = self.untag(&idx_val, &Ty::Int);
         let idx64 = self.tmp_name();
         self.line(&format!("  {} = sext i32 {} to i64", idx64, idx_bare));
+
+        // Read columns/len *after* evaluating `index` -- same hazard and fix
+        // as `emit_table_index` above.
+        let (cols, len, _len_field, _cap_field, _col_fields) = self.table_fields_mut(base, &struct_name);
 
         let in_bounds = self.tmp_name();
         self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, len));

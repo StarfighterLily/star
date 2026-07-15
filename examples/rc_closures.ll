@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,15 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -34,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -148,9 +178,15 @@ entry:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  %t0 = alloca { i8*, i8* }
+  %t11 = alloca %Handler
+  %t12 = alloca %Handler
+  %t26 = alloca i8*
+  %t99 = alloca { i8*, i8* }
+  %t101 = alloca { i8*, i8* }
+  %t169 = alloca i32
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t0 = alloca { i8*, i8* }
   %t1 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.0, i64 0, i32 2, i64 0
   %t2 = call { i8*, i8* } @make_greeter(i8* %t1)
   store { i8*, i8* } %t2, { i8*, i8* }* %t0
@@ -165,8 +201,6 @@ entry:
   %t9 = call i8* %t8(i8* %t7)
   %t10 = getelementptr inbounds [4 x i8], [4 x i8]* @.str.1, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t10, i8* %t9)
-  %t11 = alloca %Handler
-  %t12 = alloca %Handler
   %t13 = getelementptr inbounds { i64, i8*, [4 x i8] }, { i64, i8*, [4 x i8] }* @.str.2, i64 0, i32 2, i64 0
   %t14 = call { i8*, i8* } @make_greeter(i8* %t13)
   %t15 = getelementptr inbounds %Handler, %Handler* %t12, i32 0, i32 0
@@ -185,7 +219,6 @@ entry:
   %t24 = call i8* %t23(i8* %t22)
   %t25 = getelementptr inbounds [4 x i8], [4 x i8]* @.str.3, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t25, i8* %t24)
-  %t26 = alloca i8*
   %t27 = getelementptr { i8*, i8* }, { i8*, i8* }* null, i32 1
   %t28 = ptrtoint { i8*, i8* }* %t27 to i64
   %t29 = mul i64 %t28, 2
@@ -281,10 +314,8 @@ list_idx_end_16:
   %t97 = call i8* %t96(i8* %t95)
   %t98 = getelementptr inbounds [4 x i8], [4 x i8]* @.str.7, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t98, i8* %t97)
-  %t99 = alloca { i8*, i8* }
   %t100 = call { i8*, i8* } @make_adder(i32 5)
   store { i8*, i8* } %t100, { i8*, i8* }* %t99
-  %t101 = alloca { i8*, i8* }
   %t124 = getelementptr inbounds { { i8*, i8* }, %Handler, i8*, { i8*, i8* } }, { { i8*, i8* }, %Handler, i8*, { i8*, i8* } }* null, i32 1
   %t125 = ptrtoint { { i8*, i8* }, %Handler, i8*, { i8*, i8* } }* %t124 to i64
   %t139 = bitcast void (i8*)* @closure_17_release_env to i8*
@@ -329,13 +360,12 @@ list_idx_end_16:
   %t167 = call i32 %t166(i8* %t165, i32 10)
   %t168 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.8, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t168, i32 %t167)
-  %t169 = alloca i32
   store i32 0, i32* %t169
   br label %while_cond_18
 while_cond_18:
   %t170 = load i32, i32* %t169
   %t171 = icmp slt i32 %t170, 3
-  br i1 %t171, label %while_body_19, label %while_end_21
+  br i1 %t171, label %while_body_19, label %while_else_20
 while_body_19:
   %t172 = load i32, i32* %t169
   %t173 = load { i8*, i8* }, { i8*, i8* }* %t0
@@ -378,10 +408,10 @@ while_end_21:
 ; par/swarm worker functions
 define i8* @closure_0(i8* %envp) {
 entry:
+  %t4 = alloca i8*
   %t1 = bitcast i8* %envp to { i8* }*
   %t2 = getelementptr inbounds { i8* }, { i8* }* %t1, i32 0, i32 0
   %t3 = load i8*, i8** %t2
-  %t4 = alloca i8*
   store i8* %t3, i8** %t4
   %t5 = load i8*, i8** %t4
   %t6 = load i8*, i8** %t4
@@ -402,12 +432,12 @@ entry:
 
 define i32 @closure_1(i8* %envp, i32 %arg_x) {
 entry:
+  %t4 = alloca i32
+  %t5 = alloca i32
   %t1 = bitcast i8* %envp to { i32 }*
   %t2 = getelementptr inbounds { i32 }, { i32 }* %t1, i32 0, i32 0
   %t3 = load i32, i32* %t2
-  %t4 = alloca i32
   store i32 %t3, i32* %t4
-  %t5 = alloca i32
   store i32 %arg_x, i32* %t5
   %t6 = load i32, i32* %t5
   %t7 = load i32, i32* %t4
@@ -418,12 +448,12 @@ entry:
 
 define void @list_release_closure(i8* %objp) {
 entry:
+  %t43 = alloca i64
   %t38 = bitcast i8* %objp to { { i8*, i8* }*, i64, i64 }*
   %t39 = getelementptr inbounds { { i8*, i8* }*, i64, i64 }, { { i8*, i8* }*, i64, i64 }* %t38, i32 0, i32 0
   %t40 = load { i8*, i8* }*, { i8*, i8* }** %t39
   %t41 = getelementptr inbounds { { i8*, i8* }*, i64, i64 }, { { i8*, i8* }*, i64, i64 }* %t38, i32 0, i32 1
   %t42 = load i64, i64* %t41
-  %t43 = alloca i64
   store i64 0, i64* %t43
   br label %list_release_cond_2
 list_release_cond_2:
@@ -447,24 +477,24 @@ list_release_end_4:
 
 define i32 @closure_17(i8* %envp, i32 %arg_x) {
 entry:
+  %t105 = alloca { i8*, i8* }
+  %t108 = alloca %Handler
+  %t111 = alloca i8*
+  %t114 = alloca { i8*, i8* }
+  %t115 = alloca i32
   %t102 = bitcast i8* %envp to { { i8*, i8* }, %Handler, i8*, { i8*, i8* } }*
   %t103 = getelementptr inbounds { { i8*, i8* }, %Handler, i8*, { i8*, i8* } }, { { i8*, i8* }, %Handler, i8*, { i8*, i8* } }* %t102, i32 0, i32 0
   %t104 = load { i8*, i8* }, { i8*, i8* }* %t103
-  %t105 = alloca { i8*, i8* }
   store { i8*, i8* } %t104, { i8*, i8* }* %t105
   %t106 = getelementptr inbounds { { i8*, i8* }, %Handler, i8*, { i8*, i8* } }, { { i8*, i8* }, %Handler, i8*, { i8*, i8* } }* %t102, i32 0, i32 1
   %t107 = load %Handler, %Handler* %t106
-  %t108 = alloca %Handler
   store %Handler %t107, %Handler* %t108
   %t109 = getelementptr inbounds { { i8*, i8* }, %Handler, i8*, { i8*, i8* } }, { { i8*, i8* }, %Handler, i8*, { i8*, i8* } }* %t102, i32 0, i32 2
   %t110 = load i8*, i8** %t109
-  %t111 = alloca i8*
   store i8* %t110, i8** %t111
   %t112 = getelementptr inbounds { { i8*, i8* }, %Handler, i8*, { i8*, i8* } }, { { i8*, i8* }, %Handler, i8*, { i8*, i8* } }* %t102, i32 0, i32 3
   %t113 = load { i8*, i8* }, { i8*, i8* }* %t112
-  %t114 = alloca { i8*, i8* }
   store { i8*, i8* } %t113, { i8*, i8* }* %t114
-  %t115 = alloca i32
   store i32 %arg_x, i32* %t115
   %t116 = load { i8*, i8* }, { i8*, i8* }* %t114
   %t117 = load { i8*, i8* }, { i8*, i8* }* %t114

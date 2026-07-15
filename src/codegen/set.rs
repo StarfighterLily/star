@@ -90,7 +90,7 @@ impl Codegen {
         self.line("}");
         self.line("");
         let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
-        self.pending_top.push(fn_ir);
+        self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir));
 
         let reg = self.tmp_name();
         self.line(&format!("  {} = bitcast void (i8*)* @{} to i8*", reg, name));
@@ -388,9 +388,13 @@ impl Codegen {
                 format!("i32 {}", len32)
             }
             SetMethod::Contains => {
-                let (data, len) = self.set_fields(base, elem_ty);
                 let val = self.emit_expr(&args[0]);
                 let needle = self.untag(&val, elem_ty);
+                // Read data/len *after* evaluating `args[0]` -- if it
+                // mutates this same set (e.g. `s.contains(pick(s.remove(k)))`),
+                // a snapshot taken beforehand would be stale (mirrors
+                // `SetMethod::Insert`'s identical fix for `len`/`data0`).
+                let (data, len) = self.set_fields(base, elem_ty);
                 let (found, _) = self.emit_linear_find(&data, &len, elem_ty, &needle);
                 // `needle` is only ever compared against, never stored --
                 // release the borrow `emit_expr` retained on `args[0]`'s
@@ -504,9 +508,15 @@ impl Codegen {
                 format!("i1 {}", inserted)
             }
             SetMethod::Remove => {
-                let (_, data_field, len, len_field, _) = self.set_fields_mut(base, elem_ty);
+                let (_, data_field, _stale_len, len_field, _) = self.set_fields_mut(base, elem_ty);
                 let val = self.emit_expr(&args[0]);
                 let needle = self.untag(&val, elem_ty);
+                // `_stale_len` was captured *before* evaluating `args[0]` --
+                // reload it fresh, same hazard and fix as `SetMethod::Insert`.
+                // `data` is already (correctly) reloaded from `data_field`
+                // below, after `args[0]`.
+                let len = self.tmp_name();
+                self.line(&format!("  {} = load i64, i64* {}", len, len_field));
                 let data = self.tmp_name();
                 self.line(&format!("  {} = load {}*, {}** {}", data, elem_llvm, elem_llvm, data_field));
                 let (found, idx) = self.emit_linear_find(&data, &len, elem_ty, &needle);

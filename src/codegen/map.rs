@@ -114,7 +114,7 @@ impl Codegen {
         self.line("}");
         self.line("");
         let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
-        self.pending_top.push(fn_ir);
+        self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir));
 
         let reg = self.tmp_name();
         self.line(&format!("  {} = bitcast void (i8*)* @{} to i8*", reg, name));
@@ -480,9 +480,13 @@ impl Codegen {
                 format!("i32 {}", len32)
             }
             MapMethod::Contains => {
-                let (keys, _, len) = self.map_fields(base, key_ty, val_ty);
                 let val = self.emit_expr(&args[0]);
                 let needle = self.untag(&val, key_ty);
+                // Read keys/len *after* evaluating `args[0]` -- if it mutates
+                // this same map (e.g. `m.contains(pick(m.remove(k)))`), a
+                // snapshot taken beforehand would be stale (mirrors
+                // `MapMethod::Insert`'s identical fix for `len`/`keys0`).
+                let (keys, _, len) = self.map_fields(base, key_ty, val_ty);
                 let (found, _) = self.emit_linear_find_key(&keys, &len, key_ty, &needle);
                 // `needle` is only ever compared against, never stored --
                 // release the borrow `emit_expr` retained on `args[0]`'s
@@ -498,9 +502,11 @@ impl Codegen {
                     self.err("internal error: Map::get return type is not Option<V>", crate::diagnostics::Span::dummy());
                     return "%undef".into();
                 };
-                let (keys, vals, len) = self.map_fields(base, key_ty, val_ty);
                 let key_val = self.emit_expr(&args[0]);
                 let needle = self.untag(&key_val, key_ty);
+                // Read keys/vals/len *after* evaluating `args[0]` -- same
+                // stale-snapshot hazard and fix as `MapMethod::Contains`.
+                let (keys, vals, len) = self.map_fields(base, key_ty, val_ty);
                 let (found, idx) = self.emit_linear_find_key(&keys, &len, key_ty, &needle);
                 // Same reasoning as `MapMethod::Contains` above: `needle` is
                 // only ever compared against here, never stored.
@@ -544,9 +550,11 @@ impl Codegen {
                     self.err("internal error: Map::remove return type is not Option<V>", crate::diagnostics::Span::dummy());
                     return "%undef".into();
                 };
-                let (keys, _, vals, _, len, len_field, _) = self.map_fields_mut(base, key_ty, val_ty);
                 let key_val = self.emit_expr(&args[0]);
                 let needle = self.untag(&key_val, key_ty);
+                // Read keys/vals/len *after* evaluating `args[0]` -- same
+                // stale-snapshot hazard and fix as `MapMethod::Contains`.
+                let (keys, _, vals, _, len, len_field, _) = self.map_fields_mut(base, key_ty, val_ty);
                 let (found, idx) = self.emit_linear_find_key(&keys, &len, key_ty, &needle);
                 // Same reasoning as `MapMethod::Contains` above: `needle` is
                 // only ever compared against here, never stored (the key

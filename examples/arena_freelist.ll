@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,15 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -34,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -116,6 +146,14 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  %t18 = alloca %Entity
+  %t25 = alloca %GenRef
+  %t31 = alloca %GenRef
+  %t63 = alloca %Entity
+  %t70 = alloca %GenRef
+  %t76 = alloca %GenRef
+  %t80 = alloca %Entity
+  %t97 = alloca %Entity
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = load %Entity*, %Entity** @arena.Entities.data
@@ -154,7 +192,6 @@ spawn_grow_ok_6:
   br label %spawn_store_4
 spawn_store_4:
   %t17 = phi i64 [ %t12, %spawn_reuse_2 ], [ %t13, %spawn_grow_ok_6 ]
-  %t18 = alloca %Entity
   %t19 = getelementptr inbounds %Entity, %Entity* %t18, i32 0, i32 0
   store i32 100, i32* %t19
   %t20 = load %Entity, %Entity* %t18
@@ -166,7 +203,6 @@ spawn_store_4:
   store i32 %t24, i32* %t22
   br label %spawn_end_5
 spawn_end_5:
-  %t25 = alloca %GenRef
   %t26 = sext i32 0 to i64
   %t27 = icmp ult i64 %t26, 1024
   br i1 %t27, label %genref_create_ok_8, label %genref_create_oob_9
@@ -178,7 +214,6 @@ genref_create_oob_9:
   br label %genref_create_end_10
 genref_create_end_10:
   %t30 = phi i32 [ %t29, %genref_create_ok_8 ], [ 0, %genref_create_oob_9 ]
-  %t31 = alloca %GenRef
   %t32 = getelementptr inbounds %GenRef, %GenRef* %t31, i32 0, i32 0
   store i32 0, i32* %t32
   %t33 = getelementptr inbounds %GenRef, %GenRef* %t31, i32 0, i32 1
@@ -240,7 +275,6 @@ spawn_grow_ok_20:
   br label %spawn_store_18
 spawn_store_18:
   %t62 = phi i64 [ %t57, %spawn_reuse_16 ], [ %t58, %spawn_grow_ok_20 ]
-  %t63 = alloca %Entity
   %t64 = getelementptr inbounds %Entity, %Entity* %t63, i32 0, i32 0
   store i32 200, i32* %t64
   %t65 = load %Entity, %Entity* %t63
@@ -252,7 +286,6 @@ spawn_store_18:
   store i32 %t69, i32* %t67
   br label %spawn_end_19
 spawn_end_19:
-  %t70 = alloca %GenRef
   %t71 = sext i32 0 to i64
   %t72 = icmp ult i64 %t71, 1024
   br i1 %t72, label %genref_create_ok_22, label %genref_create_oob_23
@@ -264,14 +297,12 @@ genref_create_oob_23:
   br label %genref_create_end_24
 genref_create_end_24:
   %t75 = phi i32 [ %t74, %genref_create_ok_22 ], [ 0, %genref_create_oob_23 ]
-  %t76 = alloca %GenRef
   %t77 = getelementptr inbounds %GenRef, %GenRef* %t76, i32 0, i32 0
   store i32 0, i32* %t77
   %t78 = getelementptr inbounds %GenRef, %GenRef* %t76, i32 0, i32 1
   store i32 %t75, i32* %t78
   %t79 = load %GenRef, %GenRef* %t76
   store %GenRef %t79, %GenRef* %t70
-  %t80 = alloca %Entity
   %t81 = getelementptr inbounds %GenRef, %GenRef* %t25, i32 0, i32 0
   %t82 = load i32, i32* %t81
   %t83 = getelementptr inbounds %GenRef, %GenRef* %t25, i32 0, i32 1
@@ -297,7 +328,6 @@ genref_stale_27:
 genref_end_28:
   %t96 = phi %Entity [ %t95, %genref_ok_26 ], [ zeroinitializer, %genref_stale_27 ]
   store %Entity %t96, %Entity* %t80
-  %t97 = alloca %Entity
   %t98 = getelementptr inbounds %GenRef, %GenRef* %t70, i32 0, i32 0
   %t99 = load i32, i32* %t98
   %t100 = getelementptr inbounds %GenRef, %GenRef* %t70, i32 0, i32 1

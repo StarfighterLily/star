@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,7 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
 declare i32 @WSAStartup(i16, i8*)
 declare i8* @socket(i32, i32, i32)
 declare i32 @connect(i8*, i8*, i32)
@@ -42,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -124,35 +146,35 @@ entry:
   store %Result__i32__str %r, %Result__i32__str* %t0
   br label %match_scrutinee_2
 match_scrutinee_2:
-  %t4 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t0, i32 0, i32 0
-  %t5 = load i32, i32* %t4
-  %t3 = icmp eq i32 %t5, 0
-  br i1 %t3, label %match_then_0, label %match_next_0
-match_then_0:
-  %t6 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t0, i32 0, i32 1
-  %t7 = bitcast [1 x i64]* %t6 to { i32 }*
-  %t8 = getelementptr inbounds { i32 }, { i32 }* %t7, i32 0, i32 0
-  %t9 = load i32, i32* %t8
-  %t10 = getelementptr inbounds [8 x i8], [8 x i8]* @.str.0, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t10, i32 %t9)
+  %t6 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t0, i32 0, i32 0
+  %t7 = load i32, i32* %t6
+  %t5 = icmp eq i32 %t7, 0
+  br i1 %t5, label %match_then_0_3, label %match_next_0_4
+match_then_0_3:
+  %t8 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t0, i32 0, i32 1
+  %t9 = bitcast [1 x i64]* %t8 to { i32 }*
+  %t10 = getelementptr inbounds { i32 }, { i32 }* %t9, i32 0, i32 0
+  %t11 = load i32, i32* %t10
+  %t12 = getelementptr inbounds [8 x i8], [8 x i8]* @.str.0, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t12, i32 %t11)
   br label %match_end_1
-match_next_0:
-  %t12 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t0, i32 0, i32 0
-  %t13 = load i32, i32* %t12
-  %t11 = icmp eq i32 %t13, 1
-  br i1 %t11, label %match_then_1, label %match_next_1
-match_then_1:
-  %t14 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t0, i32 0, i32 1
-  %t15 = bitcast [1 x i64]* %t14 to { i8* }*
-  %t16 = getelementptr inbounds { i8* }, { i8* }* %t15, i32 0, i32 0
-  %t17 = load i8*, i8** %t16
-  %t18 = load i8*, i8** %t16
-  call void @star_rc_retain(i8* %t18)
-  call void @star_rc_release(i8* %t17)
-  %t19 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.1, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t19, i8* %t17)
+match_next_0_4:
+  %t16 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t0, i32 0, i32 0
+  %t17 = load i32, i32* %t16
+  %t15 = icmp eq i32 %t17, 1
+  br i1 %t15, label %match_then_1_13, label %match_next_1_14
+match_then_1_13:
+  %t18 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t0, i32 0, i32 1
+  %t19 = bitcast [1 x i64]* %t18 to { i8* }*
+  %t20 = getelementptr inbounds { i8* }, { i8* }* %t19, i32 0, i32 0
+  %t21 = load i8*, i8** %t20
+  %t22 = load i8*, i8** %t20
+  call void @star_rc_retain(i8* %t22)
+  call void @star_rc_release(i8* %t21)
+  %t23 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.1, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t23, i8* %t21)
   br label %match_end_1
-match_next_1:
+match_next_1_14:
   br label %match_end_1
 match_end_1:
   ret void
@@ -160,10 +182,21 @@ match_end_1:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  store i32 %.argc, i32* @star.argc
-  store i8** %.argv, i8*** @star.argv
   %t0 = alloca %Box__i32
   %t1 = alloca %Box__i32
+  %t7 = alloca %Box__Box__i32
+  %t8 = alloca %Box__Box__i32
+  %t9 = alloca %Box__i32
+  %t18 = alloca %Option__i32
+  %t19 = alloca %Option__i32
+  %t25 = alloca %Option__i32
+  %t26 = alloca %Option__i32
+  %t36 = alloca %Result__i32__str
+  %t37 = alloca %Result__i32__str
+  %t43 = alloca %Result__i32__str
+  %t44 = alloca %Result__i32__str
+  store i32 %.argc, i32* @star.argc
+  store i8** %.argv, i8*** @star.argv
   %t2 = getelementptr inbounds %Box__i32, %Box__i32* %t1, i32 0, i32 0
   store i32 42, i32* %t2
   %t3 = load %Box__i32, %Box__i32* %t1
@@ -172,9 +205,6 @@ entry:
   %t5 = load i32, i32* %t4
   %t6 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.2, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t6, i32 %t5)
-  %t7 = alloca %Box__Box__i32
-  %t8 = alloca %Box__Box__i32
-  %t9 = alloca %Box__i32
   %t10 = getelementptr inbounds %Box__i32, %Box__i32* %t9, i32 0, i32 0
   store i32 99, i32* %t10
   %t11 = load %Box__i32, %Box__i32* %t9
@@ -187,8 +217,6 @@ entry:
   %t16 = load i32, i32* %t15
   %t17 = getelementptr inbounds [16 x i8], [16 x i8]* @.str.3, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t17, i32 %t16)
-  %t18 = alloca %Option__i32
-  %t19 = alloca %Option__i32
   %t20 = getelementptr inbounds %Option__i32, %Option__i32* %t19, i32 0, i32 0
   store i32 1, i32* %t20
   %t21 = getelementptr inbounds %Option__i32, %Option__i32* %t19, i32 0, i32 1
@@ -197,8 +225,6 @@ entry:
   store i32 5, i32* %t23
   %t24 = load %Option__i32, %Option__i32* %t19
   store %Option__i32 %t24, %Option__i32* %t18
-  %t25 = alloca %Option__i32
-  %t26 = alloca %Option__i32
   %t27 = getelementptr inbounds %Option__i32, %Option__i32* %t26, i32 0, i32 0
   store i32 0, i32* %t27
   %t28 = load %Option__i32, %Option__i32* %t26
@@ -212,8 +238,6 @@ entry:
   %t34 = call i32 @unwrap_or__i32(%Option__i32 %t32, i32 %t33)
   %t35 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.5, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t35, i32 %t34)
-  %t36 = alloca %Result__i32__str
-  %t37 = alloca %Result__i32__str
   %t38 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t37, i32 0, i32 0
   store i32 0, i32* %t38
   %t39 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t37, i32 0, i32 1
@@ -222,8 +246,6 @@ entry:
   store i32 10, i32* %t41
   %t42 = load %Result__i32__str, %Result__i32__str* %t37
   store %Result__i32__str %t42, %Result__i32__str* %t36
-  %t43 = alloca %Result__i32__str
-  %t44 = alloca %Result__i32__str
   %t45 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t44, i32 0, i32 0
   store i32 1, i32* %t45
   %t46 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t44, i32 0, i32 1
@@ -250,30 +272,30 @@ entry:
 define i32 @unwrap_or__i32(%Option__i32 %o, i32 %default) {
 entry:
   %t0 = alloca %Option__i32
-  store %Option__i32 %o, %Option__i32* %t0
   %t1 = alloca i32
+  store %Option__i32 %o, %Option__i32* %t0
   store i32 %default, i32* %t1
   br label %match_scrutinee_3
 match_scrutinee_3:
-  %t5 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 0
-  %t6 = load i32, i32* %t5
-  %t4 = icmp eq i32 %t6, 1
-  br i1 %t4, label %match_then_0, label %match_next_0
-match_then_0:
-  %t7 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 1
-  %t8 = bitcast [1 x i64]* %t7 to { i32 }*
-  %t9 = getelementptr inbounds { i32 }, { i32 }* %t8, i32 0, i32 0
-  %t10 = load i32, i32* %t9
-  ret i32 %t10
-match_next_0:
-  %t12 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 0
-  %t13 = load i32, i32* %t12
-  %t11 = icmp eq i32 %t13, 0
-  br i1 %t11, label %match_then_1, label %match_next_1
-match_then_1:
-  %t14 = load i32, i32* %t1
-  ret i32 %t14
-match_next_1:
+  %t7 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 0
+  %t8 = load i32, i32* %t7
+  %t6 = icmp eq i32 %t8, 1
+  br i1 %t6, label %match_then_0_4, label %match_next_0_5
+match_then_0_4:
+  %t9 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 1
+  %t10 = bitcast [1 x i64]* %t9 to { i32 }*
+  %t11 = getelementptr inbounds { i32 }, { i32 }* %t10, i32 0, i32 0
+  %t12 = load i32, i32* %t11
+  ret i32 %t12
+match_next_0_5:
+  %t16 = getelementptr inbounds %Option__i32, %Option__i32* %t0, i32 0, i32 0
+  %t17 = load i32, i32* %t16
+  %t15 = icmp eq i32 %t17, 0
+  br i1 %t15, label %match_then_1_13, label %match_next_1_14
+match_then_1_13:
+  %t18 = load i32, i32* %t1
+  ret i32 %t18
+match_next_1_14:
   br label %match_end_2
 match_end_2:
   unreachable

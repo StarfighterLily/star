@@ -185,7 +185,7 @@ impl Codegen {
         self.line("");
 
         let pool_ir = std::mem::replace(&mut self.ir, saved_ir);
-        self.pending_top.push(pool_ir);
+        self.pending_top.push(Self::hoist_allocas_to_entry(&pool_ir));
     }
 
     /// Dispatch one `par`/`swarm` statement's already-built per-callsite

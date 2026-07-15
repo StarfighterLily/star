@@ -169,7 +169,7 @@ impl Codegen {
         self.line("");
 
         let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
-        self.pending_top.push(fn_ir);
+        self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir));
         self.symbols = saved_symbols;
         self.owned_stack = saved_owned_stack;
         self.in_frame = saved_in_frame;
@@ -219,7 +219,7 @@ impl Codegen {
                 self.line("}");
                 self.line("");
                 let fn_ir2 = std::mem::replace(&mut self.ir, saved_ir2);
-                self.pending_top.push(fn_ir2);
+                self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir2));
                 let reg = self.tmp_name();
                 self.line(&format!("  {} = bitcast void (i8*)* @{} to i8*", reg, release_fn_name));
                 reg

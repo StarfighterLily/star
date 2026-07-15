@@ -144,6 +144,12 @@ impl Codegen {
         self.owned_stack.clear();
         self.push_scope();
         self.tmp = 0;
+        // Isolate this function's own IR text so `hoist_allocas_to_entry`
+        // (see its doc comment) can move every `alloca` it emits below --
+        // wherever in the body it ends up, e.g. inside a loop -- up to the
+        // entry block, rather than each one costing real stack space on
+        // every pass through the block containing it.
+        let fn_start = self.ir.len();
 
         // `main` is the process's real C entry point once linked by clang: a
         // hosted `int main(void)` is a hard ABI requirement, since the OS/CRT
@@ -246,6 +252,9 @@ impl Codegen {
         }
         self.line("}");
         self.line("");
+
+        let fn_ir = self.ir.split_off(fn_start);
+        self.ir.push_str(&Self::hoist_allocas_to_entry(&fn_ir));
     }
 
     pub(super) fn emit_stmt(&mut self, stmt: &TypedStmt) {
@@ -326,7 +335,21 @@ impl Codegen {
                     self.line("  ret void");
                 }
             }
-            TypedStmt::Expr(e) => { self.emit_expr(e); }
+            TypedStmt::Expr(e) => {
+                // A bare-statement expression's result is never bound,
+                // returned, or stored anywhere -- but `emit_expr` may still
+                // have handed back an owned RC reference (a fresh
+                // construction like `list.pop()`/`concat(...)`, or a retain
+                // on a read of an existing slot -- see `rc.rs`'s ownership
+                // rule). With nothing left to hold that reference, it must
+                // be released here or it leaks one heap block per call.
+                let val = self.emit_expr(e);
+                let ty = self.expr_ty(e);
+                if self.contains_rc(&ty) {
+                    let clean = self.untag(&val, &ty);
+                    self.emit_release_bare(&clean, &ty);
+                }
+            }
             TypedStmt::If { cond, then_block, else_block, .. } => {
                 // Each arm may itself end in an unconditional `return` (e.g.
                 // the state-machine chain a `sequence` desugars to); a `ret`

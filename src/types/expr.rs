@@ -1947,7 +1947,12 @@ impl Checker {
         match &arm.pattern {
             Pattern::Int(v) => {
                 let scrutinee_ty = scrutinee_expr.clone().into_ty();
-                if !matches!(scrutinee_ty, Ty::Int) {
+                // Any integer-shaped scrutinee (the original `i32` plus every
+                // explicit-width type -- `Ty::int_shape`), not just `Ty::Int`
+                // -- codegen (`Codegen::emit_expr`'s `TypedExpr::Match` arm)
+                // lowers this against the scrutinee's *actual* LLVM width/
+                // signedness, mirroring `emit_sized_int_binop`.
+                if scrutinee_ty.int_shape().is_none() {
                     self.error(format!("pattern `{}` does not match scrutinee type `{:?}`", v, scrutinee_ty), arm.span);
                 }
             }
@@ -1959,9 +1964,10 @@ impl Checker {
             }
             Pattern::Compare(..) => {
                 let scrutinee_ty = scrutinee_expr.clone().into_ty();
-                if !matches!(scrutinee_ty, Ty::Int) {
+                // Same widening as `Pattern::Int` above.
+                if scrutinee_ty.int_shape().is_none() {
                     self.error(
-                        format!("comparison pattern requires an `i32` scrutinee, found `{:?}`", scrutinee_ty),
+                        format!("comparison pattern requires an integer scrutinee, found `{:?}`", scrutinee_ty),
                         arm.span,
                     );
                 }

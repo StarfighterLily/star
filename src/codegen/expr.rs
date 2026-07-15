@@ -7,6 +7,30 @@ use crate::types::*;
 
 use super::{format_f32_literal, Codegen};
 
+/// Render an `i64`-held match-pattern literal (`Pattern::Int`'s payload, or
+/// `Pattern::Compare`'s folded rhs) as a textual LLVM integer constant valid
+/// for an `iN` operand of the given `width` -- LLVM's IR parser requires an
+/// integer literal to be representable in the operand's own bit width, so a
+/// pattern like `200 -> ...` against a `u8` scrutinee (`200` doesn't fit
+/// signed `i8`'s `-128..=127`) would otherwise emit IR `clang` rejects with
+/// an opaque "constant expression too wide" error instead of running.
+/// Truncates to `width` bits, then renders through whichever of the two
+/// representations (plain non-negative, or negative via the signed
+/// interpretation) actually fits that bit width's literal syntax.
+fn int_pattern_literal(v: i64, width: u32) -> String {
+    if width >= 64 {
+        return v.to_string();
+    }
+    let mask: i64 = (1i64 << width) - 1;
+    let truncated = v & mask;
+    let sign_bit = 1i64 << (width - 1);
+    if truncated & sign_bit != 0 {
+        (truncated - (1i64 << width)).to_string()
+    } else {
+        truncated.to_string()
+    }
+}
+
 impl Codegen {
     /// Read a GLSL-style swizzle access (`.x`, `.xyz`, `.zyx`, ...) off a
     /// vector base, producing a scalar `float` (single component) or a
@@ -558,8 +582,16 @@ impl Codegen {
                         // shape as `Compare`'s `Eq` case, just without an rhs
                         // expression to evaluate first.
                         Pattern::Int(v) => {
+                            // `scrutinee_ty` may be any integer-shaped type,
+                            // not just the original `i32` `Ty::Int` (see
+                            // `Checker::check_match_arm`'s widened
+                            // `int_shape()` check) -- compare against its
+                            // real LLVM width, not a hardcoded `i32`.
+                            let (width, _) = scrutinee_ty.int_shape().unwrap_or((32, true));
+                            let ity = format!("i{}", width);
+                            let lit = int_pattern_literal(*v, width);
                             let cmp = self.tmp_name();
-                            self.line(&format!("  {} = icmp eq i32 {}, {}", cmp, scrut_val, v));
+                            self.line(&format!("  {} = icmp eq {} {}, {}", cmp, ity, scrut_val, lit));
                             self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, then_label, next_label));
                             self.open_block(&then_label);
                             self.push_scope();
@@ -597,8 +629,13 @@ impl Codegen {
                             current_label = next_label.clone();
                         }
                         Pattern::Compare(op, rhs) => {
-                            let rhs_val = match rhs.as_ref() {
-                                Expr::Int(v, _) => format!("i32 {}", v),
+                            // Same widening as `Pattern::Int` above: compare
+                            // against the scrutinee's real integer width/
+                            // signedness, not a hardcoded signed `i32`.
+                            let (width, signed) = scrutinee_ty.int_shape().unwrap_or((32, true));
+                            let ity = format!("i{}", width);
+                            let rhs_i64 = match rhs.as_ref() {
+                                Expr::Int(v, _) => *v,
                                 // A negative literal (`<= -5`) parses as a
                                 // unary negation of an int literal, not an
                                 // `Expr::Int` directly (the lexer/parser have
@@ -607,23 +644,23 @@ impl Codegen {
                                 // rather than falling into the "unsupported"
                                 // error below for perfectly ordinary syntax.
                                 Expr::Unary { op: UnOp::Neg, operand, .. } => match operand.as_ref() {
-                                    Expr::Int(v, _) => format!("i32 {}", -v),
-                                    _ => { self.err("unsupported match rhs expression", Span::dummy()); "i32 0".into() }
+                                    Expr::Int(v, _) => -v,
+                                    _ => { self.err("unsupported match rhs expression", Span::dummy()); 0 }
                                 },
-                                _ => { self.err("unsupported match rhs expression", Span::dummy()); "i32 0".into() }
+                                _ => { self.err("unsupported match rhs expression", Span::dummy()); 0 }
                             };
+                            let rhs_val_clean = int_pattern_literal(rhs_i64, width);
                             let cmp = self.tmp_name();
                             let llvm_op = match op {
-                                BinOp::Le => "icmp sle",
-                                BinOp::Ge => "icmp sge",
-                                BinOp::Lt => "icmp slt",
-                                BinOp::Gt => "icmp sgt",
+                                BinOp::Le => if signed { "icmp sle" } else { "icmp ule" },
+                                BinOp::Ge => if signed { "icmp sge" } else { "icmp uge" },
+                                BinOp::Lt => if signed { "icmp slt" } else { "icmp ult" },
+                                BinOp::Gt => if signed { "icmp sgt" } else { "icmp ugt" },
                                 BinOp::Eq => "icmp eq",
                                 BinOp::Ne => "icmp ne",
                                 _ => "icmp eq",
                             };
-                            let rhs_val_clean = rhs_val.strip_prefix("i32 ").unwrap_or(&rhs_val);
-                            self.line(&format!("  {} = {} i32 {}, {}", cmp, llvm_op, scrut_val, rhs_val_clean));
+                            self.line(&format!("  {} = {} {} {}, {}", cmp, llvm_op, ity, scrut_val, rhs_val_clean));
                             self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, then_label, next_label));
                             self.open_block(&then_label);
                             self.push_scope();

@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,15 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -34,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -133,8 +163,8 @@ entry:
 define i32 @geo__dot(%geo__Point %a, %geo__Point %b) {
 entry:
   %t0 = alloca %geo__Point
-  store %geo__Point %a, %geo__Point* %t0
   %t1 = alloca %geo__Point
+  store %geo__Point %a, %geo__Point* %t0
   store %geo__Point %b, %geo__Point* %t1
   %t2 = getelementptr inbounds %geo__Point, %geo__Point* %t0, i32 0, i32 0
   %t3 = load i32, i32* %t2
@@ -156,34 +186,34 @@ entry:
   store %geo__Shape %s, %geo__Shape* %t0
   br label %match_scrutinee_2
 match_scrutinee_2:
-  %t4 = getelementptr inbounds %geo__Shape, %geo__Shape* %t0, i32 0, i32 0
-  %t5 = load i32, i32* %t4
-  %t3 = icmp eq i32 %t5, 0
-  br i1 %t3, label %match_then_0, label %match_next_0
-match_then_0:
-  %t6 = getelementptr inbounds %geo__Shape, %geo__Shape* %t0, i32 0, i32 1
-  %t7 = bitcast [1 x i64]* %t6 to { i32 }*
-  %t8 = getelementptr inbounds { i32 }, { i32 }* %t7, i32 0, i32 0
-  %t9 = load i32, i32* %t8
-  %t10 = mul i32 3, %t9
-  %t11 = load i32, i32* %t8
-  %t12 = mul i32 %t10, %t11
-  ret i32 %t12
-match_next_0:
-  %t14 = getelementptr inbounds %geo__Shape, %geo__Shape* %t0, i32 0, i32 0
-  %t15 = load i32, i32* %t14
-  %t13 = icmp eq i32 %t15, 1
-  br i1 %t13, label %match_then_1, label %match_next_1
-match_then_1:
-  %t16 = getelementptr inbounds %geo__Shape, %geo__Shape* %t0, i32 0, i32 1
-  %t17 = bitcast [1 x i64]* %t16 to { i32, i32 }*
-  %t18 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t17, i32 0, i32 0
-  %t19 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t17, i32 0, i32 1
-  %t20 = load i32, i32* %t18
-  %t21 = load i32, i32* %t19
-  %t22 = mul i32 %t20, %t21
-  ret i32 %t22
-match_next_1:
+  %t6 = getelementptr inbounds %geo__Shape, %geo__Shape* %t0, i32 0, i32 0
+  %t7 = load i32, i32* %t6
+  %t5 = icmp eq i32 %t7, 0
+  br i1 %t5, label %match_then_0_3, label %match_next_0_4
+match_then_0_3:
+  %t8 = getelementptr inbounds %geo__Shape, %geo__Shape* %t0, i32 0, i32 1
+  %t9 = bitcast [1 x i64]* %t8 to { i32 }*
+  %t10 = getelementptr inbounds { i32 }, { i32 }* %t9, i32 0, i32 0
+  %t11 = load i32, i32* %t10
+  %t12 = mul i32 3, %t11
+  %t13 = load i32, i32* %t10
+  %t14 = mul i32 %t12, %t13
+  ret i32 %t14
+match_next_0_4:
+  %t18 = getelementptr inbounds %geo__Shape, %geo__Shape* %t0, i32 0, i32 0
+  %t19 = load i32, i32* %t18
+  %t17 = icmp eq i32 %t19, 1
+  br i1 %t17, label %match_then_1_15, label %match_next_1_16
+match_then_1_15:
+  %t20 = getelementptr inbounds %geo__Shape, %geo__Shape* %t0, i32 0, i32 1
+  %t21 = bitcast [1 x i64]* %t20 to { i32, i32 }*
+  %t22 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t21, i32 0, i32 0
+  %t23 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t21, i32 0, i32 1
+  %t24 = load i32, i32* %t22
+  %t25 = load i32, i32* %t23
+  %t26 = mul i32 %t24, %t25
+  ret i32 %t26
+match_next_1_16:
   br label %match_end_1
 match_end_1:
   unreachable
@@ -191,10 +221,13 @@ match_end_1:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  store i32 %.argc, i32* @star.argc
-  store i8** %.argv, i8*** @star.argv
   %t0 = alloca %geo__Point
   %t1 = alloca %geo__Point
+  %t6 = alloca %geo__Point
+  %t12 = alloca %geo__Shape
+  %t20 = alloca %geo__Shape
+  store i32 %.argc, i32* @star.argc
+  store i8** %.argv, i8*** @star.argv
   %t2 = getelementptr inbounds %geo__Point, %geo__Point* %t1, i32 0, i32 0
   store i32 3, i32* %t2
   %t3 = getelementptr inbounds %geo__Point, %geo__Point* %t1, i32 0, i32 1
@@ -202,7 +235,6 @@ entry:
   %t4 = load %geo__Point, %geo__Point* %t1
   store %geo__Point %t4, %geo__Point* %t0
   %t5 = load %geo__Point, %geo__Point* %t0
-  %t6 = alloca %geo__Point
   %t7 = getelementptr inbounds %geo__Point, %geo__Point* %t6, i32 0, i32 0
   store i32 1, i32* %t7
   %t8 = getelementptr inbounds %geo__Point, %geo__Point* %t6, i32 0, i32 1
@@ -211,7 +243,6 @@ entry:
   %t10 = call i32 @geo__dot(%geo__Point %t5, %geo__Point %t9)
   %t11 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.0, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t11, i32 %t10)
-  %t12 = alloca %geo__Shape
   %t13 = getelementptr inbounds %geo__Shape, %geo__Shape* %t12, i32 0, i32 0
   store i32 0, i32* %t13
   %t14 = getelementptr inbounds %geo__Shape, %geo__Shape* %t12, i32 0, i32 1
@@ -222,7 +253,6 @@ entry:
   %t18 = call i32 @geo__area(%geo__Shape %t17)
   %t19 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.1, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t19, i32 %t18)
-  %t20 = alloca %geo__Shape
   %t21 = getelementptr inbounds %geo__Shape, %geo__Shape* %t20, i32 0, i32 0
   store i32 1, i32* %t21
   %t22 = getelementptr inbounds %geo__Shape, %geo__Shape* %t20, i32 0, i32 1

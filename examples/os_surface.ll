@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,15 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -34,6 +43,27 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -108,16 +138,20 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
+  %t0 = alloca i8*
+  %t7 = alloca i64
+  %t57 = alloca i32
+  %t80 = alloca i8*
+  %t98 = alloca i1
+  %t108 = alloca i8*
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t0 = alloca i8*
   %t1 = load i32, i32* @star.argc
   %t2 = sext i32 %t1 to i64
   %t3 = load i8**, i8*** @star.argv
   %t4 = mul i64 %t2, 8
   %t5 = call i8* @malloc(i64 %t4)
   %t6 = bitcast i8* %t5 to i8**
-  %t7 = alloca i64
   store i64 0, i64* %t7
   br label %args_cond_0
 args_cond_0:
@@ -182,7 +216,6 @@ list_read_end_11:
   %t54 = phi i8** [ null, %list_read_null_9 ], [ %t51, %list_read_real_10 ]
   %t55 = phi i64 [ 0, %list_read_null_9 ], [ %t53, %list_read_real_10 ]
   %t56 = trunc i64 %t55 to i32
-  %t57 = alloca i32
   store i32 0, i32* %t57
   br label %for_cond_12
 for_cond_12:
@@ -230,7 +263,6 @@ for_step_14:
   store i32 %t79, i32* %t57
   br label %for_cond_12
 for_end_15:
-  %t80 = alloca i8*
   %t81 = getelementptr inbounds { i64, i8*, [41 x i8] }, { i64, i8*, [41 x i8] }* @.str.2, i64 0, i32 2, i64 0
   %t82 = call i8* @getenv(i8* %t81)
   %t83 = icmp eq i8* %t82, null
@@ -260,60 +292,47 @@ env_get_end_24:
   %t96 = select i1 %t93, i8* %t94, i8* %t95
   %t97 = getelementptr inbounds [26 x i8], [26 x i8]* @.str.5, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t97, i8* %t96)
-  %t98 = alloca i1
   %t99 = getelementptr inbounds { i64, i8*, [28 x i8] }, { i64, i8*, [28 x i8] }* @.str.6, i64 0, i32 2, i64 0
   %t100 = getelementptr inbounds { i64, i8*, [16 x i8] }, { i64, i8*, [16 x i8] }* @.str.7, i64 0, i32 2, i64 0
-  %t101 = call i32 @strlen(i8* %t99)
-  %t102 = call i32 @strlen(i8* %t100)
-  %t103 = add i32 %t101, %t102
-  %t104 = add i32 %t103, 2
-  %t105 = sext i32 %t104 to i64
-  %t106 = call i8* @malloc(i64 %t105)
-  call i8* @strcpy(i8* %t106, i8* %t99)
-  %t107 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.8, i64 0, i64 0
-  call i8* @strcat(i8* %t106, i8* %t107)
-  call i8* @strcat(i8* %t106, i8* %t100)
-  %t108 = call i32 @_putenv(i8* %t106)
-  call void @free(i8* %t106)
-  %t109 = icmp eq i32 %t108, 0
-  store i1 %t109, i1* %t98
-  %t110 = load i1, i1* %t98
-  %t111 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.9, i64 0, i64 0
-  %t112 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.10, i64 0, i64 0
-  %t113 = select i1 %t110, i8* %t111, i8* %t112
-  %t114 = getelementptr inbounds [23 x i8], [23 x i8]* @.str.11, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t114, i8* %t113)
-  %t115 = alloca i8*
-  %t116 = getelementptr inbounds { i64, i8*, [28 x i8] }, { i64, i8*, [28 x i8] }* @.str.12, i64 0, i32 2, i64 0
-  %t117 = call i8* @getenv(i8* %t116)
-  %t118 = icmp eq i8* %t117, null
-  br i1 %t118, label %env_get_null_25, label %env_get_real_26
+  %t101 = call i32 @_putenv_s(i8* %t99, i8* %t100)
+  %t102 = icmp eq i32 %t101, 0
+  store i1 %t102, i1* %t98
+  %t103 = load i1, i1* %t98
+  %t104 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.8, i64 0, i64 0
+  %t105 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.9, i64 0, i64 0
+  %t106 = select i1 %t103, i8* %t104, i8* %t105
+  %t107 = getelementptr inbounds [23 x i8], [23 x i8]* @.str.10, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t107, i8* %t106)
+  %t109 = getelementptr inbounds { i64, i8*, [28 x i8] }, { i64, i8*, [28 x i8] }* @.str.11, i64 0, i32 2, i64 0
+  %t110 = call i8* @getenv(i8* %t109)
+  %t111 = icmp eq i8* %t110, null
+  br i1 %t111, label %env_get_null_25, label %env_get_real_26
 env_get_null_25:
-  %t119 = call i8* @star_rc_alloc(i64 1, i8* null)
-  store i8 0, i8* %t119
+  %t112 = call i8* @star_rc_alloc(i64 1, i8* null)
+  store i8 0, i8* %t112
   br label %env_get_end_27
 env_get_real_26:
-  %t120 = call i32 @strlen(i8* %t117)
-  %t121 = add i32 %t120, 1
-  %t122 = sext i32 %t121 to i64
-  %t123 = call i8* @star_rc_alloc(i64 %t122, i8* null)
-  call i8* @strcpy(i8* %t123, i8* %t117)
+  %t113 = call i32 @strlen(i8* %t110)
+  %t114 = add i32 %t113, 1
+  %t115 = sext i32 %t114 to i64
+  %t116 = call i8* @star_rc_alloc(i64 %t115, i8* null)
+  call i8* @strcpy(i8* %t116, i8* %t110)
   br label %env_get_end_27
 env_get_end_27:
-  %t124 = phi i8* [ %t119, %env_get_null_25 ], [ %t123, %env_get_real_26 ]
-  store i8* %t124, i8** %t115
-  %t125 = load i8*, i8** %t115
-  %t126 = load i8*, i8** %t115
-  call void @star_rc_retain(i8* %t126)
-  call void @star_rc_release(i8* %t125)
-  %t127 = getelementptr inbounds [16 x i8], [16 x i8]* @.str.13, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t127, i8* %t125)
-  %t128 = load i8*, i8** %t115
-  call void @star_rc_release(i8* %t128)
-  %t129 = load i8*, i8** %t80
-  call void @star_rc_release(i8* %t129)
-  %t130 = load i8*, i8** %t0
-  call void @star_rc_release(i8* %t130)
+  %t117 = phi i8* [ %t112, %env_get_null_25 ], [ %t116, %env_get_real_26 ]
+  store i8* %t117, i8** %t108
+  %t118 = load i8*, i8** %t108
+  %t119 = load i8*, i8** %t108
+  call void @star_rc_retain(i8* %t119)
+  call void @star_rc_release(i8* %t118)
+  %t120 = getelementptr inbounds [16 x i8], [16 x i8]* @.str.12, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t120, i8* %t118)
+  %t121 = load i8*, i8** %t108
+  call void @star_rc_release(i8* %t121)
+  %t122 = load i8*, i8** %t80
+  call void @star_rc_release(i8* %t122)
+  %t123 = load i8*, i8** %t0
+  call void @star_rc_release(i8* %t123)
   ret i32 0
 }
 
@@ -321,12 +340,12 @@ env_get_end_27:
 ; par/swarm worker functions
 define void @list_release_str(i8* %objp) {
 entry:
+  %t23 = alloca i64
   %t18 = bitcast i8* %objp to { i8**, i64, i64 }*
   %t19 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t18, i32 0, i32 0
   %t20 = load i8**, i8*** %t19
   %t21 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t18, i32 0, i32 1
   %t22 = load i64, i64* %t21
-  %t23 = alloca i64
   store i64 0, i64* %t23
   br label %list_release_cond_3
 list_release_cond_3:
@@ -357,9 +376,8 @@ list_release_end_5:
 @.str.5 = private unnamed_addr constant [26 x i8] c"missing var is empty: %s\0A\00"
 @.str.6 = private unnamed_addr constant { i64, i8*, [28 x i8] } { i64 -1, i8* null, [28 x i8] c"STAR_OS_SURFACE_EXAMPLE_VAR\00" }
 @.str.7 = private unnamed_addr constant { i64, i8*, [16 x i8] } { i64 -1, i8* null, [16 x i8] c"hello from star\00" }
-@.str.8 = private unnamed_addr constant [2 x i8] c"=\00"
-@.str.9 = private unnamed_addr constant [5 x i8] c"true\00"
-@.str.10 = private unnamed_addr constant [6 x i8] c"false\00"
-@.str.11 = private unnamed_addr constant [23 x i8] c"env_set succeeded: %s\0A\00"
-@.str.12 = private unnamed_addr constant { i64, i8*, [28 x i8] } { i64 -1, i8* null, [28 x i8] c"STAR_OS_SURFACE_EXAMPLE_VAR\00" }
-@.str.13 = private unnamed_addr constant [16 x i8] c"round trip: %s\0A\00"
+@.str.8 = private unnamed_addr constant [5 x i8] c"true\00"
+@.str.9 = private unnamed_addr constant [6 x i8] c"false\00"
+@.str.10 = private unnamed_addr constant [23 x i8] c"env_set succeeded: %s\0A\00"
+@.str.11 = private unnamed_addr constant { i64, i8*, [28 x i8] } { i64 -1, i8* null, [28 x i8] c"STAR_OS_SURFACE_EXAMPLE_VAR\00" }
+@.str.12 = private unnamed_addr constant [16 x i8] c"round trip: %s\0A\00"

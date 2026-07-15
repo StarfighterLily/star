@@ -1,5 +1,5 @@
 //! Minimal OS surface (todo.md #2): `env_get`/`env_set` builtins, thin
-//! wrappers over the C runtime's `getenv`/`_putenv`. `args()` builds a
+//! wrappers over the C runtime's `getenv`/`_putenv_s`. `args()` builds a
 //! `List<str>` and lives alongside the rest of `List<T>`'s construction
 //! logic instead -- see `crate::codegen::list::emit_args`.
 
@@ -53,14 +53,14 @@ impl Codegen {
         format!("i8* {}", result)
     }
 
-    /// `env_set(name: str, value: str) -> bool`: builds a `"NAME=VALUE"`
-    /// buffer and hands it to `_putenv`, which -- per its documented
-    /// behavior on this target -- copies the string into the process's own
-    /// environment block rather than retaining the pointer, so the buffer
-    /// is `malloc`/`free`d as a plain transient scratch allocation (not
-    /// `star_rc_alloc`'d -- nothing keeps a reference to it once this call
-    /// returns). Returns whether the underlying call reported success
-    /// (`_putenv` returns `0` on success, nonzero on failure).
+    /// `env_set(name: str, value: str) -> bool`: hands both strings straight
+    /// to `_putenv_s`. Unlike `_putenv` (which stores the pointer it's given
+    /// directly in the process's environment block, making it a use-after-
+    /// free hazard the moment the caller frees or reuses that memory),
+    /// `_putenv_s` copies `name`/`value` internally, so there's no scratch
+    /// buffer here for this function to own or free. Returns whether the
+    /// underlying call reported success (`_putenv_s` returns `0` on
+    /// success, nonzero `errno_t` on failure).
     pub(super) fn emit_env_set(&mut self, args: &[TypedExpr]) -> String {
         if args.len() < 2 {
             self.err("env_set(..) expects 2 arguments (name, value)", Span::dummy());
@@ -69,31 +69,8 @@ impl Codegen {
         let name = self.emit_raw_str_ptr(&args[0]);
         let value = self.emit_raw_str_ptr(&args[1]);
 
-        let name_len = self.tmp_name();
-        self.line(&format!("  {} = call i32 @strlen(i8* {})", name_len, name));
-        let value_len = self.tmp_name();
-        self.line(&format!("  {} = call i32 @strlen(i8* {})", value_len, value));
-        let sum = self.tmp_name();
-        self.line(&format!("  {} = add i32 {}, {}", sum, name_len, value_len));
-        // `+2`: one byte for the `=` separator, one for the NUL terminator.
-        let total = self.tmp_name();
-        self.line(&format!("  {} = add i32 {}, 2", total, sum));
-        let total64 = self.tmp_name();
-        self.line(&format!("  {} = sext i32 {} to i64", total64, total));
-        let buf = self.tmp_name();
-        self.line(&format!("  {} = call i8* @malloc(i64 {})", buf, total64));
-
-        self.line(&format!("  call i8* @strcpy(i8* {}, i8* {})", buf, name));
-        let eq_g = self.global_name();
-        self.global_defs.push(format!("{} = private unnamed_addr constant [2 x i8] c\"=\\00\"", eq_g));
-        let eq_ptr = self.tmp_name();
-        self.line(&format!("  {} = getelementptr inbounds [2 x i8], [2 x i8]* {}, i64 0, i64 0", eq_ptr, eq_g));
-        self.line(&format!("  call i8* @strcat(i8* {}, i8* {})", buf, eq_ptr));
-        self.line(&format!("  call i8* @strcat(i8* {}, i8* {})", buf, value));
-
         let result = self.tmp_name();
-        self.line(&format!("  {} = call i32 @_putenv(i8* {})", result, buf));
-        self.line(&format!("  call void @free(i8* {})", buf));
+        self.line(&format!("  {} = call i32 @_putenv_s(i8* {}, i8* {})", result, name, value));
         let ok = self.tmp_name();
         self.line(&format!("  {} = icmp eq i32 {}, 0", ok, result));
         format!("i1 {}", ok)

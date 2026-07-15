@@ -347,7 +347,7 @@ impl Codegen {
         self.line("declare i32 @fgetc(i8*)");
         // `env_get`/`env_set` builtins -- see `crate::codegen::os`.
         self.line("declare i8* @getenv(i8*)");
-        self.line("declare i32 @_putenv(i8*)");
+        self.line("declare i32 @_putenv_s(i8*, i8*)");
         // `tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close` builtins -- see
         // `crate::codegen::net`. Winsock2 (`ws2_32.dll`) isn't part of this
         // target's implicitly-linked default libraries the way libc/
@@ -1082,6 +1082,73 @@ impl Codegen {
     fn line(&mut self, s: &str) { writeln!(self.ir, "{}", s).unwrap(); }
     fn write(&mut self, s: &str) { write!(self.ir, "{}", s).unwrap(); }
     fn err(&mut self, msg: &str, span: Span) { self.errors.push(Diagnostic::error(msg, span)); }
+
+    /// Rewrites one just-generated function's complete IR text (from
+    /// `define ... {` through its closing `}`) so every `alloca` instruction
+    /// is hoisted to immediately follow its `entry:` label, regardless of
+    /// which block originally contained it. Every `alloca` this codegen
+    /// emits is fixed-size (a concrete LLVM type, never a runtime element
+    /// count -- confirmed there is no `alloca TYPE, iN %count` shape
+    /// anywhere in this codebase), so moving its *definition* earlier is
+    /// always valid: `entry:` dominates every other block, and an `alloca`
+    /// reads nothing but its own static type, never a previously computed
+    /// SSA value that could still be out of scope at the new position.
+    ///
+    /// This matters because every other call site in this codegen emits a
+    /// local's `alloca` inline, in whatever block it's first needed in --
+    /// not hoisted to the function's own entry block the way a typical C
+    /// frontend (e.g. Clang) always does. An `alloca` inside a loop body is
+    /// *not* free of runtime cost the way a fixed-size stack slot declared
+    /// once at entry is: unless the backend's own optimizer proves it's
+    /// safe to promote/reuse (an `-O1`+ pass -- never runs at `-O0`), each
+    /// pass through that loop iteration's block consumes *more* stack space,
+    /// so a long-running loop containing so much as one `let`/temporary
+    /// eventually overflows the stack. Confirmed via a real
+    /// `STATUS_STACK_OVERFLOW` after ~500,000 iterations of a trivial `let
+    /// s: str = concat("a", "b")` inside a `while` loop compiled at `-O0`
+    /// (this compiler's own test suite always builds at `-O0` -- see
+    /// `tests/frontend.rs`'s `compile_and_run`) -- reproducible on a clean
+    /// checkout with none of this round's other fixes applied, so this is a
+    /// pre-existing bug, not something introduced by them. Discovered while
+    /// writing a stress-test regression for the `TypedStmt::Expr` RC-release
+    /// fix (see `emit_stmt`), which happened to be the first codegen path
+    /// exercised at a high enough iteration count to trigger it.
+    fn hoist_allocas_to_entry(func_ir: &str) -> String {
+        let mut entry_idx = None;
+        let mut alloca_lines: Vec<&str> = Vec::new();
+        let mut rest: Vec<&str> = Vec::new();
+        for line in func_ir.lines() {
+            let trimmed = line.trim_start();
+            if entry_idx.is_none() && line == "entry:" {
+                entry_idx = Some(rest.len());
+                rest.push(line);
+                continue;
+            }
+            if entry_idx.is_some() && trimmed.starts_with('%') && trimmed.contains("= alloca ") {
+                alloca_lines.push(line);
+                continue;
+            }
+            rest.push(line);
+        }
+        let Some(idx) = entry_idx else {
+            // No `entry:` label found -- not a real function body (shouldn't
+            // happen for anything this is called on); return unchanged
+            // rather than acting on a wrong assumption.
+            return func_ir.to_string();
+        };
+        let mut out = String::with_capacity(func_ir.len());
+        for (i, line) in rest.iter().enumerate() {
+            out.push_str(line);
+            out.push('\n');
+            if i == idx {
+                for a in &alloca_lines {
+                    out.push_str(a);
+                    out.push('\n');
+                }
+            }
+        }
+        out
+    }
 
     /// Produce a unique, readable basic-block label for control flow.
     fn block_label(&mut self, prefix: &str) -> String {
