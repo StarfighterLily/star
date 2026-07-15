@@ -354,6 +354,9 @@ pub enum Expr {
     Float(f64, Span),
     Str(String, Span),
     Bool(bool, Span),
+    /// A single-quoted char literal `'a'` -- a Unicode scalar value, see
+    /// `Ty::Char`.
+    Char(char, Span),
     /// An f-string lowered to a list of literal/expression parts.
     FStr(Vec<FStrExpr>, Span),
     /// A variable or `self` reference.
@@ -519,6 +522,18 @@ pub enum Expr {
         count: u64,
         span: Span,
     },
+    /// `expr as Type` -- an explicit numeric-width/`char` conversion (e.g.
+    /// `x as u8`, `250 as u8`, `c as i32`). See `docs/design.md`'s "Numeric
+    /// widths and modes" section: unlike the implicit `Int`->`Float`
+    /// promotion `infer_binop_ty` already does for the original two scalar
+    /// types, mixing two *distinct* explicit-width types (`i8 + i64`, ...)
+    /// is a hard type-mismatch error requiring an explicit cast, so this is
+    /// the only way to narrow/widen/reinterpret between them.
+    Cast {
+        expr: Box<Expr>,
+        ty: Type,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -529,6 +544,7 @@ impl Expr {
             | Expr::Float(_, s)
             | Expr::Str(_, s)
             | Expr::Bool(_, s)
+            | Expr::Char(_, s)
             | Expr::FStr(_, s)
             | Expr::Ident(_, s)
             | Expr::SelfExpr(s)
@@ -547,6 +563,7 @@ impl Expr {
             | Expr::TupleIndex { span: s, .. }
             | Expr::ArrayRepeat { span: s, .. }
             | Expr::RingNew { span: s, .. }
+            | Expr::Cast { span: s, .. }
             | Expr::ListLit(_, s) => *s,
             Expr::TupleLit(_, s) => *s,
         }

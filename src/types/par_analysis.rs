@@ -442,9 +442,13 @@ impl Checker {
             | TypedExpr::Float(..)
             | TypedExpr::Str(..)
             | TypedExpr::Bool(..)
+            | TypedExpr::Char(..)
             | TypedExpr::Ident { .. }
             | TypedExpr::SelfExpr(..)
             | TypedExpr::Error(_) => {}
+            // A cast has no receiver/mutation of its own to gate -- just
+            // walk its inner expression, same as `Unary` above.
+            TypedExpr::Cast { expr, .. } => self.walk_par_expr(expr, locals),
         }
     }
 }

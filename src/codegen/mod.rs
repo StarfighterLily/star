@@ -379,6 +379,29 @@ impl Codegen {
         self.line("declare float @llvm.ceil.f32(float)");
         self.line("declare float @llvm.minnum.f32(float, float)");
         self.line("declare float @llvm.maxnum.f32(float, float)");
+        // Overflow-checked integer arithmetic backing every explicit-width
+        // integer type's `+`/`-`/`*` (`Codegen::emit_checked_sized_int_arith`)
+        // -- declared for every (width, signedness, op) combination those
+        // types actually use; `Ty::Int` (i32, signed) is deliberately excluded
+        // since it keeps its original silent-wraparound behavior (see
+        // `Ty::I8`'s doc comment for why every *other* width traps instead).
+        for width in [8u32, 16, 64] {
+            for sign in ["s", "u"] {
+                for op in ["add", "sub", "mul"] {
+                    self.line(&format!(
+                        "declare {{ i{w}, i1 }} @llvm.{sign}{op}.with.overflow.i{w}(i{w}, i{w})",
+                        w = width, sign = sign, op = op
+                    ));
+                }
+            }
+        }
+        // `u32` shares `i32`'s bit width with `Ty::Int` but traps on the
+        // *unsigned* overflow range instead -- only the unsigned intrinsics
+        // are needed at 32 bits (the signed ones are `Ty::Int`'s domain,
+        // which doesn't use this trap).
+        for op in ["add", "sub", "mul"] {
+            self.line(&format!("declare {{ i32, i1 }} @llvm.u{op}.with.overflow.i32(i32, i32)", op = op));
+        }
         self.line("");
         self.line("%GenRef = type { i32, i32 }");
         self.line("");
@@ -515,6 +538,10 @@ impl Codegen {
     fn type_align(&self, ty: &Ty) -> u32 {
         match ty {
             Ty::Int | Ty::Float => 4,
+            Ty::I8 | Ty::U8 => 1,
+            Ty::I16 | Ty::U16 => 2,
+            Ty::U32 | Ty::Char => 4,
+            Ty::I64 | Ty::U64 | Ty::F64 => 8,
             Ty::Bool => 1,
             Ty::Str | Ty::Ptr | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Table(_) | Ty::Closure(..) => 8,
             // Same layout as `Ty::GenRef` -- see `Ty::Handle`'s doc comment.
@@ -586,6 +613,10 @@ impl Codegen {
     fn type_size(&self, ty: &Ty) -> u32 {
         match ty {
             Ty::Int | Ty::Float => 4,
+            Ty::I8 | Ty::U8 => 1,
+            Ty::I16 | Ty::U16 => 2,
+            Ty::U32 | Ty::Char => 4,
+            Ty::I64 | Ty::U64 | Ty::F64 => 8,
             Ty::Bool => 1,
             Ty::Str => 8,
             Ty::GenRef(_) | Ty::Handle(_) => 8, // { i32, i32 }
@@ -668,6 +699,13 @@ impl Codegen {
         match ty {
             Ty::Int => "i32".into(),
             Ty::Float => "float".into(),
+            Ty::I8 | Ty::U8 => "i8".into(),
+            Ty::I16 | Ty::U16 => "i16".into(),
+            Ty::U32 => "i32".into(),
+            Ty::I64 | Ty::U64 => "i64".into(),
+            Ty::F64 => "double".into(),
+            // A bare 32-bit codepoint -- see `Ty::Char`'s doc comment.
+            Ty::Char => "i32".into(),
             Ty::Str => "i8*".into(),
             Ty::Bool => "i1".into(),
             Ty::Vec2 => "<2 x float>".into(),
@@ -729,6 +767,15 @@ impl Codegen {
         match ty {
             Ty::Int => "i32".into(),
             Ty::Float => "f32".into(),
+            Ty::I8 => "i8".into(),
+            Ty::U8 => "u8".into(),
+            Ty::I16 => "i16".into(),
+            Ty::U16 => "u16".into(),
+            Ty::U32 => "u32".into(),
+            Ty::I64 => "i64".into(),
+            Ty::U64 => "u64".into(),
+            Ty::F64 => "f64".into(),
+            Ty::Char => "char".into(),
             Ty::Str => "str".into(),
             Ty::Bool => "bool".into(),
             Ty::Vec2 => "vec2".into(),
@@ -839,6 +886,8 @@ impl Codegen {
         match ty {
             Ty::Int => "0".into(),
             Ty::Float => "0.0".into(),
+            Ty::I8 | Ty::U8 | Ty::I16 | Ty::U16 | Ty::U32 | Ty::I64 | Ty::U64 | Ty::Char => "0".into(),
+            Ty::F64 => "0.0".into(),
             Ty::Bool => "false".into(),
             Ty::Str => "null".into(),
             Ty::Ptr => "null".into(),
@@ -1062,6 +1111,7 @@ impl Codegen {
         match e {
             TypedExpr::Int(_, ty, _) | TypedExpr::Float(_, ty, _)
             | TypedExpr::Str(_, ty, _) | TypedExpr::Bool(_, ty, _)
+            | TypedExpr::Char(_, ty, _) | TypedExpr::Cast { ty, .. }
             | TypedExpr::Field { ty, .. } | TypedExpr::Call { ty, .. }
             | TypedExpr::Binary { ty, .. } | TypedExpr::Unary { ty, .. }
             | TypedExpr::Match { ty, .. } | TypedExpr::StructLit { ty, .. }

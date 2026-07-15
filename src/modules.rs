@@ -369,6 +369,7 @@ fn rename_expr(expr: &Expr, names: &HashMap<String, String>) -> Expr {
         Expr::Float(v, s) => Expr::Float(*v, *s),
         Expr::Str(v, s) => Expr::Str(v.clone(), *s),
         Expr::Bool(v, s) => Expr::Bool(*v, *s),
+        Expr::Char(v, s) => Expr::Char(*v, *s),
         Expr::FStr(parts, s) => Expr::FStr(
             parts
                 .iter()
@@ -449,6 +450,9 @@ fn rename_expr(expr: &Expr, names: &HashMap<String, String>) -> Expr {
         }
         Expr::RingNew { elem_ty, count, span } => {
             Expr::RingNew { elem_ty: rename_type(elem_ty, names), count: *count, span: *span }
+        }
+        Expr::Cast { expr, ty, span } => {
+            Expr::Cast { expr: Box::new(rename_expr(expr, names)), ty: rename_type(ty, names), span: *span }
         }
     }
 }

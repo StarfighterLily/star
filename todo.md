@@ -62,79 +62,106 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
-Feature round closing out the type-system expansion `docs/design.md` laid out: added
-`Table<T>`, a struct-of-arrays table -- the last remaining "indie connective tissue" gap
-(§10). New tests in `tests/frontend.rs` (658 total, all green); all 42 pre-existing
-examples still `star check` cleanly (the same pre-existing, unrelated `examples/player.star`
-failure noted in every prior round -- `Vec3(0, 0, 0)`'s int literals vs. its `f32` fields
--- confirmed present on a clean `main` checkout, not a regression), plus a new
-`examples/table.star` (43 total).
+Feature round tackling `docs/design.md` §2, "Numeric widths and modes" -- the largest
+remaining lift the Type System section had left, per the previous round's own closing
+note. Added `i8`/`u8`/`i16`/`u16`/`u32`/`i64`/`u64`/`f64` alongside the original `i32`/
+`f32`, plus `char` (a Unicode scalar) and a new `expr as Type` cast expression -- the
+width/`char`/cast part of §2 is now **done**; `Wrapping<T>`/`Fixed<Bits,Frac>` (the two
+explicit opt-in modes) are not, and are now the largest remaining lift in that section.
+New tests in `tests/frontend.rs` (734 total, all green, 26 new this round -- parser-shape,
+checker positive/negative, and `compile_and_run` runtime tests, the latter covering real
+overflow-trap/div-by-zero aborts per width/signedness, not just happy-path arithmetic);
+all 48 pre-existing examples still `star check` cleanly (the same pre-existing, unrelated
+`examples/player.star` failure noted in every prior round -- `Vec3(0, 0, 0)`'s int
+literals vs. its `f32` fields -- confirmed present on a clean `main` checkout, not a
+regression), plus a new `examples/numeric_widths.star` (49 total).
 
-`Ty::Table(Box<Ty>)` lowers to the same reference-counted, copy-on-write `i8*` object
-pointer scheme `List<T>`/`Map<K,V>`/`Set<T>` already use (unlike `Ring<T,N>`'s inline
-storage), pointing past a `star_rc_alloc` header at a `{ i64 len, i64 cap, F0*, F1*, ... }`
-payload -- one parallel growable column per field of the struct `T` (in declaration
-order, from `Codegen::struct_field_types`), all growing/shrinking in lockstep behind one
-shared `len`/`cap` pair, rather than `List<T>`'s single `{ T*, i64, i64 }` buffer. Unlike
-`Ring<T,N>` (whose second argument `N` is a bare integer literal, needing dedicated parser/
-AST special cases), `Table<T>` has only one type argument, a plain `Type` -- so
-`Table<T>()`/`.push`/`.pop`/`.len`/`table[i]`/`table[i] = v` all piggyback on the exact
-same generic-turbofish-plus-`StructLit`/`Expr::Call`/`Expr::GenRefIndex` machinery
-`List<T>`/`Map<K,V>`/`Set<T>` already established, with *zero* parser or `ast.rs` changes
--- only new `TypedExpr::TableNew`/`TableMethod`/`TableIndex` nodes (`TableMethod::{Push,
-Pop, Len}`) produced by the checker (`Checker::infer_table_new`/`infer_table_method`,
-mirroring `infer_list_new`/`infer_list_method` almost exactly). `Checker::resolve_type`'s
-new `"Table"` branch requires `T` to already be a declared, non-generic `struct` (erroring
-otherwise, mirroring `Map`'s key-hashability check) -- but that branch only fires for a
-`Table<T>` *type annotation*; `Table<T>()`'s own turbofish resolves its single type
-argument directly, so `infer_table_new` needed its own copy of the same "is this a
-struct?" check (`rejects_table_of_non_struct_element` covers both).
+Nine new `Ty` variants (`I8`/`U8`/`I16`/`U16`/`U32`/`I64`/`U64`/`F64`/`Char`) sit alongside
+the original `Int`/`Float` rather than replacing them -- `Ty::Int`/`Ty::Float` keep
+meaning `i32`/`f32` exactly as before, so every one of the 708 pre-existing tests still
+passes unmodified. `i64`/`f64` used to be accepted spellings that silently *aliased*
+`Ty::Int`/`Ty::Float` in `Checker::resolve_type` (Star's only two widths until now); they
+resolve to the real, distinct `Ty::I64`/`Ty::F64` now -- confirmed via a grep of
+`tests/frontend.rs` that no existing test relied on the old alias behavior before making
+the change. `Ty::is_numeric()`/`Ty::int_shape() -> Option<(bit_width, is_signed)>` are two
+new helper methods (mirroring the existing `is_vec()`/`vec_arity()` pattern) that let every
+downstream numeric-generic pass (arithmetic type-checking, arithmetic codegen, FFI-scalar/
+hashable-key whitelists) dispatch on "any numeric type"/"this type's concrete integer
+shape" instead of a hardcoded `Ty::Int | Ty::Float` match, without a per-width match arm at
+every call site.
 
-`push` grows every column in lockstep (each with its own `malloc`/`memcpy`/`free`, sized
-by that column's own element type, not a single shared element size), then writes each
-of the pushed struct value's fields (via `extractvalue`) into the slot at `len` in its own
-column; `pop` reads each column's slot at `len - 1` (via `getelementptr`/`load`) and
-reassembles them into a `%Struct` value (an `alloca`+`GEP`+`store`+`load`, the same shape
-`Codegen::emit_expr`'s ordinary `StructLit` construction already uses) -- mirrors
-`ListMethod::Pop`'s "no zeroing, ownership transfers with no retain, the shrunk `len`
-already keeps `Codegen::emit_rc_walk`'s release-thunk loop from re-visiting it" convention,
-just per-column. `table[i]`/`table[i] = v` (`TableIndex`, sharing `Expr::GenRefIndex`'s
-`[..]` syntax with `GenRef<T>`/`List<T>`/`[T; N]`/`Ring<T,N>`) read/write the whole element
-the same reassemble-per-column/decompose-per-column way, bounds-checked against the shared
-`len`, yielding/discarding the zero value out of bounds exactly like `ListIndex`. The
-copy-on-write uniqueness gate (`emit_table_ensure_unique`, gating every mutating op just
-like `emit_list_ensure_unique`) clones *every* column (not just one buffer) when the table
-object isn't uniquely owned -- confirmed by a `runtime_table_end_to_end` scenario where
-mutating a `let clone = original` must not affect `original`.
+Numeric promotion is deliberately *not* generalized to a lattice: `Checker::infer_binop_ty`
+still special-cases exactly one implicit mixed-pair promotion (`Int`/`Float`, preserved
+byte-for-byte from before this round -- `1 + 1.5 == 2.5`), and requires an exact type match
+for every other numeric pair (`lhs_ty == rhs_ty`) -- `i8 + i64`, `u32 + f64`, even
+`i32 + i64`, are all hard type-mismatch errors pointing at `as` as the fix, not a silent
+widening. This was a deliberate design choice over implementing full C-style integer
+promotion rules: simpler to specify, and it matches this compiler's existing "no
+implicit narrowing either" stance (`let a: Foo = 42` was already rejected pre-this-round if
+`Foo != i32`'s inferred type -- see §1.1's fix, referenced in `types/stmt.rs`). `char`
+supports `==`/`!=`/`<`/`>`/`<=`/`>=` against another `char` (codepoint comparison) but no
+arithmetic at all (mirrors Rust's own `char`, which isn't `Add`/`Sub`).
 
-One deliberately accepted gap, documented on `Ty::Table` and `crate::codegen::table`'s own
-module doc comment: there is no dedicated `Codegen::emit_place` support for projecting a
-single *field* through a table index (`table[i].field = v`) -- unlike `List<T>`'s element
-(one contiguous value at one address `emit_list_index_place` can hand out a real pointer
-into), a `Table<T>` element's fields live at independent addresses in independent columns,
-so `emit_place`'s generic `Field`-base resolution (which GEPs a field offset out of a
-single base pointer) cannot address it without inventing a new place representation. This
-falls through to the existing generic fallback instead (spill a materialized copy into a
-fresh alloca) -- correct for a *read* (`table[i].field`, since materializing a temporary to
-read a field out of is what an ordinary value read does anyway) but silently targets a
-disconnected temporary for a *write*, the same accepted gap this compiler already has for
-any other rvalue struct base with no addressable storage of its own (e.g. a function's
-returned-by-value struct). `table[i] = v` (the whole element) is unaffected and fully
-supported, via a dedicated `store_target`/`store_table_index` arm.
+`expr as Type` (`Expr::Cast`/`TypedExpr::Cast`) is a genuinely new grammar production, not
+a repurposing of existing machinery -- `TokenKind::As` previously only appeared in
+`import "path.star" as alias`. `Parser::parse_cast` sits as its own precedence tier between
+`parse_binary` and `parse_unary` (`x as i64 + 1` is `(x as i64) + 1`; `-x as i64` is
+`(-x) as i64`; casts chain left-to-right: `x as i64 as f64`), mirroring Rust's own `as`
+precedence. `Checker::infer_expr`'s `Expr::Cast` arm accepts any numeric-to-numeric or
+numeric-to-`char` (either direction) pairing and rejects everything else (`"hi" as i32` is
+a checker error, not a codegen-time surprise). `Codegen::emit_cast` dispatches on
+`Ty::int_shape()`/`Ty::Float`/`Ty::F64` (treating `Ty::Char` as an unsigned 32-bit int for
+this purpose) to the right LLVM conversion op: same-width int/`char` <-> int/`char` is a
+bit-preserving relabel (no instruction emitted at all), a wider target `sext`s/`zext`s per
+the *source*'s signedness, a narrower target `trunc`s, int/`char` <-> float goes through
+`sitofp`/`uitofp`/`fptosi`/`fptoui` per whichever side is the integer's own signedness, and
+`float` <-> `f64` goes through `fpext`/`fptrunc`. No runtime validation that an int-to-
+`char` cast produced a valid Unicode codepoint -- this is Rust's infallible truncating `as`,
+not a `Result`-returning fallible conversion (this compiler has no such path for anything).
 
-Every other exhaustive match over `Ty`/`TypedExpr` this compiler has (`type_align`,
-`type_size`, `llvm_ty`, `mangle_ty` x2, `zero_value`, `contains_rc`, `emit_rc_walk`,
-`expr_ty`, reflection naming, `assign_root_name`, `frame_analysis`'s untracked-expression
-bucket (`Table` stores by value into its own `malloc`'d columns, same as `List`/`Map`/
-`Set`, so it needs no escape-analysis tracking, unlike `Ring<T,N>`'s inline-storage
-`RingIndex`), par/swarm's `walk_par_expr`) needed a parallel `Table`/`TableNew`/
-`TableMethod`/`TableIndex` arm, found mechanically by
-`rustup run stable-x86_64-pc-windows-gnu cargo check`'s non-exhaustive-match errors
-against this repo's actual working toolchain (the default `stable-x86_64-pc-windows-msvc`
-host has no linker available in a plain shell here; `x86_64-pc-windows-gnu` needs the
-gnu-hosted toolchain, not just `--target`, since a msvc-hosted `cargo` still tries to
-compile build-script/proc-macro crates for the msvc host and hits the same missing
-linker) rather than by grepping for every call site by hand. `modules.rs`/`sequence.rs`
-needed *no* changes at all (unlike `Ring<T,N>`'s `Type::Ring`/`Expr::RingNew`): `Table<T>`
-introduces no new `ast.rs` node, so its cross-file rename and yield/hoisting scans are
-already covered generically by the existing `Type::Generic`/`Expr::StructLit` arms.
+Trap-on-overflow (this section's stated *default*, not an opt-in) is genuinely new
+behavior, not just new-type plumbing: no add/sub/mul overflow guard existed anywhere in
+this compiler before this round (confirmed by grep -- the only prior runtime trap was the
+`i32` division guard's zero-divisor/`MIN / -1` check). `Codegen::emit_checked_sized_int_arith`
+guards `+`/`-`/`*` on every explicit-width integer type via LLVM's
+`llvm.{s,u}{add,sub,mul}.with.overflow.iN` intrinsics (declared unconditionally for every
+`(width, signedness, op)` combination those types use, in `Codegen::emit_builtins`),
+branching to the same "print a message, `exit(1)`" abort shape `emit_checked_int_div`
+already established (factored into a shared `emit_abort_with_message` helper).
+`Codegen::emit_checked_sized_int_div` generalizes the pre-existing `i32`-only division
+guard the same way, parameterized by bit width and signedness (the signed `MIN / -1`
+overflow check only applies to signed widths -- unsigned division has no equivalent trap).
+**Deliberately excluded: `Ty::Int` (`i32`) itself keeps its original silent two's-complement
+wraparound** -- retrofitting a trap onto the one type every pre-existing program already
+depends on was judged out of scope for this round (a behavior change, not a new-type
+addition), confirmed safe to *not* do by grepping `tests/frontend.rs` for any test relying
+on `i32` overflow wraparound (none exist) and locked in by a new
+`runtime_i32_add_overflow_still_wraps_silently_unlike_new_sized_int_types` regression test.
+This asymmetry (new widths trap, `i32` doesn't) is exactly the gap `Wrapping<T>` is meant
+to close once it lands: an explicit opt-in for silent wraparound on *any* width, including
+`i32`, rather than `i32` being a permanent special case.
+
+Every exhaustive match over `Ty`/`TypedExpr` this compiler has (`type_align`, `type_size`,
+`llvm_ty`, `mangle_ty` x2, `zero_value`, `expr_ty`, `reflect_type_name`, `ty_to_type`,
+`subst_expr`/`subst_type`, `frame_analysis`'s untracked-expression bucket, `par_analysis`'s
+`walk_par_expr`) needed a parallel arm for the nine new `Ty` variants and/or the two new
+`Expr`/`TypedExpr::Char`/`Cast` node kinds, found the same mechanical way the `Table<T>`
+round found its call sites: `rustup run stable-x86_64-pc-windows-gnu cargo check`'s
+non-exhaustive-match errors (this repo's only working toolchain in a plain shell here --
+see the previous round's note on why `x86_64-pc-windows-gnu`, not the default msvc host).
+`Checker::check_hashable_ty`/`Checker::is_ffi_scalar_ty` (both non-exhaustive `matches!`
+whitelists, so the compiler doesn't force new arms) were extended by hand instead: every
+new numeric width and `char` is structurally hashable (a `Map`/`Set` key) and FFI-scalar
+(an `extern "C" fn` parameter/return type) for the same reasons `Ty::Int`/`Ty::Float`
+already were. `crate::codegen::eq`'s `emit_eq_body` and `crate::codegen::builtins`'s
+`emit_print_like` format-specifier match are two more non-exhaustive whitelists that don't
+force a compile error but *would* silently misbehave (`Map<u8, V>` comparing every key as
+"always equal"; `println(f"{x}")` on a `u64` printing a garbage address via the `%p`
+fallback) if left un-audited -- both got explicit new arms (`%d`/`%u`/`%lld`/`%llu`/`%c`
+per width/signedness, with `i8`/`i16`/`u8`/`u16` explicitly `sext`/`zext`ed to `i32` before
+the `printf` varargs call, matching C's own default-argument-promotion rule the pre-existing
+`float`->`double` promotion already followed for the same reason). `modules.rs`/
+`sequence.rs` needed a small, mechanical new arm each (`Expr::Char`/`Expr::Cast`) in their
+own exhaustive `Expr` matches (`rename_expr`, `scan_expr_for_nested_yield`/`rewrite_expr`)
+-- unlike `Table<T>`, this round *does* add new `ast.rs`/`Expr` nodes, so (unlike that
+round's note) these weren't free.

@@ -13,7 +13,7 @@ impl Parser {
     }
 
     fn parse_binary(&mut self, min_bp: u8) -> Option<Expr> {
-        let mut lhs = self.parse_unary()?;
+        let mut lhs = self.parse_cast()?;
         while let Some((op, bp)) = self.peek_binop() {
             if bp < min_bp {
                 break;
@@ -24,6 +24,20 @@ impl Parser {
             lhs = Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs), span };
         }
         Some(lhs)
+    }
+
+    /// `expr as Type` -- binds tighter than any binary operator (so `x as
+    /// i64 + 1` parses as `(x as i64) + 1`, matching Rust's own `as`
+    /// precedence) but looser than unary/postfix (`-x as i64` is `(-x) as
+    /// i64`). Zero or more casts may chain (`x as i64 as f64`).
+    fn parse_cast(&mut self) -> Option<Expr> {
+        let mut expr = self.parse_unary()?;
+        while self.eat(&TokenKind::As) {
+            let ty = self.parse_type()?;
+            let span = expr.span().to(self.prev_span());
+            expr = Expr::Cast { expr: Box::new(expr), ty, span };
+        }
+        Some(expr)
     }
 
     /// Return the binary operator at the cursor with its binding power.
@@ -381,6 +395,10 @@ impl Parser {
             TokenKind::Str(s) => {
                 self.advance();
                 Some(Expr::Str(s, span))
+            }
+            TokenKind::Char(c) => {
+                self.advance();
+                Some(Expr::Char(c, span))
             }
             TokenKind::True => {
                 self.advance();

@@ -28,8 +28,12 @@ impl Codegen {
                         let val = self.emit_expr(e);
                         let ty = self.expr_ty(e);
                         match ty {
-                            Ty::Int => { fmt_str.push_str("%d"); }
-                            Ty::Float => { fmt_str.push_str("%f"); }
+                            Ty::Int | Ty::I8 | Ty::I16 => { fmt_str.push_str("%d"); }
+                            Ty::U8 | Ty::U16 | Ty::U32 => { fmt_str.push_str("%u"); }
+                            Ty::I64 => { fmt_str.push_str("%lld"); }
+                            Ty::U64 => { fmt_str.push_str("%llu"); }
+                            Ty::Float | Ty::F64 => { fmt_str.push_str("%f"); }
+                            Ty::Char => { fmt_str.push_str("%c"); }
                             Ty::Str | Ty::Bool => { fmt_str.push_str("%s"); }
                             _ => { fmt_str.push_str("%p"); }
                         }
@@ -102,6 +106,19 @@ impl Codegen {
                     // (a "true"/"false" string pointer), not the bare
                     // `i1` `llvm_ty(Ty::Bool)` would tag it as.
                     call_args.push(format!("i8* {}", val));
+                } else if matches!(ty, Ty::I8 | Ty::I16) {
+                    // C's variadic calling convention promotes any integer
+                    // type narrower than `int` up to `int` -- `%d`/`%u`
+                    // read a full 32-bit slot off the varargs, so an
+                    // un-widened `i8`/`i16` register would leave the upper
+                    // bits of that slot garbage.
+                    let widened = self.tmp_name();
+                    self.line(&format!("  {} = sext {} {} to i32", widened, self.llvm_ty(ty), val));
+                    call_args.push(format!("i32 {}", widened));
+                } else if matches!(ty, Ty::U8 | Ty::U16) {
+                    let widened = self.tmp_name();
+                    self.line(&format!("  {} = zext {} {} to i32", widened, self.llvm_ty(ty), val));
+                    call_args.push(format!("i32 {}", widened));
                 } else {
                     call_args.push(format!("{} {}", self.llvm_ty(ty), val));
                 }

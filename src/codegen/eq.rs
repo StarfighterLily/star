@@ -73,6 +73,21 @@ impl Codegen {
                 self.line(&format!("  {} = fcmp oeq float {}, {}", r, a, b));
                 r
             }
+            Ty::F64 => {
+                let r = self.tmp_name();
+                self.line(&format!("  {} = fcmp oeq double {}, {}", r, a, b));
+                r
+            }
+            // Every explicit-width integer, plus `char` (a bare `i32`
+            // codepoint, see `Ty::Char`'s doc comment) -- equality doesn't
+            // care about signedness, so this is just `icmp eq` at the right
+            // bit width regardless of which signed/unsigned pair it is.
+            Ty::I8 | Ty::U8 | Ty::I16 | Ty::U16 | Ty::U32 | Ty::I64 | Ty::U64 | Ty::Char => {
+                let width = ty.int_shape().map(|(w, _)| w).unwrap_or(32);
+                let r = self.tmp_name();
+                self.line(&format!("  {} = icmp eq i{} {}, {}", r, width, a, b));
+                r
+            }
             Ty::Str => {
                 let cmp = self.tmp_name();
                 self.line(&format!("  {} = call i32 @strcmp(i8* {}, i8* {})", cmp, a, b));

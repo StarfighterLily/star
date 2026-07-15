@@ -28,6 +28,44 @@ use std::collections::{HashMap, HashSet};
 pub enum Ty {
     Int,
     Float,
+    /// 8-bit signed integer -- retro CPU registers, PSG audio channels, and
+    /// other exact-width hardware state. Unlike `Ty::Int`, arithmetic
+    /// (`+`/`-`/`*`) traps on overflow rather than wrapping (see
+    /// `Codegen::emit_sized_int_binop`); no implicit widening to/from any
+    /// other numeric type -- an explicit `as` cast (`Expr::Cast`) is always
+    /// required, matching `docs/design.md`'s "Numeric widths and modes".
+    I8,
+    /// 8-bit unsigned integer -- see `Ty::I8`'s doc comment (same rules,
+    /// unsigned arithmetic/comparisons).
+    U8,
+    /// 16-bit signed integer -- see `Ty::I8`'s doc comment.
+    I16,
+    /// 16-bit unsigned integer -- see `Ty::I8`'s doc comment.
+    U16,
+    /// 32-bit unsigned integer -- see `Ty::I8`'s doc comment. Distinct from
+    /// `Ty::Int` (32-bit *signed*, Star's original/default integer type)
+    /// purely in signedness: same bit width, but `/`/`%`/comparisons use
+    /// unsigned opcodes and overflow traps on the unsigned range `[0,
+    /// u32::MAX]` rather than `i32`'s signed range.
+    U32,
+    /// 64-bit signed integer -- see `Ty::I8`'s doc comment. Large-world
+    /// coordinates, timestamps, and other AAA-scale counters that overflow
+    /// `i32`.
+    I64,
+    /// 64-bit unsigned integer -- see `Ty::I8`'s doc comment.
+    U64,
+    /// 64-bit IEEE-754 float -- see `Ty::I8`'s doc comment for the "no
+    /// implicit conversion" rule; unlike the sized integers, `F64` never
+    /// traps (float arithmetic saturates to +/-inf per IEEE-754, same as
+    /// `Ty::Float` today).
+    F64,
+    /// A Unicode scalar value (not a raw `str` byte -- see `Ty::Str`'s
+    /// `s[i]` byte-index convention). Lowered to a bare `i32` holding the
+    /// codepoint (see `Codegen::llvm_ty`); supports equality/ordering
+    /// comparisons but not arithmetic (mirrors Rust's `char`, which is not
+    /// `Add`/`Sub`/etc.) -- convert to/from an integer type via `as` to do
+    /// codepoint arithmetic.
+    Char,
     Str,
     Bool,
     Vec2,
@@ -175,6 +213,40 @@ impl Ty {
             2 => Some(Ty::Vec2),
             3 => Some(Ty::Vec3),
             4 => Some(Ty::Vec4),
+            _ => None,
+        }
+    }
+
+    /// True for every scalar numeric type -- the original `Int`/`Float`
+    /// pair plus every explicit-width addition from `docs/design.md`'s
+    /// "Numeric widths and modes". `Ty::Char` is deliberately excluded (it
+    /// supports comparisons but not arithmetic, mirroring Rust's `char`).
+    pub fn is_numeric(&self) -> bool {
+        matches!(
+            self,
+            Ty::Int | Ty::Float | Ty::I8 | Ty::U8 | Ty::I16 | Ty::U16 | Ty::U32 | Ty::I64 | Ty::U64 | Ty::F64
+        )
+    }
+
+    /// `Some((bit_width, is_signed))` for every integer type (the original
+    /// `Ty::Int` -- Star's default 32-bit signed integer -- plus every
+    /// explicit sized-width addition); `None` for `Ty::Float`/`Ty::F64`
+    /// (no integer bit-width/signedness) and every non-numeric type.
+    /// Drives `Codegen::emit_sized_int_binop`'s width/signedness-generic
+    /// arithmetic lowering (opcodes, overflow-trap intrinsics, comparison
+    /// predicates) so there's exactly one place that maps a `Ty` to its
+    /// concrete LLVM integer shape, instead of one hardcoded `i32` path per
+    /// type.
+    pub fn int_shape(&self) -> Option<(u32, bool)> {
+        match self {
+            Ty::Int => Some((32, true)),
+            Ty::I8 => Some((8, true)),
+            Ty::U8 => Some((8, false)),
+            Ty::I16 => Some((16, true)),
+            Ty::U16 => Some((16, false)),
+            Ty::U32 => Some((32, false)),
+            Ty::I64 => Some((64, true)),
+            Ty::U64 => Some((64, false)),
             _ => None,
         }
     }
@@ -762,7 +834,13 @@ impl Checker {
     /// rejected outright rather than silently emitting IR whose calling
     /// convention doesn't match the real foreign symbol.
     fn is_ffi_scalar_ty(ty: &Ty) -> bool {
-        matches!(ty, Ty::Int | Ty::Float | Ty::Ptr)
+        // Every explicit-width integer/float (`int8_t`/`uint32_t`/`double`/
+        // ... in C terms) and `char` (a plain 4-byte codepoint, `i32`-shaped
+        // at the ABI level) are as legitimate an FFI scalar as the original
+        // `Ty::Int`/`Ty::Float` -- LLVM lowers a fixed (non-variadic)
+        // `declare`'s narrow-integer parameters to the platform C ABI's
+        // register-passing convention with no extra annotation needed.
+        ty.is_numeric() || matches!(ty, Ty::Char | Ty::Ptr)
     }
 
     /// Type-check an `extern "C" fn` declaration: register (already done in
@@ -851,14 +929,14 @@ impl Checker {
                 continue;
             }
             self.error(
-                format!("extern \"C\" parameter `{}` has unsupported type `{:?}`; only int, float, ptr, and str are allowed", p.name, p.ty),
+                format!("extern \"C\" parameter `{}` has unsupported type `{:?}`; only a numeric type (any width)/char/ptr/str are allowed", p.name, p.ty),
                 p.span,
             );
         }
         if let Some(ret) = &sig.ret {
             if !Self::is_ffi_scalar_ty(ret) {
                 self.error(
-                    format!("extern \"C\" return type `{:?}` is unsupported; only int, float, and ptr are allowed (use `ptr_to_str` to bridge a returned `char*`)", ret),
+                    format!("extern \"C\" return type `{:?}` is unsupported; only a numeric type (any width)/char/ptr are allowed (use `ptr_to_str` to bridge a returned `char*`)", ret),
                     e.span,
                 );
             }
@@ -1247,6 +1325,10 @@ impl Checker {
     fn check_hashable_ty(&mut self, ty: &Ty, visited: &mut HashSet<String>) -> bool {
         match ty {
             Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Vec2 | Ty::Vec3 | Ty::Vec4 => true,
+            // Every explicit-width integer/float plus `char` is a plain
+            // fixed-size scalar, structurally comparable exactly like
+            // `Ty::Int`/`Ty::Float` above.
+            Ty::I8 | Ty::U8 | Ty::I16 | Ty::U16 | Ty::U32 | Ty::I64 | Ty::U64 | Ty::F64 | Ty::Char => true,
             // Every element's own type is already fully concrete here (no
             // named type to recurse-guard against, unlike `Ty::Named` below
             // -- a tuple can't be self-referential without going through a
@@ -1287,7 +1369,7 @@ impl Checker {
             _ => {
                 self.error(
                     format!(
-                        "`{:?}` cannot be used as a `Map`/`Set` key -- only i32/f32/bool/str/fieldless-enum/Vec2/Vec3/Vec4, \
+                        "`{:?}` cannot be used as a `Map`/`Set` key -- only a numeric type (any width)/bool/str/char/fieldless-enum/Vec2/Vec3/Vec4, \
                          or a struct composed entirely of such fields, are supported",
                         ty
                     ),
@@ -1337,8 +1419,24 @@ impl Checker {
                 None
             }
             Type::Named(name) => match name.as_str() {
-                "i32" | "i64" | "int" => Some(Ty::Int),
-                "f32" | "f64" | "float" => Some(Ty::Float),
+                "i32" | "int" => Some(Ty::Int),
+                "f32" | "float" => Some(Ty::Float),
+                // `docs/design.md`'s "Numeric widths and modes": every
+                // explicit-width integer/float, plus `char` (a Unicode
+                // scalar, distinct from a raw `str` byte). `i64`/`f64`
+                // previously aliased to `Ty::Int`/`Ty::Float` (Star's only
+                // widths until now) -- they're real, distinct 64-bit types
+                // as of this addition; no test/example in this repo relied
+                // on the old alias behavior.
+                "i8" => Some(Ty::I8),
+                "u8" => Some(Ty::U8),
+                "i16" => Some(Ty::I16),
+                "u16" => Some(Ty::U16),
+                "u32" => Some(Ty::U32),
+                "i64" => Some(Ty::I64),
+                "u64" => Some(Ty::U64),
+                "f64" => Some(Ty::F64),
+                "char" => Some(Ty::Char),
                 "String" | "str" => Some(Ty::Str),
                 "bool" => Some(Ty::Bool),
                 "Vec2" => Some(Ty::Vec2),
@@ -1940,6 +2038,15 @@ fn mangle_ty(ty: &Ty) -> String {
     match ty {
         Ty::Int => "i32".into(),
         Ty::Float => "f32".into(),
+        Ty::I8 => "i8".into(),
+        Ty::U8 => "u8".into(),
+        Ty::I16 => "i16".into(),
+        Ty::U16 => "u16".into(),
+        Ty::U32 => "u32".into(),
+        Ty::I64 => "i64".into(),
+        Ty::U64 => "u64".into(),
+        Ty::F64 => "f64".into(),
+        Ty::Char => "char".into(),
         Ty::Str => "str".into(),
         Ty::Bool => "bool".into(),
         Ty::Vec2 => "Vec2".into(),
@@ -2021,6 +2128,15 @@ fn ty_to_type(ty: &Ty) -> Type {
     match ty {
         Ty::Int => Type::Named("i32".into()),
         Ty::Float => Type::Named("f32".into()),
+        Ty::I8 => Type::Named("i8".into()),
+        Ty::U8 => Type::Named("u8".into()),
+        Ty::I16 => Type::Named("i16".into()),
+        Ty::U16 => Type::Named("u16".into()),
+        Ty::U32 => Type::Named("u32".into()),
+        Ty::I64 => Type::Named("i64".into()),
+        Ty::U64 => Type::Named("u64".into()),
+        Ty::F64 => Type::Named("f64".into()),
+        Ty::Char => Type::Named("char".into()),
         Ty::Str => Type::Named("str".into()),
         Ty::Bool => Type::Named("bool".into()),
         Ty::Vec2 => Type::Named("Vec2".into()),
@@ -2123,7 +2239,7 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
 
 fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
     match expr {
-        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Ident(..) | Expr::SelfExpr(..) => expr.clone(),
+        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Char(..) | Expr::Ident(..) | Expr::SelfExpr(..) => expr.clone(),
         Expr::FStr(parts, span) => Expr::FStr(
             parts.iter().map(|p| match p {
                 FStrExpr::Literal(s) => FStrExpr::Literal(s.clone()),
@@ -2200,6 +2316,9 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
         }
         Expr::RingNew { elem_ty, count, span } => {
             Expr::RingNew { elem_ty: subst_type(elem_ty, subst), count: *count, span: *span }
+        }
+        Expr::Cast { expr, ty, span } => {
+            Expr::Cast { expr: Box::new(subst_expr(expr, subst)), ty: subst_type(ty, subst), span: *span }
         }
     }
 }
@@ -2350,7 +2469,7 @@ fn scan_stmt_for_par_hazards(stmt: &Stmt, hazard: &mut bool, called: &mut HashSe
 
 fn scan_expr_for_par_hazards(expr: &Expr, hazard: &mut bool, called: &mut HashSet<String>) {
     match expr {
-        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Ident(..) | Expr::SelfExpr(..) => {}
+        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Char(..) | Expr::Ident(..) | Expr::SelfExpr(..) => {}
         Expr::FStr(parts, _) => {
             for p in parts {
                 if let FStrExpr::Expr(e) = p {
@@ -2423,6 +2542,7 @@ fn scan_expr_for_par_hazards(expr: &Expr, hazard: &mut bool, called: &mut HashSe
         // with only an (already-scanned, via the `StructLit` arm above)
         // empty `args` list).
         Expr::RingNew { .. } => {}
+        Expr::Cast { expr, .. } => scan_expr_for_par_hazards(expr, hazard, called),
     }
 }
 

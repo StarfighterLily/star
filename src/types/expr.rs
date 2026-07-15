@@ -36,6 +36,7 @@ impl Checker {
             Expr::Float(v, s) => Ok(TypedExpr::Float(*v, Ty::Float, *s)),
             Expr::Str(s, sp) => Ok(TypedExpr::Str(s.clone(), Ty::Str, *sp)),
             Expr::Bool(v, s) => Ok(TypedExpr::Bool(*v, Ty::Bool, *s)),
+            Expr::Char(c, s) => Ok(TypedExpr::Char(*c, Ty::Char, *s)),
             Expr::FStr(parts, s) => {
                 let mut typed_parts = Vec::new();
                 for part in parts {
@@ -577,6 +578,33 @@ impl Checker {
             Expr::RingNew { elem_ty, count, span } => {
                 let elem_ty = self.resolve_type(elem_ty).unwrap_or(Ty::Named("unknown".into()));
                 Ok(TypedExpr::RingNew { elem_ty, count: *count, span: *span })
+            }
+            Expr::Cast { expr, ty, span } => {
+                let inner = self.infer_expr(expr, vars)?;
+                let inner_ty = inner.clone().into_ty();
+                let target = self.resolve_type(ty).unwrap_or(Ty::Named("unknown".into()));
+                // `as` supports conversions between any two numeric types
+                // (narrowing/widening/sign-reinterpreting, matching Rust's
+                // own infallible truncating `as`) and between a numeric
+                // integer type and `char` (a bare codepoint reinterpretation
+                // -- like Rust's `u8 as char`/`u32 as char`, this trusts the
+                // caller to pass a valid codepoint rather than validating it,
+                // consistent with this compiler's existing lack of a
+                // fallible-conversion/`Result`-returning cast path).
+                let ok = (inner_ty.is_numeric() && target.is_numeric())
+                    || (inner_ty.is_numeric() && target == Ty::Char)
+                    || (inner_ty == Ty::Char && target.is_numeric())
+                    || (inner_ty == Ty::Char && target == Ty::Char);
+                if !ok && !Self::is_placeholder_ty(&inner_ty) && !Self::is_placeholder_ty(&target) {
+                    self.error(
+                        format!(
+                            "cannot cast `{:?}` as `{:?}` -- `as` only supports conversions between numeric types and `char`",
+                            inner_ty, target
+                        ),
+                        *span,
+                    );
+                }
+                Ok(TypedExpr::Cast { expr: Box::new(inner), ty: target, span: *span })
             }
         }
     }
@@ -1523,8 +1551,25 @@ impl Checker {
                 // type-check cleanly regardless, only to fail with an
                 // unlocated error once `emit_binop` actually saw it at
                 // codegen time.
-                let is_scalar = |t: &Ty| matches!(t, Ty::Int | Ty::Float);
-                if is_scalar(lhs_ty) && is_scalar(rhs_ty) {
+                let op_str = match op {
+                    BinOp::Eq => "==", BinOp::Ne => "!=",
+                    BinOp::Lt => "<", BinOp::Gt => ">",
+                    BinOp::Le => "<=", BinOp::Ge => ">=",
+                    _ => unreachable!("is_cmp already restricts op to these six"),
+                };
+                // The original `Int`/`Float` mixed-pair comparison is
+                // preserved exactly; every other numeric width requires an
+                // exact type match -- `docs/design.md`'s "Numeric widths and
+                // modes" treats `i8 == i16` etc. as a hard mismatch requiring
+                // an explicit `as` cast, not a silent implicit widening (the
+                // `Int`/`Float` pair is the one pre-existing exception, kept
+                // for backward compatibility). `char` supports equality/
+                // ordering against another `char` the same way, but never
+                // against a numeric type.
+                let legacy_int_float_pair = matches!((lhs_ty, rhs_ty), (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int));
+                if (lhs_ty.is_numeric() && rhs_ty.is_numeric() && (lhs_ty == rhs_ty || legacy_int_float_pair))
+                    || (*lhs_ty == Ty::Char && *rhs_ty == Ty::Char)
+                {
                     return Ty::Bool;
                 }
                 if *lhs_ty == Ty::Ptr && *rhs_ty == Ty::Ptr {
@@ -1533,12 +1578,16 @@ impl Checker {
                     }
                     return Ty::Bool;
                 }
-                let op_str = match op {
-                    BinOp::Eq => "==", BinOp::Ne => "!=",
-                    BinOp::Lt => "<", BinOp::Gt => ">",
-                    BinOp::Le => "<=", BinOp::Ge => ">=",
-                    _ => unreachable!("is_cmp already restricts op to these six"),
-                };
+                if lhs_ty.is_numeric() && rhs_ty.is_numeric() {
+                    self.error(
+                        format!(
+                            "`{}` between mismatched numeric types `{:?}` and `{:?}` -- use `as` to cast one side",
+                            op_str, lhs_ty, rhs_ty
+                        ),
+                        span,
+                    );
+                    return Ty::Bool;
+                }
                 self.error(
                     format!("`{}` is not supported between `{:?}` and `{:?}`", op_str, lhs_ty, rhs_ty),
                     span,
@@ -1555,22 +1604,37 @@ impl Checker {
             // the exact same class of bug the `is_cmp` branch above was
             // already hardened against; this mirrors that fix for `+ - * /
             // %`.
-            let is_scalar = |t: &Ty| matches!(t, Ty::Int | Ty::Float);
-            if !is_scalar(lhs_ty) || !is_scalar(rhs_ty) {
-                let op_str = match op {
-                    BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
-                    BinOp::Div => "/", BinOp::Rem => "%",
-                    _ => unreachable!("this branch only reaches Add/Sub/Mul/Div/Rem -- And/Or/comparisons return earlier"),
-                };
+            let op_str = match op {
+                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                BinOp::Div => "/", BinOp::Rem => "%",
+                _ => unreachable!("this branch only reaches Add/Sub/Mul/Div/Rem -- And/Or/comparisons return earlier"),
+            };
+            if !lhs_ty.is_numeric() || !rhs_ty.is_numeric() {
                 self.error(
                     format!("`{}` is not supported between `{:?}` and `{:?}`", op_str, lhs_ty, rhs_ty),
                     span,
                 );
+                return Ty::Int;
             }
-            return match (lhs_ty, rhs_ty) {
-                (Ty::Float, _) | (_, Ty::Float) => Ty::Float,
-                _ => Ty::Int,
-            };
+            if lhs_ty == rhs_ty {
+                return lhs_ty.clone();
+            }
+            // The original `Int`/`Float` mixed-pair promotion (`1 + 1.5 ==
+            // 2.5`) is preserved exactly; every other numeric width pairing
+            // is a hard mismatch (see the comparison branch above for the
+            // identical rule and rationale) -- `i8 + i64`, `u32 + f64`, etc.
+            // all require an explicit `as` cast on one side first.
+            if matches!((lhs_ty, rhs_ty), (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int)) {
+                return Ty::Float;
+            }
+            self.error(
+                format!(
+                    "`{}` between mismatched numeric types `{:?}` and `{:?}` -- use `as` to cast one side",
+                    op_str, lhs_ty, rhs_ty
+                ),
+                span,
+            );
+            return lhs_ty.clone();
         }
 
         if is_cmp {

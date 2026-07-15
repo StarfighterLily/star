@@ -24,6 +24,9 @@ pub enum TokenKind {
     // Literals.
     Int(i64),
     Float(f64),
+    /// A single-quoted char literal (`'a'`, `'\n'`), already unescaped -- a
+    /// Unicode scalar value, see `Ty::Char`.
+    Char(char),
     /// A plain string literal, contents already unescaped.
     Str(String),
     /// An f-string, split into literal and interpolation parts.
@@ -122,6 +125,7 @@ impl TokenKind {
             TokenKind::Dedent => "end of block".into(),
             TokenKind::Int(_) => "an integer literal".into(),
             TokenKind::Float(_) => "a float literal".into(),
+            TokenKind::Char(_) => "a char literal".into(),
             TokenKind::Str(_) => "a string literal".into(),
             TokenKind::FStr(_) => "an f-string literal".into(),
             TokenKind::Ident(name) => format!("identifier `{}`", name),
@@ -381,6 +385,7 @@ impl<'src> Lexer<'src> {
         match c {
             b'0'..=b'9' => self.scan_number(),
             b'"' => self.scan_string(start),
+            b'\'' => self.scan_char(start),
             c if c == b'f' && self.peek(1) == Some(b'"') => self.scan_fstring(start),
             c if is_ident_start(c) => self.scan_ident(),
             _ => self.scan_operator(),
@@ -477,6 +482,49 @@ impl<'src> Lexer<'src> {
             "unterminated string literal",
             Span::new(start, self.pos),
         ));
+    }
+
+    /// Scan a `'c'` char literal: exactly one (possibly escaped) codepoint
+    /// between single quotes -- see `Ty::Char`'s doc comment. Reuses
+    /// `scan_escape` (already shared with `scan_string`/`scan_fstring`) for
+    /// backslash escapes, so `'\n'`/`'\''`/etc. all work identically to their
+    /// string-literal spelling.
+    fn scan_char(&mut self, start: usize) {
+        self.pos += 1; // opening quote
+        if self.pos < self.bytes.len() && self.bytes[self.pos] == b'\'' {
+            self.errors.push(Diagnostic::error("empty char literal", Span::new(start, self.pos + 1)));
+            self.pos += 1;
+            return;
+        }
+        let ch = if self.pos < self.bytes.len() && self.bytes[self.pos] == b'\\' {
+            self.pos += 1;
+            self.scan_escape().unwrap_or('\0')
+        } else if self.pos < self.bytes.len() {
+            let c = self.current_char();
+            self.pos += self.current_char_len();
+            c
+        } else {
+            self.errors.push(Diagnostic::error("unterminated char literal", Span::new(start, self.pos)));
+            return;
+        };
+        if self.pos >= self.bytes.len() || self.bytes[self.pos] != b'\'' {
+            self.errors.push(Diagnostic::error(
+                "char literal must contain exactly one character (did you mean a string literal `\"...\"`?)",
+                Span::new(start, self.pos),
+            ));
+            // Recover by skipping to the closing quote (or line end) so one
+            // bad char literal doesn't cascade into unrelated errors for the
+            // rest of the line.
+            while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\'' && self.bytes[self.pos] != b'\n' {
+                self.pos += 1;
+            }
+            if self.pos < self.bytes.len() && self.bytes[self.pos] == b'\'' {
+                self.pos += 1;
+            }
+            return;
+        }
+        self.pos += 1; // closing quote
+        self.push(TokenKind::Char(ch), start, self.pos);
     }
 
     /// Scan an `f"..."` string, splitting `{expr}` holes from literal text.

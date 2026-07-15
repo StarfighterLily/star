@@ -287,6 +287,9 @@ impl Codegen {
                 format!("i8* {}", gep)
             }
             TypedExpr::Bool(v, _, _) => format!("i1 {}", if *v { "true" } else { "false" }),
+            // A bare 32-bit codepoint constant -- see `Ty::Char`'s doc comment.
+            TypedExpr::Char(c, _, _) => format!("i32 {}", *c as u32),
+            TypedExpr::Cast { expr, ty, .. } => self.emit_cast(expr, ty),
             TypedExpr::Ident { name, ty, .. } => {
                 // A plain top-level function name used as a value (never a
                 // local, so no alloca to load from) rather than called

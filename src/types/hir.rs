@@ -192,6 +192,8 @@ pub enum TypedExpr {
     Float(f64, Ty, Span),
     Str(String, Ty, Span),
     Bool(bool, Ty, Span),
+    /// A char literal, see [`crate::ast::Expr::Char`]. `ty` is always `Ty::Char`.
+    Char(char, Ty, Span),
     Ident { name: String, ty: Ty, span: Span },
     SelfExpr(Ty, Span),
     Field { base: Box<TypedExpr>, field: String, ty: Ty, span: Span },
@@ -302,6 +304,10 @@ pub enum TypedExpr {
     /// `crate::ast::Expr::GenRefIndex`'s doc comment for why this shares
     /// that AST node with `GenRef<T>`/`List<T>`/`[T; N]`/`Ring<T,N>` indexing.
     TableIndex { base: Box<TypedExpr>, index: Box<TypedExpr>, ty: Ty, span: Span },
+    /// `expr as Type`, see [`crate::ast::Expr::Cast`]. `ty` is the resolved
+    /// target type (already validated as a legal numeric/`char` conversion
+    /// by `Checker::infer_expr`'s `Expr::Cast` arm).
+    Cast { expr: Box<TypedExpr>, ty: Ty, span: Span },
     Error(Ty),
 }
 
@@ -383,6 +389,7 @@ impl TypedExpr {
     pub fn into_ty(self) -> Ty {
         match self {
             TypedExpr::Int(_, ty, _) | TypedExpr::Float(_, ty, _) | TypedExpr::Str(_, ty, _) | TypedExpr::Bool(_, ty, _)
+            | TypedExpr::Char(_, ty, _) | TypedExpr::Cast { ty, .. }
             | TypedExpr::Field { ty, .. } | TypedExpr::Call { ty, .. } | TypedExpr::Binary { ty, .. }
             | TypedExpr::Unary { ty, .. } | TypedExpr::Match { ty, .. } | TypedExpr::StructLit { ty, .. }
             | TypedExpr::FStr(_, ty, _) | TypedExpr::GenRefIndex { ty, .. } | TypedExpr::EnumVariant { ty, .. }
@@ -417,7 +424,9 @@ impl TypedExpr {
     pub fn span(&self) -> Span {
         match self {
             TypedExpr::Int(_, _, s) | TypedExpr::Float(_, _, s) | TypedExpr::Str(_, _, s) | TypedExpr::Bool(_, _, s)
+            | TypedExpr::Char(_, _, s)
             | TypedExpr::FStr(_, _, s) => *s,
+            TypedExpr::Cast { span, .. } |
             TypedExpr::Ident { span, .. } | TypedExpr::Field { span, .. } | TypedExpr::Call { span, .. }
             | TypedExpr::Binary { span, .. } | TypedExpr::Unary { span, .. } | TypedExpr::Match { span, .. }
             | TypedExpr::StructLit { span, .. } | TypedExpr::If { span, .. } | TypedExpr::GenRefCreate { span, .. }

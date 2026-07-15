@@ -361,6 +361,11 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>, local_s
         | TypedExpr::Float(..)
         | TypedExpr::Str(..)
         | TypedExpr::Bool(..)
+        | TypedExpr::Char(..)
+        // A cast's target is always a numeric/`char` type, never `Ty::Named`
+        // -- so like the scalar literals above, it can never carry a
+        // frame-local struct's identity onward.
+        | TypedExpr::Cast { .. }
         | TypedExpr::FStr(..)
         | TypedExpr::SelfExpr(..)
         | TypedExpr::EnumVariant { .. }

@@ -6,10 +6,30 @@ use crate::types::*;
 
 use super::{format_f32_literal, Codegen};
 
+/// The minimum value of a signed `iN` integer, as an LLVM decimal literal --
+/// `emit_checked_sized_int_div`'s generalization of `emit_checked_int_div`'s
+/// hardcoded `-2147483648` (`i32::MIN`) to every signed width this compiler
+/// now has.
+fn signed_min_literal(width: u32) -> &'static str {
+    match width {
+        8 => "-128",
+        16 => "-32768",
+        32 => "-2147483648",
+        64 => "-9223372036854775808",
+        _ => unreachable!("only 8/16/32/64-bit integer widths exist"),
+    }
+}
+
 impl Codegen {
-    /// Plain scalar (Int/Float, possibly mixed) binary op — this is where the
-    /// pre-existing i32-only bug is fixed: Float operands now get `f`-opcodes,
-    /// and mixed Int/Float operands are promoted to Float first.
+    /// Plain scalar (Int/Float, possibly mixed, or any single sized-integer/
+    /// `F64` type) binary op — this is where the pre-existing i32-only bug
+    /// was fixed: Float operands get `f`-opcodes, and mixed Int/Float
+    /// operands are promoted to Float first. Every explicit-width integer
+    /// type (`i8`/`u8`/`i16`/`u16`/`u32`/`i64`/`u64`) and `f64` added since
+    /// then routes to its own generalized path below -- see
+    /// `emit_sized_int_binop`/`emit_f64_binop`; `Checker::infer_binop_ty`
+    /// already guarantees `lty == rty` for any pair that isn't the original
+    /// `(Int, Float)` mix, so those are the only shapes this ever sees.
     fn emit_scalar_binop(&mut self, lhs: &str, lty: &Ty, rhs: &str, rty: &Ty, op: BinOp) -> String {
         let is_cmp = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge);
         if matches!(lty, Ty::Int) && matches!(rty, Ty::Int) {
@@ -43,6 +63,14 @@ impl Codegen {
             self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
             return format!("{} {}", if is_cmp { "i1" } else { "i32" }, reg);
         }
+        if lty == rty {
+            if lty.int_shape().is_some() {
+                return self.emit_sized_int_binop(lhs, lty, rhs, rty, op);
+            }
+            if matches!(lty, Ty::F64) {
+                return self.emit_f64_binop(lhs, rhs, op);
+            }
+        }
         let l = self.promote_to_float(lhs, lty);
         let r = self.promote_to_float(rhs, rty);
         let reg = self.tmp_name();
@@ -56,6 +84,259 @@ impl Codegen {
         };
         self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
         format!("{} {}", if is_cmp { "i1" } else { "float" }, reg)
+    }
+
+    /// Binary op between two same-width, same-signedness sized integers
+    /// (`i8`/`u8`/`i16`/`u16`/`u32`/`i64`/`u64` -- every explicit width added
+    /// since the original `i32`-only `Ty::Int`, see `Ty::int_shape`).
+    /// `+`/`-`/`*` trap on overflow (`emit_checked_sized_int_arith`, via
+    /// LLVM's `llvm.{s,u}{add,sub,mul}.with.overflow.iN` intrinsics) and `/`/
+    /// `%` trap on a zero divisor (and, for a signed width, the lone
+    /// `MIN / -1` overflow case) -- `docs/design.md`'s "Numeric widths and
+    /// modes" keeps trap-on-overflow as the default rather than `Ty::Int`'s
+    /// original silent two's-complement wraparound.
+    fn emit_sized_int_binop(&mut self, lhs: &str, lty: &Ty, rhs: &str, rty: &Ty, op: BinOp) -> String {
+        let (width, signed) = lty.int_shape().expect("caller guarantees lty is a sized integer type");
+        let is_cmp = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge);
+        let l = self.untag(lhs, lty);
+        let r = self.untag(rhs, rty);
+        let ity = format!("i{}", width);
+        if matches!(op, BinOp::Div | BinOp::Rem) {
+            return self.emit_checked_sized_int_div(&l, &r, width, signed, op);
+        }
+        if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+            return self.emit_checked_sized_int_arith(&l, &r, width, signed, op);
+        }
+        let reg = self.tmp_name();
+        let opcode = match op {
+            BinOp::Eq => format!("icmp eq {}", ity),
+            BinOp::Ne => format!("icmp ne {}", ity),
+            BinOp::Lt => format!("icmp {} {}", if signed { "slt" } else { "ult" }, ity),
+            BinOp::Gt => format!("icmp {} {}", if signed { "sgt" } else { "ugt" }, ity),
+            BinOp::Le => format!("icmp {} {}", if signed { "sle" } else { "ule" }, ity),
+            BinOp::Ge => format!("icmp {} {}", if signed { "sge" } else { "uge" }, ity),
+            BinOp::And | BinOp::Or => {
+                self.err("internal error: `&&`/`||` should be short-circuit lowered, not reach emit_sized_int_binop", Span::dummy());
+                format!("add {}", ity)
+            }
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => unreachable!("handled above"),
+        };
+        self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
+        format!("{} {}", if is_cmp { "i1" } else { &ity }, reg)
+    }
+
+    /// `+`/`-`/`*` on bare (untagged) `iN` registers/literals, trapping on
+    /// overflow via LLVM's `llvm.{s,u}{add,sub,mul}.with.overflow.iN`
+    /// intrinsics (declared unconditionally for every width/signedness/op
+    /// combination this needs, see `Codegen::emit_builtins`) rather than
+    /// `Ty::Int`'s original silent wraparound -- see `Ty::I8`'s doc comment
+    /// for why this is the default for every explicit-width type. Mirrors
+    /// `emit_checked_int_div`'s check-then-abort-with-a-message shape.
+    fn emit_checked_sized_int_arith(&mut self, l: &str, r: &str, width: u32, signed: bool, op: BinOp) -> String {
+        let ity = format!("i{}", width);
+        let kind = match op {
+            BinOp::Add => "add",
+            BinOp::Sub => "sub",
+            BinOp::Mul => "mul",
+            _ => unreachable!("caller only routes Add/Sub/Mul here"),
+        };
+        let sign_prefix = if signed { "s" } else { "u" };
+        let intrinsic = format!("llvm.{}{}.with.overflow.{}", sign_prefix, kind, ity);
+        let pair_ty = format!("{{ {}, i1 }}", ity);
+        let pair = self.tmp_name();
+        self.line(&format!("  {} = call {} @{}({} {}, {} {})", pair, pair_ty, intrinsic, ity, l, ity, r));
+        let value = self.tmp_name();
+        self.line(&format!("  {} = extractvalue {} {}, 0", value, pair_ty, pair));
+        let overflow = self.tmp_name();
+        self.line(&format!("  {} = extractvalue {} {}, 1", overflow, pair_ty, pair));
+
+        let fail_label = self.block_label("int_overflow_fail");
+        let ok_label = self.block_label("int_overflow_ok");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", overflow, fail_label, ok_label));
+
+        self.open_block(&fail_label);
+        let opname = match op { BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*", _ => unreachable!() };
+        let signedness = if signed { "signed" } else { "unsigned" };
+        let msg = format!("star runtime error: {} {}-bit integer overflow in `{}` operation\n", signedness, width, opname);
+        self.emit_abort_with_message(&msg);
+
+        self.open_block(&ok_label);
+        format!("{} {}", ity, value)
+    }
+
+    /// `l / r` or `l % r` on bare (untagged) `iN` registers/literals for any
+    /// sized integer width/signedness -- generalizes `emit_checked_int_div`'s
+    /// `i32`-only guard (a zero divisor always traps; the signed `MIN / -1`
+    /// overflow case only applies to a signed width, unsigned division has no
+    /// equivalent trap).
+    fn emit_checked_sized_int_div(&mut self, l: &str, r: &str, width: u32, signed: bool, op: BinOp) -> String {
+        let ity = format!("i{}", width);
+        let is_zero = self.tmp_name();
+        self.line(&format!("  {} = icmp eq {} {}, 0", is_zero, ity, r));
+        let is_bad = if signed {
+            let min_lit = signed_min_literal(width);
+            let is_min = self.tmp_name();
+            self.line(&format!("  {} = icmp eq {} {}, {}", is_min, ity, l, min_lit));
+            let is_neg1 = self.tmp_name();
+            self.line(&format!("  {} = icmp eq {} {}, -1", is_neg1, ity, r));
+            let is_overflow = self.tmp_name();
+            self.line(&format!("  {} = and i1 {}, {}", is_overflow, is_min, is_neg1));
+            let bad = self.tmp_name();
+            self.line(&format!("  {} = or i1 {}, {}", bad, is_zero, is_overflow));
+            bad
+        } else {
+            is_zero
+        };
+
+        let fail_label = self.block_label("int_div_fail");
+        let ok_label = self.block_label("int_div_ok");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_bad, fail_label, ok_label));
+
+        self.open_block(&fail_label);
+        let opname = if op == BinOp::Div { "/" } else { "%" };
+        let overflow_note = if signed { format!(" (or i{}::MIN {} -1 overflow)", width, opname) } else { String::new() };
+        let msg = format!("star runtime error: integer `{}` by zero{}\n", opname, overflow_note);
+        self.emit_abort_with_message(&msg);
+
+        self.open_block(&ok_label);
+        let reg = self.tmp_name();
+        let opcode = match (op, signed) {
+            (BinOp::Div, true) => "sdiv", (BinOp::Div, false) => "udiv",
+            (BinOp::Rem, true) => "srem", (BinOp::Rem, false) => "urem",
+            _ => unreachable!("caller only routes Div/Rem here"),
+        };
+        self.line(&format!("  {} = {} {} {}, {}", reg, opcode, ity, l, r));
+        format!("{} {}", ity, reg)
+    }
+
+    /// `f64`/`f64` binary op -- same opcode shape as the `float`/`float` path
+    /// above, just at `double` width. Never traps: float arithmetic
+    /// saturates to +/-inf per IEEE-754, matching `Ty::Float`'s existing
+    /// behavior (only the sized *integer* types added alongside `f64` trap
+    /// on overflow).
+    fn emit_f64_binop(&mut self, lhs: &str, rhs: &str, op: BinOp) -> String {
+        let is_cmp = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge);
+        let l = self.untag(lhs, &Ty::F64);
+        let r = self.untag(rhs, &Ty::F64);
+        let reg = self.tmp_name();
+        let opcode = match op {
+            BinOp::Add => "fadd double", BinOp::Sub => "fsub double", BinOp::Mul => "fmul double",
+            BinOp::Div => "fdiv double", BinOp::Rem => "frem double",
+            BinOp::Eq => "fcmp oeq double", BinOp::Ne => "fcmp one double",
+            BinOp::Lt => "fcmp olt double", BinOp::Gt => "fcmp ogt double",
+            BinOp::Le => "fcmp ole double", BinOp::Ge => "fcmp oge double",
+            BinOp::And | BinOp::Or => { self.err("internal error: `&&`/`||` should be short-circuit lowered, not reach emit_f64_binop", Span::dummy()); "fadd double" }
+        };
+        self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
+        format!("{} {}", if is_cmp { "i1" } else { "double" }, reg)
+    }
+
+    /// `==`/`!=`/`<`/`>`/`<=`/`>=` between two `char` values -- codepoints
+    /// compare as plain unsigned 32-bit integers (see `Ty::Char`'s doc
+    /// comment); no arithmetic (`+`/`-`/`*`/`/`/`%`) is supported (mirrors
+    /// Rust's `char`, which isn't `Add`/`Sub`/etc.) -- `Checker::infer_binop_ty`
+    /// already rejects any non-comparison `char` operator before this is
+    /// ever reached, so the `_` arm here is unreachable in a checked program.
+    fn emit_char_binop(&mut self, lhs: &str, rhs: &str, op: BinOp) -> String {
+        let l = self.untag(lhs, &Ty::Char);
+        let r = self.untag(rhs, &Ty::Char);
+        let reg = self.tmp_name();
+        let opcode = match op {
+            BinOp::Eq => "icmp eq i32", BinOp::Ne => "icmp ne i32",
+            BinOp::Lt => "icmp ult i32", BinOp::Gt => "icmp ugt i32",
+            BinOp::Le => "icmp ule i32", BinOp::Ge => "icmp uge i32",
+            _ => { self.err("only comparisons are supported on `char` values", Span::dummy()); "icmp eq i32" }
+        };
+        self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
+        format!("i1 {}", reg)
+    }
+
+    /// Emit a global message string, `puts` it, then `exit(1)`+`unreachable`
+    /// -- the shared "check first, abort with a message" tail every runtime
+    /// guard in this module (`emit_checked_sized_int_div`,
+    /// `emit_checked_sized_int_arith`) ends with once its bad-input branch is
+    /// taken. `msg` must already end in `\n` (matching every call site's
+    /// existing convention).
+    fn emit_abort_with_message(&mut self, msg: &str) {
+        let g = self.global_name();
+        let escaped = msg.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
+        self.global_defs.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", g, msg.len() + 1, escaped));
+        let msg_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0", msg_ptr, msg.len() + 1, msg.len() + 1, g));
+        self.line(&format!("  call i32 @puts(i8* {})", msg_ptr));
+        self.line("  call void @exit(i32 1)");
+        self.line("  unreachable");
+    }
+
+    /// `expr as ty` -- see `Expr::Cast`'s doc comment. Dispatches on whether
+    /// each side is integer-shaped (`Ty::int_shape`, treating `Ty::Char` as
+    /// an unsigned 32-bit int -- see its own doc comment) or float-shaped
+    /// (`Ty::Float`/`Ty::F64`); `Checker::infer_expr`'s `Expr::Cast` arm has
+    /// already restricted `target`/the source type to a legal numeric/`char`
+    /// pairing, so every reachable combination is one of the four arms below.
+    pub(super) fn emit_cast(&mut self, expr: &TypedExpr, target: &Ty) -> String {
+        let src_ty = self.expr_ty(expr);
+        let val = self.emit_expr(expr);
+        let bare = self.untag(&val, &src_ty);
+        let target_llty = self.llvm_ty(target);
+
+        let src_shape = if src_ty == Ty::Char { Some((32u32, false)) } else { src_ty.int_shape() };
+        let tgt_shape = if *target == Ty::Char { Some((32u32, false)) } else { target.int_shape() };
+        let src_is_float = matches!(src_ty, Ty::Float | Ty::F64);
+        let tgt_is_float = matches!(target, Ty::Float | Ty::F64);
+
+        match (src_shape, tgt_shape, src_is_float, tgt_is_float) {
+            // int/char -> int/char: same width is a bit-preserving relabel
+            // (e.g. `i32 as u32`, or `char`<->its underlying `i32`); a wider
+            // target sign/zero-extends per the *source*'s own signedness; a
+            // narrower target truncates.
+            (Some((sw, ssigned)), Some((tw, _)), _, _) => {
+                if sw == tw {
+                    format!("{} {}", target_llty, bare)
+                } else if tw > sw {
+                    let reg = self.tmp_name();
+                    let op = if ssigned { "sext" } else { "zext" };
+                    self.line(&format!("  {} = {} i{} {} to i{}", reg, op, sw, bare, tw));
+                    format!("{} {}", target_llty, reg)
+                } else {
+                    let reg = self.tmp_name();
+                    self.line(&format!("  {} = trunc i{} {} to i{}", reg, sw, bare, tw));
+                    format!("{} {}", target_llty, reg)
+                }
+            }
+            // int/char -> float: `sitofp`/`uitofp` per the source's signedness.
+            (Some((sw, ssigned)), None, _, true) => {
+                let reg = self.tmp_name();
+                let op = if ssigned { "sitofp" } else { "uitofp" };
+                self.line(&format!("  {} = {} i{} {} to {}", reg, op, sw, bare, target_llty));
+                format!("{} {}", target_llty, reg)
+            }
+            // float -> int/char: `fptosi`/`fptoui` per the *target*'s signedness.
+            (None, Some((tw, tsigned)), true, _) => {
+                let src_llty = self.llvm_ty(&src_ty);
+                let reg = self.tmp_name();
+                let op = if tsigned { "fptosi" } else { "fptoui" };
+                self.line(&format!("  {} = {} {} {} to i{}", reg, op, src_llty, bare, tw));
+                format!("{} {}", target_llty, reg)
+            }
+            // float -> float: `fpext` (f32 -> f64) or `fptrunc` (f64 -> f32);
+            // same type is a no-op passthrough.
+            (None, None, true, true) => {
+                if src_ty == *target {
+                    format!("{} {}", target_llty, bare)
+                } else {
+                    let src_llty = self.llvm_ty(&src_ty);
+                    let reg = self.tmp_name();
+                    let op = if matches!(target, Ty::F64) { "fpext" } else { "fptrunc" };
+                    self.line(&format!("  {} = {} {} {} to {}", reg, op, src_llty, bare, target_llty));
+                    format!("{} {}", target_llty, reg)
+                }
+            }
+            _ => {
+                self.err("internal error: unsupported cast combination reached codegen", Span::dummy());
+                format!("{} {}", target_llty, bare)
+            }
+        }
     }
 
     /// `l / r` or `l % r` on bare (untagged) `i32` registers/literals, with
@@ -242,8 +523,14 @@ impl Codegen {
     }
 
     pub(super) fn emit_binop(&mut self, lhs: &str, lty: &Ty, rhs: &str, rty: &Ty, op: BinOp) -> String {
-        if matches!(lty, Ty::Int | Ty::Float) && matches!(rty, Ty::Int | Ty::Float) {
+        if lty.is_numeric() && rty.is_numeric() {
             return self.emit_scalar_binop(lhs, lty, rhs, rty, op);
+        }
+        // `char == char` / ordering -- see `Ty::Char`'s doc comment;
+        // `Checker::infer_binop_ty` already restricts this to the six
+        // comparison operators.
+        if matches!((lty, rty), (Ty::Char, Ty::Char)) {
+            return self.emit_char_binop(lhs, rhs, op);
         }
         // `ptr == ptr` / `ptr != ptr` -- e.g. `is_null`-style handle checks
         // against a value other than the `null_ptr()` builtin.

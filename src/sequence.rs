@@ -378,7 +378,8 @@ fn scan_expr_for_nested_yield(expr: &Expr, errors: &mut Vec<Diagnostic>) {
         // `List<T>()`/`Map<K,V>()`/`Set<T>()`, plain `StructLit`s with an
         // empty `args` list already covered by the `StructLit` arm above).
         Expr::RingNew { .. } => {}
-        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Ident(..) | Expr::SelfExpr(..) => {}
+        Expr::Cast { expr, .. } => scan_expr_for_nested_yield(expr, errors),
+        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Char(..) | Expr::Ident(..) | Expr::SelfExpr(..) => {}
     }
 }
 
@@ -495,7 +496,7 @@ fn rewrite_pattern(pattern: &Pattern, hoist: &HashSet<String>) -> Pattern {
 fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
     match expr {
         Expr::Ident(name, span) if hoist.contains(name) => self_field(name, *span),
-        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Ident(..) | Expr::SelfExpr(..) => {
+        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Char(..) | Expr::Ident(..) | Expr::SelfExpr(..) => {
             expr.clone()
         }
         Expr::FStr(parts, span) => Expr::FStr(
@@ -588,5 +589,6 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
         // No `Ident`s inside a `Ring<T, N>()` construction to rewrite -- its
         // only fields are a syntactic `Type` and a compile-time constant.
         Expr::RingNew { elem_ty, count, span } => Expr::RingNew { elem_ty: elem_ty.clone(), count: *count, span: *span },
+        Expr::Cast { expr, ty, span } => Expr::Cast { expr: Box::new(rewrite_expr(expr, hoist)), ty: ty.clone(), span: *span },
     }
 }
