@@ -12341,3 +12341,124 @@ fn rejects_fixed_with_frac_not_less_than_bits() {
     let diags = Driver::check(&module).expect_err("should fail to type-check");
     assert!(diags.iter().any(|d| d.message.contains("fractional-bit count must be less than its bit width")), "{:?}", diags);
 }
+
+// ===== Bug-hunting round: unary operator / f-string span audit ============
+
+/// `Expr::Unary`'s `Neg` arm used to accept *any* operand type -- it just
+/// preserved whatever type the operand already had, with no legality check
+/// at all (unlike binary `-`, which already routes through
+/// `infer_binop_ty`'s real type-compatibility check). `-s` on a `str` (or a
+/// struct, `List<T>`, `GenRef<T>`, ...) type-checked cleanly and only failed
+/// later with an unlocated "unsupported operand types for binary operator"
+/// error once `Codegen::emit_binop` actually saw it -- confirmed via a real
+/// `star build` before this fix. Fixed by reusing `infer_binop_ty`'s own
+/// `Sub` legality check (`-x` lowers to exactly `0 - x`), which both rejects
+/// this with a real source location and preserves every previously-legal
+/// case (numeric scalars of every width, `Wrapping<T>`, `Fixed<Bits,Frac>`,
+/// `Vec2`/`Vec3`/`Vec4`, `Mat4`).
+#[test]
+fn rejects_unary_negation_of_a_str_value() {
+    let src = "fn main():\n    let s: str = \"hello\"\n    let neg = -s\n    println(neg)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("negating a `str` should be a type error");
+    assert!(diags.iter().any(|d| d.message.contains("`-` is not supported between") && d.message.contains("Str")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_unary_negation_of_a_struct_value() {
+    let src = "struct Point:\n    x: i32\nfn main():\n    let p = Point(1)\n    let neg = -p\n    println(f\"{neg.x}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("negating a struct should be a type error");
+    assert!(diags.iter().any(|d| d.message.contains("`-` is not supported between")), "{:?}", diags);
+}
+
+/// `Codegen::emit_unary`'s `Neg` case built its `0` operand for `0 - x` via
+/// an unconditional `format!("{} 0", self.llvm_ty(&operand_ty))` -- correct
+/// for a scalar (`i32 0`), but a vector/matrix's LLVM type is `<N x float>`/
+/// `[4 x <4 x float>]`, so this produced a bare scalar `0` used as a vector
+/// operand (`fsub <2 x float> 0, %t11`), malformed IR `clang` rejected
+/// outright. Confirmed via a real `star build` failure before this fix.
+/// Fixed by reusing `Codegen::zero_value` (already correct for every type,
+/// including `zeroinitializer` for vectors/matrices) instead of the
+/// ad-hoc scalar-only fallback.
+#[test]
+fn runtime_unary_negation_of_vectors_end_to_end() {
+    let src = "fn main():\n    \
+               let v2: Vec2 = Vec2(1.0, -2.5)\n    let n2 = -v2\n    println(f\"{n2.x} {n2.y}\")\n    \
+               let v3: Vec3 = Vec3(1.0, 2.0, 3.0)\n    let n3 = -v3\n    println(f\"{n3.x} {n3.y} {n3.z}\")\n    \
+               let v4: Vec4 = Vec4(1.0, 2.0, 3.0, 4.0)\n    let n4 = -v4\n    println(f\"{n4.x} {n4.y} {n4.z} {n4.w}\")\n";
+    let output = compile_and_run("unary_neg_vectors", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["-1.000000 2.500000", "-1.000000 -2.000000 -3.000000", "-1.000000 -2.000000 -3.000000 -4.000000"],
+        "{}",
+        stdout
+    );
+}
+
+/// `Expr::Unary`'s `Not` arm used to return `Ty::Bool` unconditionally
+/// regardless of the operand's real type -- `Codegen::emit_unary`'s `Not`
+/// case unconditionally emits `xor i1 true, <operand>`, assuming an `i1`
+/// operand, so `!5`/`!"x"`/`!my_struct` type-checked cleanly and only failed
+/// later with an unlocated "defined with type 'iN' but expected 'i1'"
+/// `clang` verifier error. Confirmed via a real `star build` failure before
+/// this fix. Fixed by requiring the operand to actually be `bool`.
+#[test]
+fn rejects_not_operator_on_a_non_bool_value() {
+    let src = "fn main():\n    let x: i32 = 5\n    let y = !x\n    println(f\"{y}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("`!`/`not` on a non-`bool` value should be a type error");
+    assert!(diags.iter().any(|d| d.message.contains("`!`/`not` operand must be `bool`")), "{:?}", diags);
+}
+
+#[test]
+fn runtime_not_operator_on_bool_still_works_end_to_end() {
+    let src = "fn main():\n    let b: bool = true\n    println(f\"{!b}\")\n    println(f\"{not false}\")\n";
+    let output = compile_and_run("not_operator_bool", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["false", "true"], "{}", stdout);
+}
+
+/// A checker error for an expression inside an f-string interpolation hole
+/// (`f"{...}"`) used to always report a bogus span, typically landing near
+/// the very start of the file regardless of where the hole actually was.
+/// `Parser::lower_fstring` re-lexes each hole's *extracted substring*
+/// through a fresh `Lexer` to parse it -- that sub-lexer's spans started
+/// counting from byte 0 as if the hole were its own standalone one-off
+/// file, but those byte offsets were then looked straight up against the
+/// *outer* file's real, much larger source text when a diagnostic was
+/// rendered, landing on unrelated (usually very early) content. Confirmed
+/// via a real `Driver::check` before this fix always reporting `span.start
+/// == 0` here regardless of the hole's actual position. Fixed by threading
+/// the hole's real starting byte offset (already known to
+/// `Lexer::scan_fstring`) through a new `Lexer::new_with_offset`.
+#[test]
+fn checker_error_inside_fstring_hole_reports_correct_span() {
+    let src = "fn main():\n    let a: List<i32> = List<i32>()\n    let b: List<i32> = List<i32>()\n    println(f\"{a == b}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("`==` on `List<i32>` should be a type error");
+    let d = diags.iter().find(|d| d.message.contains("is not supported between")).expect("expected the `==` type error");
+    let expected_start = src.find("a == b").unwrap();
+    assert_eq!(d.span.start, expected_start, "span should point at `a == b` inside the f-string hole: {:?}", diags);
+}
+
+/// Same fix, one level deeper: a hole nested inside another hole
+/// (`f"{f"{...}"}"`) must fold *both* offsets together (the inner hole's
+/// offset within the already-offset outer hole, plus that outer hole's own
+/// offset within the real file) -- `Lexer::scan_fstring` folds in its own
+/// `base_offset` when recording a nested hole's starting position for
+/// exactly this reason.
+#[test]
+fn checker_error_inside_nested_fstring_hole_reports_correct_span() {
+    let src = "fn main():\n    let a: List<i32> = List<i32>()\n    let b: List<i32> = List<i32>()\n    println(f\"outer {f\"inner {a == b}\"}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("`==` on `List<i32>` should be a type error");
+    let d = diags.iter().find(|d| d.message.contains("is not supported between")).expect("expected the `==` type error");
+    let expected_start = src.find("a == b").unwrap();
+    assert_eq!(d.span.start, expected_start, "span should point at `a == b` inside the nested f-string hole: {:?}", diags);
+}

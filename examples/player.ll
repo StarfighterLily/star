@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,15 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -34,6 +43,43 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare i8 @llvm.fptosi.sat.i8.f32(float)
+declare i8 @llvm.fptosi.sat.i8.f64(double)
+declare i8 @llvm.fptoui.sat.i8.f32(float)
+declare i8 @llvm.fptoui.sat.i8.f64(double)
+declare i16 @llvm.fptosi.sat.i16.f32(float)
+declare i16 @llvm.fptosi.sat.i16.f64(double)
+declare i16 @llvm.fptoui.sat.i16.f32(float)
+declare i16 @llvm.fptoui.sat.i16.f64(double)
+declare i32 @llvm.fptosi.sat.i32.f32(float)
+declare i32 @llvm.fptosi.sat.i32.f64(double)
+declare i32 @llvm.fptoui.sat.i32.f32(float)
+declare i32 @llvm.fptoui.sat.i32.f64(double)
+declare i64 @llvm.fptosi.sat.i64.f32(float)
+declare i64 @llvm.fptosi.sat.i64.f64(double)
+declare i64 @llvm.fptoui.sat.i64.f32(float)
+declare i64 @llvm.fptoui.sat.i64.f64(double)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -111,8 +157,8 @@ done:
 define void @Player__take_damage(%Player* %self, i32 %amount) {
 entry:
   %t0 = alloca %Player*
-  store %Player* %self, %Player** %t0
   %t1 = alloca i32
+  store %Player* %self, %Player** %t0
   store i32 %amount, i32* %t1
   %t2 = load i32, i32* %t1
   %t3 = load %Player*, %Player** %t0
@@ -127,24 +173,24 @@ entry:
   %t11 = load i32, i32* %t10
   br label %match_scrutinee_13
 match_scrutinee_13:
-  %t14 = icmp sle i32 %t11, 0
-  br i1 %t14, label %match_then_0, label %match_next_0
-match_then_0:
-  %t15 = load %Player*, %Player** %t0
-  %t16 = getelementptr inbounds %Player, %Player* %t15, i32 0, i32 2
-  %t17 = load i8*, i8** %t16
-  %t18 = load i8*, i8** %t16
-  call void @star_rc_retain(i8* %t18)
-  call void @star_rc_release(i8* %t17)
-  %t19 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.0, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t19, i8* %t17)
+  %t16 = icmp sle i32 %t11, 0
+  br i1 %t16, label %match_then_0_14, label %match_next_0_15
+match_then_0_14:
+  %t17 = load %Player*, %Player** %t0
+  %t18 = getelementptr inbounds %Player, %Player* %t17, i32 0, i32 2
+  %t19 = load i8*, i8** %t18
+  %t20 = load i8*, i8** %t18
+  call void @star_rc_retain(i8* %t20)
+  call void @star_rc_release(i8* %t19)
+  %t21 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.0, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t21, i8* %t19)
   br label %match_end_12
-match_next_0:
-  %t20 = load %Player*, %Player** %t0
-  %t21 = getelementptr inbounds %Player, %Player* %t20, i32 0, i32 0
-  %t22 = load i32, i32* %t21
-  %t23 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.1, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t23, i32 %t22)
+match_next_0_15:
+  %t24 = load %Player*, %Player** %t0
+  %t25 = getelementptr inbounds %Player, %Player* %t24, i32 0, i32 0
+  %t26 = load i32, i32* %t25
+  %t27 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.1, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t27, i32 %t26)
   br label %match_end_12
 match_end_12:
   ret void
@@ -162,32 +208,29 @@ entry:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  store i32 %.argc, i32* @star.argc
-  store i8** %.argv, i8*** @star.argv
   %t0 = alloca %Player
   %t1 = alloca %Player
+  store i32 %.argc, i32* @star.argc
+  store i8** %.argv, i8*** @star.argv
   %t2 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 0
   store i32 100, i32* %t2
-  %t3 = sitofp i32 0 to float
-  %t4 = insertelement <3 x float> undef, float %t3, i32 0
-  %t5 = sitofp i32 0 to float
-  %t6 = insertelement <3 x float> %t4, float %t5, i32 1
-  %t7 = sitofp i32 0 to float
-  %t8 = insertelement <3 x float> %t6, float %t7, i32 2
-  %t9 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 1
-  store <3 x float> %t8, <3 x float>* %t9
-  %t10 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.2, i64 0, i32 2, i64 0
-  %t11 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 2
-  store i8* %t10, i8** %t11
-  %t12 = load %Player, %Player* %t1
-  store %Player %t12, %Player* %t0
-  %t13 = call i32 @Player__remaining_health(%Player* %t0)
-  %t14 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.3, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t14, i32 %t13)
+  %t3 = insertelement <3 x float> undef, float 0x0000000000000000, i32 0
+  %t4 = insertelement <3 x float> %t3, float 0x0000000000000000, i32 1
+  %t5 = insertelement <3 x float> %t4, float 0x0000000000000000, i32 2
+  %t6 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 1
+  store <3 x float> %t5, <3 x float>* %t6
+  %t7 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.2, i64 0, i32 2, i64 0
+  %t8 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 2
+  store i8* %t7, i8** %t8
+  %t9 = load %Player, %Player* %t1
+  store %Player %t9, %Player* %t0
+  %t10 = call i32 @Player__remaining_health(%Player* %t0)
+  %t11 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.3, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t11, i32 %t10)
   call void @Player__take_damage(%Player* %t0, i32 150)
-  %t16 = getelementptr inbounds %Player, %Player* %t0, i32 0, i32 2
-  %t17 = load i8*, i8** %t16
-  call void @star_rc_release(i8* %t17)
+  %t13 = getelementptr inbounds %Player, %Player* %t0, i32 0, i32 2
+  %t14 = load i8*, i8** %t13
+  call void @star_rc_release(i8* %t14)
   ret i32 0
 }
 

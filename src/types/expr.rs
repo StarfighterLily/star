@@ -339,8 +339,38 @@ impl Checker {
                 // `-x` preserves the operand's own numeric type (Int stays
                 // Int, Float stays Float) rather than always widening to Int.
                 let ty = match op {
-                    UnOp::Neg => operand_expr.clone().into_ty(),
-                    UnOp::Not => Ty::Bool,
+                    // Reuse binary `-`'s own type-legality check (`Neg`
+                    // lowers to exactly `0 - x` in `Codegen::emit_unary`) so
+                    // an operand type that doesn't support subtraction
+                    // (`str`, a struct, `List<T>`, `GenRef<T>`, ...) is
+                    // rejected here with a real source location instead of
+                    // silently passing the checker and only failing later
+                    // with an unlocated "unsupported operand types" codegen
+                    // error -- the exact same class of bug `infer_binop_ty`'s
+                    // own doc comments describe already being fixed for
+                    // binary `+ - * / %` and comparisons.
+                    UnOp::Neg => {
+                        let operand_ty = operand_expr.clone().into_ty();
+                        self.infer_binop_ty(&BinOp::Sub, &operand_ty, &operand_ty, *span)
+                    }
+                    UnOp::Not => {
+                        // `Codegen::emit_unary`'s `Not` case unconditionally
+                        // emits `xor i1 true, <operand>`, assuming the
+                        // operand is already `i1` -- the checker used to
+                        // return `Ty::Bool` here regardless of the operand's
+                        // real type, so `!5`/`!"x"`/`!my_struct` type-checked
+                        // cleanly and only failed later with an unlocated
+                        // "defined with type 'iN' but expected 'i1'" `clang`
+                        // error. Same class of bug as `Neg` just above.
+                        let operand_ty = operand_expr.clone().into_ty();
+                        if operand_ty != Ty::Bool && !Self::is_placeholder_ty(&operand_ty) {
+                            self.error(
+                                format!("`!`/`not` operand must be `bool`, found `{:?}`", operand_ty),
+                                *span,
+                            );
+                        }
+                        Ty::Bool
+                    }
                 };
                 Ok(TypedExpr::Unary { op: *op, operand: Box::new(operand_expr), ty, span: *span })
             }

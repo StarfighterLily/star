@@ -756,8 +756,22 @@ impl Parser {
         for part in parts {
             match part {
                 FStrPart::Literal(s) => out.push(FStrExpr::Literal(s)),
-                FStrPart::Expr(src) => {
-                    let tokens = match Lexer::new(&src).tokenize() {
+                FStrPart::Expr(src, offset) => {
+                    // `Lexer::new_with_offset`, not `Lexer::new`: this `src`
+                    // is just the hole's extracted substring, so a plain
+                    // `Lexer::new` would number its tokens' spans from byte 0
+                    // as if the hole were its own standalone file --
+                    // `offset` (the hole's real starting byte in the outer
+                    // file, threaded through from `Lexer::scan_fstring`)
+                    // corrects every span this produces back to the outer
+                    // file's coordinates, so a checker/codegen error inside
+                    // an interpolation (`f"{a == b}"` where `==` isn't
+                    // defined for `a`/`b`'s type) points at the real `{...}`
+                    // location instead of wherever that small, hole-relative
+                    // offset happened to land when misread against the outer
+                    // file's much larger source text (previously, always
+                    // somewhere near the very start of the file).
+                    let tokens = match Lexer::new_with_offset(&src, offset).tokenize() {
                         Ok(t) => t,
                         Err(mut errs) => {
                             self.errors.append(&mut errs);

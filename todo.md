@@ -62,6 +62,94 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Bug-hunting round following `Wrapping<T>`/`Fixed<Bits,Frac>` landing (the "Expanded
+types 5" feature round, not separately logged here -- see `docs/design.md`'s "Numeric
+widths and modes" section for its full spec). Scope: an initial deep audit of every
+exhaustive-match/whitelist touch point the new types added (parser, checker, codegen,
+`modules.rs`/`sequence.rs` rename/rewrite passes, `frame_analysis`/`par_analysis`),
+confirming their integration into collections (`List`/`Map`/`Table`/`Ring`/`Array`),
+structs, `arena`/`GenRef`, reflection, and the checked-arithmetic trap/wrap paths was
+all correct end-to-end (it was -- no bugs found there); then real `star build`+run
+probing of adjacent, previously-unaudited surface area, which surfaced four confirmed
+bugs of a different kind than usual for this project -- not gaps in new-type plumbing,
+but two standing checker holes around the *unary* operators (binary `+ - * / %` and
+comparisons have long had real type-legality checks with located diagnostics; unary
+`-`/`!` never did) plus one long-lived, wide-reaching diagnostic-location bug affecting
+every checker/codegen error raised for an expression inside an f-string interpolation
+hole. 7 new tests in `tests/frontend.rs` (798 total, all green); all 50 buildable
+examples still `star build` cleanly (`examples/geometry_lib.star` has no `main` by
+design, a library module never meant to link standalone; `examples/tcp_socket.star`
+needs its own `-l ws2_32`, unchanged from every prior round) -- notably including
+`examples/player.star`, whose `Vec3(0, 0, 0)` int-literal-vs-`f32`-field mismatch had
+been re-confirmed as "pre-existing, unrelated" in every prior round's own audit without
+ever actually being fixed; fixed here (two one-line literal changes to `0.0`) since it's
+a real, trivially-fixable build failure and there was no remaining reason to keep
+reporting it instead of just closing it out. Every example's `.exe`/`.ll` rebuilt against
+the fixed compiler.
+
+Four bugs fixed:
+
+1. **Unary `-` had no operand-type check at all** (`Checker::infer_expr`'s
+   `Expr::Unary`/`UnOp::Neg` arm) -- it simply reused whatever type the operand already
+   had (`operand_expr.into_ty()`), with none of binary `-`'s real legality checking
+   (`infer_binop_ty`, which already has located, well-tested rejections for `str`,
+   structs, `List<T>`, mismatched pairs, ...). So `-s` on a `str` (or a struct, a
+   `List<T>`, a `GenRef<T>`, ...) type-checked cleanly and only failed later with an
+   unlocated `codegen error: unsupported operand types for binary operator` once
+   `Codegen::emit_binop` actually saw it (`Codegen::emit_unary`'s `Neg` case lowers `-x`
+   to exactly `0 - x` through that same function) -- confirmed via a real `star build`
+   on `let neg = -s` where `s: str` before this fix, reproducing precisely that
+   diagnostic with no file/line at all. Fixed by routing the checker's `Neg` arm through
+   `infer_binop_ty(&BinOp::Sub, &operand_ty, &operand_ty, span)` instead, which both
+   rejects unsupported operands with a real source location and preserves every
+   previously-legal case for free (every numeric width, `Wrapping<T>`, `Fixed<Bits,Frac>`,
+   `Vec2`/`Vec3`/`Vec4`, `Mat4`) since `infer_binop_ty` already handles all of those
+   for `Sub`.
+2. **Unary `-` on a vector/matrix built malformed zero-literal IR** (`Codegen::emit_unary`'s
+   `Neg` case) -- `Codegen::zero_value` already produces the right zero constant for every
+   type (notably `zeroinitializer` for `Vec2`/`Vec3`/`Vec4`/`Mat4`), but `emit_unary`'s own
+   ad-hoc zero-literal builder was `Ty::Float => "float 0.0"`/`Ty::F64 => "double 0.0"`/
+   everything else `format!("{} 0", self.llvm_ty(ty))` -- correct for a scalar (`i32 0`),
+   but for e.g. `Vec2` (`<2 x float>`) this produced the bare scalar literal `<2 x float>
+   0` as an `fsub` operand, IR `clang` rejects outright (`fsub <2 x float> 0, %t11` --
+   "integer constant must have integer type"). This was reachable even *before* fix #1
+   above, since the checker already let `-v` through for a vector (`infer_binop_ty`'s
+   `is_vec()`/`is_mat()` branch legitimately allows `Vec2 - Vec2`) -- confirmed via a real
+   `star build` failure on `-v2` where `v2: Vec2` before this fix. Fixed by reusing
+   `Codegen::zero_value` (already correct, already used elsewhere for exactly this
+   purpose -- zero-initializing struct fields) instead of the ad-hoc fallback.
+3. **Unary `!`/`not` had no operand-type check at all** -- the same class of gap as #1,
+   just for `Not`: the checker returned `Ty::Bool` unconditionally regardless of the
+   operand's real type, while `Codegen::emit_unary`'s `Not` case unconditionally emits
+   `xor i1 true, <operand>`, assuming the operand is already `i1`. So `!5`/`!"x"`/
+   `!my_struct` type-checked cleanly and only failed later with an unlocated `clang`
+   verifier error (`defined with type 'i32' but expected 'i1'`) -- confirmed via a real
+   `star build` on `!x` where `x: i32` before this fix. Fixed by requiring the operand to
+   actually be `Ty::Bool`, with a located error otherwise.
+4. **Every checker/codegen diagnostic for an expression inside an f-string interpolation
+   hole (`f"{...}"`) reported a bogus source location** -- the single highest-value fix
+   this round, since it silently degraded diagnostic quality for *any* error anywhere
+   inside *any* `f"{...}"` hole in the entire language, not a narrow one-construct bug.
+   `Parser::lower_fstring` re-lexes/re-parses each hole's *already-extracted substring*
+   (`Lexer::scan_fstring` slices it out of the outer source and hands the parser just
+   that text) through a fresh `Lexer::new`, whose spans number from byte 0 as if that
+   substring were its own standalone one-off file -- but those byte offsets were then
+   looked up directly against the *outer* file's real, much longer source text whenever
+   a diagnostic was rendered (`diagnostics::line_col`), landing on unrelated content
+   (typically very early in the file, since a hole's own small byte range rarely lines up
+   with anything meaningful once misread against a bigger file). Confirmed via a real
+   `Driver::check` on `println(f"{a == b}")` (`a`/`b: List<i32>`, `==` undefined for
+   `List<T>`) reporting `1:1` -- the file's very first line -- instead of the hole's real
+   location, before this fix. Fixed by threading the hole's real starting byte offset
+   (already computed by `Lexer::scan_fstring` as `expr_start`, previously discarded) through
+   a new `Lexer::new_with_offset`/`Lexer::span` (added `base_offset` field, folded into
+   every span the lexer emits -- tokens *and* its own diagnostics, e.g. an unterminated
+   string/char literal inside a hole) so every span the hole's re-lex produces already
+   lands in the outer file's real coordinates. Nested holes (`f"{f"{...}"}"`) fold both
+   offsets together correctly since the inner hole's `scan_fstring` call runs on a lexer
+   whose own `base_offset` is already the outer hole's offset.
+
+## Previous round:
 Bug-hunting round (not a feature round, following the same shape as the prior one):
 four parallel deep audits — numeric types/casts/overflow-traps + the type checker,
 `List`/`Map`/`Set`/`Table`/`Ring`/`Array` collection codegen, the memory model
@@ -197,7 +285,7 @@ the release call itself is well-formed IR in every shape. Fixed everywhere by
 reusing each function's already-computed `clean_val` (untagged) instead of the
 raw `val` parameter.
 
-## Previous round:
+## Two rounds ago:
 Bug-hunting round (not a feature round): four parallel deep audits across memory/RC/
 arena codegen, collection (`Map`/`Set`/`Table`/`Ring`/`Array`) codegen, concurrency
 (`par`/`swarm`/`sequence`) plus the type checker, and lexer/parser/modules/file-IO,
@@ -324,7 +412,7 @@ the scratch buffer (and its manual `strcpy`/`strcat`/`free`) entirely. Separatel
 `par`/`swarm` body as an "unsupported mutation target" even though it's exactly as safe
 as the three sibling collection types right next to it.
 
-## Two rounds ago:
+## Three rounds ago:
 Feature round tackling `docs/design.md` §2, "Numeric widths and modes" -- the largest
 remaining lift the Type System section had left, per the previous round's own closing
 note. Added `i8`/`u8`/`i16`/`u16`/`u32`/`i64`/`u64`/`f64` alongside the original `i32`/

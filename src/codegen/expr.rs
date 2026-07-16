@@ -512,11 +512,16 @@ impl Codegen {
                     // other sized-int arithmetic op already has (`-i8::MIN`
                     // traps, exactly like `0i8 - i8::MIN` would).
                     UnOp::Neg => {
-                        let zero = match &operand_ty {
-                            Ty::Float => "float 0.0".to_string(),
-                            Ty::F64 => "double 0.0".to_string(),
-                            _ => format!("{} 0", self.llvm_ty(&operand_ty)),
-                        };
+                        // `zero_value` already knows the right zero constant
+                        // for every type this can legally reach (checker-
+                        // enforced via `infer_binop_ty`'s own `Sub` legality
+                        // check) -- notably `Vec2`/`Vec3`/`Vec4`/`Mat4`, whose
+                        // zero is `zeroinitializer`, not the bare `0` the
+                        // previous unconditional `format!("{} 0", ...)`
+                        // fallback produced (`fsub <2 x float> 0, %t11` is
+                        // malformed IR `clang` rejects outright -- a scalar
+                        // `0` literal has no vector type to infer).
+                        let zero = format!("{} {}", self.llvm_ty(&operand_ty), self.zero_value(&operand_ty));
                         self.emit_binop(&zero, &operand_ty, &o, &operand_ty, BinOp::Sub)
                     }
                     UnOp::Not => {

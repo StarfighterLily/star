@@ -205,8 +205,15 @@ impl TokenKind {
 pub enum FStrPart {
     /// Literal characters between `{ ... }` holes.
     Literal(String),
-    /// Raw source of an interpolation `{expr}`, re-lexed/parsed later.
-    Expr(String),
+    /// Raw source of an interpolation `{expr}`, re-lexed/parsed later, plus
+    /// the byte offset in the *outer* file where this substring begins --
+    /// needed so the re-lexed tokens' spans (which `Lexer::new` would
+    /// otherwise start counting from 0, as if the hole were its own
+    /// standalone file) land on the right place in the real file instead of
+    /// wherever that small, hole-relative offset happens to fall in the
+    /// outer source when a diagnostic looks it up (see
+    /// `Lexer::new_with_offset`).
+    Expr(String, usize),
 }
 
 /// A token with its source span.
@@ -233,10 +240,24 @@ pub struct Lexer<'src> {
     bracket_depth: usize,
     /// Accumulated errors (lexing continues where possible).
     errors: Vec<Diagnostic>,
+    /// Added to every emitted span's `start`/`end` -- 0 for a real top-level
+    /// file, or the hole's byte offset in the *outer* file when this lexer
+    /// is re-lexing an f-string interpolation's extracted substring (see
+    /// `Lexer::new_with_offset`), so spans/diagnostics for tokens inside a
+    /// `f"{...}"` hole point at the hole's real location in the outer file
+    /// instead of being reported as if the hole's substring were its own
+    /// standalone file starting at byte 0.
+    base_offset: usize,
 }
 
 impl<'src> Lexer<'src> {
     pub fn new(src: &'src str) -> Self {
+        Self::new_with_offset(src, 0)
+    }
+
+    /// Like `Lexer::new`, but every span this lexer emits is shifted by
+    /// `base_offset` -- see `Lexer::base_offset`'s doc comment.
+    pub fn new_with_offset(src: &'src str, base_offset: usize) -> Self {
         Self {
             src,
             bytes: src.as_bytes(),
@@ -245,6 +266,7 @@ impl<'src> Lexer<'src> {
             tokens: Vec::new(),
             bracket_depth: 0,
             errors: Vec::new(),
+            base_offset,
         }
     }
 
@@ -343,7 +365,7 @@ impl<'src> Lexer<'src> {
                 if *self.indents.last().unwrap() != width {
                     self.errors.push(Diagnostic::error(
                         "inconsistent indentation",
-                        Span::new(line_start, self.pos),
+                        self.span(line_start, self.pos),
                     ));
                 }
             }
@@ -429,7 +451,7 @@ impl<'src> Lexer<'src> {
                 Err(_) => {
                     self.errors.push(Diagnostic::error(
                         format!("integer literal `{}` is too large (max 9223372036854775807)", text),
-                        Span::new(start, self.pos),
+                        self.span(start, self.pos),
                     ));
                     TokenKind::Int(0)
                 }
@@ -475,7 +497,7 @@ impl<'src> Lexer<'src> {
         }
         self.errors.push(Diagnostic::error(
             "unterminated string literal",
-            Span::new(start, self.pos),
+            self.span(start, self.pos),
         ));
     }
 
@@ -487,7 +509,7 @@ impl<'src> Lexer<'src> {
     fn scan_char(&mut self, start: usize) {
         self.pos += 1; // opening quote
         if self.pos < self.bytes.len() && self.bytes[self.pos] == b'\'' {
-            self.errors.push(Diagnostic::error("empty char literal", Span::new(start, self.pos + 1)));
+            self.errors.push(Diagnostic::error("empty char literal", self.span(start, self.pos + 1)));
             self.pos += 1;
             return;
         }
@@ -499,13 +521,13 @@ impl<'src> Lexer<'src> {
             self.pos += self.current_char_len();
             c
         } else {
-            self.errors.push(Diagnostic::error("unterminated char literal", Span::new(start, self.pos)));
+            self.errors.push(Diagnostic::error("unterminated char literal", self.span(start, self.pos)));
             return;
         };
         if self.pos >= self.bytes.len() || self.bytes[self.pos] != b'\'' {
             self.errors.push(Diagnostic::error(
                 "char literal must contain exactly one character (did you mean a string literal `\"...\"`?)",
-                Span::new(start, self.pos),
+                self.span(start, self.pos),
             ));
             // Recover by skipping to the closing quote (or line end) so one
             // bad char literal doesn't cascade into unrelated errors for the
@@ -606,7 +628,12 @@ impl<'src> Lexer<'src> {
                         self.pos += 1;
                     }
                     let expr = self.src[expr_start..self.pos].to_string();
-                    parts.push(FStrPart::Expr(expr));
+                    // Absolute offset in the *original* top-level file (not
+                    // just `self.src`, which is itself already just a hole's
+                    // extracted substring when this lexer is re-lexing a
+                    // nested f-string -- `f"{f"{...}"}"` -- so `self`'s own
+                    // `base_offset` must be folded in too).
+                    parts.push(FStrPart::Expr(expr, expr_start + self.base_offset));
                     self.pos += 1; // consume closing }
                 }
                 b'\\' => {
@@ -624,7 +651,7 @@ impl<'src> Lexer<'src> {
         }
         self.errors.push(Diagnostic::error(
             "unterminated f-string literal",
-            Span::new(start, self.pos),
+            self.span(start, self.pos),
         ));
     }
 
@@ -661,7 +688,7 @@ impl<'src> Lexer<'src> {
             other => {
                 self.errors.push(Diagnostic::error(
                     format!("unknown escape sequence '\\{}'", other),
-                    Span::new(esc_start, self.pos),
+                    self.span(esc_start, self.pos),
                 ));
                 other
             }
@@ -748,7 +775,7 @@ impl<'src> Lexer<'src> {
                 self.pos += self.current_char_len().max(1);
                 self.errors.push(Diagnostic::error(
                     format!("unexpected character '{}'", ch),
-                    Span::new(start, self.pos),
+                    self.span(start, self.pos),
                 ));
                 return;
             }
@@ -772,7 +799,16 @@ impl<'src> Lexer<'src> {
     }
 
     fn push(&mut self, kind: TokenKind, start: usize, end: usize) {
-        self.tokens.push(Token { kind, span: Span::new(start, end) });
+        self.tokens.push(Token { kind, span: self.span(start, end) });
+    }
+
+    /// A `Span` shifted by `self.base_offset` -- see its doc comment. Every
+    /// span this lexer produces (tokens and diagnostics alike) must go
+    /// through this rather than `Span::new` directly, so an error raised
+    /// while re-lexing an f-string hole's extracted substring still points
+    /// at the hole's real location in the outer file.
+    fn span(&self, start: usize, end: usize) -> Span {
+        Span::new(start + self.base_offset, end + self.base_offset)
     }
 }
 

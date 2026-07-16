@@ -8,7 +8,7 @@ struct Vec3:
 
 struct Player:
     mut health: i32 = 100
-    position: Vec3 = Vec3(0, 0, 0)
+    position: Vec3 = Vec3(0.0, 0.0, 0.0)
     name: String
 
 trait Damageable:
@@ -30,6 +30,6 @@ impl Player:
         self.health
 
 fn main():
-    let mut p = Player(health = 100, position = Vec3(0, 0, 0), name = "Hero")
+    let mut p = Player(health = 100, position = Vec3(0.0, 0.0, 0.0), name = "Hero")
     println(f"remaining: {p.remaining_health()}")
     p.take_damage(150)
