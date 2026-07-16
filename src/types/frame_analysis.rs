@@ -368,6 +368,11 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>, local_s
         // -- so like the scalar literals above, it can never carry a
         // frame-local struct's identity onward.
         | TypedExpr::Cast { .. }
+        // Both lower to a plain scalar (see their own `Ty` doc comments) --
+        // can never carry a frame-local struct's identity onward, same
+        // reasoning as `Cast` just above.
+        | TypedExpr::WrappingNew { .. }
+        | TypedExpr::FixedNew { .. }
         | TypedExpr::FStr(..)
         | TypedExpr::SelfExpr(..)
         | TypedExpr::EnumVariant { .. }

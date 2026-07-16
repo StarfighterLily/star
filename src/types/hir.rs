@@ -308,6 +308,12 @@ pub enum TypedExpr {
     /// target type (already validated as a legal numeric/`char` conversion
     /// by `Checker::infer_expr`'s `Expr::Cast` arm).
     Cast { expr: Box<TypedExpr>, ty: Ty, span: Span },
+    /// `Wrapping<T>(value)`, see [`crate::ast::Expr::WrappingNew`]. `ty` is
+    /// always `Ty::Wrapping(inner_ty)`.
+    WrappingNew { inner_ty: Ty, value: Box<TypedExpr>, span: Span },
+    /// `Fixed<Bits, Frac>(value)`, see [`crate::ast::Expr::FixedNew`]. `ty`
+    /// is always `Ty::Fixed(bits, frac)`.
+    FixedNew { bits: u32, frac: u32, value: Box<TypedExpr>, span: Span },
     Error(Ty),
 }
 
@@ -401,6 +407,8 @@ impl TypedExpr {
             TypedExpr::GenRefCreate { inner_ty, is_handle, .. } => {
                 if is_handle { Ty::Handle(Box::new(inner_ty)) } else { Ty::GenRef(Box::new(inner_ty)) }
             }
+            TypedExpr::WrappingNew { inner_ty, .. } => Ty::Wrapping(Box::new(inner_ty)),
+            TypedExpr::FixedNew { bits, frac, .. } => Ty::Fixed(bits, frac),
             TypedExpr::ListNew { elem_ty, .. } => Ty::List(Box::new(elem_ty)),
             TypedExpr::ListLit { elem_ty, .. } => Ty::List(Box::new(elem_ty)),
             TypedExpr::MapNew { key_ty, val_ty, .. } => Ty::Map(Box::new(key_ty), Box::new(val_ty)),
@@ -440,7 +448,8 @@ impl TypedExpr {
             | TypedExpr::ArrayLen { span, .. } | TypedExpr::RingNew { span, .. }
             | TypedExpr::RingMethod { span, .. } | TypedExpr::RingIndex { span, .. }
             | TypedExpr::TableNew { span, .. } | TypedExpr::TableMethod { span, .. }
-            | TypedExpr::TableIndex { span, .. } => *span,
+            | TypedExpr::TableIndex { span, .. }
+            | TypedExpr::WrappingNew { span, .. } | TypedExpr::FixedNew { span, .. } => *span,
             TypedExpr::SelfExpr(_, s) => *s,
             TypedExpr::Error(_) => Span::dummy(),
         }

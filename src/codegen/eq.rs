@@ -147,6 +147,15 @@ impl Codegen {
                 }
                 acc.unwrap_or_else(|| "true".into())
             }
+            // Both lower to a plain fixed-size scalar (see their own `Ty`
+            // doc comments) -- structurally comparable exactly like any
+            // other sized integer, same as the `I8`/.../`Char` arm above.
+            Ty::Wrapping(inner) => self.emit_eq_body(a, b, inner),
+            Ty::Fixed(bits, _) => {
+                let r = self.tmp_name();
+                self.line(&format!("  {} = icmp eq i{} {}, {}", r, bits, a, b));
+                r
+            }
             // Unreachable in practice -- `Checker::check_hashable_ty` rejects
             // every other `Ty` (GenRef/List/Map/Set/Closure/Ptr/Mat4) as a
             // Map/Set key/element type before codegen ever sees one here.

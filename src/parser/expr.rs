@@ -164,27 +164,45 @@ impl Parser {
                     let span = expr.span().to(self.prev_span());
                     expr = Expr::Call { callee: Box::new(expr), args, span };
                 }
-                // GenRef<T>(value) / Handle<T>(value) - handle generic type
-                // args before parens. `Handle<T>` is `Ty::Handle`'s surface
-                // syntax: the exact same generation-checked construction as
-                // `GenRef<T>`, just a nominally distinct wrapper type for
-                // engine resources rather than arena entities (see
-                // `Ty::Handle`'s doc comment) -- so it reuses this same
-                // parsing path and AST node, tagged via `is_handle`.
+                // GenRef<T>(value) / Handle<T>(value) / Wrapping<T>(value) -
+                // handle generic type args before parens. `Handle<T>` is
+                // `Ty::Handle`'s surface syntax: the exact same
+                // generation-checked construction as `GenRef<T>`, just a
+                // nominally distinct wrapper type for engine resources rather
+                // than arena entities (see `Ty::Handle`'s doc comment) -- so
+                // it reuses this same parsing path and AST node, tagged via
+                // `is_handle`. `Wrapping<T>` shares the identical `<T>(value)`
+                // shape but produces a different, dedicated `Expr::WrappingNew`
+                // node (see its doc comment) since it has nothing to do with
+                // arenas/generation-checking.
                 TokenKind::Lt => {
                     if let Expr::Ident(name, _) = &expr {
+                        // `Fixed<Bits, Frac>(value)` has a different `<...>`
+                        // shape (two bare integer literals, not one `Type`),
+                        // so it can't share `parse_type_args` -- mirrors
+                        // `Ring<T, N>`'s own dedicated probe/parse pair (see
+                        // `parse_ring_new`/`probe_ring_shape`).
+                        if name == "Fixed" {
+                            match self.parse_fixed_new(expr.span()) {
+                                Ok(Some(fixed_expr)) => return Some(fixed_expr),
+                                Err(()) => return None,
+                                Ok(None) => {}
+                            }
+                        }
                         let is_handle = name == "Handle";
-                        if name == "GenRef" || is_handle {
-                            let kind = if is_handle { "Handle" } else { "GenRef" };
+                        let is_wrapping = name == "Wrapping";
+                        if name == "GenRef" || is_handle || is_wrapping {
+                            let kind = if is_handle { "Handle" } else if is_wrapping { "Wrapping" } else { "GenRef" };
                             // Speculative, like `try_parse_type_args`: a
                             // capitalized identifier followed by `<` is just
                             // as often a comparison on a shadowed local
                             // (`if GenRef < 5:`) as a real `GenRef<T>(..)`/
-                            // `Handle<T>(..)` construction. Only commit once
-                            // `<...>` parses cleanly *and* is immediately
-                            // followed by `(` (the only valid continuation);
-                            // otherwise restore the cursor/diagnostics and
-                            // fall through to ordinary comparison handling.
+                            // `Handle<T>(..)`/`Wrapping<T>(..)` construction.
+                            // Only commit once `<...>` parses cleanly *and* is
+                            // immediately followed by `(` (the only valid
+                            // continuation); otherwise restore the
+                            // cursor/diagnostics and fall through to ordinary
+                            // comparison handling.
                             let checkpoint = self.pos;
                             let err_checkpoint = self.errors.len();
                             match self.parse_type_args() {
@@ -214,6 +232,9 @@ impl Parser {
                                     }
                                     let value = args.into_iter().next().unwrap();
                                     let span = expr.span().to(self.prev_span());
+                                    if is_wrapping {
+                                        return Some(Expr::WrappingNew { inner_ty, value: Box::new(value), span });
+                                    }
                                     return Some(Expr::GenRefCreate {
                                         inner_ty,
                                         value: Box::new(value),
@@ -360,6 +381,70 @@ impl Parser {
             return None;
         }
         Some((elem, count, count_span))
+    }
+
+    /// Speculatively parse `Fixed<Bits, Frac>(value)`'s `<Bits, Frac>`
+    /// turbofish, mirroring [`parse_ring_new`]/`probe_ring_shape` exactly
+    /// (two bare integer literals instead of one `Type`, so this can't share
+    /// `parse_type_args` either). Assumes the cursor is at `<`, immediately
+    /// after having consumed the `Fixed` identifier. Returns `Ok(None)` on a
+    /// shape mismatch (having already restored the cursor/diagnostics), so
+    /// the caller can fall through to ordinary identifier/comparison
+    /// handling; `Err(())` means a real, committed syntax error.
+    fn parse_fixed_new(&mut self, start: Span) -> Result<Option<Expr>, ()> {
+        let checkpoint = self.pos;
+        let err_checkpoint = self.errors.len();
+
+        let shape = self.probe_fixed_shape();
+        if shape.is_none() || !self.at(&TokenKind::LParen) {
+            self.pos = checkpoint;
+            self.errors.truncate(err_checkpoint);
+            return Ok(None);
+        }
+        let (bits, bits_span, frac, frac_span) = shape.unwrap();
+
+        if bits <= 0 {
+            self.error("`Fixed<Bits, Frac>`'s bit width must be a positive integer", bits_span);
+            return Err(());
+        }
+        if frac < 0 {
+            self.error("`Fixed<Bits, Frac>`'s fractional-bit count cannot be negative", frac_span);
+            return Err(());
+        }
+        let args = self.parse_call_args().ok_or(())?;
+        let call_span = start.to(self.prev_span());
+        if args.len() != 1 {
+            self.error(format!("`Fixed<Bits, Frac>(..)` expects exactly one argument, found {}", args.len()), call_span);
+            return Err(());
+        }
+        let value = args.into_iter().next().unwrap();
+        let full = start.to(self.prev_span());
+        Ok(Some(Expr::FixedNew { bits: bits as u32, frac: frac as u32, value: Box::new(value), span: full }))
+    }
+
+    /// The shape-only half of [`parse_fixed_new`]'s speculation: `< IntLiteral
+    /// , IntLiteral >`, with no validation of either literal's sign (left to
+    /// the caller) and no argument-list parsing. Returns `None` on any shape
+    /// mismatch; the caller restores the cursor/diagnostics in that case.
+    fn probe_fixed_shape(&mut self) -> Option<(i64, Span, i64, Span)> {
+        self.advance(); // consume '<'
+        let bits_span = self.peek_span();
+        let TokenKind::Int(bits) = self.peek_kind() else {
+            return None;
+        };
+        self.advance();
+        if !self.eat(&TokenKind::Comma) {
+            return None;
+        }
+        let frac_span = self.peek_span();
+        let TokenKind::Int(frac) = self.peek_kind() else {
+            return None;
+        };
+        self.advance();
+        if !self.eat(&TokenKind::Gt) {
+            return None;
+        }
+        Some((bits, bits_span, frac, frac_span))
     }
 
     pub(super) fn parse_call_args(&mut self) -> Option<Vec<Expr>> {
@@ -518,27 +603,37 @@ impl Parser {
                 // mirroring the `GenRef<T>`/`Handle<T>` special case below --
                 // `<` is otherwise never treated as a binary operator by
                 // `peek_binop`, so this can't misfire on a real comparison.
-                // `GenRef`/`Handle` themselves are excluded: their own
-                // `<T>(value)` syntax is handled entirely by `parse_postfix`
-                // below, and must see the `<` untouched.
-                let type_args = if name != "GenRef" && name != "Handle" && starts_uppercase(&name) && self.at(&TokenKind::Lt) {
+                // `GenRef`/`Handle`/`Wrapping`/`Fixed` themselves are
+                // excluded: their own `<...>(value)` syntax is handled
+                // entirely by `parse_postfix` below, and must see the `<`
+                // untouched.
+                let type_args = if name != "GenRef" && name != "Handle" && name != "Wrapping" && name != "Fixed"
+                    && starts_uppercase(&name) && self.at(&TokenKind::Lt)
+                {
                     self.try_parse_type_args()
                 } else {
                     Vec::new()
                 };
                 if self.at(&TokenKind::LParen) && starts_uppercase(&name) {
-                    // `GenRef`/`Handle` always require an explicit type
-                    // argument; without one this would otherwise fall
-                    // through to the generic `StructLit` case below and
-                    // construct a nonexistent `GenRef`/`Handle` struct, only
-                    // failing later with a confusing, unrelated error at its
-                    // first use.
+                    // `GenRef`/`Handle`/`Wrapping`/`Fixed` always require an
+                    // explicit type argument; without one this would
+                    // otherwise fall through to the generic `StructLit` case
+                    // below and construct a nonexistent struct, only failing
+                    // later with a confusing, unrelated error at its first use.
                     if name == "GenRef" {
                         self.error("`GenRef` requires an explicit type argument: `GenRef<T>(value)`", span);
                         return None;
                     }
                     if name == "Handle" {
                         self.error("`Handle` requires an explicit type argument: `Handle<T>(value)`", span);
+                        return None;
+                    }
+                    if name == "Wrapping" {
+                        self.error("`Wrapping` requires an explicit type argument: `Wrapping<T>(value)`", span);
+                        return None;
+                    }
+                    if name == "Fixed" {
+                        self.error("`Fixed` requires explicit type arguments: `Fixed<Bits, Frac>(value)`", span);
                         return None;
                     }
                     let args = self.parse_call_args()?;

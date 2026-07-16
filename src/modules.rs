@@ -261,6 +261,8 @@ fn rename_type(ty: &Type, names: &HashMap<String, String>) -> Type {
         Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| rename_type(e, names)).collect()),
         Type::Array(elem, count) => Type::Array(Box::new(rename_type(elem, names)), *count),
         Type::Ring(elem, count) => Type::Ring(Box::new(rename_type(elem, names)), *count),
+        // `Bits`/`Frac` are bare integer literals, no name to rename.
+        Type::Fixed(bits, frac) => Type::Fixed(*bits, *frac),
     }
 }
 
@@ -453,6 +455,14 @@ fn rename_expr(expr: &Expr, names: &HashMap<String, String>) -> Expr {
         }
         Expr::Cast { expr, ty, span } => {
             Expr::Cast { expr: Box::new(rename_expr(expr, names)), ty: rename_type(ty, names), span: *span }
+        }
+        Expr::WrappingNew { inner_ty, value, span } => Expr::WrappingNew {
+            inner_ty: rename_type(inner_ty, names),
+            value: Box::new(rename_expr(value, names)),
+            span: *span,
+        },
+        Expr::FixedNew { bits, frac, value, span } => {
+            Expr::FixedNew { bits: *bits, frac: *frac, value: Box::new(rename_expr(value, names)), span: *span }
         }
     }
 }

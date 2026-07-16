@@ -224,6 +224,16 @@ pub enum Type {
     /// `{ [N x T], i64, i64 }` (data, head, len) -- no RC header, no heap
     /// allocation of its own, like `Ty::Array` -- see `Ty::Ring`.
     Ring(Box<Type>, u64),
+    /// Deterministic fixed-point `Fixed<Bits, Frac>` (e.g. `Fixed<32,16>`):
+    /// lockstep simulation/rollback netcode where float non-determinism is a
+    /// correctness bug, not a rounding nit. Both `Bits` and `Frac` are plain
+    /// non-negative integer literals (no const-expression evaluator in this
+    /// compiler), written angle-bracketed like `Ring<T, N>` since they sit
+    /// alongside each other rather than after a `;` -- parsed by a dedicated
+    /// special case in `crate::parser::Parser::parse_type_inner` (mirroring
+    /// `Type::Ring`'s own two-integer-literal special case). Lowers to a bare
+    /// `i{Bits}` (Q format, signed) -- see `Ty::Fixed`.
+    Fixed(u32, u32),
 }
 
 impl Type {
@@ -233,7 +243,7 @@ impl Type {
         match self {
             Type::Named(name) => name == "GenRef" || name == "Handle",
             Type::Generic(name, _) => name == "GenRef" || name == "Handle",
-            Type::Fn(..) | Type::Tuple(..) | Type::Array(..) | Type::Ring(..) => false,
+            Type::Fn(..) | Type::Tuple(..) | Type::Array(..) | Type::Ring(..) | Type::Fixed(..) => false,
         }
     }
 }
@@ -534,6 +544,30 @@ pub enum Expr {
         ty: Type,
         span: Span,
     },
+    /// `Wrapping<T>(value)` -- see `Ty::Wrapping`'s doc comment. Shares
+    /// `GenRef<T>`/`Handle<T>`'s `<T>(value)` grammar (see
+    /// `Parser::parse_postfix`'s `TokenKind::Lt` arm) but gets its own node
+    /// rather than reusing `Expr::GenRefCreate`: unlike `GenRef`/`Handle`,
+    /// this has nothing to do with arenas or generation-checking.
+    WrappingNew {
+        inner_ty: Type,
+        value: Box<Expr>,
+        span: Span,
+    },
+    /// `Fixed<Bits, Frac>(value)` -- see `Ty::Fixed`'s doc comment. `value`
+    /// may be any int-shaped expression (an exact, deterministic `shl` by
+    /// `Frac`) or a `float`/`f64` (scaled by `2^Frac` then saturating-rounded
+    /// -- the one well-defined float boundary this type allows, matching
+    /// every other fixed-point library's `from_num`). Parsed by a dedicated
+    /// `<Bits, Frac>` turbofish (see `Parser::parse_fixed_new`) since `Bits`/
+    /// `Frac` are bare integer literals, not `Type`s -- mirrors
+    /// `Expr::RingNew`'s reason for existing as its own node.
+    FixedNew {
+        bits: u32,
+        frac: u32,
+        value: Box<Expr>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -564,6 +598,8 @@ impl Expr {
             | Expr::ArrayRepeat { span: s, .. }
             | Expr::RingNew { span: s, .. }
             | Expr::Cast { span: s, .. }
+            | Expr::WrappingNew { span: s, .. }
+            | Expr::FixedNew { span: s, .. }
             | Expr::ListLit(_, s) => *s,
             Expr::TupleLit(_, s) => *s,
         }

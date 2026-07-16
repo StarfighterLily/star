@@ -183,6 +183,42 @@ pub enum Ty {
     /// C handles/buffers/`char*` results that don't fit any other Star type.
     /// See `crate::codegen::builtins`'s `null_ptr`/`is_null`/`ptr_to_str`.
     Ptr,
+    /// `Wrapping<T>`: silent-overflow arithmetic, the explicit opt-in for
+    /// wraparound behavior (register/audio-counter emulation) that every
+    /// other numeric type now traps on by default (see `Ty::I8`'s doc
+    /// comment) -- `docs/design.md`'s "Numeric widths and modes". `T` is
+    /// restricted to any `int_shape()`-having type (validated in
+    /// `Checker::resolve_type`). Lowers to the *exact same* LLVM integer type
+    /// as `T` -- zero overhead, no tag -- mirroring how `Ty::Handle` reuses
+    /// `Ty::GenRef`'s layout (see `crate::codegen::wrapping`). Deliberately
+    /// excluded from `is_numeric()`/`int_shape()`: those also gate
+    /// `sqrt`/`abs`/`pow`/FFI-scalar eligibility, none of which make sense
+    /// for a "wrapping register" -- instead `+`/`-`/`*`/`/`/`%`/comparisons
+    /// get their own dedicated dispatch branch (`Checker::infer_binop_ty`,
+    /// `Codegen::emit_binop`), the same way `Vec2`/`Vec3`/`Vec4`/`Mat4`/
+    /// `char`/`ptr` each already do rather than piggybacking on the numeric
+    /// fast path.
+    Wrapping(Box<Ty>),
+    /// Deterministic fixed-point `Fixed<Bits, Frac>` (e.g. `Fixed<32,16>`):
+    /// lockstep simulation/rollback netcode where float non-determinism is a
+    /// correctness bug, not a rounding nit -- `docs/design.md`'s "Numeric
+    /// widths and modes". `Bits` is restricted to `{8, 16, 32, 64}` (the
+    /// widths this compiler's int codegen already understands) and `Frac` to
+    /// `0..Bits` (validated in `Checker::resolve_type`). Lowers to a bare
+    /// `i{Bits}` (Q format, signed) -- zero overhead, like `Ty::I8` -- see
+    /// `crate::codegen::fixed`. `+`/`-` are plain checked (trapping)
+    /// `i{Bits}` add/sub (no rescaling needed at that precision); `*`/`/`
+    /// rescale by widening through `i128` unconditionally (sign-extend,
+    /// multiply-or-shift-then-divide, truncate back with an overflow check)
+    /// rather than doubling `Bits` itself, so constructing/computing a
+    /// narrow `Fixed<8,4>` from a wider source int is never a correctness
+    /// hazard. Like `Ty::Wrapping`, deliberately excluded from
+    /// `is_numeric()`/`int_shape()` -- gets its own dedicated dispatch
+    /// branch instead. No `%` (rejected by the checker -- not a meaningful
+    /// fixed-point op) and no int<->`Fixed` cast (only `Fixed<->Float`/`F64`,
+    /// a true scaled conversion, not a bit-reinterpret); construction is the
+    /// only int entry point.
+    Fixed(u32, u32),
 }
 
 impl Ty {
@@ -1337,6 +1373,11 @@ impl Checker {
             // Same reasoning: an array is stored inline (like a tuple), so
             // it's structurally comparable exactly when its element type is.
             Ty::Array(elem, _) => self.check_hashable_ty(elem, visited),
+            // Both lower to a plain fixed-size scalar under the hood (see
+            // their own doc comments) -- structurally comparable exactly
+            // like any other sized integer.
+            Ty::Wrapping(inner) => self.check_hashable_ty(inner, visited),
+            Ty::Fixed(..) => true,
             Ty::Enum(name) => {
                 let fieldless = self.enums.get(name).map(|e| e.variants.iter().all(|v| v.fields.is_empty())).unwrap_or(true);
                 if !fieldless {
@@ -1404,6 +1445,26 @@ impl Checker {
             Type::Ring(elem, count) => {
                 let elem_ty = self.resolve_type(elem)?;
                 Some(Ty::Ring(Box::new(elem_ty), *count))
+            }
+            Type::Fixed(bits, frac) => {
+                if !matches!(bits, 8 | 16 | 32 | 64) {
+                    self.error(
+                        format!("`Fixed<{}, {}>`'s bit width must be one of 8, 16, 32, 64", bits, frac),
+                        Span::dummy(),
+                    );
+                    return None;
+                }
+                if *frac >= *bits {
+                    self.error(
+                        format!(
+                            "`Fixed<{}, {}>`'s fractional-bit count must be less than its bit width",
+                            bits, frac
+                        ),
+                        Span::dummy(),
+                    );
+                    return None;
+                }
+                Some(Ty::Fixed(*bits, *frac))
             }
             Type::Fn(params, ret) => {
                 let param_tys: Vec<Ty> = params.iter().filter_map(|p| self.resolve_type(p)).collect();
@@ -1514,6 +1575,22 @@ impl Checker {
                         return None;
                     }
                     return Some(Ty::Table(Box::new(inner)));
+                }
+                // `Wrapping<T>` -- see `Ty::Wrapping`'s doc comment. `T` must
+                // be a plain integer type (anything `int_shape()` recognizes,
+                // including `Ty::Int` itself -- this is exactly the opt-in
+                // `docs/design.md` describes for wraparound on a width that
+                // otherwise traps by default).
+                if name == "Wrapping" {
+                    let inner = args.first().and_then(|a| self.resolve_type(a))?;
+                    if inner.int_shape().is_none() {
+                        self.error(
+                            format!("`Wrapping<T>` requires `T` to be an integer type, found `{:?}`", inner),
+                            Span::dummy(),
+                        );
+                        return None;
+                    }
+                    return Some(Ty::Wrapping(Box::new(inner)));
                 }
                 if self.generic_structs.contains_key(name) {
                     let resolved_args: Vec<Ty> = args.iter().filter_map(|a| self.resolve_type(a)).collect();
@@ -1767,6 +1844,10 @@ impl Checker {
                     }
                 }
             }
+            // `Bits`/`Frac` are bare integer literals, never a type
+            // parameter to bind -- a no-op, like `Type::Named` naming a
+            // non-type-parameter type above.
+            Type::Fixed(..) => {}
             Type::Generic(name, args) => {
                 if name == "GenRef" {
                     if let (Some(a0), Ty::GenRef(inner)) = (args.first(), arg_ty) {
@@ -2103,6 +2184,8 @@ fn mangle_ty(ty: &Ty) -> String {
         // argument (extern fns can't be generic, see
         // `Checker::check_extern_fn`); exists for match exhaustiveness.
         Ty::Ptr => "ptr".into(),
+        Ty::Wrapping(inner) => format!("Wrapping_{}", mangle_ty(inner)),
+        Ty::Fixed(bits, frac) => format!("Fixed{}_{}", bits, frac),
     }
 }
 
@@ -2156,6 +2239,8 @@ fn ty_to_type(ty: &Ty) -> Type {
         Ty::Table(inner) => Type::Generic("Table".into(), vec![ty_to_type(inner)]),
         Ty::Closure(params, ret) => Type::Fn(params.iter().map(ty_to_type).collect(), Box::new(ty_to_type(ret))),
         Ty::Ptr => Type::Named("ptr".into()),
+        Ty::Wrapping(inner) => Type::Generic("Wrapping".into(), vec![ty_to_type(inner)]),
+        Ty::Fixed(bits, frac) => Type::Fixed(*bits, *frac),
     }
 }
 
@@ -2172,6 +2257,9 @@ fn subst_type(ty: &Type, subst: &HashMap<String, Type>) -> Type {
         Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| subst_type(e, subst)).collect()),
         Type::Array(elem, count) => Type::Array(Box::new(subst_type(elem, subst)), *count),
         Type::Ring(elem, count) => Type::Ring(Box::new(subst_type(elem, subst)), *count),
+        // No type parameters inside to substitute -- `Bits`/`Frac` are bare
+        // integer literals, not `Type`s.
+        Type::Fixed(bits, frac) => Type::Fixed(*bits, *frac),
     }
 }
 
@@ -2319,6 +2407,14 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
         }
         Expr::Cast { expr, ty, span } => {
             Expr::Cast { expr: Box::new(subst_expr(expr, subst)), ty: subst_type(ty, subst), span: *span }
+        }
+        Expr::WrappingNew { inner_ty, value, span } => Expr::WrappingNew {
+            inner_ty: subst_type(inner_ty, subst),
+            value: Box::new(subst_expr(value, subst)),
+            span: *span,
+        },
+        Expr::FixedNew { bits, frac, value, span } => {
+            Expr::FixedNew { bits: *bits, frac: *frac, value: Box::new(subst_expr(value, subst)), span: *span }
         }
     }
 }
@@ -2581,6 +2677,8 @@ fn scan_expr_for_par_hazards(expr: &Expr, hazard: &mut bool, called: &mut HashSe
         // empty `args` list).
         Expr::RingNew { .. } => {}
         Expr::Cast { expr, .. } => scan_expr_for_par_hazards(expr, hazard, called),
+        Expr::WrappingNew { value, .. } => scan_expr_for_par_hazards(value, hazard, called),
+        Expr::FixedNew { value, .. } => scan_expr_for_par_hazards(value, hazard, called),
     }
 }
 

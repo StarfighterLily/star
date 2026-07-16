@@ -323,6 +323,11 @@ impl Codegen {
             // A bare 32-bit codepoint constant -- see `Ty::Char`'s doc comment.
             TypedExpr::Char(c, _, _) => format!("i32 {}", *c as u32),
             TypedExpr::Cast { expr, ty, .. } => self.emit_cast(expr, ty),
+            // Lowers to the exact same LLVM integer type as its inner type
+            // -- see `Ty::Wrapping`'s doc comment -- so construction needs no
+            // dedicated codegen beyond evaluating `value` itself.
+            TypedExpr::WrappingNew { value, .. } => self.emit_expr(value),
+            TypedExpr::FixedNew { value, bits, frac, .. } => self.emit_fixed_new(value, *bits, *frac),
             TypedExpr::Ident { name, ty, .. } => {
                 // A plain top-level function name used as a value (never a
                 // local, so no alloca to load from) rather than called

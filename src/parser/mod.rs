@@ -255,6 +255,38 @@ impl Parser {
             self.expect(&TokenKind::Gt)?;
             return Some(Type::Ring(Box::new(elem), count as u64));
         }
+        // `Fixed<Bits, Frac>` -- both `Bits` and `Frac` are plain
+        // non-negative integer literals (no const-expression evaluator in
+        // this compiler), same reasoning/shape as `Ring<T, N>` just above;
+        // full legality (`Bits` a supported width, `Frac < Bits`) is left to
+        // `Checker::resolve_type` for a clearer diagnostic, mirroring how
+        // `Ring<T, N>`'s own positive-count check is split between here (bare
+        // parse-time sanity) and the checker.
+        if name == "Fixed" && self.eat(&TokenKind::Lt) {
+            let bits_span = self.peek_span();
+            let TokenKind::Int(bits) = self.peek_kind() else {
+                self.error("expected an integer literal bit width after `<` in `Fixed<Bits, Frac>`", bits_span);
+                return None;
+            };
+            self.advance();
+            if bits <= 0 {
+                self.error("`Fixed<Bits, Frac>`'s bit width must be a positive integer", bits_span);
+                return None;
+            }
+            self.expect(&TokenKind::Comma)?;
+            let frac_span = self.peek_span();
+            let TokenKind::Int(frac) = self.peek_kind() else {
+                self.error("expected an integer literal fractional-bit count after `,` in `Fixed<Bits, Frac>`", frac_span);
+                return None;
+            };
+            self.advance();
+            if frac < 0 {
+                self.error("`Fixed<Bits, Frac>`'s fractional-bit count cannot be negative", frac_span);
+                return None;
+            }
+            self.expect(&TokenKind::Gt)?;
+            return Some(Type::Fixed(bits as u32, frac as u32));
+        }
         if self.eat(&TokenKind::Lt) {
             let mut args = Vec::new();
             while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {

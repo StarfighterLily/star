@@ -424,6 +424,8 @@ fn scan_expr_for_nested_yield(expr: &Expr, errors: &mut Vec<Diagnostic>) {
         // empty `args` list already covered by the `StructLit` arm above).
         Expr::RingNew { .. } => {}
         Expr::Cast { expr, .. } => scan_expr_for_nested_yield(expr, errors),
+        Expr::WrappingNew { value, .. } => scan_expr_for_nested_yield(value, errors),
+        Expr::FixedNew { value, .. } => scan_expr_for_nested_yield(value, errors),
         Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Char(..) | Expr::Ident(..) | Expr::SelfExpr(..) => {}
     }
 }
@@ -635,6 +637,14 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
         // only fields are a syntactic `Type` and a compile-time constant.
         Expr::RingNew { elem_ty, count, span } => Expr::RingNew { elem_ty: elem_ty.clone(), count: *count, span: *span },
         Expr::Cast { expr, ty, span } => Expr::Cast { expr: Box::new(rewrite_expr(expr, hoist)), ty: ty.clone(), span: *span },
+        Expr::WrappingNew { inner_ty, value, span } => Expr::WrappingNew {
+            inner_ty: inner_ty.clone(),
+            value: Box::new(rewrite_expr(value, hoist)),
+            span: *span,
+        },
+        Expr::FixedNew { bits, frac, value, span } => {
+            Expr::FixedNew { bits: *bits, frac: *frac, value: Box::new(rewrite_expr(value, hoist)), span: *span }
+        }
     }
 }
 
@@ -719,5 +729,7 @@ fn find_forward_ref_expr(expr: &Expr, undeclared: &HashSet<String>) -> Option<(S
         Expr::ArrayRepeat { value, .. } => find_forward_ref_expr(value, undeclared),
         Expr::RingNew { .. } => None,
         Expr::Cast { expr, .. } => find_forward_ref_expr(expr, undeclared),
+        Expr::WrappingNew { value, .. } => find_forward_ref_expr(value, undeclared),
+        Expr::FixedNew { value, .. } => find_forward_ref_expr(value, undeclared),
     }
 }

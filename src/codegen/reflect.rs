@@ -73,6 +73,8 @@ impl Codegen {
                 self.reflect_type_name(ret)
             ),
             Ty::Ptr => "ptr".into(),
+            Ty::Wrapping(inner) => format!("Wrapping<{}>", self.reflect_type_name(inner)),
+            Ty::Fixed(bits, frac) => format!("Fixed<{}, {}>", bits, frac),
         }
     }
 

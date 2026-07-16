@@ -18,6 +18,7 @@ mod closure;
 mod eq;
 mod expr;
 mod file_io;
+mod fixed;
 mod list;
 mod map;
 mod net;
@@ -30,6 +31,7 @@ mod set;
 mod stmt;
 mod table;
 mod vector_math;
+mod wrapping;
 
 use std::fmt::Write;
 
@@ -583,6 +585,10 @@ impl Codegen {
             // see `llvm_ty`); only a payload enum is the `{ i32, [W x i64] }`
             // tagged union that needs 8-byte alignment.
             Ty::Enum(n) => if self.enum_is_payload(n) { 8 } else { 4 },
+            // Same LLVM integer type as `T` -- see `Ty::Wrapping`'s doc comment.
+            Ty::Wrapping(inner) => self.type_align(inner),
+            // `i{bits}` -- same alignment table as the sized-int arms above.
+            Ty::Fixed(bits, _) => bits / 8,
         }
     }
 
@@ -690,6 +696,9 @@ impl Codegen {
             // sole `x86_64-w64-windows-gnu` target.
             Ty::Closure(..) => 16,
             Ty::Ptr => 8,
+            // Same LLVM integer type as `T` -- see `Ty::Wrapping`'s doc comment.
+            Ty::Wrapping(inner) => self.type_size(inner),
+            Ty::Fixed(bits, _) => bits / 8,
         }
     }
 
@@ -771,6 +780,10 @@ impl Codegen {
             // `closure_fn_ptr_ty` -- see `crate::codegen::closure`).
             Ty::Closure(..) => "{ i8*, i8* }".into(),
             Ty::Ptr => "i8*".into(),
+            // The *exact same* LLVM integer type as `T` -- see
+            // `Ty::Wrapping`'s doc comment for why this is zero-overhead.
+            Ty::Wrapping(inner) => self.llvm_ty(inner),
+            Ty::Fixed(bits, _) => format!("i{}", bits),
         }
     }
 
@@ -841,6 +854,8 @@ impl Codegen {
             Ty::Enum(n) => format!("e_{}", n),
             Ty::Closure(..) => "closure".into(),
             Ty::Ptr => "ptr".into(),
+            Ty::Wrapping(inner) => format!("wrap_{}", self.mangle_ty(inner)),
+            Ty::Fixed(bits, frac) => format!("fixed{}_{}", bits, frac),
         }
     }
 
@@ -918,6 +933,8 @@ impl Codegen {
             // invariant that every slot outside the (here, empty) live window
             // is the element type's zero value.
             | Ty::Array(..) | Ty::Ring(..) => "zeroinitializer".into(),
+            Ty::Wrapping(inner) => self.zero_value(inner),
+            Ty::Fixed(..) => "0".into(),
         }
     }
 
@@ -1224,6 +1241,8 @@ impl Codegen {
             TypedExpr::TableNew { elem_ty, .. } => Ty::Table(Box::new(elem_ty.clone())),
             TypedExpr::TableMethod { ty, .. } => ty.clone(),
             TypedExpr::TableIndex { ty, .. } => ty.clone(),
+            TypedExpr::WrappingNew { inner_ty, .. } => Ty::Wrapping(Box::new(inner_ty.clone())),
+            TypedExpr::FixedNew { bits, frac, .. } => Ty::Fixed(*bits, *frac),
         }
     }
 

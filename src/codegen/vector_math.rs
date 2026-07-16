@@ -10,7 +10,7 @@ use super::{format_f32_literal, Codegen};
 /// `emit_checked_sized_int_div`'s generalization of `emit_checked_int_div`'s
 /// hardcoded `-2147483648` (`i32::MIN`) to every signed width this compiler
 /// now has.
-fn signed_min_literal(width: u32) -> &'static str {
+pub(super) fn signed_min_literal(width: u32) -> &'static str {
     match width {
         8 => "-128",
         16 => "-32768",
@@ -132,7 +132,7 @@ impl Codegen {
     /// `Ty::Int`'s original silent wraparound -- see `Ty::I8`'s doc comment
     /// for why this is the default for every explicit-width type. Mirrors
     /// `emit_checked_int_div`'s check-then-abort-with-a-message shape.
-    fn emit_checked_sized_int_arith(&mut self, l: &str, r: &str, width: u32, signed: bool, op: BinOp) -> String {
+    pub(super) fn emit_checked_sized_int_arith(&mut self, l: &str, r: &str, width: u32, signed: bool, op: BinOp) -> String {
         let ity = format!("i{}", width);
         let kind = match op {
             BinOp::Add => "add",
@@ -257,7 +257,7 @@ impl Codegen {
     /// `emit_checked_sized_int_arith`) ends with once its bad-input branch is
     /// taken. `msg` must already end in `\n` (matching every call site's
     /// existing convention).
-    fn emit_abort_with_message(&mut self, msg: &str) {
+    pub(super) fn emit_abort_with_message(&mut self, msg: &str) {
         let g = self.global_name();
         let escaped = msg.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
         self.global_defs.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", g, msg.len() + 1, escaped));
@@ -279,6 +279,26 @@ impl Codegen {
         let val = self.emit_expr(expr);
         let bare = self.untag(&val, &src_ty);
         let target_llty = self.llvm_ty(target);
+
+        // `Wrapping<T> <-> T`: a free bit-preserving relabel -- both sides
+        // are already the exact same LLVM integer type (see `Ty::Wrapping`'s
+        // doc comment), so no instruction is emitted at all, mirroring the
+        // same-width int/int case below.
+        if matches!(&src_ty, Ty::Wrapping(w) if **w == *target) || matches!(target, Ty::Wrapping(w) if **w == src_ty) {
+            return format!("{} {}", target_llty, bare);
+        }
+        // `Fixed<Bits,Frac> <-> float/f64`: a true scaled conversion, not a
+        // bit reinterpret -- see `Ty::Fixed`'s doc comment.
+        if let Ty::Fixed(bits, frac) = &src_ty {
+            if matches!(target, Ty::Float | Ty::F64) {
+                return self.emit_fixed_to_float(&bare, *bits, *frac, matches!(target, Ty::F64));
+            }
+        }
+        if let Ty::Fixed(bits, frac) = target {
+            if matches!(src_ty, Ty::Float | Ty::F64) {
+                return self.emit_float_to_fixed(&bare, matches!(src_ty, Ty::F64), *bits, *frac);
+            }
+        }
 
         let src_shape = if src_ty == Ty::Char { Some((32u32, false)) } else { src_ty.int_shape() };
         let tgt_shape = if *target == Ty::Char { Some((32u32, false)) } else { target.int_shape() };
@@ -535,6 +555,24 @@ impl Codegen {
     }
 
     pub(super) fn emit_binop(&mut self, lhs: &str, lty: &Ty, rhs: &str, rty: &Ty, op: BinOp) -> String {
+        // `Wrapping<T>`/`Fixed<Bits,Frac>` get their own dedicated dispatch
+        // branch, the same way `char`/`ptr`/vector/matrix types do below --
+        // neither is folded into `is_numeric()` (see their own `Ty` doc
+        // comments), so they'd otherwise fall through to the "unsupported
+        // operand types" error at the bottom of this function.
+        // `Checker::infer_binop_ty` already guarantees `lty == rty` for any
+        // operator that reaches codegen on either of these two types.
+        if let Ty::Wrapping(inner) = lty {
+            let (width, signed) = inner.int_shape().expect("Ty::Wrapping's inner type is always int-shaped");
+            let l = self.untag(lhs, lty);
+            let r = self.untag(rhs, rty);
+            return self.emit_wrapping_binop(&l, &r, width, signed, op);
+        }
+        if let Ty::Fixed(bits, frac) = lty {
+            let l = self.untag(lhs, lty);
+            let r = self.untag(rhs, rty);
+            return self.emit_fixed_binop(&l, &r, *bits, *frac, op);
+        }
         if lty.is_numeric() && rty.is_numeric() {
             return self.emit_scalar_binop(lhs, lty, rhs, rty, op);
         }

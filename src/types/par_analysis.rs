@@ -272,6 +272,8 @@ impl Checker {
                 }
             }
             TypedExpr::GenRefCreate { value, .. } => self.walk_par_expr(value, locals),
+            TypedExpr::WrappingNew { value, .. } => self.walk_par_expr(value, locals),
+            TypedExpr::FixedNew { value, .. } => self.walk_par_expr(value, locals),
             TypedExpr::GenRefIndex { base, index, .. } => {
                 self.walk_par_expr(base, locals);
                 self.walk_par_expr(index, locals);

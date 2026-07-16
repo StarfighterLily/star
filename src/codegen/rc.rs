@@ -80,6 +80,10 @@ impl Codegen {
             // whether the element type itself carries RC content -- the two
             // `i64` head/len fields never do.
             Ty::Ring(elem, _) => self.contains_rc(elem),
+            // Both lower to a plain scalar `iN` with no RC header of its own
+            // (see their own `Ty` doc comments) -- `Wrapping<T>` delegates
+            // for completeness even though `T` is always itself RC-free.
+            Ty::Wrapping(inner) => self.contains_rc(inner),
             _ => false,
         }
     }

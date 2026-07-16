@@ -435,6 +435,66 @@ impl Checker {
                 }
                 Ok(TypedExpr::GenRefCreate { inner_ty: resolved_inner, value: Box::new(value_typed), is_handle: *is_handle, span: *span })
             }
+            Expr::WrappingNew { inner_ty, value, span } => {
+                let resolved_inner = self.resolve_type(inner_ty).unwrap_or(Ty::Named("unknown".into()));
+                if resolved_inner.int_shape().is_none() && !Self::is_placeholder_ty(&resolved_inner) {
+                    self.error(
+                        format!("`Wrapping<T>` requires `T` to be an integer type, found `{:?}`", resolved_inner),
+                        *span,
+                    );
+                }
+                // A literal (optionally negated) that fits `resolved_inner`'s
+                // range is accepted directly with that type, mirroring
+                // `Expr::Cast`'s own literal fast path just above (`x as u8`
+                // already lets a narrower-than-`i32`-range literal through
+                // the same way) -- otherwise a bare literal argument (which
+                // defaults to `Ty::Int`) would be rejected by the exact-type-
+                // match check below for any `T` narrower than `i32`.
+                if let Some(v) = Self::cast_literal_magnitude(value) {
+                    if let Some((width, signed)) = resolved_inner.int_shape() {
+                        let (lo, hi) = Self::int_shape_range(width, signed);
+                        if v >= lo && v <= hi {
+                            let lit = TypedExpr::Int(v, resolved_inner.clone(), *span);
+                            return Ok(TypedExpr::WrappingNew { inner_ty: resolved_inner, value: Box::new(lit), span: *span });
+                        }
+                        self.error(
+                            format!("integer literal `{}` does not fit in `Wrapping<{:?}>` (range {}..={})", v, resolved_inner, lo, hi),
+                            *span,
+                        );
+                        let lit = TypedExpr::Int(v, resolved_inner.clone(), *span);
+                        return Ok(TypedExpr::WrappingNew { inner_ty: resolved_inner, value: Box::new(lit), span: *span });
+                    }
+                }
+                let value_typed = self.infer_expr(value, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
+                let value_ty = value_typed.clone().into_ty();
+                if value_ty != resolved_inner && !Self::is_placeholder_ty(&value_ty) && !Self::is_placeholder_ty(&resolved_inner) {
+                    self.error(
+                        format!("`Wrapping<T>(..)` expected a value of type `{:?}`, found `{:?}` -- use `as` to cast", resolved_inner, value_ty),
+                        *span,
+                    );
+                }
+                Ok(TypedExpr::WrappingNew { inner_ty: resolved_inner, value: Box::new(value_typed), span: *span })
+            }
+            Expr::FixedNew { bits, frac, value, span } => {
+                if !matches!(bits, 8 | 16 | 32 | 64) {
+                    self.error(format!("`Fixed<{}, {}>`'s bit width must be one of 8, 16, 32, 64", bits, frac), *span);
+                } else if *frac >= *bits {
+                    self.error(
+                        format!("`Fixed<{}, {}>`'s fractional-bit count must be less than its bit width", bits, frac),
+                        *span,
+                    );
+                }
+                let value_typed = self.infer_expr(value, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
+                let value_ty = value_typed.clone().into_ty();
+                let ok = value_ty.int_shape().is_some() || matches!(value_ty, Ty::Float | Ty::F64) || Self::is_placeholder_ty(&value_ty);
+                if !ok {
+                    self.error(
+                        format!("`Fixed<Bits, Frac>(..)` expects an integer or float value, found `{:?}`", value_ty),
+                        *span,
+                    );
+                }
+                Ok(TypedExpr::FixedNew { bits: *bits, frac: *frac, value: Box::new(value_typed), span: *span })
+            }
             Expr::EnumVariant { enum_name, type_args, variant, args, span } => {
                 let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
                 if self.generic_enums.contains_key(enum_name) {
@@ -656,10 +716,28 @@ impl Checker {
                 // caller to pass a valid codepoint rather than validating it,
                 // consistent with this compiler's existing lack of a
                 // fallible-conversion/`Result`-returning cast path).
+                // `Wrapping<T> <-> T` is a free bit-preserving relabel (same
+                // underlying LLVM integer, see `Ty::Wrapping`'s doc comment);
+                // `Fixed<Bits,Frac> <-> float/f64` is a true scaled
+                // conversion (see `Ty::Fixed`'s doc comment), not a bit
+                // reinterpret -- deliberately not folded into `is_numeric()`
+                // (neither type is "numeric" for `sqrt`/`abs`/FFI purposes),
+                // so both get their own explicit pairing here instead.
+                let wrapping_ok = match (&inner_ty, &target) {
+                    (Ty::Wrapping(w), t) => **w == *t,
+                    (t, Ty::Wrapping(w)) => *t == **w,
+                    _ => false,
+                };
+                let fixed_ok = matches!(
+                    (&inner_ty, &target),
+                    (Ty::Fixed(..), Ty::Float | Ty::F64) | (Ty::Float | Ty::F64, Ty::Fixed(..))
+                );
                 let ok = (inner_ty.is_numeric() && target.is_numeric())
                     || (inner_ty.is_numeric() && target == Ty::Char)
                     || (inner_ty == Ty::Char && target.is_numeric())
-                    || (inner_ty == Ty::Char && target == Ty::Char);
+                    || (inner_ty == Ty::Char && target == Ty::Char)
+                    || wrapping_ok
+                    || fixed_ok;
                 if !ok && !Self::is_placeholder_ty(&inner_ty) && !Self::is_placeholder_ty(&target) {
                     self.error(
                         format!(
@@ -1633,6 +1711,35 @@ impl Checker {
             return Ty::Bool;
         }
         let is_cmp = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge);
+        // `Wrapping<T>`/`Fixed<Bits,Frac>` get their own dedicated branch,
+        // the same way `Vec2`/`Vec3`/`Vec4`/`Mat4` do just below -- neither
+        // is folded into `Ty::is_numeric()` (see their own doc comments), so
+        // they'd otherwise fall through to the "not supported" error at the
+        // bottom of the plain-scalar branch. Requires an exact
+        // `lhs_ty == rhs_ty` match, same "no implicit anything" rule every
+        // other sized numeric type gets (no mixed-`T` `Wrapping`/`Fixed` pair,
+        // and never mixed with the bare inner type without an explicit `as`).
+        if matches!(lhs_ty, Ty::Wrapping(_) | Ty::Fixed(..)) || matches!(rhs_ty, Ty::Wrapping(_) | Ty::Fixed(..)) {
+            let op_str = match op {
+                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                BinOp::Div => "/", BinOp::Rem => "%",
+                BinOp::Eq => "==", BinOp::Ne => "!=",
+                BinOp::Lt => "<", BinOp::Gt => ">", BinOp::Le => "<=", BinOp::Ge => ">=",
+                BinOp::And | BinOp::Or => unreachable!("handled above"),
+            };
+            if lhs_ty != rhs_ty {
+                self.error(
+                    format!("`{}` between mismatched types `{:?}` and `{:?}` -- use `as` to cast one side", op_str, lhs_ty, rhs_ty),
+                    span,
+                );
+                return if is_cmp { Ty::Bool } else { lhs_ty.clone() };
+            }
+            if matches!(op, BinOp::Rem) && matches!(lhs_ty, Ty::Fixed(..)) {
+                self.error("`%` is not supported on `Fixed<Bits,Frac>` values", span);
+                return lhs_ty.clone();
+            }
+            return if is_cmp { Ty::Bool } else { lhs_ty.clone() };
+        }
         if !lhs_ty.is_vec() && !lhs_ty.is_mat() && !rhs_ty.is_vec() && !rhs_ty.is_mat() {
             if is_cmp {
                 // Only these two shapes have real codegen support today

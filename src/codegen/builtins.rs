@@ -27,7 +27,18 @@ impl Codegen {
                     TypedFStrExpr::Expr(e) => {
                         let val = self.emit_expr(e);
                         let ty = self.expr_ty(e);
-                        match ty {
+                        // `Fixed<Bits,Frac>` has no format specifier of its
+                        // own -- print it as a human-readable decimal via the
+                        // same scaled-conversion the `as float`/`as f64` cast
+                        // uses, reusing the `Ty::F64` path below rather than
+                        // adding a dedicated specifier arm.
+                        let (val, ty) = if let Ty::Fixed(bits, frac) = ty {
+                            let bare = self.untag(&val, &Ty::Fixed(bits, frac));
+                            (self.emit_fixed_to_float(&bare, bits, frac, true), Ty::F64)
+                        } else {
+                            (val, ty)
+                        };
+                        match &ty {
                             Ty::Int | Ty::I8 | Ty::I16 => { fmt_str.push_str("%d"); }
                             Ty::U8 | Ty::U16 | Ty::U32 => { fmt_str.push_str("%u"); }
                             Ty::I64 => { fmt_str.push_str("%lld"); }
@@ -35,6 +46,16 @@ impl Codegen {
                             Ty::Float | Ty::F64 => { fmt_str.push_str("%f"); }
                             Ty::Char => { fmt_str.push_str("%c"); }
                             Ty::Str | Ty::Bool => { fmt_str.push_str("%s"); }
+                            // Delegate to the inner integer type's own
+                            // specifier -- `Wrapping<T>` is the exact same
+                            // LLVM value, just re-tagged (see `Ty::Wrapping`'s
+                            // doc comment).
+                            Ty::Wrapping(inner) => match inner.int_shape() {
+                                Some((64, true)) => fmt_str.push_str("%lld"),
+                                Some((64, false)) => fmt_str.push_str("%llu"),
+                                Some((_, false)) => fmt_str.push_str("%u"),
+                                _ => fmt_str.push_str("%d"),
+                            },
                             _ => { fmt_str.push_str("%p"); }
                         }
                         // `emit_expr` may return either a bare register
@@ -119,6 +140,21 @@ impl Codegen {
                     let widened = self.tmp_name();
                     self.line(&format!("  {} = zext {} {} to i32", widened, self.llvm_ty(ty), val));
                     call_args.push(format!("i32 {}", widened));
+                } else if let Ty::Wrapping(inner) = ty {
+                    // Same C variadic-promotion rule as the `I8`/`I16`/`U8`/
+                    // `U16` arms above, just indirected through the inner
+                    // type -- `Wrapping<T>` is tagged/laid out identically to
+                    // `T` (see `Ty::Wrapping`'s doc comment), so it needs the
+                    // exact same promotion `T` alone would.
+                    match inner.int_shape() {
+                        Some((w, signed)) if w < 32 => {
+                            let widened = self.tmp_name();
+                            let op = if signed { "sext" } else { "zext" };
+                            self.line(&format!("  {} = {} i{} {} to i32", widened, op, w, val));
+                            call_args.push(format!("i32 {}", widened));
+                        }
+                        _ => call_args.push(format!("{} {}", self.llvm_ty(ty), val)),
+                    }
                 } else {
                     call_args.push(format!("{} {}", self.llvm_ty(ty), val));
                 }

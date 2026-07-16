@@ -12156,3 +12156,188 @@ fn runtime_table_out_of_bounds_write_does_not_leak_end_to_end() {
                println(\"done\")\n";
     assert_no_leak("table_oob_write_leak", src, 25 * 1024 * 1024);
 }
+
+// ===== `Wrapping<T>` / `Fixed<Bits, Frac>` (docs/design.md §2) =============
+
+/// `Wrapping<u8>` silently wraps 250 + 10 -> 4, unlike a plain `u8` (which
+/// would trap -- see `runtime_u8_add_overflow_traps_end_to_end`).
+#[test]
+fn runtime_wrapping_u8_add_overflow_wraps_silently_end_to_end() {
+    let src = "fn main():\n    let a: Wrapping<u8> = Wrapping<u8>(250 as u8)\n    let b: Wrapping<u8> = Wrapping<u8>(10 as u8)\n    println(f\"{a + b}\")\n";
+    let output = compile_and_run("wrapping_u8_add", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "4");
+}
+
+/// Signed wraparound: `i8::MAX + 1` wraps to `i8::MIN`.
+#[test]
+fn runtime_wrapping_i8_add_overflow_wraps_to_min_end_to_end() {
+    let src = "fn main():\n    let a: Wrapping<i8> = Wrapping<i8>(127 as i8)\n    let b: Wrapping<i8> = Wrapping<i8>(1 as i8)\n    println(f\"{a + b}\")\n";
+    let output = compile_and_run("wrapping_i8_add", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "-128");
+}
+
+/// `Wrapping<i8>` subtraction/multiplication wrap too, not just addition.
+#[test]
+fn runtime_wrapping_sub_and_mul_wrap_silently_end_to_end() {
+    let src = "fn main():\n    let a: Wrapping<i8> = Wrapping<i8>(-128 as i8)\n    let b: Wrapping<i8> = Wrapping<i8>(1 as i8)\n    println(f\"{a - b}\")\n    \
+               let c: Wrapping<u8> = Wrapping<u8>(200 as u8)\n    let d: Wrapping<u8> = Wrapping<u8>(2 as u8)\n    println(f\"{c * d}\")\n";
+    let output = compile_and_run("wrapping_sub_mul", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["127", "144"], "{}", stdout);
+}
+
+/// A zero divisor still traps on `Wrapping<T>` -- division-by-zero isn't
+/// "overflow" (matches Rust's own `Wrapping<T>`, and every other integer
+/// division in this compiler).
+#[test]
+fn runtime_wrapping_division_by_zero_still_traps_end_to_end() {
+    let src = "fn main():\n    println(\"before\")\n    let a: Wrapping<i32> = Wrapping<i32>(10)\n    let b: Wrapping<i32> = Wrapping<i32>(0)\n    \
+               let x = a / b\n    println(f\"unreachable {x}\")\n";
+    let output = compile_and_run("wrapping_div_zero", src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("before"), "{}", stdout);
+    assert!(stdout.contains("integer `/` by zero"), "should print a diagnostic: {}", stdout);
+    assert!(!stdout.contains("unreachable"), "the div must abort before its value is used: {}", stdout);
+    assert_eq!(output.status.code(), Some(1), "{:?}", output.status);
+}
+
+/// The one true overflow case in signed division -- `MIN / -1` -- wraps to
+/// `MIN` instead of trapping (unlike a plain `i32`'s own division guard).
+#[test]
+fn runtime_wrapping_i32_min_div_neg_one_wraps_instead_of_trapping_end_to_end() {
+    let src = "fn main():\n    let a: Wrapping<i32> = Wrapping<i32>(-2147483648)\n    let b: Wrapping<i32> = Wrapping<i32>(-1)\n    println(f\"{a / b}\")\n    \
+               println(f\"{a % b}\")\n";
+    let output = compile_and_run("wrapping_min_div_neg1", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["-2147483648", "0"], "{}", stdout);
+}
+
+/// `Wrapping<T> as T` is a free bit-preserving relabel back to the plain
+/// integer type.
+#[test]
+fn runtime_wrapping_cast_round_trip_end_to_end() {
+    let src = "fn main():\n    let a: Wrapping<u8> = Wrapping<u8>(250 as u8)\n    let b: Wrapping<u8> = Wrapping<u8>(10 as u8)\n    \
+               let wrapped = a + b\n    let plain: u8 = wrapped as u8\n    println(f\"{plain}\")\n";
+    let output = compile_and_run("wrapping_cast_roundtrip", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "4");
+}
+
+#[test]
+fn rejects_wrapping_of_a_non_integer_type() {
+    let src = "fn main():\n    let a = Wrapping<Vec3>(Vec3(0, 0, 0))\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("`Wrapping<T>` requires `T` to be an integer type")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_binop_between_mismatched_wrapping_types() {
+    let src = "fn main():\n    let a: Wrapping<u8> = Wrapping<u8>(1 as u8)\n    let b: Wrapping<i32> = Wrapping<i32>(1)\n    let c = a + b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("mismatched types")), "{:?}", diags);
+}
+
+/// `Fixed<32,16>` (Q16.16) construction from both a float literal (scaled)
+/// and a plain int (exact `shl`), plus all four arithmetic operators.
+#[test]
+fn runtime_fixed_32_16_arithmetic_end_to_end() {
+    let src = "fn main():\n    let a: Fixed<32, 16> = Fixed<32, 16>(3.5)\n    let b: Fixed<32, 16> = Fixed<32, 16>(2.0)\n    \
+               println(f\"{a + b}\")\n    println(f\"{a - b}\")\n    println(f\"{a * b}\")\n    println(f\"{a / b}\")\n    \
+               let whole: Fixed<32, 16> = Fixed<32, 16>(10)\n    println(f\"{whole}\")\n";
+    let output = compile_and_run("fixed_32_16_arith", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["5.500000", "1.500000", "7.000000", "1.750000", "10.000000"], "{}", stdout);
+}
+
+/// A narrower `Fixed<8,4>` (Q3.4) exercises the same `i128`-widening
+/// multiply/divide path at a much smaller width -- 3.5 * 1.5 = 5.25 is exact
+/// at this precision.
+#[test]
+fn runtime_fixed_8_4_multiply_end_to_end() {
+    let src = "fn main():\n    let a: Fixed<8, 4> = Fixed<8, 4>(3.5)\n    let b: Fixed<8, 4> = Fixed<8, 4>(1.5)\n    println(f\"{a * b}\")\n";
+    let output = compile_and_run("fixed_8_4_mul", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "5.250000");
+}
+
+#[test]
+fn runtime_fixed_comparisons_end_to_end() {
+    let src = "fn main():\n    let a: Fixed<32, 16> = Fixed<32, 16>(3.5)\n    let b: Fixed<32, 16> = Fixed<32, 16>(10)\n    \
+               println(f\"{a < b} {a > b} {a == a}\")\n";
+    let output = compile_and_run("fixed_compare", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "true false true");
+}
+
+/// `Fixed<Bits,Frac> as f32` is a true scaled conversion (not a bit
+/// reinterpret) -- round-trips back to the original float value.
+#[test]
+fn runtime_fixed_to_float_cast_round_trip_end_to_end() {
+    let src = "fn main():\n    let a: Fixed<32, 16> = Fixed<32, 16>(3.5)\n    let back: f32 = a as f32\n    println(f\"{back}\")\n";
+    let output = compile_and_run("fixed_to_float", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "3.500000");
+}
+
+/// A zero divisor traps on `Fixed<Bits,Frac>` division, same as any other
+/// integer division in this compiler.
+#[test]
+fn runtime_fixed_division_by_zero_traps_end_to_end() {
+    let src = "fn main():\n    println(\"before\")\n    let a: Fixed<32, 16> = Fixed<32, 16>(10.0)\n    let b: Fixed<32, 16> = Fixed<32, 16>(0.0)\n    \
+               let x = a / b\n    println(f\"unreachable {x}\")\n";
+    let output = compile_and_run("fixed_div_zero", src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("before"), "{}", stdout);
+    assert!(stdout.contains("division by zero"), "should print a diagnostic: {}", stdout);
+    assert!(!stdout.contains("unreachable"), "the div must abort before its value is used: {}", stdout);
+    assert_eq!(output.status.code(), Some(1), "{:?}", output.status);
+}
+
+/// A multiplication whose result doesn't fit the narrow `Bits` width traps
+/// rather than silently truncating -- deterministic-but-wrong is worse than
+/// a loud abort for a type whose entire purpose is deterministic math.
+#[test]
+fn runtime_fixed_multiplication_overflow_traps_end_to_end() {
+    let src = "fn main():\n    println(\"before\")\n    let a: Fixed<8, 4> = Fixed<8, 4>(7.0)\n    let b: Fixed<8, 4> = Fixed<8, 4>(7.0)\n    \
+               let x = a * b\n    println(f\"unreachable {x}\")\n";
+    let output = compile_and_run("fixed_mul_overflow", src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("before"), "{}", stdout);
+    assert!(stdout.contains("multiplication overflow"), "should print a diagnostic: {}", stdout);
+    assert!(!stdout.contains("unreachable"), "the mul must abort before its value is used: {}", stdout);
+    assert_eq!(output.status.code(), Some(1), "{:?}", output.status);
+}
+
+#[test]
+fn rejects_percent_operator_on_fixed_values() {
+    let src = "fn main():\n    let a: Fixed<32, 16> = Fixed<32, 16>(1.0)\n    let b: Fixed<32, 16> = Fixed<32, 16>(2.0)\n    let c = a % b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("`%` is not supported on `Fixed")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_fixed_with_an_unsupported_bit_width() {
+    let src = "fn main():\n    let a: Fixed<7, 3> = Fixed<7, 3>(1.0)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("bit width must be one of 8, 16, 32, 64")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_fixed_with_frac_not_less_than_bits() {
+    let src = "fn main():\n    let a: Fixed<32, 32> = Fixed<32, 32>(1.0)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("fractional-bit count must be less than its bit width")), "{:?}", diags);
+}
