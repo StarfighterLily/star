@@ -248,16 +248,32 @@ pub struct Lexer<'src> {
     /// instead of being reported as if the hole's substring were its own
     /// standalone file starting at byte 0.
     base_offset: usize,
+    /// Stamped onto every emitted span's `file_id` -- see
+    /// `crate::diagnostics::Span::file_id`'s doc comment. `0` for the root
+    /// file being compiled; `crate::modules::resolve` allocates a fresh id
+    /// per distinct file pulled in via `import`. An f-string hole re-lexed
+    /// out of some file's source (`Lexer::new_with_offset`) inherits that
+    /// same file's id (the hole is still text from that one file, just a
+    /// different byte range within it), never resets to `0`.
+    file_id: u32,
 }
 
 impl<'src> Lexer<'src> {
     pub fn new(src: &'src str) -> Self {
-        Self::new_with_offset(src, 0)
+        Self::new_with_offset(src, 0, 0)
+    }
+
+    /// Like `Lexer::new`, but for a non-root file (an `import`ed one) --
+    /// every span this lexer emits carries `file_id` instead of `0`. See
+    /// `crate::diagnostics::Span::file_id`'s doc comment.
+    pub fn new_with_file(src: &'src str, file_id: u32) -> Self {
+        Self::new_with_offset(src, 0, file_id)
     }
 
     /// Like `Lexer::new`, but every span this lexer emits is shifted by
-    /// `base_offset` -- see `Lexer::base_offset`'s doc comment.
-    pub fn new_with_offset(src: &'src str, base_offset: usize) -> Self {
+    /// `base_offset` and stamped with `file_id` -- see `Lexer::base_offset`/
+    /// `Lexer::file_id`'s doc comments.
+    pub fn new_with_offset(src: &'src str, base_offset: usize, file_id: u32) -> Self {
         Self {
             src,
             bytes: src.as_bytes(),
@@ -267,6 +283,7 @@ impl<'src> Lexer<'src> {
             bracket_depth: 0,
             errors: Vec::new(),
             base_offset,
+            file_id,
         }
     }
 
@@ -808,7 +825,7 @@ impl<'src> Lexer<'src> {
     /// while re-lexing an f-string hole's extracted substring still points
     /// at the hole's real location in the outer file.
     fn span(&self, start: usize, end: usize) -> Span {
-        Span::new(start + self.base_offset, end + self.base_offset)
+        Span::new_in_file(start + self.base_offset, end + self.base_offset, self.file_id)
     }
 }
 

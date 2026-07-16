@@ -1967,21 +1967,34 @@ impl Checker {
     /// in independent columns, not one contiguous address, so there is no
     /// real place to project a field out of, and a write through that
     /// fallback's disconnected alloca silently vanishes. Only `Field`/
-    /// `TupleIndex` hops are peeled through (mirroring `assign_root_name`'s
-    /// recursion) -- any other base (`ListIndex`, `ArrayIndex`, `RingIndex`,
-    /// `Ident`, ...) has real addressable storage of its own, so a
-    /// `TableIndex` reached *through* one of those (e.g.
-    /// `list[i].some_table[j]`) is unaffected; only a `TableIndex` sitting
-    /// directly beneath an unbroken chain of `Field`/`TupleIndex`
-    /// projections is a silent-no-op hazard. Callers only invoke this once
-    /// `target`/`base` is already known to be a `Field`/`TupleIndex` (a bare
-    /// `table[i] = v` -- the one supported whole-element write -- must not
-    /// be rejected).
+    /// `TupleIndex`/`ListIndex`/`ArrayIndex`/`RingIndex` hops are all peeled
+    /// through (mirroring `assign_root_name`'s recursion) -- `Ident` (or
+    /// anything else with genuine, independently-addressable storage of its
+    /// own that never bottoms out at a `TableIndex`) is unaffected, so
+    /// `list[i].some_table[j]` (a real `List<Table<T>>` element) is still
+    /// correctly left alone. But a `ListIndex`/`ArrayIndex`/`RingIndex`
+    /// *itself* only has real addressable storage when its own `base` does
+    /// -- `t[i].tags[j] = v` (`tags: List<i32>` a field of a `Table<T>`
+    /// element) first reads `t[i].tags` through exactly the same
+    /// disconnected-temporary fallback as `t[i].tags = v` before indexing
+    /// into *that*, so the write is just as silently lost. Previously these
+    /// three index kinds were treated as unconditionally "real storage" and
+    /// never recursed into, letting `t[i].tags[j] = v`,
+    /// `t[i].cells[j] = v` (an array field), and `t[i].tags[j] += v` all
+    /// silently no-op instead of being rejected -- confirmed via a real
+    /// `star build`+run where the write compiled cleanly, ran to exit 0,
+    /// and printed the pre-write value. Callers only invoke this once
+    /// `target`/`base` is already known to be one of these five kinds (a
+    /// bare `table[i] = v` -- the one supported whole-element write -- must
+    /// not be rejected).
     fn writes_through_table_index(target: &TypedExpr) -> bool {
         match target {
             TypedExpr::TableIndex { .. } => true,
-            TypedExpr::Field { base, .. } => Self::writes_through_table_index(base),
-            TypedExpr::TupleIndex { base, .. } => Self::writes_through_table_index(base),
+            TypedExpr::Field { base, .. }
+            | TypedExpr::TupleIndex { base, .. }
+            | TypedExpr::ListIndex { base, .. }
+            | TypedExpr::ArrayIndex { base, .. }
+            | TypedExpr::RingIndex { base, .. } => Self::writes_through_table_index(base),
             _ => false,
         }
     }
@@ -1995,7 +2008,11 @@ impl Checker {
     /// anywhere on `m`, the exact gap `docs/design.md`'s "mut is required to
     /// change state" rule exists to close for a plain assignment.
     fn check_mut_receiver(&mut self, base: &TypedExpr, method: &str, span: Span) {
-        if matches!(base, TypedExpr::Field { .. } | TypedExpr::TupleIndex { .. }) && Self::writes_through_table_index(base) {
+        if matches!(
+            base,
+            TypedExpr::Field { .. } | TypedExpr::TupleIndex { .. } | TypedExpr::ListIndex { .. } | TypedExpr::ArrayIndex { .. } | TypedExpr::RingIndex { .. }
+        ) && Self::writes_through_table_index(base)
+        {
             self.error(
                 format!(
                     "cannot call `{}(..)` through a `Table<T>` index -- a table element's fields live in independent columns with no addressable storage of their own; assign or read the whole element instead (`table[i] = ...`)",

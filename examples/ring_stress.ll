@@ -243,6 +243,7 @@ ring_rplace_end_9:
   %t47 = load i8*, i8** %t46
   %t48 = load i8*, i8** %t46
   call void @star_rc_retain(i8* %t48)
+  call void @star_rc_release(i8* %t47)
   %t49 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.2, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t49, i8* %t47)
   %t50 = getelementptr inbounds { [4 x i8*], i64, i64 }, { [4 x i8*], i64, i64 }* %t0, i32 0, i32 0
@@ -268,6 +269,7 @@ ring_rplace_end_12:
   %t64 = load i8*, i8** %t63
   %t65 = load i8*, i8** %t63
   call void @star_rc_retain(i8* %t65)
+  call void @star_rc_release(i8* %t64)
   %t66 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.3, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t66, i8* %t64)
   %t67 = getelementptr inbounds { [4 x i8*], i64, i64 }, { [4 x i8*], i64, i64 }* %t0, i32 0, i32 0
@@ -293,6 +295,7 @@ ring_rplace_end_15:
   %t81 = load i8*, i8** %t80
   %t82 = load i8*, i8** %t80
   call void @star_rc_retain(i8* %t82)
+  call void @star_rc_release(i8* %t81)
   %t83 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.4, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t83, i8* %t81)
   %t84 = getelementptr inbounds { [4 x i8*], i64, i64 }, { [4 x i8*], i64, i64 }* %t0, i32 0, i32 0
@@ -318,6 +321,7 @@ ring_rplace_end_18:
   %t98 = load i8*, i8** %t97
   %t99 = load i8*, i8** %t97
   call void @star_rc_retain(i8* %t99)
+  call void @star_rc_release(i8* %t98)
   %t100 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.5, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t100, i8* %t98)
   store { [3 x i8*], i64, i64 } zeroinitializer, { [3 x i8*], i64, i64 }* %t101

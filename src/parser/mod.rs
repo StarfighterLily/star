@@ -83,10 +83,20 @@ pub struct Parser {
     /// trigger before a heavier one crashes" bug fixed elsewhere for
     /// `MAX_BLOCK_DEPTH`.
     match_depth: u32,
+    /// The `crate::diagnostics::Span::file_id` this parser's tokens carry --
+    /// derived from the first token at construction (every token in one
+    /// `Parser`'s stream always comes from one `Lexer` run over one file, so
+    /// they all agree). Threaded through to `Lexer::new_with_offset` when
+    /// re-lexing an f-string interpolation hole (`lower_fstring`), so a
+    /// hole's re-lexed tokens keep the *enclosing* file's id instead of
+    /// silently resetting to `0` (the root file) regardless of which file
+    /// the f-string itself was written in.
+    file_id: u32,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
+        let file_id = tokens.first().map(|t| t.span.file_id).unwrap_or(0);
         Self {
             tokens,
             pos: 0,
@@ -96,12 +106,21 @@ impl Parser {
             expr_depth: 0,
             block_depth: 0,
             match_depth: 0,
+            file_id,
         }
     }
 
     /// Parse a complete module from source, running the lexer first.
     pub fn parse_source(src: &str) -> Result<Module, Vec<Diagnostic>> {
         let tokens = Lexer::new(src).tokenize()?;
+        Parser::new(tokens).parse_module()
+    }
+
+    /// Like `parse_source`, but for a non-root file (an `import`ed one) --
+    /// every span this produces carries `file_id` instead of `0`. See
+    /// `crate::diagnostics::Span::file_id`'s doc comment.
+    pub fn parse_source_with_file(src: &str, file_id: u32) -> Result<Module, Vec<Diagnostic>> {
+        let tokens = Lexer::new_with_file(src, file_id).tokenize()?;
         Parser::new(tokens).parse_module()
     }
 

@@ -397,7 +397,7 @@ fn cmd_emit(what: EmitKind, file: &str) -> ExitCode {
 /// even though `star check`/`star build` on the same file worked fine).
 fn emit_llvm_ir(file: &str, source: &str) -> Result<String, Vec<star::diagnostics::Diagnostic>> {
     let module = Driver::parse(source)?;
-    let module = star::modules::resolve(module, Path::new(file))?;
+    let (module, _imported_files) = star::modules::resolve(module, Path::new(file))?;
     let mut checker = star::types::Checker::new();
     let typed = checker.check(&module)?;
     Driver::codegen(&typed).map_err(|diags| {

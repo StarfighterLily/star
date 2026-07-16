@@ -717,7 +717,19 @@ impl Codegen {
         }
     }
 
-    /// `clamp(x, lo, hi) -> same type as x`, for `i32`/`f32`.
+    /// `clamp(x, lo, hi) -> same type as x`, generic over every numeric
+    /// width `Checker::check_builtin_call_args`'s `"clamp"` arm accepts
+    /// (`i8..u64`/`f32`/`f64`, via the fully-widened `is_numeric()`), not
+    /// just `i32`/`f32` -- mirrors `emit_minmax`'s/`emit_abs`'s own
+    /// width/signedness-generic dispatch (`ty.int_shape()`) plus a real
+    /// `f32` vs. `f64` split, rather than this function's previous
+    /// unconditional `i32`/`float` opcodes for every non-`Ty::Float` /
+    /// non-`f32` case respectively -- confirmed to emit `clang`-rejected IR
+    /// (an `i32`-tagged operand feeding an `icmp`/`select` that expected
+    /// the real operand width, e.g. `i64`, and a bare `float`-tagged
+    /// `maxnum.f32` result stored into an `f64` slot expecting `double`)
+    /// for every numeric type this function didn't special-case before this
+    /// fix.
     pub(super) fn emit_clamp(&mut self, args: &[TypedExpr]) -> String {
         if args.len() < 3 {
             self.err("clamp(..) expects 3 arguments", Span::dummy());
@@ -727,28 +739,33 @@ impl Codegen {
         let x = self.emit_expr(&args[0]);
         let lo = self.emit_expr(&args[1]);
         let hi = self.emit_expr(&args[2]);
-        if matches!(ty, Ty::Float) {
-            let x_b = self.untag(&x, &Ty::Float);
-            let lo_b = self.untag(&lo, &Ty::Float);
-            let hi_b = self.untag(&hi, &Ty::Float);
+        if matches!(ty, Ty::Float | Ty::F64) {
+            let (fty, intrinsic_suffix) = if matches!(ty, Ty::F64) { ("double", "f64") } else { ("float", "f32") };
+            let x_b = self.untag(&x, &ty);
+            let lo_b = self.untag(&lo, &ty);
+            let hi_b = self.untag(&hi, &ty);
             let m1 = self.tmp_name();
-            self.line(&format!("  {} = call float @llvm.maxnum.f32(float {}, float {})", m1, x_b, lo_b));
+            self.line(&format!("  {} = call {} @llvm.maxnum.{}({} {}, {} {})", m1, fty, intrinsic_suffix, fty, x_b, fty, lo_b));
             let m2 = self.tmp_name();
-            self.line(&format!("  {} = call float @llvm.minnum.f32(float {}, float {})", m2, m1, hi_b));
-            format!("float {}", m2)
+            self.line(&format!("  {} = call {} @llvm.minnum.{}({} {}, {} {})", m2, fty, intrinsic_suffix, fty, m1, fty, hi_b));
+            format!("{} {}", fty, m2)
         } else {
-            let x_b = self.untag(&x, &Ty::Int);
-            let lo_b = self.untag(&lo, &Ty::Int);
-            let hi_b = self.untag(&hi, &Ty::Int);
+            let (width, signed) = ty.int_shape().unwrap_or((32, true));
+            let ity = format!("i{}", width);
+            let pred_gt = if signed { "sgt" } else { "ugt" };
+            let pred_lt = if signed { "slt" } else { "ult" };
+            let x_b = self.untag(&x, &ty);
+            let lo_b = self.untag(&lo, &ty);
+            let hi_b = self.untag(&hi, &ty);
             let c1 = self.tmp_name();
-            self.line(&format!("  {} = icmp sgt i32 {}, {}", c1, lo_b, x_b));
+            self.line(&format!("  {} = icmp {} {} {}, {}", c1, pred_gt, ity, lo_b, x_b));
             let m1 = self.tmp_name();
-            self.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", m1, c1, lo_b, x_b));
+            self.line(&format!("  {} = select i1 {}, {} {}, {} {}", m1, c1, ity, lo_b, ity, x_b));
             let c2 = self.tmp_name();
-            self.line(&format!("  {} = icmp slt i32 {}, {}", c2, hi_b, m1));
+            self.line(&format!("  {} = icmp {} {} {}, {}", c2, pred_lt, ity, hi_b, m1));
             let m2 = self.tmp_name();
-            self.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", m2, c2, hi_b, m1));
-            format!("i32 {}", m2)
+            self.line(&format!("  {} = select i1 {}, {} {}, {} {}", m2, c2, ity, hi_b, ity, m1));
+            format!("{} {}", ity, m2)
         }
     }
 

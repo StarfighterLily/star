@@ -285,7 +285,18 @@ fn scan_for_nested_yield(stmt: &Stmt, errors: &mut Vec<Diagnostic>, nested: bool
                 ));
             }
         }
-        Stmt::If { then_block, else_block, .. } => {
+        // The header expression (`cond`) is scanned too, not just the body
+        // blocks -- a `match`/`if`-as-value/lambda used as an `if`/`while`
+        // condition can hide a `yield` inside its own nested `Block` (a
+        // match arm body, an `if`-as-value branch) exactly like it can in a
+        // `let`/`Stmt::Expr` position (see `Stmt::Let`/`Stmt::Expr` below),
+        // and `scan_expr_for_nested_yield` exists precisely to find that.
+        // Previously missing here, so `if match x: 0 -> yield; true _ ->
+        // false: ...` fell all the way through to the generic type-checker
+        // fallback with a worse, less specific diagnostic instead of this
+        // pass's own dedicated message.
+        Stmt::If { cond, then_block, else_block, .. } => {
+            scan_expr_for_nested_yield(cond, errors);
             for s in &then_block.stmts {
                 scan_for_nested_yield(s, errors, true);
             }
@@ -295,7 +306,8 @@ fn scan_for_nested_yield(stmt: &Stmt, errors: &mut Vec<Diagnostic>, nested: bool
                 }
             }
         }
-        Stmt::While { body, else_block, .. } => {
+        Stmt::While { cond, body, else_block, .. } => {
+            scan_expr_for_nested_yield(cond, errors);
             for s in &body.stmts {
                 scan_for_nested_yield(s, errors, true);
             }
@@ -310,7 +322,12 @@ fn scan_for_nested_yield(stmt: &Stmt, errors: &mut Vec<Diagnostic>, nested: bool
                 scan_for_nested_yield(s, errors, true);
             }
         }
-        Stmt::For { body, .. } => {
+        // `start`/`end` are scanned too, same reasoning as `If`/`While`'s
+        // `cond` above -- `for i in 0..(match x: ... )` could otherwise
+        // hide a `yield` inside the range bounds unrecognized.
+        Stmt::For { start, end, body, .. } => {
+            scan_expr_for_nested_yield(start, errors);
+            scan_expr_for_nested_yield(end, errors);
             for s in &body.stmts {
                 scan_for_nested_yield(s, errors, true);
             }

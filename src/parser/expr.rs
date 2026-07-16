@@ -771,7 +771,7 @@ impl Parser {
                     // offset happened to land when misread against the outer
                     // file's much larger source text (previously, always
                     // somewhere near the very start of the file).
-                    let tokens = match Lexer::new_with_offset(&src, offset).tokenize() {
+                    let tokens = match Lexer::new_with_offset(&src, offset, self.file_id).tokenize() {
                         Ok(t) => t,
                         Err(mut errs) => {
                             self.errors.append(&mut errs);

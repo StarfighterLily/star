@@ -19,6 +19,15 @@ use crate::types::{Checker, TypedModule};
 pub struct Compilation {
     pub file: String,
     pub source: String,
+    /// Every file pulled in transitively via `import`, in first-encountered
+    /// order -- index `i` here holds the file `crate::diagnostics::Span`s
+    /// with `file_id == i as u32 + 1` were produced from (`file_id == 0`
+    /// always means `file`/`source` above, the root file being compiled).
+    /// Populated by `crate::modules::resolve`. See `Span::file_id`'s doc
+    /// comment for why this exists: without it, every diagnostic whose span
+    /// originated in an imported file rendered against the *root* file's
+    /// source text instead, landing on a wrong/garbled location.
+    pub imported_files: Vec<(String, String)>,
     pub module: Option<Module>,
     pub typed: Option<TypedModule>,
     pub diagnostics: Vec<Diagnostic>,
@@ -30,11 +39,32 @@ impl Compilation {
         self.module.is_some() && self.diagnostics.is_empty()
     }
 
-    /// Render every diagnostic against the original source.
+    /// The `(file label, source text)` a given `Span::file_id` refers to.
+    /// Falls back to the root file for an out-of-range id -- defensive only,
+    /// since every real `file_id` a `Span` can carry is one this
+    /// `Compilation` itself assigned while parsing (see `imported_files`'s
+    /// doc comment).
+    fn file_and_source(&self, file_id: u32) -> (&str, &str) {
+        if file_id == 0 {
+            return (&self.file, &self.source);
+        }
+        match self.imported_files.get(file_id as usize - 1) {
+            Some((file, source)) => (file.as_str(), source.as_str()),
+            None => (&self.file, &self.source),
+        }
+    }
+
+    /// Render every diagnostic against the source file its own span
+    /// actually came from (the root file, or whichever imported file --
+    /// see `file_and_source`), not unconditionally against the root file's
+    /// source text.
     pub fn render_diagnostics(&self) -> String {
         self.diagnostics
             .iter()
-            .map(|d| diagnostics::render(&self.source, &self.file, d))
+            .map(|d| {
+                let (file, source) = self.file_and_source(d.span.file_id);
+                diagnostics::render(source, file, d)
+            })
             .collect()
     }
 }
@@ -81,9 +111,13 @@ impl Driver {
 
         // Inline any `import`ed files into a single flat module before the
         // checker ever has to think about more than one file.
+        let mut imported_files = Vec::new();
         let module = match module {
             Some(m) => match crate::modules::resolve(m, &self.path) {
-                Ok(resolved) => Some(resolved),
+                Ok((resolved, files)) => {
+                    imported_files = files;
+                    Some(resolved)
+                }
                 Err(diags) => {
                     diagnostics = diags;
                     None
@@ -109,7 +143,7 @@ impl Driver {
             None
         };
 
-        Ok(Compilation { file, source, module, typed, diagnostics })
+        Ok(Compilation { file, source, imported_files, module, typed, diagnostics })
     }
 
     /// Generate LLVM IR from a checked module.

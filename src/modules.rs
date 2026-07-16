@@ -42,8 +42,26 @@ pub fn mangle_name(alias: &str, name: &str) -> String {
 
 /// Resolve every `import` in `module` (whose own source lives at
 /// `root_path`), recursively inlining each imported file's items under a
-/// mangled name. Returns a module with no `Item::Import` entries left.
-pub fn resolve(module: Module, root_path: &Path) -> Result<Module, Vec<Diagnostic>> {
+/// mangled name. Returns the flattened module (no `Item::Import` entries
+/// left) plus a file table: index `i` holds the `(label, source text)` of
+/// the file `crate::diagnostics::Span::file_id == i as u32 + 1` refers to,
+/// in first-encountered order. `crate::driver::Compilation` stores this
+/// (as `imported_files`) so a diagnostic whose span originated inside an
+/// imported file's inlined AST renders against *that* file's real source
+/// text instead of unconditionally against the root file's -- previously
+/// every span an imported file's declarations carried was preserved
+/// verbatim (correct *byte offsets*, but only meaningful against that
+/// file's own buffer) with nothing tracking which buffer it belonged to,
+/// so any checker/codegen diagnostic raised against successfully-inlined
+/// imported code rendered at a wrong/garbled line, column, and caret span
+/// in the *importing* file instead (confirmed via a real `star check` on a
+/// type error inside an imported file rendering mid-way through the
+/// importing file's own `import` statement). Import-resolution-level
+/// failures (a missing file, a parse error, a cycle) are unaffected -- they
+/// already re-anchor on the *importing* file's own `decl.span`, a real,
+/// meaningful location in a file this function's caller definitely has the
+/// source text for.
+pub fn resolve(module: Module, root_path: &Path) -> Result<(Module, Vec<(String, String)>), Vec<Diagnostic>> {
     let mut loading = HashSet::new();
     // Best-effort: if the root file exists on disk, seed the cycle guard
     // with its own canonical path so an import chain that loops back to the
@@ -55,10 +73,17 @@ pub fn resolve(module: Module, root_path: &Path) -> Result<Module, Vec<Diagnosti
         loading.insert(canon);
     }
     let base_dir = root_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-    resolve_inner(module, &base_dir, &mut loading)
+    let mut files = Vec::new();
+    let resolved = resolve_inner(module, &base_dir, &mut loading, &mut files)?;
+    Ok((resolved, files))
 }
 
-fn resolve_inner(module: Module, base_dir: &Path, loading: &mut HashSet<PathBuf>) -> Result<Module, Vec<Diagnostic>> {
+fn resolve_inner(
+    module: Module,
+    base_dir: &Path,
+    loading: &mut HashSet<PathBuf>,
+    files: &mut Vec<(String, String)>,
+) -> Result<Module, Vec<Diagnostic>> {
     let mut items = Vec::new();
     for item in module.items {
         match item {
@@ -88,7 +113,15 @@ fn resolve_inner(module: Module, base_dir: &Path, loading: &mut HashSet<PathBuf>
                         )]);
                     }
                 };
-                let imported = match Parser::parse_source(&source) {
+                // Allocate this file's id *before* parsing it, so every span
+                // its own AST carries (and, recursively, any span from a
+                // file *it* imports) is stamped with the right id from the
+                // moment it's lexed -- see `Span::file_id`'s doc comment.
+                // `files.len() as u32 + 1` since `file_id == 0` is reserved
+                // for the root file (never itself entered into `files`).
+                let file_id = files.len() as u32 + 1;
+                files.push((decl.path.clone(), source.clone()));
+                let imported = match Parser::parse_source_with_file(&source, file_id) {
                     Ok(m) => m,
                     Err(diags) => {
                         let msg = diags.first().map(|d| d.message.clone()).unwrap_or_else(|| "parse error".into());
@@ -103,7 +136,7 @@ fn resolve_inner(module: Module, base_dir: &Path, loading: &mut HashSet<PathBuf>
                 // (see the module-level doc comment on the reach limit this
                 // implies).
                 let child_base = canonical.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-                let resolved_child = match resolve_inner(imported, &child_base, loading) {
+                let resolved_child = match resolve_inner(imported, &child_base, loading, files) {
                     Ok(m) => m,
                     Err(diags) => {
                         // Re-anchor on this level's own (meaningful) span

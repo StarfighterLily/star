@@ -64,18 +64,23 @@ impl Checker {
                 if let TypedExpr::StrIndex { .. } = &target_typed {
                     self.error("cannot assign into a `str` index -- strings are immutable in Star", *span);
                 }
-                // `table[i].field = v`: unlike `ListIndex`/`ArrayIndex`/
-                // `RingIndex` (each with a dedicated `Codegen::emit_place`
-                // arm handing out a real pointer into their base's storage),
-                // a `Table<T>` element's fields live in independent column
+                // `table[i].field = v` (and `table[i].field[j] = v`, one
+                // level of `ListIndex`/`ArrayIndex`/`RingIndex` further): a
+                // `Table<T>` element's fields live in independent column
                 // buffers with no single contiguous address -- `emit_place`
-                // has no arm for `TableIndex`, so a `Field`/`TupleIndex`
-                // chain rooted there falls into the generic rvalue fallback
-                // and silently writes into a disconnected temporary instead
-                // of the real column (see `crate::codegen::table`'s module
-                // doc comment). Rejected here rather than left to that
-                // silent no-op, mirroring the `StrIndex` check just above.
-                if matches!(&target_typed, TypedExpr::Field { .. } | TypedExpr::TupleIndex { .. }) && Self::writes_through_table_index(&target_typed) {
+                // has no arm for `TableIndex`, so a `Field`/`TupleIndex`/
+                // `ListIndex`/`ArrayIndex`/`RingIndex` chain rooted there
+                // falls into the generic rvalue fallback and silently writes
+                // into a disconnected temporary instead of the real column
+                // (see `crate::codegen::table`'s module doc comment and
+                // `writes_through_table_index`'s own doc comment). Rejected
+                // here rather than left to that silent no-op, mirroring the
+                // `StrIndex` check just above.
+                if matches!(
+                    &target_typed,
+                    TypedExpr::Field { .. } | TypedExpr::TupleIndex { .. } | TypedExpr::ListIndex { .. } | TypedExpr::ArrayIndex { .. } | TypedExpr::RingIndex { .. }
+                ) && Self::writes_through_table_index(&target_typed)
+                {
                     self.error("cannot assign to a field through a `Table<T>` index -- a table element's fields live in independent columns with no addressable storage of their own; assign the whole element instead (`table[i] = ...`)", *span);
                 }
                 // `mut` is required to change state (`docs/design.md`): the

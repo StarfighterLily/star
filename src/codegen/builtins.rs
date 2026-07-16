@@ -1,6 +1,7 @@
 //! The `print`/`println`, math (`sqrt`/`pow`/`abs`/`min`/`max`/...), and
 //! string (`len`/`concat`) standard-library builtins.
 
+use crate::ast::BinOp;
 use crate::diagnostics::Span;
 use crate::types::*;
 
@@ -264,12 +265,27 @@ impl Codegen {
                 // value's `abs` is itself, no computation needed.
                 return format!("{} {}", ity, bare);
             }
-            let neg = self.tmp_name();
-            self.line(&format!("  {} = sub {} 0, {}", neg, ity, bare));
+            // Route the negation through the same width/signedness-generic
+            // scalar-binop path real binary `-`/unary `-` use (`0 - x`,
+            // `Codegen::emit_unary`'s `UnOp::Neg` case) rather than a bare,
+            // untrapped `sub` opcode -- every explicit-width signed integer
+            // type traps on overflow by default (`docs/design.md`'s
+            // "Numeric widths and modes", `Ty::Int`/i32 excepted), and
+            // `abs(MIN)` is exactly the one input where `0 - x` overflows.
+            // Previously this used a raw `sub {ity} 0, {bare}` that silently
+            // wrapped instead of trapping -- confirmed via `abs(-128 as
+            // i8)` printing `-128` with exit 0 (no trap) where the
+            // equivalent direct `(0 as i8) - (-128 as i8)` correctly traps,
+            // the one signed-int overflow gap `abs` didn't inherit from the
+            // rest of this codegen's trap-on-overflow machinery.
+            let tagged = format!("{} {}", ity, bare);
+            let zero = format!("{} 0", ity);
+            let neg = self.emit_binop(&zero, &ty, &tagged, &ty, BinOp::Sub);
+            let neg_bare = self.untag(&neg, &ty);
             let is_neg = self.tmp_name();
             self.line(&format!("  {} = icmp slt {} {}, 0", is_neg, ity, bare));
             let reg = self.tmp_name();
-            self.line(&format!("  {} = select i1 {}, {} {}, {} {}", reg, is_neg, ity, neg, ity, bare));
+            self.line(&format!("  {} = select i1 {}, {} {}, {} {}", reg, is_neg, ity, neg_bare, ity, bare));
             format!("{} {}", ity, reg)
         }
     }
@@ -286,12 +302,33 @@ impl Codegen {
         let rty = self.expr_ty(&args[1]);
         let lval = self.emit_expr(&args[0]);
         let rval = self.emit_expr(&args[1]);
-        if matches!(lty, Ty::Float | Ty::F64) || matches!(rty, Ty::Float | Ty::F64) {
-            // `Checker::check_builtin_call_args` only tolerates a mismatch
-            // for the legacy `Int`/`Float` pair -- an `f64` here always
-            // pairs with another `f64` (or a placeholder), so promoting
-            // both to `f32` (matching `pow`/`sqrt`/etc.'s own always-`f32`
-            // precision, per `promote_to_float`'s doc comment) is safe.
+        if matches!(lty, Ty::F64) || matches!(rty, Ty::F64) {
+            // `min`/`max` preserve their operands' numeric type
+            // (`Checker::builtin_return_ty`) rather than always narrowing
+            // to `f32` -- an `f64` pair must stay `double` all the way
+            // through, both the intrinsic call and this function's own
+            // returned tag. Previously this always went through
+            // `promote_to_float` (which narrows an `f64` operand down to
+            // `f32`) and always tagged the result `"float "`, so a
+            // `min`/`max(f64, f64)` call site (whose checker-assigned type
+            // is `F64`) received a value tagged `float` -- any consumer
+            // that untags it as `Ty::F64` (expecting a `"double "` prefix)
+            // failed to strip the wrong tag, producing malformed,
+            // `clang`-rejected IR. Confirmed via a real `star build`
+            // failure on `min(3.5 as f64, 7.5 as f64)` before this fix.
+            let l = self.untag(&lval, &lty);
+            let r = self.untag(&rval, &rty);
+            let reg = self.tmp_name();
+            let intrinsic = if is_min { "llvm.minnum.f64" } else { "llvm.maxnum.f64" };
+            self.line(&format!("  {} = call double @{}(double {}, double {})", reg, intrinsic, l, r));
+            format!("double {}", reg)
+        } else if matches!(lty, Ty::Float) || matches!(rty, Ty::Float) {
+            // Same "one legacy mixed pair, otherwise an exact match" rule
+            // as the integer branch below -- an `Int`/`Float` pair is the
+            // one case `Checker::check_builtin_call_args` tolerates a type
+            // mismatch for, so promoting both to `f32` here is safe (and
+            // matches `pow`/`sqrt`/etc.'s own always-`f32` precision, per
+            // `promote_to_float`'s doc comment).
             let l = self.promote_to_float(&lval, &lty);
             let r = self.promote_to_float(&rval, &rty);
             let reg = self.tmp_name();

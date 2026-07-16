@@ -369,7 +369,13 @@ impl Codegen {
                 let reg = self.tmp_name();
                 let ts = self.llvm_ty(ty);
                 self.line(&format!("  {} = load {}, {}* {}", reg, ts, ts, gep));
-                self.emit_retain_at(&gep, ty);
+                // Only retain when `base` bottoms out in real, persistent
+                // storage -- see `Codegen::place_is_shared_storage`'s doc
+                // comment for the leak this guards against when `base` is
+                // instead a freshly spilled temporary (e.g. `make_pair().0`).
+                if Self::place_is_shared_storage(base) {
+                    self.emit_retain_at(&gep, ty);
+                }
                 reg
             }
             TypedExpr::ArrayRepeat { value, count, elem_ty, .. } => self.emit_array_repeat(value, *count, elem_ty),
@@ -398,7 +404,12 @@ impl Codegen {
                 let elem_llvm = self.llvm_ty(ty);
                 let reg = self.tmp_name();
                 self.line(&format!("  {} = load {}, {}* {}", reg, elem_llvm, elem_llvm, ptr));
-                self.emit_retain_at(&ptr, ty);
+                // See `Codegen::place_is_shared_storage`'s doc comment: only
+                // retain when `base` is real, persistent storage, not a
+                // freshly spilled temporary (`make_ring()[0]`).
+                if Self::place_is_shared_storage(base) {
+                    self.emit_retain_at(&ptr, ty);
+                }
                 format!("{} {}", elem_llvm, reg)
             }
             TypedExpr::RingMethod { base, method, args, .. } => {
@@ -430,8 +441,18 @@ impl Codegen {
                 let ts = self.llvm_ty(ty);
                 self.line(&format!("  {} = load {}, {}* {}", reg, ts, ts, gep));
                 // Same reasoning as `Ident` above: reading a field hands out
-                // an independent copy of its value.
-                self.emit_retain_at(&gep, ty);
+                // an independent copy of its value -- but only when `base`
+                // is real, persistent storage with its own independent
+                // owner. When `base` is instead a freshly spilled temporary
+                // (`table[i].field`, `make_struct().field`, ...) it already
+                // owns its content at refcount 1 from construction and
+                // nothing will ever separately release the temporary to
+                // balance an extra retain back out -- see
+                // `Codegen::place_is_shared_storage`'s doc comment for the
+                // leak this previously caused on every such read.
+                if Self::place_is_shared_storage(base) {
+                    self.emit_retain_at(&gep, ty);
+                }
                 reg
             }
             TypedExpr::Call { callee, args, .. } => {

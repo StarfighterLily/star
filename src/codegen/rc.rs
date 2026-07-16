@@ -23,22 +23,82 @@ use super::Codegen;
 
 impl Codegen {
     /// True for the expression kinds `emit_expr` retains on (`Ident`, a
-    /// non-swizzle `Field`, `ListIndex`, `GenRefIndex` -- see their arms in
-    /// `expr.rs`/`list.rs`/`arena.rs`), i.e. a *read of an existing owned
-    /// slot* rather than a fresh construction. Used by the couple of call
-    /// sites (`emit_raw_str_ptr`, `emit_print_like`) that consume a `Str`
-    /// value *transiently* -- extracting its raw bytes for a synchronous
-    /// library call or `printf`, never keeping the pointer around -- to
-    /// know whether `emit_expr` just retained a reference on their behalf
-    /// that needs balancing back out, or whether nothing was retained
-    /// (a fresh construction like a literal or a `concat` call) and
-    /// there's nothing to release.
+    /// non-swizzle `Field`, `ListIndex`, `GenRefIndex`, `ArrayIndex`,
+    /// `RingIndex` -- see their arms in `expr.rs`/`list.rs`/`arena.rs`/
+    /// `array.rs`), i.e. a *read of an existing owned slot* rather than a
+    /// fresh construction. Used by the couple of call sites
+    /// (`emit_raw_str_ptr`, `emit_print_like`, `emit_closure_call`) that
+    /// consume a value *transiently* -- extracting its raw bytes for a
+    /// synchronous library call/`printf`, or invoking a closure, never
+    /// keeping the reference around -- to know whether `emit_expr` just
+    /// retained a reference on their behalf that needs balancing back out,
+    /// or whether nothing was retained (a fresh construction like a literal
+    /// or a `concat` call) and there's nothing to release.
+    ///
+    /// `ArrayIndex`/`RingIndex` were previously missing from this list even
+    /// though `Codegen::emit_array_index`/the `RingIndex` arm in `expr.rs`
+    /// both do retain on read (mirroring `ListIndex`) -- so every transient
+    /// consumer of a `[T; N]`/`Ring<T,N>` element (`len(arr[i])`,
+    /// `println(ring[i])`, an f-string hole, `concat(ring[i], ..)`) retained
+    /// once and released zero times, permanently inflating that element's
+    /// refcount by one on every read and leaking it once evicted/overwritten
+    /// -- confirmed via real unbounded working-set growth (~112MB -> 884MB
+    /// over 30,000,000 iterations of `len(ring[0])` on a `Ring<str,1>`, flat
+    /// at a control with the same push/evict churn but no reads) before this
+    /// fix.
     pub(super) fn is_rc_borrowing_read(e: &TypedExpr) -> bool {
         matches!(
             e,
-            TypedExpr::Ident { .. } | TypedExpr::Field { .. } | TypedExpr::ListIndex { .. }
-                | TypedExpr::GenRefIndex { .. } | TypedExpr::TupleIndex { .. }
+            TypedExpr::Ident { .. }
+                | TypedExpr::Field { .. }
+                | TypedExpr::ListIndex { .. }
+                | TypedExpr::GenRefIndex { .. }
+                | TypedExpr::TupleIndex { .. }
+                | TypedExpr::ArrayIndex { .. }
+                | TypedExpr::RingIndex { .. }
         )
+    }
+
+    /// True if `expr` resolves (through `Codegen::emit_place`/
+    /// `emit_read_place`, possibly recursing through a chain of `Field`/
+    /// `TupleIndex`/`ArrayIndex`/`RingIndex`/`ListIndex` projections) to a
+    /// pointer into real, persistent storage that some other owner already
+    /// holds and will independently release at its own scope
+    /// exit/reassignment (an `Ident`, `self`, or a projection chained from
+    /// one; a `GenRefIndex` counts too -- it addresses an arena's own
+    /// backing array, not a spilled temporary). False for anything else (a
+    /// `Call`, `StructLit`, `If`/`Match`, `TableIndex`, a mutating
+    /// collection-method result, a `Cast`, ...): `emit_place`'s generic
+    /// fallback resolves those by spilling `emit_expr`'s already-owned
+    /// result (fresh at refcount 1, see this module's own doc comment) into
+    /// a scratch `alloca` nothing will ever separately release.
+    ///
+    /// Used by every "read a field/element out of a place pointer, then
+    /// retain" arm (`Field`, `TupleIndex`, `ArrayIndex`, `RingIndex` in
+    /// `expr.rs`/`array.rs`) to decide whether that retain is actually
+    /// needed: reading out of *real* storage hands out a genuine duplicate
+    /// that must be retained (the original slot keeps its own reference,
+    /// released independently later) -- but reading out of a freshly
+    /// spilled temporary must NOT retain again, since that temporary
+    /// already owns its content and nothing will ever release the
+    /// temporary itself to balance the extra retain back out. Previously
+    /// every one of these call sites retained unconditionally, leaking one
+    /// reference on every read through a temporary -- confirmed via real
+    /// unbounded working-set growth on both `table[i].field` (a `Table<T>`
+    /// index is never handled by `emit_place`'s explicit arms, see its own
+    /// `TableIndex` doc comment) and a direct `make_struct().field` call
+    /// chain (any struct-returning call/`if`/`match` used directly as a
+    /// field-access receiver, with no `let` binding of its own).
+    pub(super) fn place_is_shared_storage(expr: &TypedExpr) -> bool {
+        match expr {
+            TypedExpr::Ident { .. } | TypedExpr::SelfExpr(..) | TypedExpr::GenRefIndex { .. } => true,
+            TypedExpr::Field { base, .. }
+            | TypedExpr::TupleIndex { base, .. }
+            | TypedExpr::ArrayIndex { base, .. }
+            | TypedExpr::RingIndex { base, .. }
+            | TypedExpr::ListIndex { base, .. } => Self::place_is_shared_storage(base),
+            _ => false,
+        }
     }
 
     /// True if a value of this type owns, directly or transitively (through

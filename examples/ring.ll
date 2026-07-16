@@ -647,6 +647,7 @@ ring_rplace_end_56:
   %t306 = load i8*, i8** %t305
   %t307 = load i8*, i8** %t305
   call void @star_rc_retain(i8* %t307)
+  call void @star_rc_release(i8* %t306)
   %t308 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 0
   %t309 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 1
   %t310 = load i64, i64* %t309
@@ -670,6 +671,7 @@ ring_rplace_end_59:
   %t322 = load i8*, i8** %t321
   %t323 = load i8*, i8** %t321
   call void @star_rc_retain(i8* %t323)
+  call void @star_rc_release(i8* %t322)
   %t324 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.13, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t324, i8* %t306, i8* %t322)
   store { [2 x %Player], i64, i64 } zeroinitializer, { [2 x %Player], i64, i64 }* %t325

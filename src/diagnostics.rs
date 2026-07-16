@@ -6,32 +6,62 @@
 
 use std::fmt;
 
-/// A half-open byte range `[start, end)` into a single source file.
+/// A half-open byte range `[start, end)` into one source file, identified by
+/// `file_id` -- an index into whatever file table the diagnostic is
+/// eventually rendered against (`0` is always the root/entry file being
+/// compiled; `crate::modules::resolve` allocates `1`, `2`, ... for each
+/// distinct file pulled in via `import`, in first-encountered order -- see
+/// `Driver::compile`'s `files` field). Every `Span` used to implicitly mean
+/// "into the one file this compilation is about," which broke down the
+/// moment `crate::modules::resolve` started inlining a *second* file's AST
+/// (with that file's own, unrelated byte offsets) into the root module: any
+/// checker/codegen diagnostic whose span originated in an imported file was
+/// rendered against the *root* file's source text, landing on a wrong/
+/// garbled line, column, and caret span (confirmed via a real `star check`
+/// on an error inside an imported file rendering at the importing file's
+/// `import` statement, or worse, past the end of a short importing file's
+/// own line count). `file_id` is what lets `Diagnostic`-rendering code look
+/// up the *correct* source text per diagnostic instead of assuming there is
+/// only ever one.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
+    pub file_id: u32,
 }
 
 impl Span {
     pub const fn new(start: usize, end: usize) -> Self {
-        Self { start, end }
+        Self { start, end, file_id: 0 }
+    }
+
+    /// Same as `new`, but for a span into a specific (non-root) file --
+    /// see `Span::file_id`'s doc comment.
+    pub const fn new_in_file(start: usize, end: usize, file_id: u32) -> Self {
+        Self { start, end, file_id }
     }
 
     /// A zero-width span, useful for synthesized nodes.
     pub const fn dummy() -> Self {
-        Self { start: 0, end: 0 }
+        Self { start: 0, end: 0, file_id: 0 }
     }
 
-    /// Merge two spans into the smallest span covering both.
+    /// Merge two spans into the smallest span covering both. Assumes both
+    /// spans are in the same file (true of every existing call site -- a
+    /// merge only ever combines two sub-spans of one larger expression/
+    /// statement parsed from a single file); keeps `self`'s `file_id`.
     pub fn to(self, other: Span) -> Span {
-        Span::new(self.start.min(other.start), self.end.max(other.end))
+        Span { start: self.start.min(other.start), end: self.end.max(other.end), file_id: self.file_id }
     }
 }
 
 impl fmt::Debug for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}..{}", self.start, self.end)
+        if self.file_id == 0 {
+            write!(f, "{}..{}", self.start, self.end)
+        } else {
+            write!(f, "{}..{}@file{}", self.start, self.end, self.file_id)
+        }
     }
 }
 

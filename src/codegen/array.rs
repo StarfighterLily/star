@@ -115,8 +115,15 @@ impl Codegen {
         // Reading an element hands out an independent copy while the array
         // keeps its own (see `rc.rs`; a no-op unless `elem_ty` is
         // RC-bearing). The out-of-bounds fallback has no real backing
-        // allocation, so there's nothing to retain there.
-        self.emit_retain_at(&ptr, elem_ty);
+        // allocation, so there's nothing to retain there. Only retain when
+        // `base` is real, persistent storage, though -- not a freshly
+        // spilled temporary (`make_array()[0]`) that already owns its
+        // content and has no independent owner to release it later; see
+        // `Codegen::place_is_shared_storage`'s doc comment for the leak
+        // this previously caused.
+        if Self::place_is_shared_storage(base) {
+            self.emit_retain_at(&ptr, elem_ty);
+        }
         format!("{} {}", elem_llvm, reg)
     }
 

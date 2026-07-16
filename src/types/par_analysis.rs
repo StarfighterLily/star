@@ -35,6 +35,7 @@ impl Checker {
             }
             TypedStmt::Assign { target, value, span, .. } => {
                 self.walk_par_expr(value, locals);
+                self.walk_par_assign_target(target, locals);
                 match root_ident(target) {
                     Some(root) if locals.contains(&root) => {}
                     Some(root) => self.error(
@@ -129,6 +130,43 @@ impl Checker {
                     *span,
                 );
             }
+        }
+    }
+
+    /// Walk the sub-expressions of an assignment *target* that aren't
+    /// themselves the write location -- specifically, any index expression
+    /// nested inside it (`arr[hazard()] = 1`, `t[hazard()].f = 1`, ...).
+    /// `walk_par_stmt`'s `Assign` arm already proves *which* binding is
+    /// being written to via `root_ident` (and that it's a body-local, not a
+    /// captured outer name) -- but `root_ident` only extracts the target's
+    /// *root* identifier, never inspecting an index sub-expression along
+    /// the way, so a hazardous call embedded in one (anything
+    /// `unsafe_par_fns` would otherwise reject in a `let`/argument
+    /// position) was invisible to this whole analysis: previously
+    /// `Stmt::Assign` only ever called `walk_par_expr` on `value`, never on
+    /// `target`, so `arr[hazard()] = 1` (where `hazard()` transitively
+    /// `spawn`s into a shared arena) type-checked cleanly even though the
+    /// exact same call in a `let x = hazard()` position was correctly
+    /// rejected -- a soundness hole letting an unsynchronized-across-
+    /// worker-threads race compile silently. Mirrors `root_ident`'s own
+    /// recursion through the same projection kinds, but also walks each
+    /// index-bearing node's `index` expression via `walk_par_expr` (the
+    /// same hazard/capture-aware walk a `let`/call-argument position gets)
+    /// rather than silently skipping it.
+    fn walk_par_assign_target(&mut self, target: &TypedExpr, locals: &HashSet<String>) {
+        match target {
+            TypedExpr::Field { base, .. } | TypedExpr::TupleIndex { base, .. } => {
+                self.walk_par_assign_target(base, locals);
+            }
+            TypedExpr::ListIndex { base, index, .. }
+            | TypedExpr::ArrayIndex { base, index, .. }
+            | TypedExpr::RingIndex { base, index, .. }
+            | TypedExpr::TableIndex { base, index, .. }
+            | TypedExpr::GenRefIndex { base, index, .. } => {
+                self.walk_par_assign_target(base, locals);
+                self.walk_par_expr(index, locals);
+            }
+            _ => {}
         }
     }
 
