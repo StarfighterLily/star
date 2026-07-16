@@ -676,4 +676,165 @@ impl Codegen {
         ));
         result
     }
+
+    /// Shared generation-check emission for a `GenRef<T>` used directly as a
+    /// write target (whole-element `r[0] = v` or a field `r[0].f = v`) --
+    /// duplicates `emit_genref_index_place`'s check/branch shape but, unlike
+    /// that function, does *not* phi-merge the ok/stale paths into one
+    /// pointer. A stale/OOB write must be a true no-op (matching every
+    /// sibling collection's "out-of-bounds write is a silent no-op"
+    /// contract -- see `store_list_index` etc.), which requires the RHS
+    /// value (already owned/retained by the caller) to be *released* on
+    /// that path rather than stored into a disconnected dummy and leaked.
+    /// Leaves `ok_label` open with `elem_ptr` valid for the caller to GEP
+    /// off of and finish (ending in `br label %{end_label}`); the caller
+    /// must then `open_block(&stale_label)`, release `val`, jump to
+    /// `end_label`, and finally `open_block(&end_label)` itself.
+    fn open_genref_write_check(
+        &mut self,
+        base: &TypedExpr,
+        elem_ty: &Ty,
+        span: Span,
+    ) -> (String, String, String, String) {
+        let elem_llvm_ty = self.llvm_ty(elem_ty);
+        let arena = self.arena_for_elem_ty(elem_ty, span);
+
+        let base_ptr = self.emit_place(base);
+        let idx_field_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 0", idx_field_ptr, base_ptr));
+        let stored_idx = self.tmp_name();
+        self.line(&format!("  {} = load i32, i32* {}", stored_idx, idx_field_ptr));
+        let gen_field_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 1", gen_field_ptr, base_ptr));
+        let stored_gen = self.tmp_name();
+        self.line(&format!("  {} = load i32, i32* {}", stored_gen, gen_field_ptr));
+        let idx64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", idx64, stored_idx));
+
+        let in_bounds = self.tmp_name();
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, Self::ARENA_CAPACITY));
+        let check_label = self.block_label("genref_wcheck");
+        let ok_label = self.block_label("genref_wok");
+        let stale_label = self.block_label("genref_wstale");
+        let end_label = self.block_label("genref_wend");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, check_label, stale_label));
+
+        self.open_block(&check_label);
+        let gen_ptr = self.tmp_name();
+        self.line(&format!(
+            "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
+            gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
+        ));
+        let live_gen = self.tmp_name();
+        self.line(&format!("  {} = load i32, i32* {}", live_gen, gen_ptr));
+        let gen_match = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, {}", gen_match, stored_gen, live_gen));
+        let parity = self.tmp_name();
+        self.line(&format!("  {} = and i32 {}, 1", parity, live_gen));
+        let is_live = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, 1", is_live, parity));
+        let ok = self.tmp_name();
+        self.line(&format!("  {} = and i1 {}, {}", ok, gen_match, is_live));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", ok, ok_label, stale_label));
+
+        self.open_block(&ok_label);
+        let data_ptr = self.tmp_name();
+        self.line(&format!("  {} = load {}*, {}** @arena.{}.data", data_ptr, elem_llvm_ty, elem_llvm_ty, arena));
+        let elem_ptr = self.tmp_name();
+        self.line(&format!(
+            "  {} = getelementptr inbounds {}, {}* {}, i64 {}",
+            elem_ptr, elem_llvm_ty, elem_llvm_ty, data_ptr, idx64
+        ));
+
+        (elem_ptr, ok_label, stale_label, end_label)
+    }
+
+    /// Whole-element write through a `GenRef<T>` (`r[0] = value`). A stale
+    /// handle or out-of-bounds index releases `val` and otherwise does
+    /// nothing, matching every sibling indexed-collection's silent-no-op
+    /// write contract instead of leaking `val`'s ownership (see
+    /// `open_genref_write_check`'s doc comment).
+    pub(super) fn store_genref_whole(&mut self, base: &TypedExpr, elem_ty: &Ty, val: &str, span: Span) {
+        let (elem_ptr, _ok_label, stale_label, end_label) = self.open_genref_write_check(base, elem_ty, span);
+        self.emit_release_at(&elem_ptr, elem_ty);
+        let ts = self.llvm_ty(elem_ty);
+        let clean_val = val.strip_prefix(&format!("{} ", ts)).unwrap_or(val);
+        self.line(&format!("  store {} {}, {}* {}", ts, clean_val, ts, elem_ptr));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&stale_label);
+        // `emit_release_bare` expects a *bare* (untagged) value -- reuse
+        // `clean_val` (already untagged above), not `val` itself, which is
+        // whatever `emit_expr` handed the caller and isn't consistently
+        // tagged or bare across expression kinds (a struct-literal
+        // construction like `Item(1)` is tagged; a call/load result isn't).
+        // Releasing the tagged form directly would double-tag the `store`
+        // this emits (`store %Item %Item %t9, ...`, which `clang` rejects).
+        self.emit_release_bare(clean_val, elem_ty);
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
+    }
+
+    /// Field write through a `GenRef<T>` (`r[0].field = value`). Same
+    /// silent-no-op-on-stale contract as `store_genref_whole`, one field
+    /// deep -- fixes the RC leak where `store_target`'s generic `Field` arm
+    /// would GEP into `emit_genref_index_place`'s disconnected stale-path
+    /// dummy and store (and thus permanently orphan) an already-owned `val`
+    /// there.
+    pub(super) fn store_genref_field(
+        &mut self,
+        base: &TypedExpr,
+        elem_ty: &Ty,
+        field: &str,
+        field_ty: &Ty,
+        val: &str,
+        span: Span,
+    ) {
+        let idx = self.field_index(elem_ty, field);
+        self.store_genref_field_index(base, elem_ty, idx, field_ty, val, span);
+    }
+
+    /// Tuple-index write through a `GenRef<T>` (`r[0].0 = value`, where `T`
+    /// is a tuple type). Same fix, one numeric index deep, as
+    /// `store_genref_field`.
+    pub(super) fn store_genref_tuple_index(
+        &mut self,
+        base: &TypedExpr,
+        elem_ty: &Ty,
+        index: u32,
+        field_ty: &Ty,
+        val: &str,
+        span: Span,
+    ) {
+        self.store_genref_field_index(base, elem_ty, index, field_ty, val, span);
+    }
+
+    fn store_genref_field_index(
+        &mut self,
+        base: &TypedExpr,
+        elem_ty: &Ty,
+        idx: u32,
+        field_ty: &Ty,
+        val: &str,
+        span: Span,
+    ) {
+        let (elem_ptr, _ok_label, stale_label, end_label) = self.open_genref_write_check(base, elem_ty, span);
+        let bty = self.llvm_ty(elem_ty);
+        let gep = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", gep, bty, bty, elem_ptr, idx));
+        let ts = self.llvm_ty(field_ty);
+        let clean_val = val.strip_prefix(&format!("{} ", ts)).unwrap_or(val);
+        self.emit_release_at(&gep, field_ty);
+        self.line(&format!("  store {} {}, {}* {}", ts, clean_val, ts, gep));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&stale_label);
+        // Same reasoning as `store_genref_whole`'s identical fix: release
+        // the already-untagged `clean_val`, not the possibly-tagged `val`.
+        self.emit_release_bare(clean_val, field_ty);
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
+    }
 }

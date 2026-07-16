@@ -214,14 +214,27 @@ impl Codegen {
             let reg = self.tmp_name();
             self.line(&format!("  {} = call float @llvm.fabs.f32(float {})", reg, bare));
             format!("float {}", reg)
-        } else {
-            let neg = self.tmp_name();
-            self.line(&format!("  {} = sub i32 0, {}", neg, bare));
-            let is_neg = self.tmp_name();
-            self.line(&format!("  {} = icmp slt i32 {}, 0", is_neg, bare));
+        } else if matches!(ty, Ty::F64) {
             let reg = self.tmp_name();
-            self.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", reg, is_neg, neg, bare));
-            format!("i32 {}", reg)
+            self.line(&format!("  {} = call double @llvm.fabs.f64(double {})", reg, bare));
+            format!("double {}", reg)
+        } else {
+            // Any integer type -- `int_shape` covers `Ty::Int` (`i32`) and
+            // every explicit-width addition (`i8`/`u8`/.../`u64`) alike.
+            let (width, signed) = ty.int_shape().unwrap_or((32, true));
+            let ity = format!("i{}", width);
+            if !signed {
+                // Already non-negative by construction -- an unsigned
+                // value's `abs` is itself, no computation needed.
+                return format!("{} {}", ity, bare);
+            }
+            let neg = self.tmp_name();
+            self.line(&format!("  {} = sub {} 0, {}", neg, ity, bare));
+            let is_neg = self.tmp_name();
+            self.line(&format!("  {} = icmp slt {} {}, 0", is_neg, ity, bare));
+            let reg = self.tmp_name();
+            self.line(&format!("  {} = select i1 {}, {} {}, {} {}", reg, is_neg, ity, neg, ity, bare));
+            format!("{} {}", ity, reg)
         }
     }
 
@@ -237,7 +250,12 @@ impl Codegen {
         let rty = self.expr_ty(&args[1]);
         let lval = self.emit_expr(&args[0]);
         let rval = self.emit_expr(&args[1]);
-        if matches!(lty, Ty::Float) || matches!(rty, Ty::Float) {
+        if matches!(lty, Ty::Float | Ty::F64) || matches!(rty, Ty::Float | Ty::F64) {
+            // `Checker::check_builtin_call_args` only tolerates a mismatch
+            // for the legacy `Int`/`Float` pair -- an `f64` here always
+            // pairs with another `f64` (or a placeholder), so promoting
+            // both to `f32` (matching `pow`/`sqrt`/etc.'s own always-`f32`
+            // precision, per `promote_to_float`'s doc comment) is safe.
             let l = self.promote_to_float(&lval, &lty);
             let r = self.promote_to_float(&rval, &rty);
             let reg = self.tmp_name();
@@ -245,14 +263,25 @@ impl Codegen {
             self.line(&format!("  {} = call float @{}(float {}, float {})", reg, intrinsic, l, r));
             format!("float {}", reg)
         } else {
+            // Any integer pair -- the checker requires `lty == rty` here
+            // (no legacy mixed pair applies once floats are ruled out), so
+            // either type's shape describes both operands.
+            let (width, signed) = lty.int_shape().unwrap_or((32, true));
+            let ity = format!("i{}", width);
             let l = self.untag(&lval, &lty);
             let r = self.untag(&rval, &rty);
             let cmp = self.tmp_name();
-            let pred = if is_min { "slt" } else { "sgt" };
-            self.line(&format!("  {} = icmp {} i32 {}, {}", cmp, pred, l, r));
+            let pred = if is_min {
+                if signed { "slt" } else { "ult" }
+            } else if signed {
+                "sgt"
+            } else {
+                "ugt"
+            };
+            self.line(&format!("  {} = icmp {} {} {}, {}", cmp, pred, ity, l, r));
             let reg = self.tmp_name();
-            self.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", reg, cmp, l, r));
-            format!("i32 {}", reg)
+            self.line(&format!("  {} = select i1 {}, {} {}, {} {}", reg, cmp, ity, l, ity, r));
+            format!("{} {}", ity, reg)
         }
     }
 

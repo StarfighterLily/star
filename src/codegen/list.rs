@@ -632,8 +632,9 @@ impl Codegen {
         let in_bounds = self.tmp_name();
         self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, len));
         let do_label = self.block_label("list_set_do");
+        let oob_label = self.block_label("list_set_oob");
         let end_label = self.block_label("list_set_end");
-        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, do_label, end_label));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, do_label, oob_label));
 
         self.open_block(&do_label);
         let elem_ptr = self.tmp_name();
@@ -645,6 +646,23 @@ impl Codegen {
         // reasoning as `Codegen::store_target`'s `Ident`/`Field` arms.
         self.emit_release_at(&elem_ptr, elem_ty);
         self.line(&format!("  store {} {}, {}* {}", elem_llvm, clean_val, elem_llvm, elem_ptr));
+        self.line(&format!("  br label %{}", end_label));
+
+        // An out-of-bounds write is a silent no-op *observably* (nothing in
+        // the list changes), but `val` was already computed and retained by
+        // the caller on our behalf -- without this, that ownership was
+        // never released anywhere, permanently leaking one heap reference
+        // per out-of-bounds write instead of the true no-op the doc comment
+        // above promises.
+        self.open_block(&oob_label);
+        // `emit_release_bare` expects a *bare* (untagged) value -- `val` is
+        // whatever `emit_expr` handed the caller, which isn't consistently
+        // tagged or bare across expression kinds (a literal/struct-literal
+        // construction is tagged, e.g. `%Item %t9`; a call/load result is
+        // already bare). Reuse the same `clean_val` the `do_label` branch
+        // above already computed via `untag`, rather than risking a
+        // double-tagged `store` (`store i8* i8* %t5, ...`) clang rejects.
+        self.emit_release_bare(&clean_val, elem_ty);
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&end_label);

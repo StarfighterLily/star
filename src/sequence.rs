@@ -280,7 +280,7 @@ fn scan_for_nested_yield(stmt: &Stmt, errors: &mut Vec<Diagnostic>, nested: bool
             if nested {
                 errors.push(Diagnostic::error(
                     "`yield` is only supported at the top level of a `sequence` body \
-                     (not inside `if`/`while`/`frame`)",
+                     (not inside `if`/`while`/`frame`/`for`/`par`/`swarm`/`match`)",
                     *span,
                 ));
             }
@@ -311,6 +311,17 @@ fn scan_for_nested_yield(stmt: &Stmt, errors: &mut Vec<Diagnostic>, nested: bool
             }
         }
         Stmt::For { body, .. } => {
+            for s in &body.stmts {
+                scan_for_nested_yield(s, errors, true);
+            }
+        }
+        // `par`/`swarm` (`Stmt::Par`) carries its own `Block` exactly like
+        // `For` above, and was previously missing here -- a `yield` nested
+        // inside one still ended up rejected (it isn't `par`-safe either
+        // way), just via the generic type-checker fallback mentioned in
+        // this match's own doc comment below, with a worse diagnostic/
+        // location than this dedicated pass gives every sibling construct.
+        Stmt::Par { body, .. } => {
             for s in &body.stmts {
                 scan_for_nested_yield(s, errors, true);
             }

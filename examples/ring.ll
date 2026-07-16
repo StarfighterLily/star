@@ -43,6 +43,22 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare i8 @llvm.fptosi.sat.i8.f32(float)
+declare i8 @llvm.fptosi.sat.i8.f64(double)
+declare i8 @llvm.fptoui.sat.i8.f32(float)
+declare i8 @llvm.fptoui.sat.i8.f64(double)
+declare i16 @llvm.fptosi.sat.i16.f32(float)
+declare i16 @llvm.fptosi.sat.i16.f64(double)
+declare i16 @llvm.fptoui.sat.i16.f32(float)
+declare i16 @llvm.fptoui.sat.i16.f64(double)
+declare i32 @llvm.fptosi.sat.i32.f32(float)
+declare i32 @llvm.fptosi.sat.i32.f64(double)
+declare i32 @llvm.fptoui.sat.i32.f32(float)
+declare i32 @llvm.fptoui.sat.i32.f64(double)
+declare i64 @llvm.fptosi.sat.i64.f32(float)
+declare i64 @llvm.fptosi.sat.i64.f64(double)
+declare i64 @llvm.fptoui.sat.i64.f32(float)
+declare i64 @llvm.fptoui.sat.i64.f64(double)
 declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
 declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
 declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
@@ -149,16 +165,15 @@ entry:
   %t166 = alloca i32
   %t200 = alloca i32
   %t204 = alloca { [2 x i32], i64, i64 }
-  %t230 = alloca i32
-  %t244 = alloca i32
-  %t248 = alloca { [2 x i8*], i64, i64 }
-  %t306 = alloca i8*
-  %t322 = alloca i8*
-  %t327 = alloca { [2 x %Player], i64, i64 }
-  %t328 = alloca %Player
-  %t348 = alloca %Player
-  %t380 = alloca %Player
-  %t397 = alloca %Player
+  %t242 = alloca i32
+  %t246 = alloca { [2 x i8*], i64, i64 }
+  %t304 = alloca i8*
+  %t320 = alloca i8*
+  %t325 = alloca { [2 x %Player], i64, i64 }
+  %t326 = alloca %Player
+  %t346 = alloca %Player
+  %t378 = alloca %Player
+  %t395 = alloca %Player
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   store { [3 x i32], i64, i64 } zeroinitializer, { [3 x i32], i64, i64 }* %t0
@@ -497,298 +512,296 @@ ring_pop_end_38:
   %t224 = load i64, i64* %t219
   %t225 = load i64, i64* %t221
   %t226 = icmp ult i64 %t223, %t225
-  br i1 %t226, label %ring_place_ok_39, label %ring_place_oob_40
-ring_place_ok_39:
+  br i1 %t226, label %ring_set_do_39, label %ring_set_oob_40
+ring_set_do_39:
   %t227 = add i64 %t224, %t223
   %t228 = urem i64 %t227, 3
   %t229 = getelementptr inbounds [3 x i32], [3 x i32]* %t218, i32 0, i64 %t228
-  br label %ring_place_end_41
-ring_place_oob_40:
-  store i32 0, i32* %t230
-  br label %ring_place_end_41
-ring_place_end_41:
-  %t231 = phi i32* [ %t229, %ring_place_ok_39 ], [ %t230, %ring_place_oob_40 ]
-  store i32 100, i32* %t231
-  %t232 = getelementptr inbounds { [3 x i32], i64, i64 }, { [3 x i32], i64, i64 }* %t0, i32 0, i32 0
-  %t233 = getelementptr inbounds { [3 x i32], i64, i64 }, { [3 x i32], i64, i64 }* %t0, i32 0, i32 1
+  store i32 100, i32* %t229
+  br label %ring_set_end_41
+ring_set_oob_40:
+  br label %ring_set_end_41
+ring_set_end_41:
+  %t230 = getelementptr inbounds { [3 x i32], i64, i64 }, { [3 x i32], i64, i64 }* %t0, i32 0, i32 0
+  %t231 = getelementptr inbounds { [3 x i32], i64, i64 }, { [3 x i32], i64, i64 }* %t0, i32 0, i32 1
+  %t232 = load i64, i64* %t231
+  %t233 = getelementptr inbounds { [3 x i32], i64, i64 }, { [3 x i32], i64, i64 }* %t0, i32 0, i32 2
   %t234 = load i64, i64* %t233
-  %t235 = getelementptr inbounds { [3 x i32], i64, i64 }, { [3 x i32], i64, i64 }* %t0, i32 0, i32 2
-  %t236 = load i64, i64* %t235
-  %t237 = sext i32 0 to i64
-  %t238 = load i64, i64* %t233
-  %t239 = load i64, i64* %t235
-  %t240 = icmp ult i64 %t237, %t239
-  br i1 %t240, label %ring_rplace_ok_42, label %ring_rplace_oob_43
+  %t235 = sext i32 0 to i64
+  %t236 = load i64, i64* %t231
+  %t237 = load i64, i64* %t233
+  %t238 = icmp ult i64 %t235, %t237
+  br i1 %t238, label %ring_rplace_ok_42, label %ring_rplace_oob_43
 ring_rplace_ok_42:
-  %t241 = add i64 %t238, %t237
-  %t242 = urem i64 %t241, 3
-  %t243 = getelementptr inbounds [3 x i32], [3 x i32]* %t232, i32 0, i64 %t242
+  %t239 = add i64 %t236, %t235
+  %t240 = urem i64 %t239, 3
+  %t241 = getelementptr inbounds [3 x i32], [3 x i32]* %t230, i32 0, i64 %t240
   br label %ring_rplace_end_44
 ring_rplace_oob_43:
-  store i32 0, i32* %t244
+  store i32 0, i32* %t242
   br label %ring_rplace_end_44
 ring_rplace_end_44:
-  %t245 = phi i32* [ %t243, %ring_rplace_ok_42 ], [ %t244, %ring_rplace_oob_43 ]
-  %t246 = load i32, i32* %t245
-  %t247 = getelementptr inbounds [27 x i8], [27 x i8]* @.str.9, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t247, i32 %t246)
-  store { [2 x i8*], i64, i64 } zeroinitializer, { [2 x i8*], i64, i64 }* %t248
-  %t249 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.10, i64 0, i32 2, i64 0
-  %t250 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 0
-  %t251 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 1
+  %t243 = phi i32* [ %t241, %ring_rplace_ok_42 ], [ %t242, %ring_rplace_oob_43 ]
+  %t244 = load i32, i32* %t243
+  %t245 = getelementptr inbounds [27 x i8], [27 x i8]* @.str.9, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t245, i32 %t244)
+  store { [2 x i8*], i64, i64 } zeroinitializer, { [2 x i8*], i64, i64 }* %t246
+  %t247 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.10, i64 0, i32 2, i64 0
+  %t248 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 0
+  %t249 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 1
+  %t250 = load i64, i64* %t249
+  %t251 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 2
   %t252 = load i64, i64* %t251
-  %t253 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 2
-  %t254 = load i64, i64* %t253
-  %t255 = icmp sge i64 %t254, 2
-  br i1 %t255, label %ring_push_full_45, label %ring_push_grow_46
+  %t253 = icmp sge i64 %t252, 2
+  br i1 %t253, label %ring_push_full_45, label %ring_push_grow_46
 ring_push_grow_46:
-  %t256 = add i64 %t252, %t254
-  %t257 = urem i64 %t256, 2
-  %t258 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t250, i32 0, i64 %t257
-  store i8* %t249, i8** %t258
-  %t259 = add i64 %t254, 1
-  store i64 %t259, i64* %t253
+  %t254 = add i64 %t250, %t252
+  %t255 = urem i64 %t254, 2
+  %t256 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t248, i32 0, i64 %t255
+  store i8* %t247, i8** %t256
+  %t257 = add i64 %t252, 1
+  store i64 %t257, i64* %t251
   br label %ring_push_done_47
 ring_push_full_45:
-  %t260 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t250, i32 0, i64 %t252
-  %t261 = load i8*, i8** %t260
-  call void @star_rc_release(i8* %t261)
-  store i8* %t249, i8** %t260
-  %t262 = add i64 %t252, 1
-  %t263 = urem i64 %t262, 2
-  store i64 %t263, i64* %t251
+  %t258 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t248, i32 0, i64 %t250
+  %t259 = load i8*, i8** %t258
+  call void @star_rc_release(i8* %t259)
+  store i8* %t247, i8** %t258
+  %t260 = add i64 %t250, 1
+  %t261 = urem i64 %t260, 2
+  store i64 %t261, i64* %t249
   br label %ring_push_done_47
 ring_push_done_47:
-  %t264 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.11, i64 0, i32 2, i64 0
-  %t265 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 0
-  %t266 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 1
+  %t262 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.11, i64 0, i32 2, i64 0
+  %t263 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 0
+  %t264 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 1
+  %t265 = load i64, i64* %t264
+  %t266 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 2
   %t267 = load i64, i64* %t266
-  %t268 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 2
-  %t269 = load i64, i64* %t268
-  %t270 = icmp sge i64 %t269, 2
-  br i1 %t270, label %ring_push_full_48, label %ring_push_grow_49
+  %t268 = icmp sge i64 %t267, 2
+  br i1 %t268, label %ring_push_full_48, label %ring_push_grow_49
 ring_push_grow_49:
-  %t271 = add i64 %t267, %t269
-  %t272 = urem i64 %t271, 2
-  %t273 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t265, i32 0, i64 %t272
-  store i8* %t264, i8** %t273
-  %t274 = add i64 %t269, 1
-  store i64 %t274, i64* %t268
+  %t269 = add i64 %t265, %t267
+  %t270 = urem i64 %t269, 2
+  %t271 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t263, i32 0, i64 %t270
+  store i8* %t262, i8** %t271
+  %t272 = add i64 %t267, 1
+  store i64 %t272, i64* %t266
   br label %ring_push_done_50
 ring_push_full_48:
-  %t275 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t265, i32 0, i64 %t267
-  %t276 = load i8*, i8** %t275
-  call void @star_rc_release(i8* %t276)
-  store i8* %t264, i8** %t275
-  %t277 = add i64 %t267, 1
-  %t278 = urem i64 %t277, 2
-  store i64 %t278, i64* %t266
+  %t273 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t263, i32 0, i64 %t265
+  %t274 = load i8*, i8** %t273
+  call void @star_rc_release(i8* %t274)
+  store i8* %t262, i8** %t273
+  %t275 = add i64 %t265, 1
+  %t276 = urem i64 %t275, 2
+  store i64 %t276, i64* %t264
   br label %ring_push_done_50
 ring_push_done_50:
-  %t279 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.12, i64 0, i32 2, i64 0
-  %t280 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 0
-  %t281 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 1
+  %t277 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.12, i64 0, i32 2, i64 0
+  %t278 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 0
+  %t279 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 1
+  %t280 = load i64, i64* %t279
+  %t281 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 2
   %t282 = load i64, i64* %t281
-  %t283 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 2
-  %t284 = load i64, i64* %t283
-  %t285 = icmp sge i64 %t284, 2
-  br i1 %t285, label %ring_push_full_51, label %ring_push_grow_52
+  %t283 = icmp sge i64 %t282, 2
+  br i1 %t283, label %ring_push_full_51, label %ring_push_grow_52
 ring_push_grow_52:
-  %t286 = add i64 %t282, %t284
-  %t287 = urem i64 %t286, 2
-  %t288 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t280, i32 0, i64 %t287
-  store i8* %t279, i8** %t288
-  %t289 = add i64 %t284, 1
-  store i64 %t289, i64* %t283
+  %t284 = add i64 %t280, %t282
+  %t285 = urem i64 %t284, 2
+  %t286 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t278, i32 0, i64 %t285
+  store i8* %t277, i8** %t286
+  %t287 = add i64 %t282, 1
+  store i64 %t287, i64* %t281
   br label %ring_push_done_53
 ring_push_full_51:
-  %t290 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t280, i32 0, i64 %t282
-  %t291 = load i8*, i8** %t290
-  call void @star_rc_release(i8* %t291)
-  store i8* %t279, i8** %t290
-  %t292 = add i64 %t282, 1
-  %t293 = urem i64 %t292, 2
-  store i64 %t293, i64* %t281
+  %t288 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t278, i32 0, i64 %t280
+  %t289 = load i8*, i8** %t288
+  call void @star_rc_release(i8* %t289)
+  store i8* %t277, i8** %t288
+  %t290 = add i64 %t280, 1
+  %t291 = urem i64 %t290, 2
+  store i64 %t291, i64* %t279
   br label %ring_push_done_53
 ring_push_done_53:
-  %t294 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 0
-  %t295 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 1
+  %t292 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 0
+  %t293 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 1
+  %t294 = load i64, i64* %t293
+  %t295 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 2
   %t296 = load i64, i64* %t295
-  %t297 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 2
-  %t298 = load i64, i64* %t297
-  %t299 = sext i32 0 to i64
-  %t300 = load i64, i64* %t295
-  %t301 = load i64, i64* %t297
-  %t302 = icmp ult i64 %t299, %t301
-  br i1 %t302, label %ring_rplace_ok_54, label %ring_rplace_oob_55
+  %t297 = sext i32 0 to i64
+  %t298 = load i64, i64* %t293
+  %t299 = load i64, i64* %t295
+  %t300 = icmp ult i64 %t297, %t299
+  br i1 %t300, label %ring_rplace_ok_54, label %ring_rplace_oob_55
 ring_rplace_ok_54:
-  %t303 = add i64 %t300, %t299
-  %t304 = urem i64 %t303, 2
-  %t305 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t294, i32 0, i64 %t304
+  %t301 = add i64 %t298, %t297
+  %t302 = urem i64 %t301, 2
+  %t303 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t292, i32 0, i64 %t302
   br label %ring_rplace_end_56
 ring_rplace_oob_55:
-  store i8* null, i8** %t306
+  store i8* null, i8** %t304
   br label %ring_rplace_end_56
 ring_rplace_end_56:
-  %t307 = phi i8** [ %t305, %ring_rplace_ok_54 ], [ %t306, %ring_rplace_oob_55 ]
-  %t308 = load i8*, i8** %t307
-  %t309 = load i8*, i8** %t307
-  call void @star_rc_retain(i8* %t309)
-  %t310 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 0
-  %t311 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 1
+  %t305 = phi i8** [ %t303, %ring_rplace_ok_54 ], [ %t304, %ring_rplace_oob_55 ]
+  %t306 = load i8*, i8** %t305
+  %t307 = load i8*, i8** %t305
+  call void @star_rc_retain(i8* %t307)
+  %t308 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 0
+  %t309 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 1
+  %t310 = load i64, i64* %t309
+  %t311 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 2
   %t312 = load i64, i64* %t311
-  %t313 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 2
-  %t314 = load i64, i64* %t313
-  %t315 = sext i32 1 to i64
-  %t316 = load i64, i64* %t311
-  %t317 = load i64, i64* %t313
-  %t318 = icmp ult i64 %t315, %t317
-  br i1 %t318, label %ring_rplace_ok_57, label %ring_rplace_oob_58
+  %t313 = sext i32 1 to i64
+  %t314 = load i64, i64* %t309
+  %t315 = load i64, i64* %t311
+  %t316 = icmp ult i64 %t313, %t315
+  br i1 %t316, label %ring_rplace_ok_57, label %ring_rplace_oob_58
 ring_rplace_ok_57:
-  %t319 = add i64 %t316, %t315
-  %t320 = urem i64 %t319, 2
-  %t321 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t310, i32 0, i64 %t320
+  %t317 = add i64 %t314, %t313
+  %t318 = urem i64 %t317, 2
+  %t319 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t308, i32 0, i64 %t318
   br label %ring_rplace_end_59
 ring_rplace_oob_58:
-  store i8* null, i8** %t322
+  store i8* null, i8** %t320
   br label %ring_rplace_end_59
 ring_rplace_end_59:
-  %t323 = phi i8** [ %t321, %ring_rplace_ok_57 ], [ %t322, %ring_rplace_oob_58 ]
-  %t324 = load i8*, i8** %t323
-  %t325 = load i8*, i8** %t323
-  call void @star_rc_retain(i8* %t325)
-  %t326 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.13, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t326, i8* %t308, i8* %t324)
-  store { [2 x %Player], i64, i64 } zeroinitializer, { [2 x %Player], i64, i64 }* %t327
-  %t329 = getelementptr inbounds %Player, %Player* %t328, i32 0, i32 0
-  store i32 100, i32* %t329
-  %t330 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.14, i64 0, i32 2, i64 0
-  %t331 = getelementptr inbounds %Player, %Player* %t328, i32 0, i32 1
-  store i8* %t330, i8** %t331
-  %t332 = load %Player, %Player* %t328
-  %t333 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t327, i32 0, i32 0
-  %t334 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t327, i32 0, i32 1
+  %t321 = phi i8** [ %t319, %ring_rplace_ok_57 ], [ %t320, %ring_rplace_oob_58 ]
+  %t322 = load i8*, i8** %t321
+  %t323 = load i8*, i8** %t321
+  call void @star_rc_retain(i8* %t323)
+  %t324 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.13, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t324, i8* %t306, i8* %t322)
+  store { [2 x %Player], i64, i64 } zeroinitializer, { [2 x %Player], i64, i64 }* %t325
+  %t327 = getelementptr inbounds %Player, %Player* %t326, i32 0, i32 0
+  store i32 100, i32* %t327
+  %t328 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.14, i64 0, i32 2, i64 0
+  %t329 = getelementptr inbounds %Player, %Player* %t326, i32 0, i32 1
+  store i8* %t328, i8** %t329
+  %t330 = load %Player, %Player* %t326
+  %t331 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t325, i32 0, i32 0
+  %t332 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t325, i32 0, i32 1
+  %t333 = load i64, i64* %t332
+  %t334 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t325, i32 0, i32 2
   %t335 = load i64, i64* %t334
-  %t336 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t327, i32 0, i32 2
-  %t337 = load i64, i64* %t336
-  %t338 = icmp sge i64 %t337, 2
-  br i1 %t338, label %ring_push_full_60, label %ring_push_grow_61
+  %t336 = icmp sge i64 %t335, 2
+  br i1 %t336, label %ring_push_full_60, label %ring_push_grow_61
 ring_push_grow_61:
-  %t339 = add i64 %t335, %t337
-  %t340 = urem i64 %t339, 2
-  %t341 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t333, i32 0, i64 %t340
-  store %Player %t332, %Player* %t341
-  %t342 = add i64 %t337, 1
-  store i64 %t342, i64* %t336
+  %t337 = add i64 %t333, %t335
+  %t338 = urem i64 %t337, 2
+  %t339 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t331, i32 0, i64 %t338
+  store %Player %t330, %Player* %t339
+  %t340 = add i64 %t335, 1
+  store i64 %t340, i64* %t334
   br label %ring_push_done_62
 ring_push_full_60:
-  %t343 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t333, i32 0, i64 %t335
-  %t344 = getelementptr inbounds %Player, %Player* %t343, i32 0, i32 1
-  %t345 = load i8*, i8** %t344
-  call void @star_rc_release(i8* %t345)
-  store %Player %t332, %Player* %t343
-  %t346 = add i64 %t335, 1
-  %t347 = urem i64 %t346, 2
-  store i64 %t347, i64* %t334
+  %t341 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t331, i32 0, i64 %t333
+  %t342 = getelementptr inbounds %Player, %Player* %t341, i32 0, i32 1
+  %t343 = load i8*, i8** %t342
+  call void @star_rc_release(i8* %t343)
+  store %Player %t330, %Player* %t341
+  %t344 = add i64 %t333, 1
+  %t345 = urem i64 %t344, 2
+  store i64 %t345, i64* %t332
   br label %ring_push_done_62
 ring_push_done_62:
-  %t349 = getelementptr inbounds %Player, %Player* %t348, i32 0, i32 0
-  store i32 80, i32* %t349
-  %t350 = getelementptr inbounds { i64, i8*, [9 x i8] }, { i64, i8*, [9 x i8] }* @.str.15, i64 0, i32 2, i64 0
-  %t351 = getelementptr inbounds %Player, %Player* %t348, i32 0, i32 1
-  store i8* %t350, i8** %t351
-  %t352 = load %Player, %Player* %t348
-  %t353 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t327, i32 0, i32 0
-  %t354 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t327, i32 0, i32 1
+  %t347 = getelementptr inbounds %Player, %Player* %t346, i32 0, i32 0
+  store i32 80, i32* %t347
+  %t348 = getelementptr inbounds { i64, i8*, [9 x i8] }, { i64, i8*, [9 x i8] }* @.str.15, i64 0, i32 2, i64 0
+  %t349 = getelementptr inbounds %Player, %Player* %t346, i32 0, i32 1
+  store i8* %t348, i8** %t349
+  %t350 = load %Player, %Player* %t346
+  %t351 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t325, i32 0, i32 0
+  %t352 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t325, i32 0, i32 1
+  %t353 = load i64, i64* %t352
+  %t354 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t325, i32 0, i32 2
   %t355 = load i64, i64* %t354
-  %t356 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t327, i32 0, i32 2
-  %t357 = load i64, i64* %t356
-  %t358 = icmp sge i64 %t357, 2
-  br i1 %t358, label %ring_push_full_63, label %ring_push_grow_64
+  %t356 = icmp sge i64 %t355, 2
+  br i1 %t356, label %ring_push_full_63, label %ring_push_grow_64
 ring_push_grow_64:
-  %t359 = add i64 %t355, %t357
-  %t360 = urem i64 %t359, 2
-  %t361 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t353, i32 0, i64 %t360
-  store %Player %t352, %Player* %t361
-  %t362 = add i64 %t357, 1
-  store i64 %t362, i64* %t356
+  %t357 = add i64 %t353, %t355
+  %t358 = urem i64 %t357, 2
+  %t359 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t351, i32 0, i64 %t358
+  store %Player %t350, %Player* %t359
+  %t360 = add i64 %t355, 1
+  store i64 %t360, i64* %t354
   br label %ring_push_done_65
 ring_push_full_63:
-  %t363 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t353, i32 0, i64 %t355
-  %t364 = getelementptr inbounds %Player, %Player* %t363, i32 0, i32 1
-  %t365 = load i8*, i8** %t364
-  call void @star_rc_release(i8* %t365)
-  store %Player %t352, %Player* %t363
-  %t366 = add i64 %t355, 1
-  %t367 = urem i64 %t366, 2
-  store i64 %t367, i64* %t354
+  %t361 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t351, i32 0, i64 %t353
+  %t362 = getelementptr inbounds %Player, %Player* %t361, i32 0, i32 1
+  %t363 = load i8*, i8** %t362
+  call void @star_rc_release(i8* %t363)
+  store %Player %t350, %Player* %t361
+  %t364 = add i64 %t353, 1
+  %t365 = urem i64 %t364, 2
+  store i64 %t365, i64* %t352
   br label %ring_push_done_65
 ring_push_done_65:
-  %t368 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t327, i32 0, i32 0
-  %t369 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t327, i32 0, i32 1
+  %t366 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t325, i32 0, i32 0
+  %t367 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t325, i32 0, i32 1
+  %t368 = load i64, i64* %t367
+  %t369 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t325, i32 0, i32 2
   %t370 = load i64, i64* %t369
-  %t371 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t327, i32 0, i32 2
-  %t372 = load i64, i64* %t371
-  %t373 = sext i32 0 to i64
-  %t374 = load i64, i64* %t369
-  %t375 = load i64, i64* %t371
-  %t376 = icmp ult i64 %t373, %t375
-  br i1 %t376, label %ring_rplace_ok_66, label %ring_rplace_oob_67
+  %t371 = sext i32 0 to i64
+  %t372 = load i64, i64* %t367
+  %t373 = load i64, i64* %t369
+  %t374 = icmp ult i64 %t371, %t373
+  br i1 %t374, label %ring_rplace_ok_66, label %ring_rplace_oob_67
 ring_rplace_ok_66:
-  %t377 = add i64 %t374, %t373
-  %t378 = urem i64 %t377, 2
-  %t379 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t368, i32 0, i64 %t378
+  %t375 = add i64 %t372, %t371
+  %t376 = urem i64 %t375, 2
+  %t377 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t366, i32 0, i64 %t376
   br label %ring_rplace_end_68
 ring_rplace_oob_67:
-  store %Player zeroinitializer, %Player* %t380
+  store %Player zeroinitializer, %Player* %t378
   br label %ring_rplace_end_68
 ring_rplace_end_68:
-  %t381 = phi %Player* [ %t379, %ring_rplace_ok_66 ], [ %t380, %ring_rplace_oob_67 ]
-  %t382 = getelementptr inbounds %Player, %Player* %t381, i32 0, i32 1
-  %t383 = load i8*, i8** %t382
-  %t384 = load i8*, i8** %t382
-  call void @star_rc_retain(i8* %t384)
-  call void @star_rc_release(i8* %t383)
-  %t385 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t327, i32 0, i32 0
-  %t386 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t327, i32 0, i32 1
+  %t379 = phi %Player* [ %t377, %ring_rplace_ok_66 ], [ %t378, %ring_rplace_oob_67 ]
+  %t380 = getelementptr inbounds %Player, %Player* %t379, i32 0, i32 1
+  %t381 = load i8*, i8** %t380
+  %t382 = load i8*, i8** %t380
+  call void @star_rc_retain(i8* %t382)
+  call void @star_rc_release(i8* %t381)
+  %t383 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t325, i32 0, i32 0
+  %t384 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t325, i32 0, i32 1
+  %t385 = load i64, i64* %t384
+  %t386 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t325, i32 0, i32 2
   %t387 = load i64, i64* %t386
-  %t388 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t327, i32 0, i32 2
-  %t389 = load i64, i64* %t388
-  %t390 = sext i32 0 to i64
-  %t391 = load i64, i64* %t386
-  %t392 = load i64, i64* %t388
-  %t393 = icmp ult i64 %t390, %t392
-  br i1 %t393, label %ring_rplace_ok_69, label %ring_rplace_oob_70
+  %t388 = sext i32 0 to i64
+  %t389 = load i64, i64* %t384
+  %t390 = load i64, i64* %t386
+  %t391 = icmp ult i64 %t388, %t390
+  br i1 %t391, label %ring_rplace_ok_69, label %ring_rplace_oob_70
 ring_rplace_ok_69:
-  %t394 = add i64 %t391, %t390
-  %t395 = urem i64 %t394, 2
-  %t396 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t385, i32 0, i64 %t395
+  %t392 = add i64 %t389, %t388
+  %t393 = urem i64 %t392, 2
+  %t394 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t383, i32 0, i64 %t393
   br label %ring_rplace_end_71
 ring_rplace_oob_70:
-  store %Player zeroinitializer, %Player* %t397
+  store %Player zeroinitializer, %Player* %t395
   br label %ring_rplace_end_71
 ring_rplace_end_71:
-  %t398 = phi %Player* [ %t396, %ring_rplace_ok_69 ], [ %t397, %ring_rplace_oob_70 ]
-  %t399 = getelementptr inbounds %Player, %Player* %t398, i32 0, i32 0
-  %t400 = load i32, i32* %t399
-  %t401 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.16, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t401, i8* %t383, i32 %t400)
-  %t402 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t327, i32 0, i32 0
-  %t403 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t402, i32 0, i64 0
-  %t404 = getelementptr inbounds %Player, %Player* %t403, i32 0, i32 1
-  %t405 = load i8*, i8** %t404
-  call void @star_rc_release(i8* %t405)
-  %t406 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t402, i32 0, i64 1
-  %t407 = getelementptr inbounds %Player, %Player* %t406, i32 0, i32 1
-  %t408 = load i8*, i8** %t407
-  call void @star_rc_release(i8* %t408)
-  %t409 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t248, i32 0, i32 0
-  %t410 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t409, i32 0, i64 0
+  %t396 = phi %Player* [ %t394, %ring_rplace_ok_69 ], [ %t395, %ring_rplace_oob_70 ]
+  %t397 = getelementptr inbounds %Player, %Player* %t396, i32 0, i32 0
+  %t398 = load i32, i32* %t397
+  %t399 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.16, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t399, i8* %t381, i32 %t398)
+  %t400 = getelementptr inbounds { [2 x %Player], i64, i64 }, { [2 x %Player], i64, i64 }* %t325, i32 0, i32 0
+  %t401 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t400, i32 0, i64 0
+  %t402 = getelementptr inbounds %Player, %Player* %t401, i32 0, i32 1
+  %t403 = load i8*, i8** %t402
+  call void @star_rc_release(i8* %t403)
+  %t404 = getelementptr inbounds [2 x %Player], [2 x %Player]* %t400, i32 0, i64 1
+  %t405 = getelementptr inbounds %Player, %Player* %t404, i32 0, i32 1
+  %t406 = load i8*, i8** %t405
+  call void @star_rc_release(i8* %t406)
+  %t407 = getelementptr inbounds { [2 x i8*], i64, i64 }, { [2 x i8*], i64, i64 }* %t246, i32 0, i32 0
+  %t408 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t407, i32 0, i64 0
+  %t409 = load i8*, i8** %t408
+  call void @star_rc_release(i8* %t409)
+  %t410 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t407, i32 0, i64 1
   %t411 = load i8*, i8** %t410
   call void @star_rc_release(i8* %t411)
-  %t412 = getelementptr inbounds [2 x i8*], [2 x i8*]* %t409, i32 0, i64 1
-  %t413 = load i8*, i8** %t412
-  call void @star_rc_release(i8* %t413)
   ret i32 0
 }
 

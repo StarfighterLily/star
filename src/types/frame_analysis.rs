@@ -518,6 +518,56 @@ fn local_struct_receiver(expr: &TypedExpr, local_structs: &HashSet<String>) -> O
         // falls through as well, since a struct-returning call's own type
         // is never `Ty::Closure`).
         TypedExpr::Call { ty, .. } if matches!(ty, Ty::Named(_)) => Some(ANONYMOUS_CALL_RESULT.to_string()),
+        // An `if`/`match` used in value position is, like a call's return
+        // value just above, spilled by `Codegen::emit_place` into a fresh,
+        // function-scoped alloca -- there's no other storage for a
+        // multi-branch expression's result to live in. Previously missing
+        // here (falling through to `_ => None` below), a method call on such
+        // a receiver built from plain (non-`frame:`) locals escaped
+        // undetected: `return (if cond: a else: b).get_closure()` where
+        // `get_closure` captures `self` by pointer. Mirrors
+        // `frame_escape_source`'s own `If`/`Match` arms (which already
+        // catch the `frame:`-scoped-local case via `frame_locals`) --
+        // conservatively flagging the *whole* expression if *any* branch
+        // resolves to a local struct, since `emit_place`'s spill can't tell
+        // at runtime which branch actually ran.
+        TypedExpr::If { then_block, else_block, ty, .. } => {
+            if matches!(ty, Ty::Named(_)) {
+                local_struct_receiver_block(then_block, local_structs)
+                    .or_else(|| else_block.as_ref().and_then(|b| local_struct_receiver_block(b, local_structs)))
+            } else {
+                None
+            }
+        }
+        TypedExpr::Match { arms, ty, .. } => {
+            if matches!(ty, Ty::Named(_)) {
+                arms.iter().find_map(|arm| local_struct_receiver_block(&arm.body, local_structs))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The `local_struct_receiver` source of a block used in value position (an
+/// `if`/`match` arm) -- same "only the trailing expression contributes a
+/// value" shape as `frame_escape_source_block`, generalized from
+/// `frame_locals` to the broader `local_structs` set.
+fn local_struct_receiver_block(block: &TypedBlock, local_structs: &HashSet<String>) -> Option<String> {
+    match block.stmts.last() {
+        Some(TypedStmt::Expr(e)) => local_struct_receiver(e, local_structs),
+        Some(TypedStmt::Frame { body, .. }) => {
+            let mut ls = local_structs.clone();
+            for stmt in &body.stmts {
+                if let TypedStmt::Let { name, ty, .. } = stmt {
+                    if matches!(ty, Ty::Named(_)) {
+                        ls.insert(name.clone());
+                    }
+                }
+            }
+            local_struct_receiver_block(body, &ls)
+        }
         _ => None,
     }
 }

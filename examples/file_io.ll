@@ -43,6 +43,22 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare i8 @llvm.fptosi.sat.i8.f32(float)
+declare i8 @llvm.fptosi.sat.i8.f64(double)
+declare i8 @llvm.fptoui.sat.i8.f32(float)
+declare i8 @llvm.fptoui.sat.i8.f64(double)
+declare i16 @llvm.fptosi.sat.i16.f32(float)
+declare i16 @llvm.fptosi.sat.i16.f64(double)
+declare i16 @llvm.fptoui.sat.i16.f32(float)
+declare i16 @llvm.fptoui.sat.i16.f64(double)
+declare i32 @llvm.fptosi.sat.i32.f32(float)
+declare i32 @llvm.fptosi.sat.i32.f64(double)
+declare i32 @llvm.fptoui.sat.i32.f32(float)
+declare i32 @llvm.fptoui.sat.i32.f64(double)
+declare i64 @llvm.fptosi.sat.i64.f32(float)
+declare i64 @llvm.fptosi.sat.i64.f64(double)
+declare i64 @llvm.fptoui.sat.i64.f32(float)
+declare i64 @llvm.fptoui.sat.i64.f64(double)
 declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
 declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
 declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
@@ -212,6 +228,7 @@ file_null_handle_7:
   unreachable
 file_handle_ok_8:
   call i32 @fclose(i8* %t30)
+  store i8* null, i8** %t4
   %t34 = load i8*, i8** %t0
   %t35 = load i8*, i8** %t0
   call void @star_rc_retain(i8* %t35)
@@ -350,6 +367,7 @@ file_null_handle_24:
   unreachable
 file_handle_ok_25:
   call i32 @fclose(i8* %t102)
+  store i8* null, i8** %t55
   %t105 = load i8*, i8** %t85
   call void @star_rc_release(i8* %t105)
   %t106 = load i8*, i8** %t65

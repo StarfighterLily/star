@@ -619,6 +619,16 @@ impl Codegen {
                     self.emit_swizzle_write(base, field, ty, val);
                     return;
                 }
+                // `r[0].field = v`: routed through a dedicated codegen path
+                // rather than the generic `emit_place(base)` GEP-and-store
+                // below, since that generic path can't release `val` on a
+                // stale/OOB `GenRef` (whose place resolution hands back a
+                // disconnected dummy) -- see `store_genref_field`'s doc
+                // comment for the leak this closes.
+                if let TypedExpr::GenRefIndex { base: genref_base, ty: elem_ty, span, .. } = base.as_ref() {
+                    self.store_genref_field(genref_base, elem_ty, field, ty, val, *span);
+                    return;
+                }
                 let base_ptr = self.emit_place(base);
                 let gep = self.tmp_name();
                 let bty = self.llvm_ty(&self.expr_ty(base));
@@ -644,6 +654,10 @@ impl Codegen {
                 self.store_table_index(base, index, ty, val);
             }
             TypedExpr::TupleIndex { base, index, ty, .. } => {
+                if let TypedExpr::GenRefIndex { base: genref_base, ty: elem_ty, span, .. } = base.as_ref() {
+                    self.store_genref_tuple_index(genref_base, elem_ty, *index as u32, ty, val, *span);
+                    return;
+                }
                 let base_ptr = self.emit_place(base);
                 let gep = self.tmp_name();
                 let bty = self.llvm_ty(&self.expr_ty(base));
@@ -652,6 +666,9 @@ impl Codegen {
                 let clean_val = val.strip_prefix(&format!("{} ", ts)).unwrap_or(val);
                 self.emit_release_at(&gep, ty);
                 self.line(&format!("  store {} {}, {}* {}", ts, clean_val, ts, gep));
+            }
+            TypedExpr::GenRefIndex { base, ty, span, .. } => {
+                self.store_genref_whole(base, ty, val, *span);
             }
             _ => { self.err("cannot store to this expression", Span::dummy()); }
         }

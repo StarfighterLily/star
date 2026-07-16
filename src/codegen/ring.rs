@@ -188,20 +188,64 @@ impl Codegen {
     }
 
     /// `ring[idx] = v`: bounds-checked (against `len`) element write; an
-    /// out-of-bounds index is a silent no-op (mirrors `store_array_index`),
-    /// since it only ever writes into `ring_index_ptr`'s disconnected dummy
-    /// slot. Does not touch `head`/`len` -- only `push`/`pop` do.
+    /// out-of-bounds index is a silent no-op. Does not touch `head`/`len` --
+    /// only `push`/`pop` do. Unlike `emit_ring_index_place` (shared with
+    /// reads, whose out-of-bounds fallback is a disconnected dummy nothing
+    /// else ever points at), this runs its own bounds-check branch so the
+    /// out-of-bounds path can release `val` -- already computed and
+    /// retained by the caller before calling this -- instead of leaking it
+    /// into that dummy the way storing through `emit_ring_index_place`
+    /// unconditionally did. Mirrors `store_array_index`'s identical
+    /// `do`/`oob` branch shape.
     pub(super) fn store_ring_index(&mut self, base: &TypedExpr, index: &TypedExpr, elem_ty: &Ty, count: u64, val: &str) {
-        let ptr = self.emit_ring_index_place(base, index, elem_ty, count);
         let elem_llvm = self.llvm_ty(elem_ty);
+        let (data_ptr, head_ptr, _, len_ptr, _) = self.ring_fields_mut(base, elem_ty, count);
+        let idx64 = self.ring_index_to_i64(index);
+        // Reload `head`/`len` *after* evaluating `index` -- see
+        // `ring_index_ptr`'s doc comment for why the values `ring_fields_mut`
+        // loaded above can already be stale by this point.
+        let head = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", head, head_ptr));
+        let len = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", len, len_ptr));
+
+        // Unsigned compare: a negative index sign-extends/wraps to a huge
+        // unsigned value, so it safely fails this bounds check too (mirrors
+        // `ring_index_ptr`'s identical trick).
+        let in_bounds = self.tmp_name();
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, len));
+        let do_label = self.block_label("ring_set_do");
+        let oob_label = self.block_label("ring_set_oob");
+        let end_label = self.block_label("ring_set_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, do_label, oob_label));
+
+        self.open_block(&do_label);
+        let sum = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, {}", sum, head, idx64));
+        let phys = self.tmp_name();
+        self.line(&format!("  {} = urem i64 {}, {}", phys, sum, count));
+        let arr_ty = format!("[{} x {}]", count, elem_llvm);
+        let ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i64 {}", ptr, arr_ty, arr_ty, data_ptr, phys));
         let clean_val = self.untag(val, elem_ty);
-        // The overwritten slot is always live (bounds-checked against `len`,
-        // and the out-of-bounds dummy has nothing real to release) -- release
-        // it *after* `val` was already computed (and retained, if it's a
-        // copy), right before overwriting, keeping `ring[i] = ring[i]` safe
-        // (same reasoning as `Codegen::store_target`'s `Ident`/`Field` arms).
+        // The overwritten slot is always live (bounds-checked against `len`)
+        // -- release it *after* `val` was already computed (and retained, if
+        // it's a copy), right before overwriting, keeping `ring[i] = ring[i]`
+        // safe (same reasoning as `Codegen::store_target`'s `Ident`/`Field`
+        // arms).
         self.emit_release_at(&ptr, elem_ty);
         self.line(&format!("  store {} {}, {}* {}", elem_llvm, clean_val, elem_llvm, ptr));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&oob_label);
+        // `emit_release_bare` expects a *bare* (untagged) value, unlike
+        // `val` itself (see `store_list_index`'s identical fix's doc
+        // comment for why) -- reuse the `clean_val` the `do_label` branch
+        // above already computed.
+        self.emit_release_bare(&clean_val, elem_ty);
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
     }
 
     /// `ring.push(v)` / `ring.pop()` / `ring.len()`.

@@ -12,6 +12,7 @@ declare i32 @getchar()
 declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
+declare i32 @strcmp(i8*, i8*)
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -20,7 +21,15 @@ declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
 declare i32 @fgetc(i8*)
 declare i8* @getenv(i8*)
-declare i32 @_putenv(i8*)
+declare i32 @_putenv_s(i8*, i8*)
+declare i32 @WSAStartup(i16, i8*)
+declare i8* @socket(i32, i32, i32)
+declare i32 @connect(i8*, i8*, i32)
+declare i32 @send(i8*, i8*, i32, i32)
+declare i32 @recv(i8*, i8*, i32, i32)
+declare i32 @closesocket(i8*)
+declare i16 @htons(i16)
+declare i32 @inet_addr(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -34,6 +43,43 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare i8 @llvm.fptosi.sat.i8.f32(float)
+declare i8 @llvm.fptosi.sat.i8.f64(double)
+declare i8 @llvm.fptoui.sat.i8.f32(float)
+declare i8 @llvm.fptoui.sat.i8.f64(double)
+declare i16 @llvm.fptosi.sat.i16.f32(float)
+declare i16 @llvm.fptosi.sat.i16.f64(double)
+declare i16 @llvm.fptoui.sat.i16.f32(float)
+declare i16 @llvm.fptoui.sat.i16.f64(double)
+declare i32 @llvm.fptosi.sat.i32.f32(float)
+declare i32 @llvm.fptosi.sat.i32.f64(double)
+declare i32 @llvm.fptoui.sat.i32.f32(float)
+declare i32 @llvm.fptoui.sat.i32.f64(double)
+declare i64 @llvm.fptosi.sat.i64.f32(float)
+declare i64 @llvm.fptosi.sat.i64.f64(double)
+declare i64 @llvm.fptoui.sat.i64.f32(float)
+declare i64 @llvm.fptoui.sat.i64.f64(double)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.ssub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.smul.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.uadd.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.usub.with.overflow.i8(i8, i8)
+declare { i8, i1 } @llvm.umul.with.overflow.i8(i8, i8)
+declare { i16, i1 } @llvm.sadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.ssub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.smul.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.uadd.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.usub.with.overflow.i16(i16, i16)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.uadd.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i32 }
 
@@ -133,8 +179,8 @@ entry:
 define i32 @dot(%Point %a, %Point %b) {
 entry:
   %t0 = alloca %Point
-  store %Point %a, %Point* %t0
   %t1 = alloca %Point
+  store %Point %a, %Point* %t0
   store %Point %b, %Point* %t1
   %t2 = getelementptr inbounds %Point, %Point* %t0, i32 0, i32 0
   %t3 = load i32, i32* %t2
@@ -156,34 +202,34 @@ entry:
   store %Shape %s, %Shape* %t0
   br label %match_scrutinee_2
 match_scrutinee_2:
-  %t4 = getelementptr inbounds %Shape, %Shape* %t0, i32 0, i32 0
-  %t5 = load i32, i32* %t4
-  %t3 = icmp eq i32 %t5, 0
-  br i1 %t3, label %match_then_0, label %match_next_0
-match_then_0:
-  %t6 = getelementptr inbounds %Shape, %Shape* %t0, i32 0, i32 1
-  %t7 = bitcast [1 x i64]* %t6 to { i32 }*
-  %t8 = getelementptr inbounds { i32 }, { i32 }* %t7, i32 0, i32 0
-  %t9 = load i32, i32* %t8
-  %t10 = mul i32 3, %t9
-  %t11 = load i32, i32* %t8
-  %t12 = mul i32 %t10, %t11
-  ret i32 %t12
-match_next_0:
-  %t14 = getelementptr inbounds %Shape, %Shape* %t0, i32 0, i32 0
-  %t15 = load i32, i32* %t14
-  %t13 = icmp eq i32 %t15, 1
-  br i1 %t13, label %match_then_1, label %match_next_1
-match_then_1:
-  %t16 = getelementptr inbounds %Shape, %Shape* %t0, i32 0, i32 1
-  %t17 = bitcast [1 x i64]* %t16 to { i32, i32 }*
-  %t18 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t17, i32 0, i32 0
-  %t19 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t17, i32 0, i32 1
-  %t20 = load i32, i32* %t18
-  %t21 = load i32, i32* %t19
-  %t22 = mul i32 %t20, %t21
-  ret i32 %t22
-match_next_1:
+  %t6 = getelementptr inbounds %Shape, %Shape* %t0, i32 0, i32 0
+  %t7 = load i32, i32* %t6
+  %t5 = icmp eq i32 %t7, 0
+  br i1 %t5, label %match_then_0_3, label %match_next_0_4
+match_then_0_3:
+  %t8 = getelementptr inbounds %Shape, %Shape* %t0, i32 0, i32 1
+  %t9 = bitcast [1 x i64]* %t8 to { i32 }*
+  %t10 = getelementptr inbounds { i32 }, { i32 }* %t9, i32 0, i32 0
+  %t11 = load i32, i32* %t10
+  %t12 = mul i32 3, %t11
+  %t13 = load i32, i32* %t10
+  %t14 = mul i32 %t12, %t13
+  ret i32 %t14
+match_next_0_4:
+  %t18 = getelementptr inbounds %Shape, %Shape* %t0, i32 0, i32 0
+  %t19 = load i32, i32* %t18
+  %t17 = icmp eq i32 %t19, 1
+  br i1 %t17, label %match_then_1_15, label %match_next_1_16
+match_then_1_15:
+  %t20 = getelementptr inbounds %Shape, %Shape* %t0, i32 0, i32 1
+  %t21 = bitcast [1 x i64]* %t20 to { i32, i32 }*
+  %t22 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t21, i32 0, i32 0
+  %t23 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t21, i32 0, i32 1
+  %t24 = load i32, i32* %t22
+  %t25 = load i32, i32* %t23
+  %t26 = mul i32 %t24, %t25
+  ret i32 %t26
+match_next_1_16:
   br label %match_end_1
 match_end_1:
   unreachable

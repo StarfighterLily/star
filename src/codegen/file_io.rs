@@ -71,6 +71,27 @@ impl Codegen {
         let handle = self.untag(&val, &Ty::Ptr);
         self.abort_if_null_handle(&handle, "file_close");
         self.line(&format!("  call i32 @fclose(i8* {})", handle));
+        // Null out the caller's own variable, if `arg` is a bare one, so
+        // calling any other file builtin through *this* binding afterward
+        // hits `abort_if_null_handle` above -- matching this module's
+        // documented "aborts loudly on a closed handle" contract -- instead
+        // of silently handing the C runtime a dangling `FILE*` that a later,
+        // unrelated `fopen` may have already reused for a different file
+        // (`fclose` doesn't invalidate the pointer *value* itself at the
+        // LLVM/C-ABI level; there is no portable way to poison a raw
+        // pointer's bit pattern). Restricted to a bare `Ident` specifically
+        // because `emit_place` would otherwise *re-evaluate* `arg` a second
+        // time -- harmless for a plain variable lookup, but wrong for
+        // anything with its own side effects (an index expression, a call).
+        // This can't help a handle reached through a *different*
+        // variable/copy/struct field still holding the same stale value --
+        // a real, but narrower, residual gap of the same class -- but it
+        // closes the direct, single-binding case this module's doc comment
+        // actually promises.
+        if let TypedExpr::Ident { .. } = arg {
+            let place = self.emit_place(arg);
+            self.line(&format!("  store i8* null, i8** {}", place));
+        }
     }
 
     /// `file_read(handle: ptr) -> str`: reads every remaining byte from the

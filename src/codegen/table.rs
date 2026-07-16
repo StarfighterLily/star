@@ -473,8 +473,9 @@ impl Codegen {
         let in_bounds = self.tmp_name();
         self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, len));
         let do_label = self.block_label("table_set_do");
+        let oob_label = self.block_label("table_set_oob");
         let end_label = self.block_label("table_set_end");
-        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, do_label, end_label));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, do_label, oob_label));
 
         self.open_block(&do_label);
         let clean_val = self.untag(val, ty);
@@ -491,6 +492,23 @@ impl Codegen {
             self.emit_release_at(&col_ptr, fty);
             self.line(&format!("  store {} {}, {}* {}", f_llvm, new_field_val, f_llvm, col_ptr));
         }
+        self.line(&format!("  br label %{}", end_label));
+
+        // An out-of-bounds write is a silent no-op *observably* (no column
+        // changes), but `val`'s whole struct -- including any RC-bearing
+        // fields -- was already computed and retained by the caller on our
+        // behalf. Previously this branch jumped straight to `end_label`
+        // with no release at all, permanently leaking every RC field `val`
+        // carried on every out-of-bounds write instead of the true no-op
+        // this function's doc comment promises.
+        self.open_block(&oob_label);
+        // `emit_release_bare` expects a *bare* (untagged) value -- `val`
+        // itself is a tagged struct-literal-construction value here (e.g.
+        // `%Item %t9`), not bare, so releasing it directly would double-tag
+        // the `store` this emits (`store %Item %Item %t9, ...`, which
+        // `clang` rejects outright). Reuse the `clean_val` the `do_label`
+        // branch above already computed via `untag`.
+        self.emit_release_bare(&clean_val, ty);
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&end_label);

@@ -8,6 +8,41 @@ use crate::diagnostics::{suggest, Span};
 use super::*;
 
 impl Checker {
+    /// If `expr` is a bare integer literal, or a unary `-` directly over
+    /// one, returns its signed magnitude -- used by `Expr::Cast`'s literal
+    /// fast path to look through the exact `-x as T`-is-`(-x) as T`
+    /// precedence shape `Parser::parse_cast`'s doc comment describes,
+    /// without generically recursing through `infer_expr` (which would
+    /// apply `Expr::Int`'s default-`i32` range check before the cast ever
+    /// gets a chance to widen it). `Expr::Int`'s own magnitude is always
+    /// non-negative (see `Lexer::scan_number`'s doc comment), so `-v` here
+    /// never overflows `i64`.
+    fn cast_literal_magnitude(expr: &Expr) -> Option<i64> {
+        match expr {
+            Expr::Int(v, _) => Some(*v),
+            Expr::Unary { op: UnOp::Neg, operand, .. } => {
+                if let Expr::Int(v, _) = operand.as_ref() { Some(-*v) } else { None }
+            }
+            _ => None,
+        }
+    }
+
+    /// The inclusive `[lo, hi]` range an `int_shape`-described integer type
+    /// can hold, clamped to what an `i64`-backed literal token can actually
+    /// represent (an unsigned 64-bit type's true upper bound, `u64::MAX`,
+    /// exceeds `i64::MAX` and isn't reachable through this storage -- a
+    /// separate, pre-existing limitation of `Lexer::scan_number`'s `i64`
+    /// token storage, not one this cast fast path introduces).
+    fn int_shape_range(width: u32, signed: bool) -> (i64, i64) {
+        if signed {
+            if width >= 64 { (i64::MIN, i64::MAX) } else { (-(1i64 << (width - 1)), (1i64 << (width - 1)) - 1) }
+        } else if width >= 64 {
+            (0, i64::MAX)
+        } else {
+            (0, (1i64 << width) - 1)
+        }
+    }
+
     pub(super) fn check_expr_infer(&mut self, expr: &Expr) -> TypedExpr {
         let mut dummy_vars = HashMap::new();
         self.infer_expr(expr, &mut dummy_vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))
@@ -16,20 +51,18 @@ impl Checker {
     pub(super) fn infer_expr(&mut self, expr: &Expr, vars: &mut HashMap<String, Ty>) -> Result<TypedExpr, ()> {
         match expr {
             Expr::Int(v, s) => {
-                if *v == i32::MIN as i64 {
-                    // The lexer stores the literal magnitude `2147483648`
-                    // pre-negated to `i32::MIN`'s bit pattern (its positive
-                    // value doesn't fit `i32` on its own -- `-2147483648` is
-                    // the only legal spelling of `i32::MIN`), since normal
-                    // digit scanning never otherwise produces a negative
-                    // token value. A directly enclosing unary `-` sanctions
-                    // that reinterpretation (see the `Expr::Unary` arm below,
-                    // which intercepts this exact shape before recursing
-                    // here); reaching here un-sanctioned means the source
-                    // wrote the bare literal `2147483648` with no negation at
-                    // all, which previously type-checked cleanly and
-                    // silently became `-2147483648` with zero diagnostics.
-                    self.error("integer literal `2147483648` is too large for a 32-bit integer (max 2147483647)", *s);
+                // A plain (un-cast) integer literal's type always defaults
+                // to `Ty::Int` (`i32`) -- the lexer itself now only rejects
+                // a magnitude that doesn't fit `i64` at all (see
+                // `Lexer::scan_number`'s doc comment), deferring the
+                // "does this fit the type it's actually used as" question
+                // here. A literal that's the direct operand of a widening
+                // `as <sized int type>` cast is special-cased in the
+                // `Expr::Cast` arm below, before it ever reaches this arm,
+                // so reaching here with an out-of-`i32`-range magnitude
+                // means it's genuinely defaulting to `i32` and doesn't fit.
+                if *v < i32::MIN as i64 || *v > i32::MAX as i64 {
+                    self.error(format!("integer literal `{}` is too large for a 32-bit integer (max 2147483647)", v), *s);
                 }
                 Ok(TypedExpr::Int(*v, Ty::Int, *s))
             }
@@ -286,15 +319,18 @@ impl Checker {
                 Ok(TypedExpr::Binary { op: *op, lhs: Box::new(lhs_expr), rhs: Box::new(rhs_expr), ty, span: *span })
             }
             Expr::Unary { op, operand, span } => {
-                // `-2147483648` is the only legal way to spell `i32::MIN`
-                // (see the `Expr::Int` arm's doc comment above): intercept
-                // this exact raw-AST shape -- a unary `-` directly over the
-                // literal -- before generically recursing into `operand`,
-                // which would otherwise hit that arm's bounds check and
-                // reject its own sanctioned case.
+                // `-2147483648` is the only legal way to spell `i32::MIN`:
+                // the lexer stores the literal magnitude `2147483648`
+                // verbatim (positive -- it fits `i64` fine, see
+                // `Lexer::scan_number`'s doc comment), so intercept this
+                // exact raw-AST shape -- a unary `-` directly over that one
+                // magnitude -- before generically recursing into `operand`,
+                // which would otherwise hit the `Expr::Int` arm's `i32`
+                // bounds check and reject its own sanctioned case (that
+                // literal's positive value doesn't itself fit `i32`).
                 if matches!(op, UnOp::Neg) {
                     if let Expr::Int(v, _) = operand.as_ref() {
-                        if *v == i32::MIN as i64 {
+                        if *v == (i32::MAX as i64) + 1 {
                             return Ok(TypedExpr::Int(i32::MIN as i64, Ty::Int, *span));
                         }
                     }
@@ -580,9 +616,38 @@ impl Checker {
                 Ok(TypedExpr::RingNew { elem_ty, count: *count, span: *span })
             }
             Expr::Cast { expr, ty, span } => {
+                let target = self.resolve_type(ty).unwrap_or(Ty::Named("unknown".into()));
+                // A literal (optionally directly negated) that's the
+                // operand of a widening `as` cast is special-cased here,
+                // before it reaches the generic `infer_expr` call below
+                // (which types a bare literal as `i32` by default and
+                // rejects anything outside `i32`'s range) -- otherwise
+                // `5000000000 as i64` would be rejected for not fitting
+                // `i32` before the cast ever got a chance to widen it,
+                // defeating the entire reason `i64`/`u64` exist
+                // (`docs/design.md`'s "large-world coordinates" numeric-
+                // widths motivation). Only takes this path when the
+                // literal's magnitude doesn't already fit `i32` -- values
+                // that do keep flowing through the generic `Ty::Int` +
+                // `Cast` path unchanged, preserving existing truncating-
+                // narrow-cast semantics like `200 as i8`.
+                if let Some(v) = Self::cast_literal_magnitude(expr) {
+                    if v < i32::MIN as i64 || v > i32::MAX as i64 {
+                        if let Some((width, signed)) = target.int_shape() {
+                            let (lo, hi) = Self::int_shape_range(width, signed);
+                            if v >= lo && v <= hi {
+                                return Ok(TypedExpr::Int(v, target.clone(), *span));
+                            }
+                            self.error(
+                                format!("integer literal `{}` does not fit in `{:?}` (range {}..={})", v, target, lo, hi),
+                                *span,
+                            );
+                            return Ok(TypedExpr::Int(v, target.clone(), *span));
+                        }
+                    }
+                }
                 let inner = self.infer_expr(expr, vars)?;
                 let inner_ty = inner.clone().into_ty();
-                let target = self.resolve_type(ty).unwrap_or(Ty::Named("unknown".into()));
                 // `as` supports conversions between any two numeric types
                 // (narrowing/widening/sign-reinterpreting, matching Rust's
                 // own infallible truncating `as`) and between a numeric
@@ -1350,7 +1415,15 @@ impl Checker {
             matches!(t, Ty::Named(n) if matches!(n.as_str(), "unknown" | "infer_error" | "infer" | "Self"))
         }
         fn is_numeric(t: &Ty) -> bool {
-            matches!(t, Ty::Int | Ty::Float) || is_placeholder(t)
+            // `Ty::is_numeric()` covers every explicit-width integer type
+            // and `f64` alongside the original `i32`/`f32` -- this used to
+            // shadow it with a narrower `Int | Float`-only check, left
+            // behind when the sized numeric types landed, which made
+            // `sqrt`/`floor`/`ceil`/`abs`/`pow`/`min`/`max` hard type errors
+            // on every `i8`/`u8`/`i16`/`u16`/`u32`/`i64`/`u64`/`f64`
+            // argument even though the checker otherwise treats them as
+            // full numeric citizens.
+            t.is_numeric() || is_placeholder(t)
         }
         fn is_vec(t: &Ty) -> bool {
             t.is_vec() || is_placeholder(t)
@@ -1380,6 +1453,27 @@ impl Checker {
                     for (i, t) in arg_tys.iter().enumerate() {
                         if !is_numeric(t) {
                             self.error(format!("`{}` argument {} expected a numeric (`int`/`float`) value, found `{:?}`", name, i + 1, t), span);
+                        }
+                    }
+                    // Same "one legacy mixed pair, otherwise an exact match"
+                    // rule `infer_binop_ty` enforces for arithmetic/compare
+                    // operators (`docs/design.md`'s "Numeric widths and
+                    // modes") -- `i8`/`i64` or `u32`/`f64` mismatches are
+                    // hard errors pointing at `as`, not a silent implicit
+                    // widening, now that more than one numeric width exists.
+                    if is_numeric(&arg_tys[0]) && is_numeric(&arg_tys[1]) {
+                        let legacy_int_float_pair =
+                            matches!((&arg_tys[0], &arg_tys[1]), (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int));
+                        if arg_tys[0] != arg_tys[1] && !legacy_int_float_pair
+                            && !is_placeholder(&arg_tys[0]) && !is_placeholder(&arg_tys[1])
+                        {
+                            self.error(
+                                format!(
+                                    "`{}` arguments must be the same numeric type, found `{:?}` and `{:?}`",
+                                    name, arg_tys[0], arg_tys[1]
+                                ),
+                                span,
+                            );
                         }
                     }
                 }
@@ -1952,8 +2046,32 @@ impl Checker {
                 // -- codegen (`Codegen::emit_expr`'s `TypedExpr::Match` arm)
                 // lowers this against the scrutinee's *actual* LLVM width/
                 // signedness, mirroring `emit_sized_int_binop`.
-                if scrutinee_ty.int_shape().is_none() {
-                    self.error(format!("pattern `{}` does not match scrutinee type `{:?}`", v, scrutinee_ty), arm.span);
+                match scrutinee_ty.int_shape() {
+                    None => {
+                        self.error(format!("pattern `{}` does not match scrutinee type `{:?}`", v, scrutinee_ty), arm.span);
+                    }
+                    // A pattern literal that doesn't fit the scrutinee's
+                    // actual width used to type-check cleanly and reach
+                    // `Codegen::int_pattern_literal`, which *truncates* to
+                    // fit rather than erroring (needed so an in-range
+                    // literal renders correctly for every width, not a
+                    // license for an out-of-range one to silently
+                    // reinterpret) -- e.g. a bare `2147483648` pattern
+                    // against an `i32` scrutinee (`Lexer::scan_number` no
+                    // longer caps a literal's magnitude at `i32::MAX`, so
+                    // this became reachable) silently matched as
+                    // `i32::MIN`'s bit pattern with zero diagnostic. Reject
+                    // it here instead, mirroring `Expr::Int`'s own default-
+                    // width range check.
+                    Some((width, signed)) => {
+                        let (lo, hi) = Self::int_shape_range(width, signed);
+                        if *v < lo || *v > hi {
+                            self.error(
+                                format!("pattern `{}` does not fit in `{:?}` (range {}..={})", v, scrutinee_ty, lo, hi),
+                                arm.span,
+                            );
+                        }
+                    }
                 }
             }
             Pattern::Bool(v) => {

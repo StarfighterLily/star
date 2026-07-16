@@ -379,6 +379,22 @@ impl Codegen {
         self.line("declare float @llvm.ceil.f32(float)");
         self.line("declare float @llvm.minnum.f32(float, float)");
         self.line("declare float @llvm.maxnum.f32(float, float)");
+        // Saturating float->int casts backing `expr as <int type>`
+        // (`Codegen::emit_cast`'s float->int arm): plain `fptosi`/`fptoui`
+        // are undefined behavior (poison) whenever the source value
+        // doesn't fit the destination width or is NaN, unlike Rust's own
+        // `as` (saturating since Rust 1.45 -- clamps to the destination's
+        // min/max, and NaN becomes `0`), which `Checker::infer_expr`'s
+        // `Expr::Cast` doc comment already claims to match. Declared for
+        // every (width, signedness, source float type) combination a
+        // cast's target/source pair can produce.
+        for width in [8u32, 16, 32, 64] {
+            for op in ["fptosi", "fptoui"] {
+                for (fty, llfty) in [("f32", "float"), ("f64", "double")] {
+                    self.line(&format!("declare i{w} @llvm.{op}.sat.i{w}.{fty}({llfty})", w = width, op = op, fty = fty, llfty = llfty));
+                }
+            }
+        }
         // Overflow-checked integer arithmetic backing every explicit-width
         // integer type's `+`/`-`/`*` (`Codegen::emit_checked_sized_int_arith`)
         // -- declared for every (width, signedness, op) combination those
@@ -1229,17 +1245,37 @@ impl Codegen {
         s.strip_prefix(&format!("{} ", t)).unwrap_or(s).to_string()
     }
 
-    /// Strip a bare `i32`/`float` tag and, if the operand is an `Int`,
-    /// convert it to `float` via `sitofp` so it can be used in float
-    /// arithmetic. Returns a bare (untagged) register.
+    /// Strip a bare type tag and, if the operand isn't already `float`,
+    /// convert it to one so it can be used in `float` arithmetic (every
+    /// math builtin backing this -- `sqrt`/`floor`/`ceil`/`pow` -- always
+    /// computes in `f32`, regardless of its argument's width). Handles
+    /// every numeric type (`Ty::is_numeric()`), not just the original
+    /// `Ty::Int`: an `f64` narrows via `fptrunc`, a signed sized int
+    /// widens/narrows its *bit width* via `sitofp`, an unsigned one via
+    /// `uitofp`. Returns a bare (untagged) `float` register.
     fn promote_to_float(&mut self, val: &str, ty: &Ty) -> String {
         let bare = self.untag(val, ty);
-        if matches!(ty, Ty::Int) {
-            let reg = self.tmp_name();
-            self.line(&format!("  {} = sitofp i32 {} to float", reg, bare));
-            reg
-        } else {
-            bare
+        match ty {
+            Ty::Int => {
+                let reg = self.tmp_name();
+                self.line(&format!("  {} = sitofp i32 {} to float", reg, bare));
+                reg
+            }
+            Ty::Float => bare,
+            Ty::F64 => {
+                let reg = self.tmp_name();
+                self.line(&format!("  {} = fptrunc double {} to float", reg, bare));
+                reg
+            }
+            _ => match ty.int_shape() {
+                Some((width, signed)) => {
+                    let reg = self.tmp_name();
+                    let op = if signed { "sitofp" } else { "uitofp" };
+                    self.line(&format!("  {} = {} i{} {} to float", reg, op, width, bare));
+                    reg
+                }
+                None => bare,
+            },
         }
     }
 

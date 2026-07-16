@@ -412,28 +412,23 @@ impl<'src> Lexer<'src> {
         let kind = if is_float {
             TokenKind::Float(text.parse().unwrap_or(0.0))
         } else {
-            // Star's `Ty::Int` lowers to a 32-bit LLVM `i32` everywhere (see
-            // `Checker::resolve_type`/`Codegen::llvm_ty`); `i64` here is only
-            // this token's Rust-side storage width. Parsing straight into
-            // `i64` and defaulting failures to `0` let any literal in
-            // `(i32::MAX, i64::MAX]` silently reinterpret as a negative
-            // `i32` at codegen with no diagnostic at all, and let anything
-            // past `i64::MAX` silently become `0`.
+            // Star's plain (un-cast) `Ty::Int` literal type is a 32-bit
+            // `i32` (see `Checker::resolve_type`/`Codegen::llvm_ty`), but a
+            // literal can also be the direct operand of a widening `as
+            // <sized int type>` cast (`5000000000 as i64`), which needs the
+            // literal's full magnitude preserved past `i32`'s range --
+            // `Checker::infer_expr`'s `Expr::Cast` arm special-cases exactly
+            // that shape. The lexer therefore only rejects a magnitude that
+            // doesn't fit `i64` at all (this token's Rust-side storage
+            // width, unrelated to any particular Star type); whether a
+            // literal that fits `i64` but not `i32` is actually legal in
+            // context is deferred entirely to the checker, which is the
+            // first place that knows whether a cast is widening it.
             match text.parse::<i64>() {
-                Ok(v) if v >= i32::MIN as i64 && v <= i32::MAX as i64 => TokenKind::Int(v),
-                // The one magnitude allowed to exceed `i32::MAX`: writing
-                // `i32::MIN` requires typing its positive magnitude (the
-                // sign comes from a separate, preceding unary `-` token) --
-                // codegen's wrapping `i32` negation of `i32::MIN` round-trips
-                // back to `i32::MIN`, so this is exactly the value a `-`
-                // in front of this literal is meant to produce.
-                Ok(v) if v == (i32::MAX as i64) + 1 => TokenKind::Int(i32::MIN as i64),
-                _ => {
+                Ok(v) => TokenKind::Int(v),
+                Err(_) => {
                     self.errors.push(Diagnostic::error(
-                        format!(
-                            "integer literal `{}` is too large for a 32-bit integer (max 2147483647)",
-                            text
-                        ),
+                        format!("integer literal `{}` is too large (max 9223372036854775807)", text),
                         Span::new(start, self.pos),
                     ));
                     TokenKind::Int(0)
@@ -570,6 +565,39 @@ impl<'src> Lexer<'src> {
                             b'"' => in_str = !in_str,
                             b'{' if !in_str => depth += 1,
                             b'}' if !in_str => depth -= 1,
+                            // A `char` literal (`'x'`/`'\n'`/`'}'`/...) inside
+                            // the hole's expression: unlike the nested-`"..."`-
+                            // string handling above, this couldn't just toggle
+                            // an `in_char` flag on `'` alone, since `'` is also
+                            // a syntactically valid *content* byte inside a
+                            // `str` literal -- the flag would flip incorrectly
+                            // there. Instead, consume the whole `'...'` unit
+                            // (opening quote, one possibly-backslash-escaped
+                            // byte/codepoint, closing quote) right here as an
+                            // atomic step so a brace *inside* it (`'}'`) is
+                            // never separately matched against the `{`/`}`
+                            // arms above and mistaken for closing the hole
+                            // early. Previously missing entirely -- only
+                            // string-literal nesting was ever considered (see
+                            // this loop's own doc comment) -- so `f"{c == '}'}"`
+                            // desynced the hole boundary at the `}` inside the
+                            // char literal, producing a nonsensical downstream
+                            // parse error far from the real (non-)issue.
+                            b'\'' if !in_str => {
+                                self.pos += 1; // opening quote
+                                if self.pos < self.bytes.len() && self.bytes[self.pos] == b'\\' {
+                                    self.pos += 1; // backslash
+                                    if self.pos < self.bytes.len() {
+                                        self.pos += 1; // escaped byte
+                                    }
+                                } else if self.pos < self.bytes.len() {
+                                    self.pos += self.current_char_len();
+                                }
+                                // `self.pos` now sits on the closing `'` (if
+                                // well-formed); the shared `self.pos += 1`
+                                // below consumes it, same "already adjusted,
+                                // then +1" shape every other arm here uses.
+                            }
                             _ => {}
                         }
                         if depth == 0 {

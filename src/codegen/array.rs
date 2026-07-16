@@ -121,16 +121,53 @@ impl Codegen {
     }
 
     /// `arr[idx] = v`: bounds-checked element write; an out-of-bounds index
-    /// is a silent no-op (mirrors `store_list_index`), since it only ever
-    /// writes into `array_index_ptr`'s disconnected dummy slot.
+    /// is a silent no-op. Unlike `emit_array_index_place` (shared with
+    /// reads, whose out-of-bounds fallback is a disconnected dummy nothing
+    /// else ever points at), this runs its own bounds-check branch so the
+    /// out-of-bounds path can release `val` -- already computed and
+    /// retained by the caller before calling this -- instead of leaking it
+    /// into that dummy the way storing through `emit_array_index_place`
+    /// unconditionally did. Mirrors `store_list_index`'s identical
+    /// `do`/`oob` branch shape.
     pub(super) fn store_array_index(&mut self, base: &TypedExpr, index: &TypedExpr, elem_ty: &Ty, count: u64, val: &str) {
-        let ptr = self.emit_array_index_place(base, index, elem_ty, count);
         let elem_llvm = self.llvm_ty(elem_ty);
+        let arr_ty = format!("[{} x {}]", count, elem_llvm);
+        let base_ptr = self.emit_place(base);
+
+        let idx_val = self.emit_expr(index);
+        let idx_bare = self.untag(&idx_val, &Ty::Int);
+        let idx64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", idx64, idx_bare));
+
+        // Unsigned compare: a negative index sign-extends/wraps to a huge
+        // unsigned value, so it safely fails this bounds check too (mirrors
+        // `array_index_ptr`'s identical trick).
+        let in_bounds = self.tmp_name();
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, count));
+        let do_label = self.block_label("arr_set_do");
+        let oob_label = self.block_label("arr_set_oob");
+        let end_label = self.block_label("arr_set_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, do_label, oob_label));
+
+        self.open_block(&do_label);
+        let ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i64 {}", ptr, arr_ty, arr_ty, base_ptr, idx64));
         let clean_val = self.untag(val, elem_ty);
         // Same reasoning as `Codegen::store_target`'s `Ident`/`Field` arms:
         // release the old element *after* `val` was already computed (and
         // retained, if it's a copy), right before overwriting it.
         self.emit_release_at(&ptr, elem_ty);
         self.line(&format!("  store {} {}, {}* {}", elem_llvm, clean_val, elem_llvm, ptr));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&oob_label);
+        // `emit_release_bare` expects a *bare* (untagged) value, unlike
+        // `val` itself (see `store_list_index`'s identical fix's doc
+        // comment for why) -- reuse the `clean_val` the `do_label` branch
+        // above already computed.
+        self.emit_release_bare(&clean_val, elem_ty);
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
     }
 }

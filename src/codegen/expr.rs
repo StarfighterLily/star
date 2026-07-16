@@ -278,7 +278,16 @@ impl Codegen {
 
     pub(super) fn emit_expr(&mut self, expr: &TypedExpr) -> String {
         match expr {
-            TypedExpr::Int(v, _, _) => format!("i32 {}", v),
+            // Almost always `Ty::Int` (`i32`) -- the checker's `Expr::Int`
+            // arm always types a bare literal that way -- but
+            // `Checker::infer_expr`'s `Expr::Cast` literal fast path can
+            // also produce one already typed as the cast's (wider) target,
+            // for a literal whose magnitude doesn't fit `i32` on its own
+            // (`5000000000 as i64`). Must respect `ty` here rather than
+            // hardcoding `i32`, or that literal's own `i64` tag would be
+            // silently discarded and reinterpreted as an out-of-range `i32`
+            // constant -- invalid IR `clang` rejects outright.
+            TypedExpr::Int(v, ty, _) => format!("{} {}", self.llvm_ty(ty), v),
             TypedExpr::Float(v, _, _) => format!("float {}", format_f32_literal(*v)),
             TypedExpr::Str(s, _, _) => {
                 let escaped = s.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
@@ -484,22 +493,38 @@ impl Codegen {
             TypedExpr::Unary { op, operand, .. } => {
                 let operand_ty = self.expr_ty(operand);
                 let o = self.emit_expr(operand);
-                // `emit_expr` returns literals already tagged with their
-                // LLVM type (e.g. `i32 5`) but loads/calls bare; strip any
-                // existing tag so the opcode below never double-tags it.
-                let bare = self.untag(&o, &operand_ty);
-                let reg = self.tmp_name();
                 match op {
+                    // Routed through the same width/signedness-generic
+                    // scalar-binop path real binary `-` uses (`0 - x`)
+                    // rather than a hardcoded `sub i32 0, ...`/`fsub float
+                    // 0.0, ...` -- the operand's type is never restricted to
+                    // `i32`/`float` by the checker (`-x` preserves whatever
+                    // numeric type `x` has), so `-a` on any other numeric
+                    // type (`i64`, `u8`, `f64`, ...) previously emitted an
+                    // operand/opcode width mismatch `clang` rejects outright
+                    // (e.g. `sub i32 0, %t` against an `i64` operand). This
+                    // also picks up the same trap-on-overflow behavior every
+                    // other sized-int arithmetic op already has (`-i8::MIN`
+                    // traps, exactly like `0i8 - i8::MIN` would).
                     UnOp::Neg => {
-                        if matches!(operand_ty, Ty::Float) {
-                            self.line(&format!("  {} = fsub float 0.0, {}", reg, bare));
-                        } else {
-                            self.line(&format!("  {} = sub i32 0, {}", reg, bare));
-                        }
+                        let zero = match &operand_ty {
+                            Ty::Float => "float 0.0".to_string(),
+                            Ty::F64 => "double 0.0".to_string(),
+                            _ => format!("{} 0", self.llvm_ty(&operand_ty)),
+                        };
+                        self.emit_binop(&zero, &operand_ty, &o, &operand_ty, BinOp::Sub)
                     }
-                    UnOp::Not => self.line(&format!("  {} = xor i1 true, {}", reg, bare)),
+                    UnOp::Not => {
+                        // `emit_expr` returns literals already tagged with
+                        // their LLVM type (e.g. `i32 5`) but loads/calls
+                        // bare; strip any existing tag so the opcode below
+                        // never double-tags it.
+                        let bare = self.untag(&o, &operand_ty);
+                        let reg = self.tmp_name();
+                        self.line(&format!("  {} = xor i1 true, {}", reg, bare));
+                        reg
+                    }
                 }
-                reg
             }
             TypedExpr::Match { scrutinee, arms, ty, .. } => {
                 let ty_str = self.llvm_ty(ty);

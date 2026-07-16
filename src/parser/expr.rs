@@ -776,25 +776,14 @@ impl Parser {
             TokenKind::Gt => self.compare_pattern(BinOp::Gt),
             TokenKind::EqEq => self.compare_pattern(BinOp::Eq),
             TokenKind::Int(v) => {
-                let span = self.peek_span();
                 self.advance();
-                // The lexer pre-negates the bare digit magnitude
-                // `2147483648` (the only legal spelling of `i32::MIN`) to
-                // `Int(i32::MIN)` regardless of context (see its own doc
-                // comment) -- `Expr::Int` catches an un-negated one of these
-                // reaching it at the checker level (`types/expr.rs`'s
-                // `Expr::Int` arm), because `Expr::Unary{Neg, Expr::Int}`'s
-                // AST shape still distinguishes "was there a directly-
-                // enclosing `-`" there. `Pattern::Int(i64)` has no such
-                // wrapper -- this function's own `Minus` arm below folds the
-                // negation in immediately -- so a bare (un-negated) pattern
-                // token this exact magnitude must be rejected right here,
-                // or it would silently match as `i32::MIN` with zero
-                // diagnostic, indistinguishable from a real `-2147483648`
-                // pattern by the time it reaches the checker.
-                if v == i32::MIN as i64 {
-                    self.error("integer literal `2147483648` is too large for a 32-bit integer (max 2147483647)", span);
-                }
+                // The lexer stores a literal's raw magnitude verbatim,
+                // deferring range validation to context (see
+                // `Lexer::scan_number`'s doc comment) -- whether `v` fits
+                // whatever scrutinee type this pattern is ultimately matched
+                // against is checked once that's known, by the `Pattern::Int`
+                // arm of `Checker::check_match_arm` (mirroring `Expr::Int`'s
+                // own default-width range check).
                 Some(Pattern::Int(v))
             }
             // A bare negative-literal pattern (`-1 -> ...`), mirroring
@@ -807,16 +796,16 @@ impl Parser {
                 match self.peek_kind() {
                     TokenKind::Int(v) => {
                         self.advance();
-                        // The lexer pre-negates the bare digit magnitude
-                        // `2147483648` (the only legal spelling of
-                        // `i32::MIN`) to `Int(i32::MIN)` regardless of a
-                        // preceding `-` (see its own doc comment, and
-                        // `Expr::Unary`'s identical special case in
-                        // `types/expr.rs`) -- so a `-` directly in front of
-                        // it must not re-negate, which would overflow back
-                        // out of `i32` range.
-                        let value = if v == i32::MIN as i64 { v } else { -v };
-                        Some(Pattern::Int(value))
+                        // `v` is always a non-negative magnitude (see the
+                        // `TokenKind::Int` arm's doc comment above), so
+                        // negating it is always safely representable in the
+                        // `i64` this token/pattern is stored in -- no
+                        // special-casing needed (contrast `Expr::Unary`'s
+                        // `i32::MIN` sentinel, which exists because `Ty::Int`
+                        // arithmetic is `i32`-width; a bare `Pattern::Int`
+                        // has no such width of its own until it meets its
+                        // scrutinee).
+                        Some(Pattern::Int(-v))
                     }
                     other => {
                         let span = self.peek_span();

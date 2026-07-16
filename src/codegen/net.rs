@@ -247,5 +247,14 @@ impl Codegen {
         let handle = self.untag(&val, &Ty::Ptr);
         self.abort_if_null_socket(&handle, "tcp_close");
         self.line(&format!("  call i32 @closesocket(i8* {})", handle));
+        // Null out the caller's own variable, if `arg` is a bare one --
+        // same fix, same rationale, as `file_io.rs`'s `emit_file_close`
+        // (see its doc comment): `closesocket` doesn't invalidate the
+        // handle *value* itself, which a later, unrelated `tcp_connect`
+        // may reuse for a different socket.
+        if let TypedExpr::Ident { .. } = arg {
+            let place = self.emit_place(arg);
+            self.line(&format!("  store i8* null, i8** {}", place));
+        }
     }
 }

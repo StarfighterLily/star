@@ -311,12 +311,24 @@ impl Codegen {
                 self.line(&format!("  {} = {} i{} {} to {}", reg, op, sw, bare, target_llty));
                 format!("{} {}", target_llty, reg)
             }
-            // float -> int/char: `fptosi`/`fptoui` per the *target*'s signedness.
+            // float -> int/char: the saturating `llvm.fptosi.sat`/
+            // `llvm.fptoui.sat` intrinsics (declared unconditionally in
+            // `Codegen::emit_builtins`) per the *target*'s signedness,
+            // rather than the plain `fptosi`/`fptoui` instructions --
+            // those are undefined behavior (poison) whenever the source
+            // value doesn't fit the destination width or is NaN, silently
+            // producing a nonsense result instead of the well-defined,
+            // Rust-`as`-matching clamp `Checker::infer_expr`'s `Expr::Cast`
+            // doc comment already promises.
             (None, Some((tw, tsigned)), true, _) => {
                 let src_llty = self.llvm_ty(&src_ty);
+                let fty_suffix = if matches!(src_ty, Ty::F64) { "f64" } else { "f32" };
                 let reg = self.tmp_name();
                 let op = if tsigned { "fptosi" } else { "fptoui" };
-                self.line(&format!("  {} = {} {} {} to i{}", reg, op, src_llty, bare, tw));
+                self.line(&format!(
+                    "  {} = call i{} @llvm.{}.sat.i{}.{}({} {})",
+                    reg, tw, op, tw, fty_suffix, src_llty, bare
+                ));
                 format!("{} {}", target_llty, reg)
             }
             // float -> float: `fpext` (f32 -> f64) or `fptrunc` (f64 -> f32);

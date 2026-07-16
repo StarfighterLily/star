@@ -62,6 +62,142 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Bug-hunting round (not a feature round, following the same shape as the prior one):
+four parallel deep audits — numeric types/casts/overflow-traps + the type checker,
+`List`/`Map`/`Set`/`Table`/`Ring`/`Array` collection codegen, the memory model
+(`frame`/`arena`/`GenRef`/RC), and concurrency/modules/parser/file-IO — each required
+to actually reproduce every candidate via a real `star build`+run before reporting it,
+not just read the code. 11 confirmed bugs found and fixed; 20 new tests in
+`tests/frontend.rs` (775 total, all green); all 48 buildable examples still `star
+build` cleanly (the same pre-existing, unrelated `examples/player.star` `Vec3`
+int/`f32` mismatch noted in every prior round, confirmed present on a clean checkout;
+`examples/geometry_lib.star` has no `main` by design, a library module never meant to
+link standalone) plus the already-documented `examples/tcp_socket.star` needing its
+own `-l ws2_32`; every example's `.exe`/`.ll` rebuilt against the fixed compiler.
+
+Eleven bugs fixed, grouped by audit:
+
+**Numeric types/casts (4)** — all four were "checker/codegen never updated when the
+sized-width types landed" gaps, not logic errors in the sized-int machinery itself:
+1. Unary `-` hardcoded `sub i32 0, ...`/`fsub float 0.0, ...` regardless of the
+   operand's real type (the checker never restricts `-x` to `i32`/`float` -- it
+   preserves whatever numeric type `x` has) -- `-x` on any other numeric type
+   (`i64`, `u8`, `f64`, ...) emitted an operand/opcode width mismatch `clang`
+   rejected outright. Fixed by routing through the same `emit_binop`/
+   `emit_checked_sized_int_arith` path real binary `0 - x` uses, which also
+   picks up the same trap-on-overflow behavior every other sized-int op has
+   (`-i8::MIN` now traps instead of silently miscompiling).
+2. `Lexer::scan_number` capped every integer literal's magnitude at `i32::MAX`
+   unconditionally, so `5000000000 as i64` was rejected before the cast ever got
+   a chance to widen it -- defeating the entire reason `i64`/`u64` exist
+   (`docs/design.md`'s "large-world coordinates"). Fixed by widening the lexer to
+   store any literal fitting `i64` and deferring range validation to
+   `Checker::infer_expr`'s `Expr::Cast` arm, which special-cases a literal
+   (optionally directly negated) as its cast's *direct* operand and types it
+   against the target's actual width instead of forcing it through `i32` first.
+   The old `i32::MIN`-sentinel pre-negation dance in the lexer/parser/checker
+   (needed only because the lexer used to have no other way to represent that
+   one magnitude) is gone -- literals are stored as plain non-negative
+   magnitudes now, and negation is always safely representable in `i64`.
+3. `float as <int type>` used plain `fptosi`/`fptoui`, which is undefined
+   behavior (poison) whenever the source value doesn't fit the destination
+   width or is NaN -- confirmed via real garbage output (`-1.0 as u8` printing
+   `3530362624`). Fixed with the saturating `llvm.fptosi.sat`/`llvm.fptoui.sat`
+   intrinsics (newly declared for every width/signedness/source-float-type
+   combination in `emit_builtins`), matching Rust's own saturating `as` (since
+   1.45) the checker's doc comment already claimed to follow.
+4. `sqrt`/`floor`/`ceil`/`abs`/`pow`/`min`/`max` rejected every numeric type
+   except the original `i32`/`f32` -- a local `is_numeric` helper in
+   `check_builtin_call_args` shadowed `Ty::is_numeric()` with a narrower
+   `Int | Float`-only check, never widened when the sized types/`f64` landed.
+   Fixed the checker gate, added a same-numeric-type-pair requirement for
+   `pow`/`min`/`max` (mirroring `infer_binop_ty`'s rule), and generalized
+   `promote_to_float`/`emit_abs`/`emit_minmax` codegen to handle every width/
+   signedness instead of hardcoding `i32`/`float`.
+
+**Memory model (3)**:
+5. Writing an RC-bearing field through a stale (post-`despawn`) or
+   out-of-bounds `GenRef` (`r[0].name = concat(..)`) leaked one heap reference
+   per write -- `emit_genref_index_place`'s stale-path fallback is a
+   disconnected, throwaway dummy alloca, and `store_target`'s generic `Field`
+   arm stored the new (already-owned) value into it with nothing ever
+   releasing it. Fixed with dedicated `store_genref_field`/`store_genref_whole`
+   codegen (not routed through the generic `emit_place` dummy convention) that
+   explicitly releases the RHS on the stale/OOB path instead of storing it
+   into a dead end -- confirmed fixed via the same Working-Set-sampling
+   technique the prior round's leak fixes used (flat ~3MB vs. ~84MB grown
+   over 5,000,000 iterations pre-fix).
+6. `local_struct_receiver` (the escape-analysis check for a dangling-`self`
+   closure) had arms for `Ident`/`Field`/`TupleIndex`/`ArrayIndex`/`RingIndex`/
+   `Call` receivers but none for an `if`/`match`-expression receiver built from
+   plain (non-`frame:`) locals -- `(if cond: a else: b).get_closure()` escaped
+   this check entirely, even though `Codegen::emit_place` spills that
+   expression's result into a fresh, function-scoped alloca exactly like a
+   named local. Confirmed via real garbage output after a stack-clobbering
+   intervening call. Fixed with new `If`/`Match` arms mirroring
+   `frame_escape_source`'s existing (narrower, `frame_locals`-only) handling
+   of the same two expression kinds.
+7. `r[0] = value` (a whole-element write through a `GenRef`) type-checked but
+   crashed codegen with an opaque "cannot store to this expression" internal
+   error -- `store_target` had no arm for a bare `TypedExpr::GenRefIndex`
+   target (only `r[0].field = v` was handled). Fixed by adding real support
+   (not just a clean rejection), reusing the same stale/OOB-releases-the-RHS
+   shape from fix #5.
+
+**Concurrency/modules/parser/file-IO (3)**:
+8. `file_close(handle)`/`tcp_close(handle)` freed the underlying `FILE*`/
+   `SOCKET` but never invalidated the *value* itself -- a later, unrelated
+   `file_open`/`tcp_connect` call can have the C allocator hand back that
+   exact same freed pointer for a different file/socket, so writing through
+   the stale handle silently corrupted the *other* file instead of aborting
+   like this module's own doc comment claims. Confirmed via real cross-file
+   corruption (a write through a closed handle landing in an unrelated later
+   `fopen`'s file). Fixed by nulling out the caller's own variable after
+   `fclose`/`closesocket`, when the argument is a bare `Ident` (so a later use
+   through *that* binding hits the existing null-handle abort) -- restricted
+   to that one shape specifically because `emit_place` would otherwise
+   *re-evaluate* the argument expression a second time, which is only safe
+   for a plain variable lookup. Doesn't (and can't, without a real
+   handle-validity-tracking wrapper type, out of scope here) help a handle
+   reached through a different variable/copy/struct field still holding the
+   stale value -- a narrower residual gap of the same class.
+9. `scan_fstring`'s hole-scanning loop tracked nested `"..."` string literals
+   (so a `}`/`{` inside one doesn't prematurely close/reopen the
+   interpolation hole) but not `'...'` char literals -- `f"{c == '}'}"`
+   misread the `}` inside the char literal as closing the hole early,
+   producing a nonsense downstream parse error far from the real (non-)issue.
+   Fixed by consuming a `'...'` char literal as an atomic unit (opening quote,
+   one possibly-backslash-escaped byte/codepoint, closing quote) the moment
+   `'` is seen outside a string, mirroring the existing string-nesting
+   handling.
+10. (Minor, diagnostic-quality only, not a correctness bug) `sequence`'s
+    dedicated nested-`yield` pre-check (`scan_for_nested_yield`) had arms for
+    `if`/`while`/`frame`/`for`/`match`/lambda bodies but not `par`/`swarm` --
+    a `yield` nested inside one was still rejected either way, just via a
+    separate, generic type-checker fallback with a worse diagnostic/location.
+    Added the missing `Stmt::Par` arm for consistency with every sibling
+    nested-block construct.
+
+One bug found *while writing regression tests* for the above (not from either
+audit): the first pass at fixes #5/#7/#11 called `emit_release_bare(val, ty)`
+directly on `store_target`'s raw `val` parameter in the stale/out-of-bounds
+release branches -- but `val` isn't consistently tagged or bare across
+expression kinds (a struct-literal construction like `Item(1)` is tagged, e.g.
+`%Item %t9`; a call/load result like `concat(..)` already isn't), while
+`emit_release_bare` always expects a bare value and blindly re-tags it itself.
+For a tagged input this double-tagged the emitted `store` (`store %Item %Item
+%t9, ...`), which `clang` rejects outright -- caught by the
+`runtime_table_out_of_bounds_write_does_not_leak_end_to_end` test specifically
+because `Item(concat(..))` is a tagged struct literal, while the equivalent
+`List`/`Array`/`Ring`/`GenRef`-whole-element tests happened to pass regardless
+(their test bodies used a bare call result, or a struct with no RC-bearing
+field short-circuiting `emit_release_bare` before it ever reached the broken
+`store`) -- a reminder that a leak-regression test proves *no leak*, not that
+the release call itself is well-formed IR in every shape. Fixed everywhere by
+reusing each function's already-computed `clean_val` (untagged) instead of the
+raw `val` parameter.
+
+## Previous round:
 Bug-hunting round (not a feature round): four parallel deep audits across memory/RC/
 arena codegen, collection (`Map`/`Set`/`Table`/`Ring`/`Array`) codegen, concurrency
 (`par`/`swarm`/`sequence`) plus the type checker, and lexer/parser/modules/file-IO,
@@ -188,7 +324,7 @@ the scratch buffer (and its manual `strcpy`/`strcat`/`free`) entirely. Separatel
 `par`/`swarm` body as an "unsupported mutation target" even though it's exactly as safe
 as the three sibling collection types right next to it.
 
-## Previous round:
+## Two rounds ago:
 Feature round tackling `docs/design.md` §2, "Numeric widths and modes" -- the largest
 remaining lift the Type System section had left, per the previous round's own closing
 note. Added `i8`/`u8`/`i16`/`u16`/`u32`/`i64`/`u64`/`f64` alongside the original `i32`/
