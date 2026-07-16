@@ -373,9 +373,10 @@ fn rename_stmt(stmt: &Stmt, names: &HashMap<String, String>) -> Stmt {
             Stmt::Par { var: var.clone(), arena: mangled(arena, names), body: rename_block(body, names), span: *span }
         }
         Stmt::Yield { span } => Stmt::Yield { span: *span },
-        Stmt::Spawn { arena, args, span } => Stmt::Spawn {
+        Stmt::Spawn { arena, args, arg_names, span } => Stmt::Spawn {
             arena: mangled(arena, names),
             args: args.iter().map(|a| rename_expr(a, names)).collect(),
+            arg_names: arg_names.clone(),
             span: *span,
         },
         Stmt::Despawn { arena, index, span } => {
@@ -420,9 +421,10 @@ fn rename_expr(expr: &Expr, names: &HashMap<String, String>) -> Expr {
         Expr::Field { base, field, span } => {
             Expr::Field { base: Box::new(rename_expr(base, names)), field: field.clone(), span: *span }
         }
-        Expr::Call { callee, args, span } => Expr::Call {
+        Expr::Call { callee, args, arg_names, span } => Expr::Call {
             callee: Box::new(rename_expr(callee, names)),
             args: args.iter().map(|a| rename_expr(a, names)).collect(),
+            arg_names: arg_names.clone(),
             span: *span,
         },
         Expr::Binary { op, lhs, rhs, span } => Expr::Binary {
@@ -440,10 +442,11 @@ fn rename_expr(expr: &Expr, names: &HashMap<String, String>) -> Expr {
                 .collect(),
             span: *span,
         },
-        Expr::StructLit { name, type_args, args, span } => Expr::StructLit {
+        Expr::StructLit { name, type_args, args, arg_names, span } => Expr::StructLit {
             name: mangled(name, names),
             type_args: type_args.iter().map(|t| rename_type(t, names)).collect(),
             args: args.iter().map(|a| rename_expr(a, names)).collect(),
+            arg_names: arg_names.clone(),
             span: *span,
         },
         Expr::If { cond, then_block, else_block, span } => Expr::If {
@@ -461,11 +464,12 @@ fn rename_expr(expr: &Expr, names: &HashMap<String, String>) -> Expr {
         Expr::GenRefIndex { base, index, span } => {
             Expr::GenRefIndex { base: Box::new(rename_expr(base, names)), index: Box::new(rename_expr(index, names)), span: *span }
         }
-        Expr::EnumVariant { enum_name, type_args, variant, args, span } => Expr::EnumVariant {
+        Expr::EnumVariant { enum_name, type_args, variant, args, arg_names, span } => Expr::EnumVariant {
             enum_name: mangled(enum_name, names),
             type_args: type_args.iter().map(|t| rename_type(t, names)).collect(),
             variant: variant.clone(),
             args: args.iter().map(|a| rename_expr(a, names)).collect(),
+            arg_names: arg_names.clone(),
             span: *span,
         },
         Expr::Lambda { params, ret, body, span } => Expr::Lambda {

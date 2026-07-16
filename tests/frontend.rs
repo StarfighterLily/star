@@ -8570,17 +8570,38 @@ fn rejects_genref_equality_comparison() {
     assert!(errs.iter().any(|d| d.message.contains("not supported") && d.message.contains("GenRef")), "{:?}", errs);
 }
 
-/// Same bug, `str` operands -- also silently `bool`-typed before this fix,
-/// then failed unlocated at codegen (there's no `strcmp`-backed `==` lowering
-/// for `str` in `Codegen::emit_binop` at all).
+/// `str == str` / `str != str` is structural byte equality (the docs'
+/// comparison table promises `==`/`!=` generally, and the `strcmp`-backed
+/// lowering `Map<str, V>` key comparison uses already existed) -- it was
+/// previously rejected outright by the checker for want of a
+/// `Codegen::emit_binop` lowering, which now exists (see its `Str` arm).
+/// Covers equal values in *distinct* allocations (`concat` result vs. a
+/// literal), so pointer identity can't fake a pass.
 #[test]
-fn rejects_str_equality_comparison() {
-    let src = "fn main():\n    let a = \"x\"\n    let b = \"y\"\n    if a == b:\n        println(\"eq\")\n    else:\n        println(\"ne\")\n";
+fn runtime_str_equality_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let a = \"xy\"\n",
+        "    let b = concat(\"x\", \"y\")\n",
+        "    println(f\"{a == b} {a == \"z\"} {a != b} {a != \"z\"}\")\n",
+    );
+    let output = compile_and_run("str_equality", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "true false false true", "{}", stdout);
+}
+
+/// Ordering comparisons between `str` values stay rejected -- there's no
+/// collation story to promise anything sensible about, so only `==`/`!=`
+/// are defined (see `Checker::infer_binop_ty`'s `Str` arm).
+#[test]
+fn rejects_str_ordering_comparison() {
+    let src = "fn main():\n    let a = \"x\"\n    let b = \"y\"\n    if a < b:\n        println(\"lt\")\n";
     let module = Driver::parse(src).expect("should parse");
     let Err(errs) = Driver::check(&module) else {
-        panic!("comparing two `str` values with `==` should be rejected")
+        panic!("comparing two `str` values with `<` should be rejected")
     };
-    assert!(errs.iter().any(|d| d.message.contains("not supported") && d.message.contains("Str")), "{:?}", errs);
+    assert!(errs.iter().any(|d| d.message.contains("only `==`/`!=` are supported between `str` values")), "{:?}", errs);
 }
 
 /// Comparing two entirely unrelated types (`i32` and `str`) with `==` must
@@ -13587,4 +13608,262 @@ fn runtime_immediately_invoked_fresh_closure_literal_end_to_end() {
     let output = compile_and_run("iife_fresh_closure", src);
     assert!(output.status.success(), "{:?}", output.status);
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "15");
+}
+
+// ===== inline if-expressions ================================================
+
+/// The language reference's inline `if`-expression form -- `let result =
+/// if x > 0: "pos" else: "neg"`, both arms on the same line -- must parse.
+/// Previously `Parser::parse_if_expr` unconditionally demanded an indented
+/// block after each `:`, so the documented one-liner failed with "expected
+/// end of line".
+#[test]
+fn parses_inline_if_expression() {
+    let src = "fn main():\n    let v = if 3 > 2: 10 else: 20\n";
+    let module = Driver::parse(src).expect("inline if-expression should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected let") };
+    assert!(matches!(value, Expr::If { .. }), "{:?}", value);
+}
+
+/// Inline `if`-expression arms evaluate to the right values end to end,
+/// including one nested inside an f-string hole.
+#[test]
+fn runtime_inline_if_expression_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let v = if 3 > 2: 10 else: 20\n",
+        "    let w = if 3 < 2: 10 else: 20\n",
+        "    let s = if v < w: \"lt\" else: \"ge\"\n",
+        "    println(f\"{v} {w} {s} {if 1 < 2: 7 else: 8}\")\n",
+    );
+    let output = compile_and_run("inline_if_expression", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "10 20 lt 7");
+}
+
+/// An inline `then` arm may still pair with an indented-block `else` arm --
+/// the two arms decide their form independently.
+#[test]
+fn parses_inline_then_arm_with_block_else_arm() {
+    let src = "fn main():\n    let v = if 3 > 2: 10 else:\n        20\n    let w = v\n";
+    Driver::parse(src).expect("mixed inline/block if-expression arms should parse");
+}
+
+// ===== chained tuple indexing ===============================================
+
+/// `t.0.1` -- a tuple index chained on another tuple index -- must lex as
+/// two integer indexes, not fold `0.1` into a float literal. The lexer now
+/// suppresses float-fraction folding for a number that immediately follows
+/// a member-access `.` (Star has no leading-dot `.5` float spelling, so no
+/// real float literal can begin there).
+#[test]
+fn parses_chained_tuple_index() {
+    let src = "fn main():\n    let t = ((1, 2), (3, 4))\n    let x = t.0.1\n";
+    let module = Driver::parse(src).expect("chained tuple index should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Let { value, .. } = &f.body.stmts[1] else { panic!("expected let") };
+    let Expr::TupleIndex { base, index: 1, .. } = value else { panic!("expected outer .1: {:?}", value) };
+    assert!(matches!(base.as_ref(), Expr::TupleIndex { index: 0, .. }), "{:?}", base);
+}
+
+/// Chained tuple indexing reads the right elements end to end, three levels
+/// deep -- and ordinary float literals (which share the `digits.digits`
+/// shape the lexer fix discriminates on) still work right next to it.
+#[test]
+fn runtime_chained_tuple_index_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let pair = ((1, (2, 3)), 4)\n",
+        "    let f = 0.5\n",
+        "    println(f\"{pair.0.1.0} {pair.0.1.1} {pair.1} {f + 0.25}\")\n",
+    );
+    let output = compile_and_run("chained_tuple_index", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "2 3 4 0.750000");
+}
+
+// ===== named constructor arguments and field defaults =======================
+
+/// Named struct-literal arguments match their *named* field, in any order.
+/// Previously the parser dropped the names outright and matched every
+/// argument positionally, so `Pair(b = 1, a = 2)` silently compiled to
+/// `a = 1, b = 2` -- a wrong-values miscompile with no diagnostic.
+#[test]
+fn runtime_named_struct_args_reorder_end_to_end() {
+    let src = concat!(
+        "struct Pair:\n    a: i32\n    b: i32\n",
+        "fn main():\n",
+        "    let p = Pair(b = 1, a = 2)\n",
+        "    println(f\"{p.a} {p.b}\")\n",
+    );
+    let output = compile_and_run("named_struct_args_reorder", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "2 1");
+}
+
+/// A field omitted from a construction falls back to its declared default:
+/// all-defaults `Config()`, one named override, and a positional prefix
+/// (which fills fields in declaration order) with defaults completing the
+/// rest. Previously field defaults were parsed but never applied anywhere.
+#[test]
+fn runtime_struct_field_defaults_end_to_end() {
+    let src = concat!(
+        "struct Config:\n    width: i32 = 640\n    height: i32 = 480\n    title: str = \"game\"\n",
+        "fn main():\n",
+        "    let c0 = Config()\n",
+        "    let c1 = Config(height = 720)\n",
+        "    let c2 = Config(800, title = \"demo\")\n",
+        "    println(f\"{c0.width} {c0.height} {c0.title}\")\n",
+        "    println(f\"{c1.width} {c1.height} {c1.title}\")\n",
+        "    println(f\"{c2.width} {c2.height} {c2.title}\")\n",
+    );
+    let output = compile_and_run("struct_field_defaults", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["640 480 game", "640 720 game", "800 480 demo"], "{}", stdout);
+}
+
+/// Named arguments and defaults work through the generic-struct
+/// monomorphization path too (resolution happens at the AST level, before
+/// type-parameter unification, so a reordered/omitted argument can't skew
+/// the inferred type arguments).
+#[test]
+fn runtime_named_args_generic_struct_end_to_end() {
+    let src = concat!(
+        "struct BoxG<T>:\n    value: T\n    tag: i32 = 7\n",
+        "fn main():\n",
+        "    let a = BoxG(value = 5)\n",
+        "    let b = BoxG<str>(tag = 9, value = \"hi\")\n",
+        "    println(f\"{a.value} {a.tag} {b.value} {b.tag}\")\n",
+    );
+    let output = compile_and_run("named_args_generic_struct", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "5 7 hi 9");
+}
+
+/// Named arguments match an enum variant's payload fields by name too.
+#[test]
+fn runtime_named_args_enum_variant_end_to_end() {
+    let src = concat!(
+        "enum Msg:\n    Move(dx: i32, dy: i32)\n    Quit\n",
+        "fn main():\n",
+        "    let m = Msg::Move(dy = 3, dx = 4)\n",
+        "    match m:\n",
+        "        Msg::Move(dx, dy) -> println(f\"{dx} {dy}\")\n",
+        "        Msg::Quit -> println(\"quit\")\n",
+    );
+    let output = compile_and_run("named_args_enum_variant", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "4 3");
+}
+
+/// `spawn` constructs the arena's element struct, so named arguments and
+/// field defaults apply there exactly like an ordinary struct literal.
+#[test]
+fn runtime_spawn_named_args_with_defaults_end_to_end() {
+    let src = concat!(
+        "struct Thing:\n    hp: i32 = 100\n    tag: i32 = 5\n",
+        "arena Things: Thing\n",
+        "fn main():\n",
+        "    spawn Things(tag = 9)\n",
+        "    let r = GenRef<Thing>(0)\n",
+        "    let t = r[0]\n",
+        "    println(f\"{t.hp} {t.tag}\")\n",
+    );
+    let output = compile_and_run("spawn_named_args_defaults", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "100 9");
+}
+
+/// An unknown field name in a struct construction is a clean checker error.
+#[test]
+fn rejects_unknown_named_ctor_argument() {
+    let src = "struct Pair:\n    a: i32\n    b: i32\nfn main():\n    let p = Pair(a = 1, c = 2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("unknown field name should be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("has no field `c`")), "{:?}", errs);
+}
+
+/// The same field given twice (positionally and then again by name) is a
+/// clean checker error, not a silent overwrite.
+#[test]
+fn rejects_duplicate_named_ctor_argument() {
+    let src = "struct Pair:\n    a: i32\n    b: i32\nfn main():\n    let p = Pair(1, a = 2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("duplicate field should be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("given more than once")), "{:?}", errs);
+}
+
+/// A positional argument after a named one is ambiguous (which field does
+/// it fill?) and is rejected outright, mirroring Python's rule.
+#[test]
+fn rejects_positional_ctor_argument_after_named() {
+    let src = "struct Pair:\n    a: i32\n    b: i32\nfn main():\n    let p = Pair(b = 1, 2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("positional-after-named should be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("positional argument after a named argument")), "{:?}", errs);
+}
+
+/// Omitting a field that has no declared default is a clean checker error
+/// naming the missing field.
+#[test]
+fn rejects_named_ctor_call_missing_field_without_default() {
+    let src = "struct Pair:\n    a: i32\n    b: i32\nfn main():\n    let p = Pair(a = 1)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("missing defaultless field should be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("missing a value for field `b`")), "{:?}", errs);
+}
+
+/// A purely positional construction that undersupplies a struct with *no*
+/// defaults keeps the original arity diagnostic (nothing about missing
+/// fields or names).
+#[test]
+fn rejects_positional_ctor_undersupply_with_original_arity_error() {
+    let src = "struct Pair:\n    a: i32\n    b: i32\nfn main():\n    let p = Pair(1)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("positional undersupply should be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("expects 2 argument(s), found 1")), "{:?}", errs);
+}
+
+/// Ordinary function/method calls have no named-parameter machinery --
+/// `name = expr` there is rejected instead of silently dropping the name
+/// (which previously made `f(b = 1, a = 2)` *look* reordered while
+/// matching purely positionally).
+#[test]
+fn rejects_named_arguments_on_ordinary_call() {
+    let src = "fn add(a: i32, b: i32) -> i32:\n    a + b\nfn main():\n    let x = add(b = 1, a = 2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("named args on a fn call should be rejected") };
+    assert!(
+        errs.iter().any(|d| d.message.contains("named arguments are only supported when constructing a struct or enum variant")),
+        "{:?}",
+        errs
+    );
+}
+
+/// Builtin constructors (`Vec3`, `List`, ...) have no user-declared field
+/// list to match names against, so named arguments there are rejected.
+#[test]
+fn rejects_named_arguments_on_builtin_constructor() {
+    let src = "fn main():\n    let v = Vec3(x = 1.0, y = 2.0, z = 3.0)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("named args on Vec3(..) should be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("named arguments are not supported")), "{:?}", errs);
+}
+
+/// All-named construction sites in declaration order -- the pre-existing
+/// examples' style -- still work unchanged through the new resolution.
+#[test]
+fn runtime_named_args_in_declaration_order_end_to_end() {
+    let src = concat!(
+        "struct Player:\n    name: str\n    hp: i32\n",
+        "fn main():\n",
+        "    let p = Player(name = \"Hero\", hp = 100)\n",
+        "    println(f\"{p.name} {p.hp}\")\n",
+    );
+    let output = compile_and_run("named_args_declaration_order", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "Hero 100");
 }

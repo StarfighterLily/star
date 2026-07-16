@@ -333,6 +333,10 @@ pub enum Stmt {
     Spawn {
         arena: String,
         args: Vec<Expr>,
+        /// Parallel to `args`; see `Expr::StructLit::arg_names` (`spawn`
+        /// constructs the arena's element struct, so the same named-argument
+        /// matching and default-filling applies).
+        arg_names: Vec<Option<String>>,
         span: Span,
     },
     /// `despawn ArenaName[index]` - invalidates a slot by bumping its
@@ -379,10 +383,15 @@ pub enum Expr {
         field: String,
         span: Span,
     },
-    /// A function or method call.
+    /// A function or method call. `arg_names` runs parallel to `args`:
+    /// `Some(name)` for an argument written `name = expr` (named-argument
+    /// syntax is only meaningful for struct/enum constructions -- the
+    /// checker rejects it on ordinary calls, where parameters are matched
+    /// purely positionally).
     Call {
         callee: Box<Expr>,
         args: Vec<Expr>,
+        arg_names: Vec<Option<String>>,
         span: Span,
     },
     /// A binary operation.
@@ -409,10 +418,16 @@ pub enum Expr {
     /// (`Box<i32>(value = 5)`); when empty the checker infers each type
     /// parameter by unifying the declared field types against the arguments'
     /// inferred types (see `Checker::instantiate_struct`).
+    /// `arg_names` runs parallel to `args`: `Some(field)` for an argument
+    /// written `field = expr`. The checker matches named arguments to their
+    /// declared fields (in any order), fills fields omitted entirely from
+    /// their declared defaults, and rejects unknown/duplicate names --
+    /// positional arguments fill fields in declaration order as before.
     StructLit {
         name: String,
         type_args: Vec<Type>,
         args: Vec<Expr>,
+        arg_names: Vec<Option<String>>,
         span: Span,
     },
     /// An `if` expression: `if cond: <block> [else: <block>]`.
@@ -460,6 +475,9 @@ pub enum Expr {
         type_args: Vec<Type>,
         variant: String,
         args: Vec<Expr>,
+        /// Parallel to `args`; see `Expr::StructLit::arg_names` (variant
+        /// payload fields are named/typed just like struct fields).
+        arg_names: Vec<Option<String>>,
         span: Span,
     },
     /// A lambda/closure literal: `fn(params) [-> RetType]: <body>`, where

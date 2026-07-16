@@ -618,6 +618,33 @@ impl Codegen {
                 }
             };
         }
+        // `str == str` / `str != str` -- structural byte equality via the
+        // same `strcmp` comparison `Map<str, V>` key lookup already uses
+        // (see `eq.rs`'s `Ty::Str` arm). The comparison only reads the
+        // bytes, so release what `emit_expr` left us owning on both sides
+        // (a borrowed read's extra retain, or a fresh construction's sole
+        // reference -- see `rc.rs`'s module doc comment), mirroring the
+        // f-string `%s` hole's own unconditional release.
+        if matches!((lty, rty), (Ty::Str, Ty::Str)) {
+            return match op {
+                BinOp::Eq | BinOp::Ne => {
+                    let l = self.untag(lhs, &Ty::Str);
+                    let r = self.untag(rhs, &Ty::Str);
+                    let cmp = self.tmp_name();
+                    self.line(&format!("  {} = call i32 @strcmp(i8* {}, i8* {})", cmp, l, r));
+                    self.line(&format!("  call void @star_rc_release(i8* {})", l));
+                    self.line(&format!("  call void @star_rc_release(i8* {})", r));
+                    let pred = if op == BinOp::Eq { "eq" } else { "ne" };
+                    let reg = self.tmp_name();
+                    self.line(&format!("  {} = icmp {} i32 {}, 0", reg, pred, cmp));
+                    format!("i1 {}", reg)
+                }
+                _ => {
+                    self.err("only `==`/`!=` are supported between `str` values", Span::dummy());
+                    "%undef".into()
+                }
+            };
+        }
         if matches!(op, BinOp::Rem | BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge) {
             self.err("`%` and comparison operators are not supported on vector/matrix types", Span::dummy());
             return "%undef".into();

@@ -160,9 +160,9 @@ impl Parser {
                     // `Handle(` with a clear error requiring
                     // `GenRef<T>(value)`/`Handle<T>(value)`. The `<T>(value)`
                     // form (with type args) is handled below, in the `Lt` arm.
-                    let args = self.parse_call_args()?;
+                    let (args, arg_names) = self.parse_call_args()?;
                     let span = expr.span().to(self.prev_span());
-                    expr = Expr::Call { callee: Box::new(expr), args, span };
+                    expr = Expr::Call { callee: Box::new(expr), args, arg_names, span };
                 }
                 // GenRef<T>(value) / Handle<T>(value) / Wrapping<T>(value) -
                 // handle generic type args before parens. `Handle<T>` is
@@ -221,7 +221,7 @@ impl Parser {
                                     }
                                     let inner_ty = type_args.into_iter().next().unwrap();
                                     // Now parse the call args (value)
-                                    let args = self.parse_call_args()?;
+                                    let args = self.parse_positional_call_args(&format!("{}<T>(..)", kind))?;
                                     let call_span = expr.span().to(self.prev_span());
                                     if args.len() != 1 {
                                         self.error(
@@ -352,7 +352,7 @@ impl Parser {
             self.error("ring capacity must be a positive integer", count_span);
             return Err(());
         }
-        let Some(args) = self.parse_call_args() else { return Err(()) };
+        let Some(args) = self.parse_positional_call_args("Ring<T, N>()") else { return Err(()) };
         if !args.is_empty() {
             self.error("`Ring<T, N>()` takes no arguments -- it always starts empty", start.to(self.prev_span()));
         }
@@ -411,7 +411,7 @@ impl Parser {
             self.error("`Fixed<Bits, Frac>`'s fractional-bit count cannot be negative", frac_span);
             return Err(());
         }
-        let args = self.parse_call_args().ok_or(())?;
+        let args = self.parse_positional_call_args("Fixed<Bits, Frac>(..)").ok_or(())?;
         let call_span = start.to(self.prev_span());
         if args.len() != 1 {
             self.error(format!("`Fixed<Bits, Frac>(..)` expects exactly one argument, found {}", args.len()), call_span);
@@ -447,15 +447,23 @@ impl Parser {
         Some((bits, bits_span, frac, frac_span))
     }
 
-    pub(super) fn parse_call_args(&mut self) -> Option<Vec<Expr>> {
+    /// Parse a `(...)` argument list, capturing named-argument syntax
+    /// `field = expr` alongside each expression -- the returned name list
+    /// runs parallel to the expression list (`None` for a plain positional
+    /// argument). The *checker* matches names to declared fields; previously
+    /// the name was dropped right here and every argument silently matched
+    /// positionally, so `Pair(b = 1, a = 2)` compiled to `a = 1, b = 2`.
+    pub(super) fn parse_call_args(&mut self) -> Option<(Vec<Expr>, Vec<Option<String>>)> {
         self.expect(&TokenKind::LParen)?;
         let mut args = Vec::new();
+        let mut names = Vec::new();
         while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
-            // Allow named-argument syntax `field = expr` used by struct literals;
-            // the name is dropped here and positions are matched by the checker.
-            if matches!(self.peek_kind(), TokenKind::Ident(_)) && self.peek_kind_at(1) == Some(TokenKind::Assign) {
+            if let (TokenKind::Ident(name), Some(TokenKind::Assign)) = (self.peek_kind(), self.peek_kind_at(1)) {
                 self.advance(); // ident
                 self.advance(); // '='
+                names.push(Some(name));
+            } else {
+                names.push(None);
             }
             args.push(self.parse_expr()?);
             if !self.eat(&TokenKind::Comma) {
@@ -463,6 +471,20 @@ impl Parser {
             }
         }
         self.expect(&TokenKind::RParen)?;
+        Some((args, names))
+    }
+
+    /// `parse_call_args` for contexts whose arguments have no named fields
+    /// to match (`GenRef<T>(v)`, `Fixed<B,F>(v)`, `Ring<T,N>()`): rejects
+    /// any `name = expr` argument outright instead of silently dropping the
+    /// name.
+    fn parse_positional_call_args(&mut self, what: &str) -> Option<Vec<Expr>> {
+        let start = self.peek_span();
+        let (args, names) = self.parse_call_args()?;
+        if names.iter().any(|n| n.is_some()) {
+            let span = start.to(self.prev_span());
+            self.error(format!("`{}` does not take named arguments", what), span);
+        }
         Some(args)
     }
 
@@ -636,9 +658,9 @@ impl Parser {
                         self.error("`Fixed` requires explicit type arguments: `Fixed<Bits, Frac>(value)`", span);
                         return None;
                     }
-                    let args = self.parse_call_args()?;
+                    let (args, arg_names) = self.parse_call_args()?;
                     let full = span.to(self.prev_span());
-                    return Some(Expr::StructLit { name, type_args, args, span: full });
+                    return Some(Expr::StructLit { name, type_args, args, arg_names, span: full });
                 }
                 // A path into an imported module's namespace: either
                 // `module::Enum::Variant[(args)]` or `module::item[(args)]`
@@ -678,23 +700,23 @@ impl Parser {
                             return None;
                         }
                         let variant = self.expect_ident()?;
-                        let args = if self.at(&TokenKind::LParen) {
+                        let (args, arg_names) = if self.at(&TokenKind::LParen) {
                             self.parse_call_args()?
                         } else {
-                            Vec::new()
+                            (Vec::new(), Vec::new())
                         };
                         let full = span.to(self.prev_span());
                         let enum_name = crate::modules::mangle_name(&name, &first);
-                        return Some(Expr::EnumVariant { enum_name, type_args: Vec::new(), variant, args, span: full });
+                        return Some(Expr::EnumVariant { enum_name, type_args: Vec::new(), variant, args, arg_names, span: full });
                     }
                     let mangled = crate::modules::mangle_name(&name, &first);
                     if self.at(&TokenKind::LParen) {
-                        let args = self.parse_call_args()?;
+                        let (args, arg_names) = self.parse_call_args()?;
                         let full = span.to(self.prev_span());
                         if starts_uppercase(&first) {
-                            return Some(Expr::StructLit { name: mangled, type_args: Vec::new(), args, span: full });
+                            return Some(Expr::StructLit { name: mangled, type_args: Vec::new(), args, arg_names, span: full });
                         }
-                        return Some(Expr::Call { callee: Box::new(Expr::Ident(mangled, span)), args, span: full });
+                        return Some(Expr::Call { callee: Box::new(Expr::Ident(mangled, span)), args, arg_names, span: full });
                     }
                     let full = span.to(self.prev_span());
                     return Some(Expr::Ident(mangled, full));
@@ -703,13 +725,13 @@ impl Parser {
                 // payload variant, `EnumName::Variant(args...)`.
                 if self.eat(&TokenKind::ColonColon) {
                     let variant = self.expect_ident()?;
-                    let args = if self.at(&TokenKind::LParen) {
+                    let (args, arg_names) = if self.at(&TokenKind::LParen) {
                         self.parse_call_args()?
                     } else {
-                        Vec::new()
+                        (Vec::new(), Vec::new())
                     };
                     let full = span.to(self.prev_span());
-                    return Some(Expr::EnumVariant { enum_name: name, type_args, variant, args, span: full });
+                    return Some(Expr::EnumVariant { enum_name: name, type_args, variant, args, arg_names, span: full });
                 }
                 // Unreachable with an empty `type_args`: `try_parse_type_args`
                 // only returns a non-empty `Vec` when it already confirmed
@@ -728,15 +750,39 @@ impl Parser {
 
     /// Parse `if <cond>:` followed by a block and an optional `else:` block,
     /// producing an expression form of `if` (used as a value, e.g. in `let`).
+    ///
+    /// Each arm's body is either a full indented block or (mirroring
+    /// `parse_lambda`'s body grammar -- an `if`-expression is likewise an
+    /// *expression*, e.g. `let v = if x > 0: "pos" else: "neg"` from the
+    /// language reference) a single inline trailing expression on the same
+    /// line, which does not consume a line end itself.
     fn parse_if_expr(&mut self) -> Option<Expr> {
         let start = self.peek_span();
         self.expect(&TokenKind::If)?;
         let cond = Box::new(self.parse_expr()?);
         self.expect(&TokenKind::Colon)?;
-        let then_block = self.parse_block()?;
-        let else_block = self.parse_opt_else();
+        let then_block = self.parse_if_expr_arm()?;
+        let else_block = if self.eat(&TokenKind::Else) {
+            self.expect(&TokenKind::Colon)?;
+            Some(self.parse_if_expr_arm()?)
+        } else {
+            None
+        };
         let span = start.to(self.prev_span());
         Some(Expr::If { cond, then_block, else_block, span })
+    }
+
+    /// One arm of an `if`-expression: an indented block when the `:` is
+    /// followed by a line end, otherwise a single inline expression wrapped
+    /// in a one-statement `Block` (the same shape `parse_lambda` uses for
+    /// its own inline body).
+    fn parse_if_expr_arm(&mut self) -> Option<Block> {
+        if self.at(&TokenKind::Newline) {
+            return self.parse_block();
+        }
+        let expr = self.parse_expr()?;
+        let span = expr.span();
+        Some(Block { stmts: vec![Stmt::Expr(expr)], span })
     }
 
     /// Parse a lambda/closure literal: `fn(params) [-> RetType]: <body>`.
@@ -823,7 +869,18 @@ impl Parser {
                     // f-string hole with its own nested `match`, repeated
                     // enough times, could reach the real stack limit before
                     // `MAX_MATCH_DEPTH` ever tripped.
-                    sub.expr_depth = self.expr_depth;
+                    // ... and charge each hole *more* than a plain
+                    // paren/unary level: one f-string nesting level costs
+                    // far more real Rust stack than the six-odd frames
+                    // `MAX_EXPR_DEPTH`'s calibration assumes (the whole
+                    // `parse_primary` -> `lower_fstring` -> re-lex ->
+                    // fresh-sub-parser chain, with its String/Vec locals),
+                    // so charging it a single unit let ~80 nested holes
+                    // overflow a 2MiB thread stack in debug builds before
+                    // the guard ever tripped -- the same "guard calibrated
+                    // for a lighter call chain" bug `match_depth`'s own
+                    // lower bound exists to prevent.
+                    sub.expr_depth = self.expr_depth.saturating_add(4);
                     sub.block_depth = self.block_depth;
                     sub.match_depth = self.match_depth;
                     let parsed = sub.parse_expr();

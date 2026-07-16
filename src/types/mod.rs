@@ -2398,9 +2398,10 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
             Stmt::Par { var: var.clone(), arena: arena.clone(), body: subst_block(body, subst), span: *span }
         }
         Stmt::Yield { span } => Stmt::Yield { span: *span },
-        Stmt::Spawn { arena, args, span } => Stmt::Spawn {
+        Stmt::Spawn { arena, args, arg_names, span } => Stmt::Spawn {
             arena: arena.clone(),
             args: args.iter().map(|a| subst_expr(a, subst)).collect(),
+            arg_names: arg_names.clone(),
             span: *span,
         },
         Stmt::Despawn { arena, index, span } => {
@@ -2420,9 +2421,10 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             *span,
         ),
         Expr::Field { base, field, span } => Expr::Field { base: Box::new(subst_expr(base, subst)), field: field.clone(), span: *span },
-        Expr::Call { callee, args, span } => Expr::Call {
+        Expr::Call { callee, args, arg_names, span } => Expr::Call {
             callee: Box::new(subst_expr(callee, subst)),
             args: args.iter().map(|a| subst_expr(a, subst)).collect(),
+            arg_names: arg_names.clone(),
             span: *span,
         },
         Expr::Binary { op, lhs, rhs, span } => Expr::Binary {
@@ -2437,10 +2439,11 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             arms: arms.iter().map(|a| MatchArm { pattern: a.pattern.clone(), body: subst_block(&a.body, subst), span: a.span }).collect(),
             span: *span,
         },
-        Expr::StructLit { name, type_args, args, span } => Expr::StructLit {
+        Expr::StructLit { name, type_args, args, arg_names, span } => Expr::StructLit {
             name: name.clone(),
             type_args: type_args.iter().map(|t| subst_type(t, subst)).collect(),
             args: args.iter().map(|a| subst_expr(a, subst)).collect(),
+            arg_names: arg_names.clone(),
             span: *span,
         },
         Expr::If { cond, then_block, else_block, span } => Expr::If {
@@ -2458,11 +2461,12 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
         Expr::GenRefIndex { base, index, span } => {
             Expr::GenRefIndex { base: Box::new(subst_expr(base, subst)), index: Box::new(subst_expr(index, subst)), span: *span }
         }
-        Expr::EnumVariant { enum_name, type_args, variant, args, span } => Expr::EnumVariant {
+        Expr::EnumVariant { enum_name, type_args, variant, args, arg_names, span } => Expr::EnumVariant {
             enum_name: enum_name.clone(),
             type_args: type_args.iter().map(|t| subst_type(t, subst)).collect(),
             variant: variant.clone(),
             args: args.iter().map(|a| subst_expr(a, subst)).collect(),
+            arg_names: arg_names.clone(),
             span: *span,
         },
         Expr::Lambda { params, ret, body, span } => Expr::Lambda {

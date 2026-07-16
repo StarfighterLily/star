@@ -437,7 +437,18 @@ impl<'src> Lexer<'src> {
             self.pos += 1;
         }
         let mut is_float = false;
-        if self.pos < self.bytes.len()
+        // A number that immediately follows a member-access `.` is a tuple
+        // index, never a float: without this, the chained tuple index
+        // `t.0.1` lexed as `t` `.` `0.1` (a float literal), which no parser
+        // rule can recover into the two integer indexes it actually means.
+        // Star has no leading-dot `.5` float spelling, so no legitimate
+        // float literal can ever begin right after a `Dot` token -- and a
+        // fresh index scanned here that is itself followed by `.digit`
+        // (the `0` in `t.0.1`) stops before the `.`, leaving it to be lexed
+        // as the next access's own `Dot`.
+        let follows_member_dot = matches!(self.tokens.last().map(|t| &t.kind), Some(TokenKind::Dot));
+        if !follows_member_dot
+            && self.pos < self.bytes.len()
             && self.bytes[self.pos] == b'.'
             && self.peek(1).map(|b| b.is_ascii_digit()).unwrap_or(false)
         {

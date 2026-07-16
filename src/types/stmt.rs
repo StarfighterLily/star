@@ -263,7 +263,7 @@ impl Checker {
                 self.error("`yield` is only valid at the top level of a `sequence` body", *span);
                 TypedStmt::Expr(TypedExpr::Error(Ty::Named("void".into())))
             }
-            Stmt::Spawn { arena, args, span } => self.check_spawn_stmt(arena, args, vars, *span),
+            Stmt::Spawn { arena, args, arg_names, span } => self.check_spawn_stmt(arena, args, arg_names, vars, *span),
             Stmt::Despawn { arena, index, span } => self.check_despawn_stmt(arena, index, vars, *span),
         })
     }
@@ -273,7 +273,7 @@ impl Checker {
     /// can hold), validates the argument count against the struct's field
     /// list, and packages the constructed element as a `StructLit` so
     /// codegen only has to append it to the arena's backing array.
-    fn check_spawn_stmt(&mut self, arena: &str, args: &[Expr], vars: &mut HashMap<String, Ty>, span: Span) -> TypedStmt {
+    fn check_spawn_stmt(&mut self, arena: &str, args: &[Expr], arg_names: &[Option<String>], vars: &mut HashMap<String, Ty>, span: Span) -> TypedStmt {
         let elem_ty = match self.arenas.get(arena) {
             Some(t) => t.clone(),
             None => {
@@ -288,6 +288,33 @@ impl Checker {
                 "unknown".into()
             }
         };
+        // `spawn` constructs the arena's element struct, so the same named-
+        // argument matching and default-filling as an ordinary struct
+        // literal applies -- see `resolve_ctor_arg_exprs`.
+        let resolved_args: Vec<Expr> = match self.ctor_field_list(&elem_name) {
+            Some((field_names, defaults)) => {
+                match self.resolve_ctor_arg_exprs(&format!("`spawn {}(..)`", arena), &field_names, &defaults, args, arg_names, span) {
+                    Ok(v) => v,
+                    Err(true) => {
+                        // Already reported; don't let the arity check below
+                        // pile a second diagnostic onto the same spawn.
+                        let elem = TypedExpr::StructLit { name: elem_name, args: Vec::new(), ty: elem_ty, span };
+                        return TypedStmt::Spawn { arena: arena.to_string(), elem, span };
+                    }
+                    Err(false) => args.to_vec(),
+                }
+            }
+            None => {
+                if arg_names.iter().any(|n| n.is_some()) {
+                    self.error(
+                        format!("named arguments are not supported for `spawn {}(..)` -- `{}` has no user-declared fields", arena, elem_name),
+                        span,
+                    );
+                }
+                args.to_vec()
+            }
+        };
+        let args = &resolved_args;
         let arg_exprs: Vec<TypedExpr> = args
             .iter()
             .map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into()))))

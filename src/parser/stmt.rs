@@ -125,10 +125,10 @@ impl Parser {
         let start = self.peek_span();
         self.expect(&TokenKind::Spawn)?;
         let arena = self.expect_ident()?;
-        let args = self.parse_call_args()?;
+        let (args, arg_names) = self.parse_call_args()?;
         self.expect_line_end()?;
         let span = start.to(self.prev_span());
-        Some(Stmt::Spawn { arena, args, span })
+        Some(Stmt::Spawn { arena, args, arg_names, span })
     }
 
     /// Parse `despawn ArenaName[index]`: bumps the generation counter of the

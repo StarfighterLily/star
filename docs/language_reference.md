@@ -215,6 +215,21 @@ let p = Player(health = 100, position = Vec3(0, 0, 0), name = "Hero")
 let v = Vec3(1.0, 2.0, 3.0)
 ```
 
+Arguments may be positional (filling fields in declaration order), named
+(`field = value`, in any order), or a positional prefix followed by named
+arguments — a positional argument after a named one is an error, as are
+unknown and duplicate field names. Any field omitted entirely falls back to
+its declared default; omitting a field with no default is a compile error:
+
+```star
+let d = Player(name = "NPC")          # health/position from their defaults
+let q = Player(50, name = "Grunt")    # positional prefix fills health
+```
+
+The same rules apply to enum-variant payload fields and to `spawn Arena(...)`
+(which constructs the arena's element struct). Ordinary function and method
+calls do not accept named arguments — their parameters match positionally.
+
 ### Field Access
 
 ```star
@@ -663,6 +678,8 @@ let name = read_line()  # Read one line from stdin (trailing newline
 len("hello")                    # String length
 len(my_string)                   # Also works on variables
 concat("hello", ", world")       # String concatenation
+"abc" == other                   # Structural equality (and !=);
+                                 # ordering (<, >, ...) is not defined for str
 ```
 
 ### Math Operations

@@ -135,7 +135,18 @@ impl Checker {
                 let field_ty = self.resolve_field_type(&base_expr, field, *span);
                 Ok(TypedExpr::Field { base: Box::new(base_expr), field: field.clone(), ty: field_ty, span: *span })
             }
-            Expr::Call { callee, args, span } => {
+            Expr::Call { callee, args, arg_names, span } => {
+                // Ordinary call arguments are matched to parameters purely
+                // positionally -- there is no named-parameter machinery for
+                // functions/methods, so silently accepting (and previously
+                // dropping) `name = expr` here would let `f(b = 1, a = 2)`
+                // reorder nothing while looking like it did.
+                if arg_names.iter().any(|n| n.is_some()) {
+                    self.error(
+                        "named arguments are only supported when constructing a struct or enum variant -- call arguments are matched positionally",
+                        *span,
+                    );
+                }
                 // A call to a generic free function: its type arguments
                 // aren't written at the call site (no turbofish call
                 // syntax), they're inferred by unifying each declared
@@ -405,7 +416,30 @@ impl Checker {
                     .unwrap_or(Ty::Named("unknown".into()));
                 Ok(TypedExpr::Match { scrutinee: Box::new(scrutinee_expr), arms: arm_tys, ty, span: *span })
             }
-            Expr::StructLit { name, type_args, args, span } => {
+            Expr::StructLit { name, type_args, args, arg_names, span } => {
+                // Resolve named arguments and fill omitted-field defaults
+                // *before* inference, so every downstream path (builtin
+                // dispatch, generic unification, arity/field-type checks,
+                // codegen) sees the complete positional list it expects.
+                let resolved_args: Vec<Expr> = match self.ctor_field_list(name) {
+                    Some((field_names, defaults)) => {
+                        match self.resolve_ctor_arg_exprs(&format!("`{}(..)`", name), &field_names, &defaults, args, arg_names, *span) {
+                            Ok(v) => v,
+                            Err(true) => return Ok(TypedExpr::Error(Ty::Named("infer_error".into()))),
+                            Err(false) => args.clone(),
+                        }
+                    }
+                    None => {
+                        if arg_names.iter().any(|n| n.is_some()) {
+                            self.error(
+                                format!("named arguments are not supported for `{}(..)` -- it has no user-declared fields", name),
+                                *span,
+                            );
+                        }
+                        args.clone()
+                    }
+                };
+                let args = &resolved_args;
                 let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
                 if name == "List" {
                     return Ok(self.infer_list_new(type_args, &arg_exprs, *span));
@@ -525,7 +559,34 @@ impl Checker {
                 }
                 Ok(TypedExpr::FixedNew { bits: *bits, frac: *frac, value: Box::new(value_typed), span: *span })
             }
-            Expr::EnumVariant { enum_name, type_args, variant, args, span } => {
+            Expr::EnumVariant { enum_name, type_args, variant, args, arg_names, span } => {
+                // Same pre-inference named-argument resolution as the
+                // `StructLit` arm above -- a variant's payload fields are
+                // named/typed just like struct fields (no defaults, though).
+                let variant_fields: Option<Vec<String>> = self.enums.get(enum_name)
+                    .or_else(|| self.generic_enums.get(enum_name))
+                    .and_then(|e| e.variants.iter().find(|v| &v.name == variant))
+                    .map(|v| v.fields.iter().map(|f| f.name.clone()).collect());
+                let resolved_args: Vec<Expr> = match variant_fields {
+                    Some(field_names) => {
+                        let defaults = vec![None; field_names.len()];
+                        match self.resolve_ctor_arg_exprs(&format!("`{}::{}(..)`", enum_name, variant), &field_names, &defaults, args, arg_names, *span) {
+                            Ok(v) => v,
+                            Err(true) => return Ok(TypedExpr::Error(Ty::Named("infer_error".into()))),
+                            Err(false) => args.clone(),
+                        }
+                    }
+                    None => {
+                        if arg_names.iter().any(|n| n.is_some()) {
+                            self.error(
+                                format!("named arguments are not supported here -- `{}::{}` is not a known payload variant", enum_name, variant),
+                                *span,
+                            );
+                        }
+                        args.clone()
+                    }
+                };
+                let args = &resolved_args;
                 let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
                 if self.generic_enums.contains_key(enum_name) {
                     return Ok(self.infer_generic_enum_variant(enum_name, type_args, variant, arg_exprs, *span));
@@ -1479,6 +1540,127 @@ impl Checker {
         self.check_field_ctor_types(name, &sdef.fields, arg_exprs, span);
     }
 
+    /// Resolve a construction's (possibly named) argument list against its
+    /// declared field list, at the AST level and *before* any inference:
+    /// positional arguments fill fields in declaration order, named
+    /// arguments (`field = expr`) fill their named field in any order, and
+    /// any field left unfilled falls back to its declared default
+    /// initializer -- producing the full positional expression list every
+    /// downstream check and codegen path already expects. Previously the
+    /// parser dropped argument names outright and everything matched
+    /// positionally, so `Pair(b = 1, a = 2)` silently compiled to
+    /// `a = 1, b = 2`, and a field default could never actually be omitted
+    /// at a construction site.
+    ///
+    /// Errors this reports (returning `Err(true)`): an unknown or duplicate
+    /// field name, a positional argument after a named one, too many
+    /// positional arguments mixed with named ones, and an unfilled field
+    /// with no default. A *purely positional* argument list whose count
+    /// mismatches (and that defaults can't complete) returns `Err(false)`
+    /// without reporting, leaving the caller's existing arity diagnostics
+    /// to fire exactly as before.
+    pub(super) fn resolve_ctor_arg_exprs(
+        &mut self,
+        desc: &str,
+        field_names: &[String],
+        defaults: &[Option<Expr>],
+        args: &[Expr],
+        arg_names: &[Option<String>],
+        span: Span,
+    ) -> Result<Vec<Expr>, bool> {
+        let has_names = arg_names.iter().any(|n| n.is_some());
+        if !has_names {
+            if args.len() == field_names.len() {
+                return Ok(args.to_vec());
+            }
+            // An undersupplied positional prefix is only completable when
+            // every remaining field has a declared default.
+            if args.len() < field_names.len() && defaults[args.len()..].iter().all(|d| d.is_some()) {
+                let mut out = args.to_vec();
+                out.extend(defaults[args.len()..].iter().map(|d| d.clone().unwrap()));
+                return Ok(out);
+            }
+            return Err(false);
+        }
+        let mut slots: Vec<Option<Expr>> = vec![None; field_names.len()];
+        let mut reported = false;
+        let mut seen_named = false;
+        let mut pos = 0usize;
+        for (arg, name) in args.iter().zip(arg_names.iter()) {
+            match name {
+                None => {
+                    if seen_named {
+                        self.error(format!("positional argument after a named argument in {}", desc), span);
+                        reported = true;
+                        continue;
+                    }
+                    if pos >= slots.len() {
+                        self.error(format!("{} expects {} argument(s), found {}", desc, field_names.len(), args.len()), span);
+                        reported = true;
+                        break;
+                    }
+                    slots[pos] = Some(arg.clone());
+                    pos += 1;
+                }
+                Some(n) => {
+                    seen_named = true;
+                    match field_names.iter().position(|f| f == n) {
+                        None => {
+                            self.error(format!("{} has no field `{}`", desc, n), span);
+                            reported = true;
+                        }
+                        Some(idx) if slots[idx].is_some() => {
+                            self.error(format!("field `{}` is given more than once in {}", n, desc), span);
+                            reported = true;
+                        }
+                        Some(idx) => slots[idx] = Some(arg.clone()),
+                    }
+                }
+            }
+        }
+        let mut out = Vec::with_capacity(slots.len());
+        for (i, slot) in slots.into_iter().enumerate() {
+            match slot.or_else(|| defaults.get(i).cloned().flatten()) {
+                Some(e) => out.push(e),
+                None => {
+                    self.error(
+                        format!("{} is missing a value for field `{}`, which has no default", desc, field_names[i]),
+                        span,
+                    );
+                    reported = true;
+                }
+            }
+        }
+        if reported { Err(true) } else { Ok(out) }
+    }
+
+    /// The `(field names, field defaults)` a `StructLit` naming `name`
+    /// should resolve named arguments against: a plain struct's declared
+    /// fields, a generic struct template's declared fields, or -- for a
+    /// desugared `sequence`'s state struct -- only its leading declared
+    /// parameters (the hoisted-local/`state` fields behind them are
+    /// internal, and a sequence constructor takes no named/default
+    /// arguments for them). `None` when `name` isn't a user-declared
+    /// struct at all (builtin `Vec3`/`List`/... constructions have no
+    /// named fields to match).
+    pub(super) fn ctor_field_list(&self, name: &str) -> Option<(Vec<String>, Vec<Option<Expr>>)> {
+        if let Some(sdef) = self.structs.get(name) {
+            let n = self.sequence_param_counts.get(name).copied().unwrap_or(sdef.fields.len()).min(sdef.fields.len());
+            let is_sequence = self.sequence_param_counts.contains_key(name);
+            return Some((
+                sdef.fields[..n].iter().map(|f| f.name.clone()).collect(),
+                sdef.fields[..n].iter().map(|f| if is_sequence { None } else { f.default.clone() }).collect(),
+            ));
+        }
+        if let Some(template) = self.generic_structs.get(name) {
+            return Some((
+                template.fields.iter().map(|f| f.name.clone()).collect(),
+                template.fields.iter().map(|f| f.default.clone()).collect(),
+            ));
+        }
+        None
+    }
+
     /// Per-argument declared-vs-actual field type check, factored out of
     /// `check_struct_ctor_args` so `infer_generic_struct_lit` can reuse it
     /// against a monomorphized generic struct's *concrete* field list --
@@ -1877,6 +2059,17 @@ impl Checker {
                 if *lhs_ty == Ty::Ptr && *rhs_ty == Ty::Ptr {
                     if !matches!(op, BinOp::Eq | BinOp::Ne) {
                         self.error("only `==`/`!=` are supported on `ptr` values", span);
+                    }
+                    return Ty::Bool;
+                }
+                // `str == str` / `str != str`: structural byte equality,
+                // lowered to the same `strcmp` comparison `Map<str, V>` key
+                // lookup already uses (see `Codegen::emit_binop`'s `Str`
+                // arm). Ordering comparisons stay unsupported -- there's no
+                // collation story to promise anything sensible about.
+                if *lhs_ty == Ty::Str && *rhs_ty == Ty::Str {
+                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
+                        self.error("only `==`/`!=` are supported between `str` values", span);
                     }
                     return Ty::Bool;
                 }

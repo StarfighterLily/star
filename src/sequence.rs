@@ -510,9 +510,10 @@ fn rewrite_stmt(stmt: &Stmt, hoist: &HashSet<String>) -> Stmt {
             Stmt::Par { var: var.clone(), arena: arena.clone(), body: rewrite_block(body, hoist), span: *span }
         }
         Stmt::Yield { span } => Stmt::Yield { span: *span },
-        Stmt::Spawn { arena, args, span } => Stmt::Spawn {
+        Stmt::Spawn { arena, args, arg_names, span } => Stmt::Spawn {
             arena: arena.clone(),
             args: args.iter().map(|a| rewrite_expr(a, hoist)).collect(),
+            arg_names: arg_names.clone(),
             span: *span,
         },
         Stmt::Despawn { arena, index, span } => {
@@ -576,9 +577,10 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
         Expr::Field { base, field, span } => {
             Expr::Field { base: Box::new(rewrite_expr(base, hoist)), field: field.clone(), span: *span }
         }
-        Expr::Call { callee, args, span } => Expr::Call {
+        Expr::Call { callee, args, arg_names, span } => Expr::Call {
             callee: Box::new(rewrite_expr(callee, hoist)),
             args: args.iter().map(|a| rewrite_expr(a, hoist)).collect(),
+            arg_names: arg_names.clone(),
             span: *span,
         },
         Expr::Binary { op, lhs, rhs, span } => {
@@ -602,10 +604,11 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
                 .collect(),
             span: *span,
         },
-        Expr::StructLit { name, type_args, args, span } => Expr::StructLit {
+        Expr::StructLit { name, type_args, args, arg_names, span } => Expr::StructLit {
             name: name.clone(),
             type_args: type_args.clone(),
             args: args.iter().map(|a| rewrite_expr(a, hoist)).collect(),
+            arg_names: arg_names.clone(),
             span: *span,
         },
         Expr::If { cond, then_block, else_block, span } => Expr::If {
@@ -623,11 +626,12 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
         Expr::GenRefIndex { base, index, span } => {
             Expr::GenRefIndex { base: Box::new(rewrite_expr(base, hoist)), index: Box::new(rewrite_expr(index, hoist)), span: *span }
         }
-        Expr::EnumVariant { enum_name, type_args, variant, args, span } => Expr::EnumVariant {
+        Expr::EnumVariant { enum_name, type_args, variant, args, arg_names, span } => Expr::EnumVariant {
             enum_name: enum_name.clone(),
             type_args: type_args.clone(),
             variant: variant.clone(),
             args: args.iter().map(|a| rewrite_expr(a, hoist)).collect(),
+            arg_names: arg_names.clone(),
             span: *span,
         },
         // A lambda's own parameters aren't hoisted locals, and each one
