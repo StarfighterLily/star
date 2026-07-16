@@ -762,12 +762,22 @@ impl Checker {
                     (&inner_ty, &target),
                     (Ty::Fixed(..), Ty::Float | Ty::F64) | (Ty::Float | Ty::F64, Ty::Fixed(..))
                 );
+                // `Tick`/`Duration`/`Instant` <-> `i64`: a free bit-preserving
+                // relabel, same reasoning as `Wrapping<T> <-> T` above -- see
+                // `Ty::Tick`'s doc comment. Only `i64` itself (not any other
+                // width) is a legal pairing, since that's the one width these
+                // three actually lower to.
+                let time_ok = matches!(
+                    (&inner_ty, &target),
+                    (Ty::Tick | Ty::Duration | Ty::Instant, Ty::I64) | (Ty::I64, Ty::Tick | Ty::Duration | Ty::Instant)
+                );
                 let ok = (inner_ty.is_numeric() && target.is_numeric())
                     || (inner_ty.is_numeric() && target == Ty::Char)
                     || (inner_ty == Ty::Char && target.is_numeric())
                     || (inner_ty == Ty::Char && target == Ty::Char)
                     || wrapping_ok
-                    || fixed_ok;
+                    || fixed_ok
+                    || time_ok;
                 if !ok && !Self::is_placeholder_ty(&inner_ty) && !Self::is_placeholder_ty(&target) {
                     self.error(
                         format!(
@@ -1401,6 +1411,15 @@ impl Checker {
                     self.error(format!("{}(..) expects 4 Vec4 row arguments", name), span);
                 }
             }
+            // `docs/design.md`'s "Time" section: `Tick`/`Duration`/`Instant`
+            // each construct from a single int-shaped value (any width),
+            // widened/narrowed to the underlying `i64` at codegen time --
+            // see `Ty::Tick`'s doc comment and `Codegen::emit_time_new`.
+            Ty::Tick | Ty::Duration | Ty::Instant => {
+                if args.len() != 1 || !args.iter().all(|a| a.clone().into_ty().int_shape().is_some()) {
+                    self.error(format!("{}(..) expects 1 integer argument", name), span);
+                }
+            }
             _ => {}
         }
     }
@@ -1741,6 +1760,16 @@ impl Checker {
             return Ty::Bool;
         }
         let is_cmp = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge);
+        // `Tick`/`Duration`/`Instant` get their own dedicated dispatch too --
+        // unlike `Wrapping`/`Fixed` just below, their legal operator set is
+        // *asymmetric* (e.g. `Instant - Instant -> Duration` but
+        // `Instant + Duration -> Instant`), so it's factored into its own
+        // function rather than squeezed into this uniform "operands must
+        // match exactly" shape. See `Ty::Tick`'s doc comment for the full
+        // legal-pairing table.
+        if matches!(lhs_ty, Ty::Tick | Ty::Duration | Ty::Instant) || matches!(rhs_ty, Ty::Tick | Ty::Duration | Ty::Instant) {
+            return self.infer_time_binop_ty(op, lhs_ty, rhs_ty, span);
+        }
         // `Wrapping<T>`/`Fixed<Bits,Frac>` get their own dedicated branch,
         // the same way `Vec2`/`Vec3`/`Vec4`/`Mat4` do just below -- neither
         // is folded into `Ty::is_numeric()` (see their own doc comments), so
@@ -1930,6 +1959,50 @@ impl Checker {
             }
             _ => unreachable!("Rem and comparisons handled above"),
         }
+    }
+
+    /// Dedicated binop dispatch for `Tick`/`Duration`/`Instant`
+    /// (`docs/design.md`'s "Time" section), mirroring Rust's own
+    /// `std::time::{Instant,Duration}` operator set:
+    /// - `Tick + i64 -> Tick` / `Tick - i64 -> Tick` (advance/rewind by a
+    ///   step count), `Tick - Tick -> i64` (a tick delta)
+    /// - `Duration + Duration -> Duration` / `Duration - Duration ->
+    ///   Duration`
+    /// - `Instant - Instant -> Duration` (elapsed time), `Instant +
+    ///   Duration -> Instant` / `Instant - Duration -> Instant`
+    /// - `==`/`!=`/`<`/`>`/`<=`/`>=` between two values of the *same* one of
+    ///   these three types
+    ///
+    /// Every other pairing (including mixing `Tick`/`Duration`/`Instant`
+    /// with each other outside the table above, or with a bare `i32`) is a
+    /// hard error -- there is no implicit anything here, same "no implicit
+    /// widening" philosophy every other explicit-width type in
+    /// `docs/design.md`'s "Numeric widths and modes" already follows.
+    fn infer_time_binop_ty(&mut self, op: &BinOp, lhs_ty: &Ty, rhs_ty: &Ty, span: Span) -> Ty {
+        let is_cmp = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge);
+        match (lhs_ty, op, rhs_ty) {
+            (Ty::Tick, BinOp::Add | BinOp::Sub, Ty::I64) => return Ty::Tick,
+            (Ty::Tick, BinOp::Sub, Ty::Tick) => return Ty::I64,
+            (Ty::Duration, BinOp::Add | BinOp::Sub, Ty::Duration) => return Ty::Duration,
+            (Ty::Instant, BinOp::Sub, Ty::Instant) => return Ty::Duration,
+            (Ty::Instant, BinOp::Add | BinOp::Sub, Ty::Duration) => return Ty::Instant,
+            _ => {}
+        }
+        if is_cmp && lhs_ty == rhs_ty && matches!(lhs_ty, Ty::Tick | Ty::Duration | Ty::Instant) {
+            return Ty::Bool;
+        }
+        let op_str = match op {
+            BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+            BinOp::Div => "/", BinOp::Rem => "%",
+            BinOp::Eq => "==", BinOp::Ne => "!=",
+            BinOp::Lt => "<", BinOp::Gt => ">", BinOp::Le => "<=", BinOp::Ge => ">=",
+            BinOp::And | BinOp::Or => unreachable!("handled by infer_binop_ty before this is ever called"),
+        };
+        self.error(
+            format!("`{}` is not supported between `{:?}` and `{:?}`", op_str, lhs_ty, rhs_ty),
+            span,
+        );
+        if is_cmp { Ty::Bool } else { lhs_ty.clone() }
     }
 
     /// The type of a bare identifier that isn't a local -- if it names a

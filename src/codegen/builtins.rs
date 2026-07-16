@@ -43,6 +43,9 @@ impl Codegen {
                             Ty::Int | Ty::I8 | Ty::I16 => { fmt_str.push_str("%d"); }
                             Ty::U8 | Ty::U16 | Ty::U32 => { fmt_str.push_str("%u"); }
                             Ty::I64 => { fmt_str.push_str("%lld"); }
+                            // All three lower to a bare signed `i64` -- see
+                            // `Ty::Tick`'s doc comment.
+                            Ty::Tick | Ty::Duration | Ty::Instant => { fmt_str.push_str("%lld"); }
                             Ty::U64 => { fmt_str.push_str("%llu"); }
                             Ty::Float | Ty::F64 => { fmt_str.push_str("%f"); }
                             Ty::Char => { fmt_str.push_str("%c"); }

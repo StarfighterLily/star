@@ -219,6 +219,43 @@ pub enum Ty {
     /// a true scaled conversion, not a bit-reinterpret); construction is the
     /// only int entry point.
     Fixed(u32, u32),
+    /// An integer simulation-step counter, matching `sequence`'s existing
+    /// tick model -- `docs/design.md`'s "Time" section. Lowers to a bare
+    /// `i64` -- zero overhead, like `Ty::I64` -- see `crate::codegen::time`.
+    /// Deliberately a distinct nominal type from `Ty::I64` itself (not just
+    /// an alias), same reasoning as `Ty::Handle` vs `Ty::GenRef`: a `Tick`
+    /// value can't be silently swapped for an arbitrary 64-bit integer (a
+    /// frame-time delta, an entity count, ...) at a call boundary. Supports
+    /// `Tick + i64 -> Tick`/`Tick - i64 -> Tick` (advance/rewind by a step
+    /// count), `Tick - Tick -> i64` (a tick delta), and comparisons against
+    /// another `Tick` -- see `Checker::infer_time_binop_ty`. Construction
+    /// (`Tick(value)`) accepts any `int_shape()`-having value, widened/
+    /// narrowed to `i64`. Like `Ty::Wrapping`/`Ty::Fixed`, deliberately
+    /// excluded from `is_numeric()`/`int_shape()` -- it gets its own
+    /// dedicated binop dispatch branch instead.
+    Tick,
+    /// A wall-clock time span, e.g. `i64` nanoseconds -- `docs/design.md`'s
+    /// "Time" section. Lowers to a bare `i64`, same reasoning as `Ty::Tick`.
+    /// Keeping this distinct from a bare `f32`/`i64` delta-time avoids the
+    /// drift and non-determinism bugs that break replay recording and
+    /// rollback netcode (mixing a raw tick count with a raw nanosecond count
+    /// at a call site is a real correctness hazard the type system can catch
+    /// for free). Supports `Duration + Duration -> Duration`/
+    /// `Duration - Duration -> Duration` and comparisons against another
+    /// `Duration`. Construction (`Duration(value)`) accepts any
+    /// `int_shape()`-having value, widened/narrowed to `i64` (the
+    /// nanosecond count). See `Ty::Tick`'s doc comment for why this isn't
+    /// folded into `is_numeric()`/`int_shape()`.
+    Duration,
+    /// A monotonic timestamp -- `docs/design.md`'s "Time" section. Lowers to
+    /// a bare `i64`, same reasoning as `Ty::Tick`/`Ty::Duration`. Supports
+    /// `Instant - Instant -> Duration` (elapsed time), `Instant + Duration
+    /// -> Instant`/`Instant - Duration -> Instant`, and comparisons against
+    /// another `Instant` -- mirrors Rust's own `std::time::Instant` operator
+    /// set. Construction (`Instant(value)`) accepts any `int_shape()`-having
+    /// value, widened/narrowed to `i64`. See `Ty::Tick`'s doc comment for why
+    /// this isn't folded into `is_numeric()`/`int_shape()`.
+    Instant,
 }
 
 impl Ty {
@@ -1505,6 +1542,11 @@ impl Checker {
                 "Vec4" => Some(Ty::Vec4),
                 "Mat4" => Some(Ty::Mat4),
                 "ptr" => Some(Ty::Ptr),
+                // `docs/design.md`'s "Time" section -- see `Ty::Tick`'s doc
+                // comment.
+                "Tick" => Some(Ty::Tick),
+                "Duration" => Some(Ty::Duration),
+                "Instant" => Some(Ty::Instant),
                 // Every other candidate has to be a declared struct by this
                 // point: builtins are handled above, and enums/generics are
                 // both already caught by the two guarded arms above this
@@ -2203,6 +2245,12 @@ fn mangle_ty(ty: &Ty) -> String {
         Ty::Ptr => "ptr".into(),
         Ty::Wrapping(inner) => format!("Wrapping_{}", mangle_ty(inner)),
         Ty::Fixed(bits, frac) => format!("Fixed{}_{}", bits, frac),
+        // Never used as a generic type argument today (no generic struct/
+        // enum in this codebase is parameterized over a time type); exists
+        // for match exhaustiveness, same reasoning as `Closure`/`Ptr` above.
+        Ty::Tick => "Tick".into(),
+        Ty::Duration => "Duration".into(),
+        Ty::Instant => "Instant".into(),
     }
 }
 
@@ -2258,6 +2306,9 @@ fn ty_to_type(ty: &Ty) -> Type {
         Ty::Ptr => Type::Named("ptr".into()),
         Ty::Wrapping(inner) => Type::Generic("Wrapping".into(), vec![ty_to_type(inner)]),
         Ty::Fixed(bits, frac) => Type::Fixed(*bits, *frac),
+        Ty::Tick => Type::Named("Tick".into()),
+        Ty::Duration => Type::Named("Duration".into()),
+        Ty::Instant => Type::Named("Instant".into()),
     }
 }
 

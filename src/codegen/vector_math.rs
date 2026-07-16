@@ -287,6 +287,12 @@ impl Codegen {
         if matches!(&src_ty, Ty::Wrapping(w) if **w == *target) || matches!(target, Ty::Wrapping(w) if **w == src_ty) {
             return format!("{} {}", target_llty, bare);
         }
+        // `Tick`/`Duration`/`Instant` <-> `i64`: same free bit-preserving
+        // relabel as `Wrapping<T> <-> T` just above -- see `Ty::Tick`'s doc
+        // comment.
+        if matches!((&src_ty, target), (Ty::Tick | Ty::Duration | Ty::Instant, Ty::I64) | (Ty::I64, Ty::Tick | Ty::Duration | Ty::Instant)) {
+            return format!("{} {}", target_llty, bare);
+        }
         // `Fixed<Bits,Frac> <-> float/f64`: a true scaled conversion, not a
         // bit reinterpret -- see `Ty::Fixed`'s doc comment.
         if let Ty::Fixed(bits, frac) = &src_ty {
@@ -555,6 +561,18 @@ impl Codegen {
     }
 
     pub(super) fn emit_binop(&mut self, lhs: &str, lty: &Ty, rhs: &str, rty: &Ty, op: BinOp) -> String {
+        // `Tick`/`Duration`/`Instant` all lower to a bare `i64` (see
+        // `Ty::Tick`'s doc comment) -- `Checker::infer_time_binop_ty` already
+        // restricted the reachable (type, op, type) combinations to a
+        // checked `i64` add/sub or a signed `i64` comparison, so both
+        // operands are untagged and handed to the one shared helper
+        // regardless of which of the three (or a bare `i64`, on the other
+        // side of a mixed pairing like `Tick - i64`) each side actually is.
+        if matches!(lty, Ty::Tick | Ty::Duration | Ty::Instant) || matches!(rty, Ty::Tick | Ty::Duration | Ty::Instant) {
+            let l = self.untag(lhs, lty);
+            let r = self.untag(rhs, rty);
+            return self.emit_time_binop(&l, &r, op);
+        }
         // `Wrapping<T>`/`Fixed<Bits,Frac>` get their own dedicated dispatch
         // branch, the same way `char`/`ptr`/vector/matrix types do below --
         // neither is folded into `is_numeric()` (see their own `Ty` doc

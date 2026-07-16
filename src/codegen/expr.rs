@@ -976,6 +976,7 @@ impl Codegen {
                         }
                         format!("{} {}", mat_t, acc)
                     }
+                    Ty::Tick | Ty::Duration | Ty::Instant => self.emit_time_new(&args[0]),
                     _ => {
                         let ptr = self.tmp_name();
                         self.line(&format!("  {} = alloca %{}", ptr, name));

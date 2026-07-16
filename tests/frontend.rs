@@ -8834,7 +8834,7 @@ fn runtime_list_of_structs_field_read_end_to_end() {
 /// the loop silently read the stale, unrelated outer field instead.
 #[test]
 fn runtime_sequence_for_loop_var_shadowing_hoisted_field_end_to_end() {
-    let src = "sequence Tick(mut i: i32, mut total: i32):\n    for i in 0..3:\n        total = total + i\n    yield\n\nfn main():\n    let mut t = Tick(100, 0)\n    t.resume()\n    println(f\"{t.total}\")\n";
+    let src = "sequence Counter(mut i: i32, mut total: i32):\n    for i in 0..3:\n        total = total + i\n    yield\n\nfn main():\n    let mut t = Counter(100, 0)\n    t.resume()\n    println(f\"{t.total}\")\n";
     let output = compile_and_run("sequence_for_var_shadowing", src);
     assert!(output.status.success(), "{:?}", output.status);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -8846,7 +8846,7 @@ fn runtime_sequence_for_loop_var_shadowing_hoisted_field_end_to_end() {
 /// win, not the outer `self.<name>`.
 #[test]
 fn runtime_sequence_match_binding_shadowing_hoisted_field_end_to_end() {
-    let src = "sequence Tick(mut n: i32, mut total: i32):\n    match n:\n        n ->\n            total = n + 1\n    yield\n\nfn main():\n    let mut t = Tick(41, 0)\n    t.resume()\n    println(f\"{t.total}\")\n";
+    let src = "sequence Counter(mut n: i32, mut total: i32):\n    match n:\n        n ->\n            total = n + 1\n    yield\n\nfn main():\n    let mut t = Counter(41, 0)\n    t.resume()\n    println(f\"{t.total}\")\n";
     let output = compile_and_run("sequence_match_binding_shadowing", src);
     assert!(output.status.success(), "{:?}", output.status);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -12340,6 +12340,130 @@ fn rejects_fixed_with_frac_not_less_than_bits() {
     let module = Driver::parse(src).expect("should parse");
     let diags = Driver::check(&module).expect_err("should fail to type-check");
     assert!(diags.iter().any(|d| d.message.contains("fractional-bit count must be less than its bit width")), "{:?}", diags);
+}
+
+// ===== `Tick` / `Duration` / `Instant` (docs/design.md §6, "Time") =========
+
+/// `Tick + i64 -> Tick` (advance by a step count) and `Tick - Tick -> i64`
+/// (a tick delta) -- see `examples/time_types.star`.
+#[test]
+fn runtime_tick_advance_and_delta_end_to_end() {
+    let src = "fn main():\n    let start: Tick = Tick(0)\n    let mut t = start\n    let mut i: i32 = 0\n    \
+               while i < 5:\n        t = t + (1 as i64)\n        i += 1\n    \
+               println(f\"{t}\")\n    let delta: i64 = t - start\n    println(f\"{delta}\")\n";
+    let output = compile_and_run("tick_advance_delta", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["5", "5"], "{}", stdout);
+}
+
+/// `Duration + Duration -> Duration`, `Duration - Duration -> Duration`, and
+/// comparisons between two `Duration`s.
+#[test]
+fn runtime_duration_add_sub_and_compare_end_to_end() {
+    let src = "fn main():\n    let budget: Duration = Duration(1000 as i64)\n    let total = budget + budget\n    \
+               println(f\"{total}\")\n    let remaining = total - budget\n    println(f\"{remaining}\")\n    \
+               println(f\"{budget < total} {budget == remaining}\")\n";
+    let output = compile_and_run("duration_add_sub_cmp", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["2000", "1000", "true true"], "{}", stdout);
+}
+
+/// `Instant - Instant -> Duration` (elapsed time) and `Instant +/- Duration
+/// -> Instant`, mirroring Rust's own `std::time::Instant` operator set.
+#[test]
+fn runtime_instant_diff_and_shift_end_to_end() {
+    let src = "fn main():\n    let t0: Instant = Instant(1000 as i64)\n    let t1: Instant = Instant(2500 as i64)\n    \
+               let gap: Duration = t1 - t0\n    println(f\"{gap}\")\n    \
+               let shifted = t0 + gap\n    println(f\"{shifted == t1}\")\n    \
+               let rewound = t1 - gap\n    println(f\"{rewound == t0}\")\n";
+    let output = compile_and_run("instant_diff_shift", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["1500", "true", "true"], "{}", stdout);
+}
+
+/// `Tick`/`Duration`/`Instant` <-> `i64` is a free bit-preserving relabel,
+/// same as `Wrapping<T> <-> T` -- see `runtime_wrapping_cast_round_trip_end_to_end`.
+#[test]
+fn runtime_time_cast_round_trip_end_to_end() {
+    let src = "fn main():\n    let a: Duration = Duration(4242 as i64)\n    let raw: i64 = a as i64\n    \
+               let back: Duration = raw as Duration\n    println(f\"{raw} {back == a}\")\n";
+    let output = compile_and_run("time_cast_roundtrip", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "4242 true");
+}
+
+/// `+`/`-` on `Tick`/`Duration`/`Instant` trap on `i64` overflow, exactly
+/// like a plain `i64` -- see `runtime_wrapping_...` for the general pattern
+/// this mirrors (minus the wrap).
+#[test]
+fn runtime_duration_add_overflow_traps_end_to_end() {
+    let src = "fn main():\n    println(\"before\")\n    let a: Duration = Duration(9223372036854775807 as i64)\n    let b: Duration = Duration(1 as i64)\n    \
+               let x = a + b\n    println(f\"unreachable {x}\")\n";
+    let output = compile_and_run("duration_add_overflow", src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("before"), "{}", stdout);
+    assert!(stdout.contains("integer overflow"), "should print a diagnostic: {}", stdout);
+    assert!(!stdout.contains("unreachable"), "the add must abort before its value is used: {}", stdout);
+    assert_eq!(output.status.code(), Some(1), "{:?}", output.status);
+}
+
+#[test]
+fn rejects_binop_between_tick_and_duration() {
+    let src = "fn main():\n    let a: Tick = Tick(0)\n    let b: Duration = Duration(0 as i64)\n    let c = a + b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("`+` is not supported between `Tick` and `Duration`")), "{:?}", diags);
+}
+
+/// `Tick + Tick` isn't a legal pairing (only `Tick + i64` is, per
+/// `Checker::infer_time_binop_ty`'s table) -- unlike `Duration + Duration`,
+/// summing two absolute tick counts has no sensible meaning.
+#[test]
+fn rejects_tick_plus_tick() {
+    let src = "fn main():\n    let a: Tick = Tick(0)\n    let b: Tick = Tick(1)\n    let c = a + b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("`+` is not supported between `Tick` and `Tick`")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_time_construction_with_wrong_arg_count() {
+    let src = "fn main():\n    let a = Tick(0, 1)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("Tick(..) expects 1 integer argument")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_time_construction_with_non_integer_arg() {
+    let src = "fn main():\n    let a = Duration(1.5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("Duration(..) expects 1 integer argument")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_multiply_on_duration_values() {
+    let src = "fn main():\n    let a: Duration = Duration(1 as i64)\n    let b: Duration = Duration(2 as i64)\n    let c = a * b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("`*` is not supported between `Duration` and `Duration`")), "{:?}", diags);
+}
+
+/// Reflection metadata spells these fields by their own names, not their
+/// bare `i64` backing representation -- see `Codegen::reflect_type_name`.
+#[test]
+fn reflect_metadata_names_time_types_distinctly_from_i64() {
+    let src = "struct Clock:\n    @export t: Tick\n    @export d: Duration\n    @export i: Instant\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("t:0:Tick:export"), "{}", ir);
+    assert!(ir.contains("d:8:Duration:export"), "{}", ir);
+    assert!(ir.contains("i:16:Instant:export"), "{}", ir);
 }
 
 // ===== Bug-hunting round: unary operator / f-string span audit ============

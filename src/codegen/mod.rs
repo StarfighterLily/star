@@ -30,6 +30,7 @@ mod ring;
 mod set;
 mod stmt;
 mod table;
+mod time;
 mod vector_math;
 mod wrapping;
 
@@ -589,6 +590,8 @@ impl Codegen {
             Ty::Wrapping(inner) => self.type_align(inner),
             // `i{bits}` -- same alignment table as the sized-int arms above.
             Ty::Fixed(bits, _) => bits / 8,
+            // Bare `i64` -- see `Ty::Tick`'s doc comment.
+            Ty::Tick | Ty::Duration | Ty::Instant => 8,
         }
     }
 
@@ -699,6 +702,8 @@ impl Codegen {
             // Same LLVM integer type as `T` -- see `Ty::Wrapping`'s doc comment.
             Ty::Wrapping(inner) => self.type_size(inner),
             Ty::Fixed(bits, _) => bits / 8,
+            // Bare `i64` -- see `Ty::Tick`'s doc comment.
+            Ty::Tick | Ty::Duration | Ty::Instant => 8,
         }
     }
 
@@ -784,6 +789,8 @@ impl Codegen {
             // `Ty::Wrapping`'s doc comment for why this is zero-overhead.
             Ty::Wrapping(inner) => self.llvm_ty(inner),
             Ty::Fixed(bits, _) => format!("i{}", bits),
+            // A bare `i64` -- see `Ty::Tick`'s doc comment.
+            Ty::Tick | Ty::Duration | Ty::Instant => "i64".into(),
         }
     }
 
@@ -856,6 +863,9 @@ impl Codegen {
             Ty::Ptr => "ptr".into(),
             Ty::Wrapping(inner) => format!("wrap_{}", self.mangle_ty(inner)),
             Ty::Fixed(bits, frac) => format!("fixed{}_{}", bits, frac),
+            Ty::Tick => "tick".into(),
+            Ty::Duration => "duration".into(),
+            Ty::Instant => "instant".into(),
         }
     }
 
@@ -919,6 +929,8 @@ impl Codegen {
             Ty::Float => "0.0".into(),
             Ty::I8 | Ty::U8 | Ty::I16 | Ty::U16 | Ty::U32 | Ty::I64 | Ty::U64 | Ty::Char => "0".into(),
             Ty::F64 => "0.0".into(),
+            // Bare `i64` zero -- see `Ty::Tick`'s doc comment.
+            Ty::Tick | Ty::Duration | Ty::Instant => "0".into(),
             Ty::Bool => "false".into(),
             Ty::Str => "null".into(),
             Ty::Ptr => "null".into(),

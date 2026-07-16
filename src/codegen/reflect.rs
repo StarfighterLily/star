@@ -75,6 +75,9 @@ impl Codegen {
             Ty::Ptr => "ptr".into(),
             Ty::Wrapping(inner) => format!("Wrapping<{}>", self.reflect_type_name(inner)),
             Ty::Fixed(bits, frac) => format!("Fixed<{}, {}>", bits, frac),
+            Ty::Tick => "Tick".into(),
+            Ty::Duration => "Duration".into(),
+            Ty::Instant => "Instant".into(),
         }
     }
 

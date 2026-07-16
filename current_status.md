@@ -15,11 +15,11 @@ directory.
 ## What the language actually has
 
 - **A real, growing compiler pipeline**: lexer → parser → AST → type checker → LLVM-IR
-  codegen → `clang` link. `src/` (excluding `tests/`) is now **~23,700 lines of Rust**:
-  lexer 861, parser 2,065, checker/types 6,908, codegen 11,303, plus `modules.rs`/
-  `sequence.rs`/`driver.rs`/`ast.rs`/`main.rs` ~2,560. `tests/frontend.rs` alone is 12,464
+  codegen → `clang` link. `src/` (excluding `tests/`) is now **~24,300 lines of Rust**:
+  lexer 878, parser 2,084, checker/types 7,092, codegen 11,552, plus `modules.rs`/
+  `sequence.rs`/`driver.rs`/`ast.rs`/`main.rs` ~2,500. `tests/frontend.rs` alone is 12,974
   lines. Verified live: `cargo check` is clean and `cargo test --release` passes
-  **798/798**.
+  **828/828**.
 - **A genuinely novel memory model** for its stated game-dev niche: `frame` bump allocators
   with compiler-enforced escape analysis, spatial `arena`s with generation-checked `GenRef`
   handles and an internal free-list, and reference-counted `str`/closures/`List`/`Map`/
@@ -33,10 +33,12 @@ directory.
   `List<T>`/`Map<K,V>`/`Set<T>` (linear-scan, not hash-table-backed yet), `(T, U, ...)`
   tuples and `[T; N]` fixed arrays (both inline, no RC header), `Ring<T,N>` (fixed-capacity
   ring buffer), `Table<T>` (struct-of-arrays), `GenRef<T>`/`Handle<T>` (shared generation-
-  check machinery), and `Option<T>`/`Result<T,E>` as true compiler-builtin generics with
-  `?`-propagation. This closes essentially all of `docs/design.md`'s "indie connective
-  tissue" tier; the AAA/retro tiers (quaternions, HDR color, `Bytes`/`Symbol`, time types,
-  bitfields) are explicitly still open per that same doc.
+  check machinery), `Tick`/`Duration`/`Instant` (nominal `i64`-backed time types with an
+  asymmetric, `std::time`-style operator set), and `Option<T>`/`Result<T,E>` as true
+  compiler-builtin generics with `?`-propagation. This closes essentially all of
+  `docs/design.md`'s "indie connective tissue" tier plus its time-types section (§6); the
+  remaining AAA/retro tiers (quaternions, HDR color, `Bytes`/`Symbol`, bitfields) are
+  explicitly still open per that same doc.
 - **`par`/`swarm` parallel ECS iteration** with a compiler-proved (conservatively — false
   rejections over false acceptances) disjointness check and a persistent thread pool
   (`src/codegen/par_pool.rs`), plus `sequence`/`yield` tick-based coroutines.
@@ -101,7 +103,7 @@ enough to bind a struct-heavy or callback-based C API (SDL, OpenGL) without furt
 the compiler implementing a renderer itself.
 
 **5. Programs written in the language are still small, but there's now one real data point.**
-`examples/` has grown from 39 files (~40-line max) to 51, and now includes
+`examples/` has grown from 39 files (~40-line max) to 52, and now includes
 `examples/brainfuck.star` (81 lines) — a genuine, non-trivial Brainfuck interpreter
 exercising `List<i32>` as a 30,000-cell tape under sustained mutation, real FFI (`putchar`),
 and string/byte indexing, explicitly built to satisfy `todo.md`'s "build one real, non-toy
