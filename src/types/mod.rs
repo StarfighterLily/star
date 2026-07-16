@@ -1512,6 +1512,24 @@ impl Checker {
                 Some(Ty::Closure(param_tys, Box::new(ret_ty)))
             }
             Type::Named(name) if self.enums.contains_key(name) => Some(Ty::Enum(name.clone())),
+            // A user struct takes priority over a same-named builtin scalar
+            // (`Vec2`, `Tick`, ...) below, mirroring the `enums` guard just
+            // above -- previously a `struct Tick: ...` (or `Vec2`/`Mat4`/...)
+            // type-checked with no error at all (the "declared more than
+            // once" duplicate-name check only ever covered the builtin
+            // *generic* enums `Option`/`Result`, seeded into
+            // `type_names_seen` up front), silently registered into
+            // `self.structs`, and then every reference to `Tick`/`Vec2`/...
+            // kept resolving to the builtin scalar anyway since the matches
+            // below fired first -- so the user's struct was permanently
+            // inert. That surfaced downstream as thoroughly confusing
+            // failures: `Tick(5)` construction passed `check_builtin_ctor_arity`
+            // (an int-shaped arg satisfies "expects 1 integer argument")
+            // instead of the user's actual field list, and a later `.x`
+            // field access on the resulting bare-`i64`-typed value crashed
+            // codegen with an unlocated "field access on non-struct type"
+            // instead of any diagnostic pointing at the real problem.
+            Type::Named(name) if self.structs.contains_key(name) => Some(Ty::Named(name.clone())),
             Type::Named(name) if self.generic_structs.contains_key(name) || self.generic_enums.contains_key(name) => {
                 self.error(format!("generic type `{}` used without type arguments", name), Span::dummy());
                 None
@@ -1547,18 +1565,16 @@ impl Checker {
                 "Tick" => Some(Ty::Tick),
                 "Duration" => Some(Ty::Duration),
                 "Instant" => Some(Ty::Instant),
-                // Every other candidate has to be a declared struct by this
-                // point: builtins are handled above, and enums/generics are
-                // both already caught by the two guarded arms above this
-                // one. Previously this fell through to a blind
-                // `Ty::Named(name.clone())` with no lookup at all, so a
-                // typo'd/undeclared type name in a parameter, field, or
-                // return position silently "resolved" to a bogus
-                // `Ty::Named`, which downstream code (e.g.
+                // Every other candidate is undeclared by this point: a
+                // declared struct, enum, or generic template is already
+                // caught by the guarded arms above this one. Previously this
+                // fell through to a blind `Ty::Named(name.clone())` with no
+                // lookup at all, so a typo'd/undeclared type name in a
+                // parameter, field, or return position silently "resolved"
+                // to a bogus `Ty::Named`, which downstream code (e.g.
                 // `resolve_field_type`) treats as "already reported
                 // elsewhere" and quietly widens to the `unknown` placeholder
                 // -- masking what should be a real, clean diagnostic here.
-                _ if self.structs.contains_key(name) => Some(Ty::Named(name.clone())),
                 _ => {
                     let candidates: Vec<&str> = self.structs.keys().map(String::as_str).collect();
                     match suggest(name, candidates) {

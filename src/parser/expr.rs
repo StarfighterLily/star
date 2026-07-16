@@ -651,6 +651,32 @@ impl Parser {
                     self.advance();
                     let first = self.expect_ident()?;
                     if self.eat(&TokenKind::ColonColon) {
+                        // `alias::first::...` where `first` is lowercase can't
+                        // be `EnumName::Variant` (enum names are always
+                        // capitalized -- the same convention `starts_uppercase`
+                        // already applies just below to tell a struct literal
+                        // from a function call) -- it's an attempt to reach
+                        // through `first` as if it were itself a re-exported
+                        // nested module, which `crate::modules`'s doc comment
+                        // explicitly says isn't supported (imports are
+                        // resolved by inlining one file at a time, with no
+                        // transitive re-export). Catching it here with a
+                        // located, accurate diagnostic avoids silently
+                        // misparsing this as `EnumVariant { enum_name:
+                        // "alias__first" }` and letting the checker report a
+                        // fabricated "undefined enum `alias__first`" that
+                        // exposes internal mangling and gives no hint about
+                        // the real (unsupported-transitive-import) cause.
+                        if !starts_uppercase(&first) {
+                            self.error(
+                                format!(
+                                    "cannot reach `{}` through `{}` -- imports are not transitively re-exported; import `{}` directly if you need its items",
+                                    first, name, first
+                                ),
+                                span.to(self.prev_span()),
+                            );
+                            return None;
+                        }
                         let variant = self.expect_ident()?;
                         let args = if self.at(&TokenKind::LParen) {
                             self.parse_call_args()?
@@ -941,6 +967,19 @@ impl Parser {
                     self.advance();
                     let first = self.expect_ident()?;
                     if self.eat(&TokenKind::ColonColon) {
+                        // See the mirrored check in `parse_primary`'s
+                        // qualified-path branch for why a lowercase `first`
+                        // here can't be `EnumName::Variant`.
+                        if !starts_uppercase(&first) {
+                            self.error(
+                                format!(
+                                    "cannot reach `{}` through `{}` -- imports are not transitively re-exported; import `{}` directly if you need its items",
+                                    first, name, first
+                                ),
+                                self.prev_span(),
+                            );
+                            return None;
+                        }
                         let variant = self.expect_ident()?;
                         let bindings = if self.eat(&TokenKind::LParen) {
                             let mut names = Vec::new();

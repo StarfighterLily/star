@@ -76,16 +76,14 @@ impl Codegen {
                         // between "true"/"false" string constants instead,
                         // same as any other `%s`.
                         let arg_val = if matches!(ty, Ty::Str) {
-                            // Same reasoning as `emit_raw_str_ptr`: balance
-                            // back out whatever retain `emit_expr(e)` above
-                            // did on `e`'s behalf (a no-op if `e` was a
-                            // fresh construction, since nothing was
-                            // retained) -- this f-string hole only formats
-                            // the bytes for `printf`, it doesn't keep the
-                            // pointer around.
-                            if Self::is_rc_borrowing_read(e) {
-                                self.line(&format!("  call void @star_rc_release(i8* {})", bare_val));
-                            }
+                            // This f-string hole only formats the bytes for
+                            // `printf`, it doesn't keep the pointer around --
+                            // release whatever `emit_expr(e)` above left us
+                            // owning (a borrowed read's extra retain, or a
+                            // fresh construction's sole reference; see
+                            // `rc.rs`'s module doc comment for why this is
+                            // unconditional and always safe).
+                            self.line(&format!("  call void @star_rc_release(i8* {})", bare_val));
                             bare_val
                         } else if matches!(ty, Ty::Bool) {
                             self.emit_bool_str(&bare_val)
@@ -98,11 +96,7 @@ impl Codegen {
                             // this `%p` hole only prints the value's raw
                             // address, it doesn't keep it around. A no-op for
                             // `Int`/`Float` (neither carries RC content).
-                            // Previously missing entirely, this leaked one
-                            // reference per interpolation of any such value.
-                            if Self::is_rc_borrowing_read(e) {
-                                self.emit_release_bare(&bare_val, &ty);
-                            }
+                            self.emit_release_bare(&bare_val, &ty);
                             bare_val
                         };
                         arg_vals.push((arg_val, ty));
@@ -175,9 +169,8 @@ impl Codegen {
             // pointer `printf` expects, no boxing indirection to unwrap.
             let loaded = self.untag(&val, &Ty::Str);
             // Same reasoning as `emit_raw_str_ptr`/the f-string branch
-            // above: balance back out whatever retain `emit_expr(arg)`
-            // did on `arg`'s behalf.
-            if matches!(self.expr_ty(arg), Ty::Str) && Self::is_rc_borrowing_read(arg) {
+            // above: release whatever `emit_expr(arg)` left us owning.
+            if matches!(self.expr_ty(arg), Ty::Str) {
                 self.line(&format!("  call void @star_rc_release(i8* {})", loaded));
             }
             self.line(&format!("  call i32 (i8*, ...) @printf(i8* {})", loaded));
@@ -363,23 +356,26 @@ impl Codegen {
 
     /// Get the real `i8*` out of a `Str`-typed expression. A `Str` value's
     /// `emit_expr` result *is* the raw string pointer (tagged for a literal,
-    /// bare for a load/call), so this is just a tag-stripping pass-through --
-    /// kept as its own function since every caller also needs the
-    /// `is_rc_borrowing_read` release-balancing below.
+    /// bare for a load/call), so this is just a tag-stripping pass-through.
+    ///
+    /// Deliberately does *not* release here, unlike an earlier version of
+    /// this function -- every caller still needs to release whatever
+    /// `emit_expr` left it owning (a borrowed read's extra retain, or a
+    /// fresh construction's sole reference; see `rc.rs`'s module doc
+    /// comment) once it's truly done reading through the returned pointer,
+    /// but releasing *inside* this function, before the caller has actually
+    /// used it, is a real use-after-free for a fresh (mortal, refcount-1)
+    /// string: `Codegen::emit_str_concat` calls this once per argument and
+    /// then reads *both* returned pointers afterward (`strlen`, then
+    /// `strcpy`/`strcat`) -- confirmed via a real, wrong runtime result
+    /// (`concat(f"a{1}", f"b{2}")` produced `"b2b2"` instead of `"a1b2"`,
+    /// its first argument's freshly-`star_rc_alloc`'d buffer freed the
+    /// instant its length was taken, then reused by the very next
+    /// allocation before `strcpy` ever read it). Each caller below now
+    /// releases explicitly, after its own last use of the pointer.
     pub(super) fn emit_raw_str_ptr(&mut self, e: &TypedExpr) -> String {
         let val = self.emit_expr(e);
-        let reg = self.untag(&val, &Ty::Str);
-        // If `e` reads an existing owned slot, `emit_expr` above already
-        // retained a fresh reference on its behalf (see `rc.rs`) -- but
-        // this function only extracts the raw bytes for a synchronous
-        // library call (`strlen`/`strcpy`/...) and never keeps the pointer
-        // around, so that retain must be released right back or `s`'s
-        // refcount would grow by one on every `len(s)`/`concat(s, ..)`
-        // call, never balanced by a matching release.
-        if Self::is_rc_borrowing_read(e) {
-            self.line(&format!("  call void @star_rc_release(i8* {})", reg));
-        }
-        reg
+        self.untag(&val, &Ty::Str)
     }
 
     /// `read_line() -> str`: reads one line from stdin a character at a time
@@ -457,6 +453,10 @@ impl Codegen {
         let raw = self.emit_raw_str_ptr(arg);
         let reg = self.tmp_name();
         self.line(&format!("  {} = call i32 @strlen(i8* {})", reg, raw));
+        // `raw` is done being read -- release whatever `emit_raw_str_ptr`
+        // left us owning (see its own doc comment for why this can't happen
+        // inside that function itself).
+        self.line(&format!("  call void @star_rc_release(i8* {})", raw));
         format!("i32 {}", reg)
     }
 
@@ -511,6 +511,11 @@ impl Codegen {
         self.open_block(&end_label);
         let result = self.tmp_name();
         self.line(&format!("  {} = phi i32 [ {}, %{} ], [ 0, %{} ]", result, byte32, ok_label, oob_label));
+        // `raw` is done being read on every path that reaches here -- release
+        // whatever `emit_raw_str_ptr` left us owning (see its own doc comment
+        // for why this can't happen inside that function itself). Safe even
+        // on the null path: `star_rc_release` no-ops on a null pointer.
+        self.line(&format!("  call void @star_rc_release(i8* {})", raw));
         format!("i32 {}", result)
     }
 
@@ -578,6 +583,10 @@ impl Codegen {
         self.open_block(&end_label);
         let result = self.tmp_name();
         self.line(&format!("  {} = phi i32 [ {}, %{} ], [ 0, %{} ]", result, byte32, read_label, oob_label));
+        // `raw` is done being read on every path that reaches here -- release
+        // whatever `emit_raw_str_ptr` left us owning. Safe even on the null
+        // path: `star_rc_release` no-ops on a null pointer.
+        self.line(&format!("  call void @star_rc_release(i8* {})", raw));
         format!("i32 {}", result)
     }
 
@@ -604,6 +613,12 @@ impl Codegen {
         self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", buf, total64));
         self.line(&format!("  call i8* @strcpy(i8* {}, i8* {})", buf, a));
         self.line(&format!("  call i8* @strcat(i8* {}, i8* {})", buf, b));
+        // `a`/`b` are done being read -- release whatever `emit_raw_str_ptr`
+        // left us owning for each (see its own doc comment for why this
+        // can't happen inside that function itself, before `strcpy`/`strcat`
+        // above have actually read through the pointer).
+        self.line(&format!("  call void @star_rc_release(i8* {})", a));
+        self.line(&format!("  call void @star_rc_release(i8* {})", b));
         buf
     }
 

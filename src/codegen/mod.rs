@@ -1045,6 +1045,32 @@ impl Codegen {
                 let ptr = self.tmp_name();
                 self.line(&format!("  {} = alloca {}", ptr, ty_str));
                 self.line(&format!("  store {} {}, {}* {}", ty_str, bare, ty_str, ptr));
+                // `List`/`Map`/`Set`/`Table` are each a single bare `i8*`
+                // object-pointer value with no decomposition-without-retain
+                // convention (unlike a plain struct/tuple/array, whose
+                // `Field`/`TupleIndex`/`ArrayIndex` read arms deliberately
+                // extract a sub-value *without* retaining when `base` isn't
+                // `place_is_shared_storage` -- see that function's doc
+                // comment -- relying on nothing else ever separately
+                // releasing this same spilled temporary, so a subsequent
+                // `track_owned` here would double-release that already-
+                // transferred field). `list_fields`/`map_fields`/
+                // `set_fields`/`table_fields` never rely on that convention:
+                // every element they hand out is read from the object's own
+                // live backing buffer and independently retained there
+                // (the buffer itself remains the owner), so this spilled
+                // pointer is the *only* reference to the whole collection
+                // object and must be released once the current scope ends
+                // -- same reasoning as the match-scrutinee spill in
+                // `Codegen::emit_match`'s `Pattern::Binding` arm. Previously
+                // untracked here: every method call or index reached
+                // directly off a bare `Call`/`If`/`Match` producing a
+                // collection (e.g. `make_list()[0]`, with no intervening
+                // `let`) leaked the entire returned collection object on
+                // every evaluation, since nothing ever released this alloca.
+                if matches!(ty, Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) | Ty::Table(_)) {
+                    self.track_owned(&ptr, &ty);
+                }
                 ptr
             }
         }

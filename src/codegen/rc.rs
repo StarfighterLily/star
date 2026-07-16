@@ -16,49 +16,33 @@
 //! element, a closure's by-value capture snapshot -- is *always* just
 //! `emit_expr` evaluating some expression, so retaining at the read alone
 //! is sufficient; no other call site needs special-casing.
+//!
+//! The flip side of that rule, for a value consumed *transiently* and never
+//! stored anywhere (a `println`/f-string interpolation argument, a
+//! `Map`/`Set` lookup key compared via `eq_fn` and discarded, a closure
+//! invoked and never bound): whichever of the two states above `emit_expr`
+//! left it in, exactly one release is owed once it's done being read --
+//! a borrowed read's extra retain must be balanced back out, or a fresh
+//! value's sole owning reference leaks forever with nothing else to free it.
+//! There is no "nothing to release" case: `Codegen::emit_release_bare`
+//! already no-ops for a non-RC-bearing type, and the `star_rc_release`
+//! runtime itself no-ops on a null pointer or the immortal (`-1`-sentinel)
+//! refcount a string literal's global constant carries -- so releasing
+//! unconditionally is always safe, whether the value being discarded came
+//! from a borrow or a fresh construction. Every transient-consumption call
+//! site used to gate its release on `is_rc_borrowing_read(expr)` (true only
+//! for a borrowing read), skipping it entirely for a fresh construction --
+//! so `println(concat(a, b))`, `map.contains(concat(a, b))`, an f-string
+//! hole holding a fresh value, and an immediately-invoked closure literal
+//! each leaked their fresh operand on every single evaluation, confirmed via
+//! real unbounded working-set growth. Fixed by dropping the guard and
+//! releasing unconditionally at every one of those call sites.
 
 use crate::types::{Ty, TypedExpr};
 
 use super::Codegen;
 
 impl Codegen {
-    /// True for the expression kinds `emit_expr` retains on (`Ident`, a
-    /// non-swizzle `Field`, `ListIndex`, `GenRefIndex`, `ArrayIndex`,
-    /// `RingIndex` -- see their arms in `expr.rs`/`list.rs`/`arena.rs`/
-    /// `array.rs`), i.e. a *read of an existing owned slot* rather than a
-    /// fresh construction. Used by the couple of call sites
-    /// (`emit_raw_str_ptr`, `emit_print_like`, `emit_closure_call`) that
-    /// consume a value *transiently* -- extracting its raw bytes for a
-    /// synchronous library call/`printf`, or invoking a closure, never
-    /// keeping the reference around -- to know whether `emit_expr` just
-    /// retained a reference on their behalf that needs balancing back out,
-    /// or whether nothing was retained (a fresh construction like a literal
-    /// or a `concat` call) and there's nothing to release.
-    ///
-    /// `ArrayIndex`/`RingIndex` were previously missing from this list even
-    /// though `Codegen::emit_array_index`/the `RingIndex` arm in `expr.rs`
-    /// both do retain on read (mirroring `ListIndex`) -- so every transient
-    /// consumer of a `[T; N]`/`Ring<T,N>` element (`len(arr[i])`,
-    /// `println(ring[i])`, an f-string hole, `concat(ring[i], ..)`) retained
-    /// once and released zero times, permanently inflating that element's
-    /// refcount by one on every read and leaking it once evicted/overwritten
-    /// -- confirmed via real unbounded working-set growth (~112MB -> 884MB
-    /// over 30,000,000 iterations of `len(ring[0])` on a `Ring<str,1>`, flat
-    /// at a control with the same push/evict churn but no reads) before this
-    /// fix.
-    pub(super) fn is_rc_borrowing_read(e: &TypedExpr) -> bool {
-        matches!(
-            e,
-            TypedExpr::Ident { .. }
-                | TypedExpr::Field { .. }
-                | TypedExpr::ListIndex { .. }
-                | TypedExpr::GenRefIndex { .. }
-                | TypedExpr::TupleIndex { .. }
-                | TypedExpr::ArrayIndex { .. }
-                | TypedExpr::RingIndex { .. }
-        )
-    }
-
     /// True if `expr` resolves (through `Codegen::emit_place`/
     /// `emit_read_place`, possibly recursing through a chain of `Field`/
     /// `TupleIndex`/`ArrayIndex`/`RingIndex`/`ListIndex` projections) to a
@@ -163,14 +147,14 @@ impl Codegen {
     /// Release every RC-bearing leaf reachable from a bare (untagged) value
     /// register that isn't backed by any existing storage slot -- spills it
     /// into a fresh, scratch `alloca` first so `emit_release_at`'s
-    /// pointer-walking shape has somewhere to read from. For a value that
-    /// `emit_expr` retained on the caller's behalf (see `is_rc_borrowing_read`)
-    /// but which is only used transiently (a `Map`/`Set` key/element compared
-    /// against with `eq_fn` and then discarded, never stored into the
-    /// collection) -- the same "balance the borrow back out" shape
+    /// pointer-walking shape has somewhere to read from. For a value that's
+    /// only used transiently (a `Map`/`Set` key/element compared against
+    /// with `eq_fn` and then discarded, never stored into the collection) --
+    /// the same "release whatever `emit_expr` left us owning" shape
     /// `emit_raw_str_ptr`/`emit_print_like` already use for a bare `Str`,
     /// generalized to any RC-bearing type via the same walker `emit_release_at`
-    /// uses for a real slot.
+    /// uses for a real slot. A no-op if `ty` doesn't `contains_rc`, so it's
+    /// always safe to call unconditionally (see `rc.rs`'s module doc comment).
     pub(super) fn emit_release_bare(&mut self, val: &str, ty: &Ty) {
         if !self.contains_rc(ty) {
             return;

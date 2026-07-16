@@ -58,6 +58,11 @@ impl Codegen {
         let mode = self.emit_raw_str_ptr(&args[1]);
         let reg = self.tmp_name();
         self.line(&format!("  {} = call i8* @fopen(i8* {}, i8* {})", reg, path, mode));
+        // `path`/`mode` are done being read -- release whatever
+        // `emit_raw_str_ptr` left us owning for each (see its own doc
+        // comment for why this can't happen inside that function itself).
+        self.line(&format!("  call void @star_rc_release(i8* {})", path));
+        self.line(&format!("  call void @star_rc_release(i8* {})", mode));
         format!("i8* {}", reg)
     }
 
@@ -230,6 +235,9 @@ impl Codegen {
         self.line(&format!("  {} = sext i32 {} to i64", len64, len));
         let n = self.tmp_name();
         self.line(&format!("  {} = call i64 @fwrite(i8* {}, i64 1, i64 {}, i8* {})", n, data, len64, handle));
+        // `data` is done being read -- release whatever `emit_raw_str_ptr`
+        // left us owning (see its own doc comment).
+        self.line(&format!("  call void @star_rc_release(i8* {})", data));
         let reg = self.tmp_name();
         self.line(&format!("  {} = icmp eq i64 {}, {}", reg, n, len64));
         format!("i1 {}", reg)
@@ -250,6 +258,9 @@ impl Codegen {
         self.line(&format!("  {} = getelementptr inbounds [2 x i8], [2 x i8]* {}, i64 0, i64 0", mode_ptr, mode_g));
         let handle = self.tmp_name();
         self.line(&format!("  {} = call i8* @fopen(i8* {}, i8* {})", handle, path, mode_ptr));
+        // `path` is done being read -- release whatever `emit_raw_str_ptr`
+        // left us owning (see its own doc comment).
+        self.line(&format!("  call void @star_rc_release(i8* {})", path));
         let exists = self.tmp_name();
         self.line(&format!("  {} = icmp ne i8* {}, null", exists, handle));
         let close_label = self.block_label("file_exists_close");

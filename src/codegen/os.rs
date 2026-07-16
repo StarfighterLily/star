@@ -22,6 +22,9 @@ impl Codegen {
         let name = self.emit_raw_str_ptr(arg);
         let raw = self.tmp_name();
         self.line(&format!("  {} = call i8* @getenv(i8* {})", raw, name));
+        // `name` is done being read -- release whatever `emit_raw_str_ptr`
+        // left us owning (see its own doc comment).
+        self.line(&format!("  call void @star_rc_release(i8* {})", name));
         let is_null = self.tmp_name();
         self.line(&format!("  {} = icmp eq i8* {}, null", is_null, raw));
         let null_label = self.block_label("env_get_null");
@@ -71,6 +74,11 @@ impl Codegen {
 
         let result = self.tmp_name();
         self.line(&format!("  {} = call i32 @_putenv_s(i8* {}, i8* {})", result, name, value));
+        // `name`/`value` are done being read -- release whatever
+        // `emit_raw_str_ptr` left us owning for each (see its own doc
+        // comment).
+        self.line(&format!("  call void @star_rc_release(i8* {})", name));
+        self.line(&format!("  call void @star_rc_release(i8* {})", value));
         let ok = self.tmp_name();
         self.line(&format!("  {} = icmp eq i32 {}, 0", ok, result));
         format!("i1 {}", ok)

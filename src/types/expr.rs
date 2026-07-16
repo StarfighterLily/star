@@ -1289,9 +1289,11 @@ impl Checker {
         );
         let Some(concrete_args) = concrete_args else { return TypedExpr::Error(Ty::Named("infer_error".into())) };
         let mangled = self.instantiate_struct(name, &concrete_args);
-        let field_count = self.structs.get(&mangled).map(|s| s.fields.len()).unwrap_or(0);
-        if arg_exprs.len() != field_count {
-            self.error(format!("`{}(..)` expects {} argument(s), found {}", name, field_count, arg_exprs.len()), span);
+        let fields = self.structs.get(&mangled).map(|s| s.fields.clone()).unwrap_or_default();
+        if arg_exprs.len() != fields.len() {
+            self.error(format!("`{}(..)` expects {} argument(s), found {}", name, fields.len(), arg_exprs.len()), span);
+        } else {
+            self.check_field_ctor_types(name, &fields, &arg_exprs, span);
         }
         TypedExpr::StructLit { name: mangled.clone(), args: arg_exprs, ty: Ty::Named(mangled), span }
     }
@@ -1329,6 +1331,22 @@ impl Checker {
             );
         }
         let mangled = self.instantiate_enum(enum_name, &concrete_args);
+        // Same missing-validation hazard `check_field_ctor_types`'s doc
+        // comment describes for the generic-struct path, mirrored here for
+        // a generic enum variant's payload fields: without this, an
+        // untyped literal argument against a narrower concrete field kept
+        // its default `Ty::Int` all the way to codegen, and the payload
+        // union's store picked its width from that (wrong) inferred type
+        // instead of the variant's declared field type -- corrupting
+        // whatever payload bytes sit after it.
+        if vdef.fields.len() == arg_exprs.len() {
+            if let Some(concrete_fields) = self.enums.get(&mangled)
+                .and_then(|e| e.variants.iter().find(|v| v.name == variant))
+                .map(|v| v.fields.clone())
+            {
+                self.check_enum_variant_ctor_args(enum_name, variant, &concrete_fields, &arg_exprs, span);
+            }
+        }
         TypedExpr::EnumVariant { enum_name: mangled.clone(), variant: variant.to_string(), args: arg_exprs, ty: Ty::Enum(mangled), span }
     }
 
@@ -1458,7 +1476,31 @@ impl Checker {
             );
             return;
         }
-        for (i, (f, a)) in sdef.fields.iter().zip(arg_exprs.iter()).enumerate() {
+        self.check_field_ctor_types(name, &sdef.fields, arg_exprs, span);
+    }
+
+    /// Per-argument declared-vs-actual field type check, factored out of
+    /// `check_struct_ctor_args` so `infer_generic_struct_lit` can reuse it
+    /// against a monomorphized generic struct's *concrete* field list --
+    /// previously that path only ran `resolve_generic_ctor_args`'s
+    /// `unify_ty` (which exists purely to solve type-parameter bindings and
+    /// silently no-ops on a field whose declared type is already concrete,
+    /// e.g. `tag: i8` in `struct Box<T>: value: T  tag: i8`), so an
+    /// untyped literal argument against a narrower concrete field
+    /// (`Box<u8>(250 as u8, 3)`, `tag: i8`) kept its default `Ty::Int` all
+    /// the way to codegen. `crate::codegen::expr`'s generic `StructLit`
+    /// store path picks its LLVM store width from the *argument's* inferred
+    /// type, not the field's declared type (same hazard
+    /// `check_struct_ctor_args`'s own doc comment already describes for the
+    /// non-generic case) -- so this produced a real, silent 4-byte store
+    /// into a struct with only 1 byte of room past that field, corrupting
+    /// whatever sits directly after it in memory. By the time
+    /// `instantiate_struct` returns, a monomorphized struct's fields have
+    /// already been fully substituted (see `subst_type`) -- no leftover
+    /// type parameter remains -- so this is exactly the same check either
+    /// way, just against a different field list.
+    fn check_field_ctor_types(&mut self, name: &str, fields: &[FieldDef], arg_exprs: &[TypedExpr], span: Span) {
+        for (i, (f, a)) in fields.iter().zip(arg_exprs.iter()).enumerate() {
             let declared = self.resolve_type(&f.ty).unwrap_or(Ty::Named("unknown".into()));
             let actual = a.clone().into_ty();
             if !Self::types_compatible(&declared, &actual) {

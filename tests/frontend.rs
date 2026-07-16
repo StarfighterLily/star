@@ -5621,10 +5621,15 @@ fn codegen_break_does_not_release_outer_scope_str_local() {
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
     let fn_ir = extract_fn_body(&ir, "define i32 @t(");
-    // Exactly one release of `s`: at the function's own fallthrough exit.
-    // If `break` also released it, this would be 2 (or more, once per loop
-    // iteration's worth of `break` sites).
-    assert_eq!(fn_ir.matches("call void @star_rc_release").count(), 1, "`s` should be released exactly once, at function exit, not by `break`: {}", fn_ir);
+    // Three releases total: `concat`'s own two internal `emit_raw_str_ptr`
+    // extractions of its literal `"a"`/`"b"` arguments (harmless no-ops at
+    // runtime -- a literal's global constant carries the immortal `-1`
+    // sentinel `star_rc_release` checks for, see `rc.rs`'s module doc
+    // comment -- but still emitted unconditionally now, unlike before that
+    // fix), plus exactly one release of `s` itself at the function's own
+    // fallthrough exit. If `break` also released `s`, this would be 4 (or
+    // more, once per loop iteration's worth of `break` sites).
+    assert_eq!(fn_ir.matches("call void @star_rc_release").count(), 3, "`s` should be released exactly once, at function exit, not by `break`: {}", fn_ir);
 }
 
 /// Copying a struct that has a `str` field (`let p2 = p1`) retains the
@@ -7009,11 +7014,18 @@ fn extern_fn_str_arg_balances_retain_with_release() {
     let ir = Driver::codegen(&typed).expect("should codegen");
     let main_body = extract_fn_body(&ir, "define i32 @main(");
     let retain_idx = main_body.find("call void @star_rc_retain").expect("reading `s` should retain");
-    let release_idx = main_body.find("call void @star_rc_release").expect("the transient extern-call read should be released back");
     let call_idx = main_body.find("call i32 @atoi(").expect("should call atoi");
+    let release_idx = main_body.find("call void @star_rc_release").expect("the transient extern-call read should be released back");
+    // The release must come *after* the call, not before: `atoi` reads
+    // through the raw pointer it's handed during the call itself, so
+    // releasing any earlier would free a fresh (non-`Ident`) argument's
+    // buffer before the call ever read it (see `Codegen::emit_extern_call`'s
+    // doc comment). Releasing after is also correct for this borrowed-`s`
+    // case -- `s`'s own slot keeps the string alive throughout regardless of
+    // when the extra retain is balanced back out.
     assert!(
-        retain_idx < release_idx && release_idx < call_idx,
-        "expected retain, then a balancing release, then the extern call itself, in that order: {}",
+        retain_idx < call_idx && call_idx < release_idx,
+        "expected retain, then the extern call itself, then a balancing release, in that order: {}",
         main_body
     );
 }
@@ -12971,4 +12983,608 @@ fn import_parse_error_still_reports_at_the_import_site() {
     assert!(rendered.contains("failed to parse import"), "{}", rendered);
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ===== Bug-hunting round: builtin-name shadowing / generic ctor field ======
+// ===== validation / collection-return-value RC leak / transitive-import ===
+// ===== diagnostic ===========================================================
+
+/// `struct Tick: ...` (or any other name colliding with a builtin scalar
+/// type -- `Vec2`/`Vec3`/`Vec4`/`Mat4`/`i32`/.../`Instant`) previously
+/// type-checked with **no error at all**: `Checker::resolve_type`'s
+/// hardcoded builtin-name match arm (`"Tick" => Some(Ty::Tick)`, ...) fired
+/// before ever consulting `self.structs`, so the user's struct was silently
+/// registered into `self.structs` but permanently unreachable -- every
+/// reference to `Tick` kept resolving to the builtin scalar regardless.
+/// `Tick(5)` then passed `check_builtin_ctor_arity` (a bare `i32` literal
+/// satisfies "expects 1 integer argument") instead of validating against
+/// the user's actual field list, and the subsequent `.x` field access on
+/// the resulting bare-`i64`-typed value crashed codegen with an unlocated
+/// "field access on non-struct type" instead of any diagnostic pointing at
+/// the real problem. Fixed by letting a declared struct take priority over
+/// a same-named builtin scalar in `resolve_type`, mirroring the priority
+/// `self.enums` already had over the same builtin-name match.
+#[test]
+fn struct_named_after_a_builtin_scalar_type_shadows_it_end_to_end() {
+    let src = "struct Tick:\n    x: i32\n\nfn main():\n    let t = Tick(5)\n    println(f\"{t.x}\")\n";
+    let output = compile_and_run("struct_named_tick_shadows_builtin", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "5");
+}
+
+/// Same fix, for `Vec2` (a builtin with its own constructor-arity check,
+/// unlike `Tick`) -- confirms the priority fix isn't specific to the time
+/// types.
+#[test]
+fn struct_named_after_vec2_shadows_it_end_to_end() {
+    let src = "struct Vec2:\n    x: i32\n\nfn main():\n    let t = Vec2(5)\n    println(f\"{t.x}\")\n";
+    let output = compile_and_run("struct_named_vec2_shadows_builtin", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "5");
+}
+
+/// `infer_generic_struct_lit` previously only ran `resolve_generic_ctor_args`'s
+/// `unify_ty` (which exists purely to solve type-*parameter* bindings and
+/// silently no-ops on a field whose declared type is already concrete, e.g.
+/// `tag: i8` here) -- never validating a constructor argument against such
+/// a field the way `check_struct_ctor_args` already does for an ordinary,
+/// non-generic struct. `Checker::check_field_ctor_types` closes that gap.
+/// Without it, an untyped `i32` literal argument against a narrower
+/// concrete field type-checked cleanly and kept its default `Ty::Int` all
+/// the way to codegen, where the generic `StructLit` store path picks its
+/// LLVM store width from the *argument's* inferred type rather than the
+/// field's declared type -- a real, silent 4-byte store into a struct with
+/// only 1 byte of room past that field, corrupting whatever sits directly
+/// after it in memory.
+#[test]
+fn rejects_generic_struct_ctor_arg_with_wrong_width_for_a_concrete_field() {
+    let src = "struct Box<T>:\n    value: T\n    tag: i8\n\nfn main():\n    let b = Box<u8>(value=250 as u8, tag=3)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("a plain `i32` literal against a declared `i8` field should be a type error");
+    assert!(
+        diags.iter().any(|d| d.message.contains("`Box`'s field `tag`") && d.message.contains("expects type `I8`")),
+        "{:?}", diags
+    );
+}
+
+/// Runtime confirmation of the fix above: once every argument is correctly
+/// cast to its field's declared width, the narrow sibling field keeps its
+/// own value instead of being clobbered by a wider store landing on top of
+/// it.
+#[test]
+fn runtime_generic_struct_ctor_concrete_field_keeps_correct_width_end_to_end() {
+    let src = "struct Box<T>:\n    value: T\n    tag: i8\n\nfn main():\n    \
+               let b = Box<u8>(value=250 as u8, tag=3 as i8)\n    println(f\"{b.value} {b.tag as i32}\")\n";
+    let output = compile_and_run("generic_struct_ctor_field_width", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "250 3");
+}
+
+/// Same missing-validation hazard as the generic-struct case above, for a
+/// generic enum variant's payload fields instead.
+#[test]
+fn rejects_generic_enum_variant_ctor_arg_with_wrong_width_for_a_concrete_field() {
+    let src = "enum Res<T>:\n    Ok(value: T, a: i8)\n    Err()\n\nfn main():\n    let r = Res<u8>::Ok(200 as u8, 1)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("a plain `i32` literal against a declared `i8` field should be a type error");
+    assert!(
+        diags.iter().any(|d| d.message.contains("`Res::Ok(..)`'s field `a`") && d.message.contains("expects type `I8`")),
+        "{:?}", diags
+    );
+}
+
+/// Runtime confirmation: with 7 correctly-cast `i8` payload fields following
+/// the generic `value: T` field, none of them get clobbered by a wrong-width
+/// store landing on top of a neighbor -- this is the same corruption shape
+/// as the struct case, just inside a payload-enum's tagged-union storage
+/// instead of a plain struct's fields.
+#[test]
+fn runtime_generic_enum_variant_ctor_concrete_fields_keep_correct_width_end_to_end() {
+    let src = concat!(
+        "enum Res<T>:\n",
+        "    Ok(value: T, a: i8, b: i8, c: i8, d: i8, e: i8, f: i8, g: i8)\n",
+        "    Err()\n",
+        "\n",
+        "fn main():\n",
+        "    let r = Res<u8>::Ok(200 as u8, 1 as i8, 2 as i8, 3 as i8, 4 as i8, 5 as i8, 6 as i8, 7 as i8)\n",
+        "    match r:\n",
+        "        Res::Ok(value, a, b, c, d, e, f, g) -> println(f\"{value} {a as i32} {b as i32} {c as i32} {d as i32} {e as i32} {f as i32} {g as i32}\")\n",
+        "        Res::Err() -> println(\"err\")\n",
+    );
+    let output = compile_and_run("generic_enum_variant_ctor_field_width", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "200 1 2 3 4 5 6 7");
+}
+
+/// A qualified path through an import alias with a *second* `::` segment
+/// (`b::c::make_vec2`) previously always parsed as `EnumVariant { enum_name:
+/// mangle_name("b", "c") = "b__c", variant: "make_vec2" }` regardless of
+/// whether `c` actually names an enum -- `crate::modules`'s own doc comment
+/// says imports are resolved by inlining one file at a time with no
+/// transitive re-export, so this is never valid, but the old parser
+/// silently misparsed it anyway and let the checker report a fabricated,
+/// internals-exposing "undefined enum `b__c`" with no hint about the real
+/// (unsupported-transitive-import) cause. Fixed in the parser: a lowercase
+/// second segment can't be `EnumName::Variant` (enum names are always
+/// capitalized -- the same convention already used just below to tell a
+/// struct literal from a function call), so it's now rejected immediately
+/// with a located, accurate diagnostic instead of being silently
+/// reinterpreted.
+#[test]
+fn rejects_transitive_module_path_through_an_alias_with_a_clear_diagnostic() {
+    let src = "import \"other.star\" as b\nfn main():\n    let v = b::c::make_vec2(3, 4)\n";
+    let diags = Driver::parse(src).expect_err("a qualified path reaching through a second alias segment should be a parse error");
+    assert!(
+        diags.iter().any(|d| d.message.contains("cannot reach `c` through `b`") && d.message.contains("not transitively re-exported")),
+        "{:?}", diags
+    );
+}
+
+/// Same fix, exercised through the mirrored qualified-*pattern* parser path
+/// (`match v: b::c::Foo(x) -> ...`) rather than the qualified-expression
+/// path above.
+#[test]
+fn rejects_transitive_module_path_in_a_match_pattern_with_a_clear_diagnostic() {
+    let src = "import \"other.star\" as b\nfn main():\n    match 1:\n        b::c::Foo(x) -> println(f\"{x}\")\n        _ -> println(\"no\")\n";
+    let diags = Driver::parse(src).expect_err("a qualified pattern reaching through a second alias segment should be a parse error");
+    assert!(
+        diags.iter().any(|d| d.message.contains("cannot reach `c` through `b`") && d.message.contains("not transitively re-exported")),
+        "{:?}", diags
+    );
+}
+
+/// End-to-end confirmation with real files on disk (mirroring
+/// `diagnostic_inside_imported_file_renders_against_that_files_own_source`'s
+/// pattern): `a` imports `b`, `b` imports `c`, and `a` tries to reach `c`
+/// through `b`. Guards the full pipeline, not just the parser in isolation.
+#[test]
+fn transitive_module_import_chain_reports_a_clear_diagnostic_end_to_end() {
+    let dir = test_scratch_dir("transitive_module_import_chain_reports_a_clear_diagnostic_end_to_end");
+    write_test_file(
+        &dir, "c.star",
+        "struct Vec2:\n    x: i32\n    y: i32\n\nfn make_vec2(x: i32, y: i32) -> Vec2:\n    Vec2(x, y)\n",
+    );
+    write_test_file(
+        &dir, "b.star",
+        "import \"c.star\" as c\n\nfn b_make(x: i32, y: i32) -> c::Vec2:\n    c::make_vec2(x, y)\n",
+    );
+    let main_path = write_test_file(
+        &dir, "a.star",
+        "import \"b.star\" as b\n\nfn main():\n    let v = b::c::make_vec2(3, 4)\n    println(f\"sum = {v.x}\")\n",
+    );
+
+    let compilation = Driver::new(main_path).compile().expect("file read should succeed");
+    assert!(!compilation.is_ok(), "reaching through a transitively-imported module should fail");
+    let rendered = compilation.render_diagnostics();
+    assert!(rendered.contains("not transitively re-exported"), "{}", rendered);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A legitimate *single-level* qualified call through an import alias
+/// (`b::b_make`, not reaching into `b`'s own imports) must keep working --
+/// guards the fix above against overcorrecting into rejecting valid
+/// qualified calls.
+#[test]
+fn single_level_qualified_call_through_import_alias_still_works_end_to_end() {
+    let dir = test_scratch_dir("single_level_qualified_call_through_import_alias_still_works_end_to_end");
+    write_test_file(
+        &dir, "c.star",
+        "struct Vec2:\n    x: i32\n    y: i32\n\nfn make_vec2(x: i32, y: i32) -> Vec2:\n    Vec2(x, y)\n",
+    );
+    write_test_file(
+        &dir, "b.star",
+        "import \"c.star\" as c\n\nfn b_make(x: i32, y: i32) -> c::Vec2:\n    c::make_vec2(x, y)\n",
+    );
+    let main_path = write_test_file(
+        &dir, "a.star",
+        "import \"b.star\" as b\n\nfn main():\n    let v = b::b_make(3, 4)\n    println(f\"sum = {v.x}\")\n",
+    );
+
+    let compilation = Driver::new(main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Regression test for the RC leak fixed in `Codegen::emit_place`'s generic
+/// fallback arm: indexing directly into a bare `Call` expression that
+/// returns a `List<T>` (`make_list()[0]`, with no intervening `let`) routes
+/// through `list_fields`, which resolves its `base` via `emit_read_place` ->
+/// `emit_place`'s fallback -- that fallback spills `emit_expr`'s
+/// already-owned result into a scratch `alloca` but, before this fix, never
+/// released it, so every evaluation permanently leaked the entire returned
+/// `List<str>` object. Mirrors `runtime_discarded_list_pop_statement_does_not_leak_end_to_end`'s
+/// technique: builds a throwaway executable and samples its Working Set via
+/// a single PowerShell `Get-Process` polling loop, which must stay flat
+/// across the run.
+#[test]
+fn runtime_indexing_a_fresh_list_returning_call_does_not_leak_end_to_end() {
+    use std::process::Command;
+
+    let src = concat!(
+        "fn make_list() -> List<str>:\n",
+        "    return [concat(\"a\", \"b\"), concat(\"c\", \"d\")]\n",
+        "\n",
+        "fn main():\n",
+        "    let mut i: i32 = 0\n",
+        "    while i < 3000000:\n",
+        "        let v = make_list()[0]\n",
+        "        i += 1\n",
+        "    println(\"done\")\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_fresh_list_index_leak.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+
+    let stdout_file = std::env::temp_dir().join("fresh_list_index_leak_stdout.txt");
+    let script = format!(
+        "$p = Start-Process -FilePath '{}' -PassThru -RedirectStandardOutput '{}'; \
+         $samples = New-Object System.Collections.ArrayList; \
+         while (-not $p.HasExited) {{ try {{ $p.Refresh(); [void]$samples.Add($p.WorkingSet64) }} catch {{}}; Start-Sleep -Milliseconds 100 }}; \
+         $samples -join ','",
+        exe.display(),
+        stdout_file.display()
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .expect("failed to run the PowerShell memory-sampling script");
+    assert!(output.status.success(), "sampling script failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    let program_stdout = std::fs::read_to_string(&stdout_file).unwrap_or_default();
+    assert!(program_stdout.contains("done"), "program should finish normally: {}", program_stdout);
+
+    let samples_raw = String::from_utf8_lossy(&output.stdout);
+    let samples: Vec<i64> = samples_raw.trim().split(',').filter_map(|s| s.trim().parse().ok()).collect();
+
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    let _ = std::fs::remove_file(&stdout_file);
+
+    if samples.len() < 3 {
+        // Ran too fast to sample meaningfully on this machine -- a
+        // successful, fast exit is itself still evidence against a
+        // per-iteration leak at this iteration count.
+        return;
+    }
+    let settled = &samples[1..];
+    let min = *settled.iter().min().unwrap();
+    let max = *settled.iter().max().unwrap();
+    assert!(
+        (max - min) < 20 * 1024 * 1024,
+        "Working Set grew by {}MB across the run (samples: {:?}) -- indexing into a fresh `make_list()[0]` is leaking the whole List",
+        (max - min) / (1024 * 1024),
+        samples
+    );
+}
+
+/// Same fix, exercised through a method call (`.contains(..)`) on a fresh
+/// `Map<K,V>`-returning call instead of an index on a `List<T>` -- confirms
+/// the fix in `emit_place`'s fallback isn't specific to `List<T>`/indexing.
+#[test]
+fn runtime_method_call_on_a_fresh_map_returning_call_does_not_leak_end_to_end() {
+    use std::process::Command;
+
+    let src = concat!(
+        "fn make_map() -> Map<str, str>:\n",
+        "    let mut m: Map<str, str> = Map<str, str>()\n",
+        "    m.insert(concat(\"k\", \"1\"), concat(\"v\", \"1\"))\n",
+        "    return m\n",
+        "\n",
+        "fn main():\n",
+        "    let mut i: i32 = 0\n",
+        "    while i < 2000000:\n",
+        "        let found = make_map().contains(concat(\"k\", \"1\"))\n",
+        "        i += 1\n",
+        "    println(\"done\")\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_fresh_map_method_leak.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+
+    let stdout_file = std::env::temp_dir().join("fresh_map_method_leak_stdout.txt");
+    let script = format!(
+        "$p = Start-Process -FilePath '{}' -PassThru -RedirectStandardOutput '{}'; \
+         $samples = New-Object System.Collections.ArrayList; \
+         while (-not $p.HasExited) {{ try {{ $p.Refresh(); [void]$samples.Add($p.WorkingSet64) }} catch {{}}; Start-Sleep -Milliseconds 100 }}; \
+         $samples -join ','",
+        exe.display(),
+        stdout_file.display()
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .expect("failed to run the PowerShell memory-sampling script");
+    assert!(output.status.success(), "sampling script failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    let program_stdout = std::fs::read_to_string(&stdout_file).unwrap_or_default();
+    assert!(program_stdout.contains("done"), "program should finish normally: {}", program_stdout);
+
+    let samples_raw = String::from_utf8_lossy(&output.stdout);
+    let samples: Vec<i64> = samples_raw.trim().split(',').filter_map(|s| s.trim().parse().ok()).collect();
+
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    let _ = std::fs::remove_file(&stdout_file);
+
+    if samples.len() < 3 {
+        return;
+    }
+    let settled = &samples[1..];
+    let min = *settled.iter().min().unwrap();
+    let max = *settled.iter().max().unwrap();
+    assert!(
+        (max - min) < 20 * 1024 * 1024,
+        "Working Set grew by {}MB across the run (samples: {:?}) -- calling a method on a fresh `make_map()` is leaking the whole Map",
+        (max - min) / (1024 * 1024),
+        samples
+    );
+}
+
+// ===== Bug-hunting round: transient RC-value release was gated on ==========
+// ===== "was this a borrowed read", skipping it entirely for a fresh =======
+// ===== construction =========================================================
+//
+// `Codegen::is_rc_borrowing_read` used to gate every "release a transiently-
+// consumed value" call site (`println`/f-string holes, `Map`/`Set` lookup
+// keys, an invoked closure literal, `emit_raw_str_ptr`'s callers) on whether
+// the value came from a borrowing read (`Ident`/`Field`/`ListIndex`/...).
+// That's correct for undoing a borrow's extra retain, but backwards for a
+// *fresh* construction (`concat(..)`, a fresh closure literal, ...): those
+// start at refcount 1 with a single owner and were never being retained in
+// the first place, so skipping the release left that sole reference with
+// nothing to ever free it -- a real, confirmed leak on every evaluation.
+// Fixed by making every one of those releases unconditional (safe: a
+// non-RC-bearing type's release is a no-op via `contains_rc`, and
+// `star_rc_release` itself no-ops on a null pointer or a string literal's
+// immortal `-1`-sentinel refcount).
+//
+// A first version of this fix moved the release *into*
+// `Codegen::emit_raw_str_ptr` itself, which broke every caller that reads
+// the extracted raw pointer more than once after getting it back (`concat`'s
+// `strcpy`/`strcat`, an extern-C call, `file_open`'s `fopen`, ...): a fresh
+// (non-borrowed) argument's buffer was freed the instant its first use
+// (e.g. `strlen`) executed, corrupting or reusing that memory before its
+// second use ever ran -- confirmed via a real wrong runtime result
+// (`concat(f"a{1}", f"b{2})` produced `"b2b2"` instead of `"a1b2"`, caught
+// by the pre-existing `runtime_fstring_value_nested_and_concat_end_to_end`).
+// Fixed by releasing at each *caller's* own last use of the pointer instead.
+
+/// Chaining `concat` calls (each argument itself a fresh `concat` result,
+/// never bound to a `let`) must still produce the correct concatenation --
+/// guards `Codegen::emit_str_concat` specifically, since its two arguments'
+/// raw pointers are each read twice (`strlen`, then `strcpy`/`strcat`)
+/// before being released.
+#[test]
+fn runtime_concat_of_two_fresh_concat_results_end_to_end() {
+    let src = "fn main():\n    let s = concat(concat(\"a\", \"b\"), concat(\"c\", \"d\"))\n    println(s)\n";
+    let output = compile_and_run("concat_of_fresh_concats", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "abcd");
+}
+
+/// `len`/`ord` of a fresh (never `let`-bound) `concat` result must read the
+/// correct bytes, not a use-after-free of a buffer released before it was
+/// ever read -- guards `Codegen::emit_str_len`/`emit_ord`, which route
+/// through `emit_raw_str_ptr` the same way `emit_str_concat` does.
+#[test]
+fn runtime_len_and_ord_of_a_fresh_concat_result_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let n = len(concat(\"xy\", \"zw\"))\n",
+        "    println(f\"{n}\")\n",
+        "    let o = ord(concat(\"Q\", \"\"))\n",
+        "    println(f\"{o}\")\n",
+    );
+    let output = compile_and_run("len_ord_of_fresh_concat", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["4", "81"], "{}", stdout);
+}
+
+/// An `extern "C" fn` call passed a *fresh* `str` argument (not a borrowed
+/// `Ident`) must still read the correct bytes -- guards
+/// `Codegen::emit_extern_call`'s deferred per-argument release (added
+/// alongside `emit_raw_str_ptr`'s own fix), which has to release *after*
+/// the actual `call @name(...)` instruction, not while still building up
+/// `call_args`.
+#[test]
+fn runtime_extern_call_with_a_fresh_str_argument_end_to_end() {
+    let src = "extern \"C\" fn atoi(s: str) -> int\nfn main():\n    println(f\"{atoi(concat(\"4\", \"2\"))}\")\n";
+    let output = compile_and_run("extern_call_fresh_str_arg", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
+}
+
+/// `file_open`/`file_write`/`env_get`/`env_set` each passed a fresh
+/// (`concat`-built) `str` argument rather than a borrowed `Ident` -- guards
+/// every remaining `emit_raw_str_ptr` caller in `file_io.rs`/`os.rs` at
+/// once, end-to-end through real OS calls rather than just inspecting IR.
+#[test]
+fn runtime_file_and_env_builtins_with_fresh_str_arguments_end_to_end() {
+    let dir = test_scratch_dir("runtime_file_and_env_builtins_with_fresh_str_arguments_end_to_end");
+    let file_path = dir.join("fresh_write_test.txt");
+    std::fs::create_dir_all(&dir).expect("create test dir");
+    let file_path_star = file_path.to_str().unwrap().replace('\\', "/");
+    let src = format!(
+        "fn main():\n    \
+         env_set(concat(\"STAR_TEST_\", \"FRESHVAR\"), concat(\"hello_\", \"world\"))\n    \
+         println(env_get(concat(\"STAR_TEST_\", \"FRESHVAR\")))\n    \
+         let h = file_open(concat(\"{path}\", \"\"), \"w\")\n    \
+         file_write(h, concat(\"payload_\", \"data\"))\n    \
+         file_close(h)\n    \
+         let h2 = file_open(concat(\"{path}\", \"\"), \"r\")\n    \
+         println(file_read_line(h2))\n    \
+         file_close(h2)\n",
+        path = file_path_star
+    );
+    let output = compile_and_run("file_env_fresh_str_args", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["hello_world", "payload_data"], "{}", stdout);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Regression test for the leak fixed across `emit_print_like`/the f-string-
+/// value codegen path: `println`ing a fresh, never-`let`-bound `concat`
+/// result in a tight loop must not grow memory -- previously every call
+/// left that fresh string's sole reference permanently unreleased. Mirrors
+/// `runtime_discarded_list_pop_statement_does_not_leak_end_to_end`'s
+/// technique (throwaway executable + a single PowerShell Working-Set
+/// polling loop).
+#[test]
+fn runtime_printing_a_fresh_concat_result_does_not_leak_end_to_end() {
+    use std::process::Command;
+
+    let src = "fn main():\n    let mut i: i32 = 0\n    while i < 20000000:\n        println(concat(\"a\", \"b\"))\n        i += 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_println_fresh_concat_leak.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+
+    let stdout_file = std::env::temp_dir().join("println_fresh_concat_leak_stdout.txt");
+    let script = format!(
+        "$p = Start-Process -FilePath '{}' -PassThru -RedirectStandardOutput '{}'; \
+         $samples = New-Object System.Collections.ArrayList; \
+         while (-not $p.HasExited) {{ try {{ $p.Refresh(); [void]$samples.Add($p.WorkingSet64) }} catch {{}}; Start-Sleep -Milliseconds 100 }}; \
+         $samples -join ','",
+        exe.display(),
+        stdout_file.display()
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .expect("failed to run the PowerShell memory-sampling script");
+    assert!(output.status.success(), "sampling script failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    let samples_raw = String::from_utf8_lossy(&output.stdout);
+    let samples: Vec<i64> = samples_raw.trim().split(',').filter_map(|s| s.trim().parse().ok()).collect();
+
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    let _ = std::fs::remove_file(&stdout_file);
+
+    if samples.len() < 3 {
+        return;
+    }
+    let settled = &samples[1..];
+    let min = *settled.iter().min().unwrap();
+    let max = *settled.iter().max().unwrap();
+    assert!(
+        (max - min) < 20 * 1024 * 1024,
+        "Working Set grew by {}MB across the run (samples: {:?}) -- println of a fresh, unbound `concat` result is leaking",
+        (max - min) / (1024 * 1024),
+        samples
+    );
+}
+
+/// Regression test for the same leak, through `Map::contains` passed a
+/// fresh `concat`-built key argument (rather than the collection-return-
+/// value leak `runtime_method_call_on_a_fresh_map_returning_call_does_not_leak_end_to_end`
+/// covers) -- this is the call site that originally caught the bug: a
+/// `-O2`-optimized manual check looked flat (the optimizer had likely
+/// elided the unused result), but this suite always builds at `-O0`
+/// (matching `compile_and_run`'s convention) and immediately showed real,
+/// unbounded growth before the fix.
+#[test]
+fn runtime_map_contains_with_a_fresh_concat_key_does_not_leak_end_to_end() {
+    use std::process::Command;
+
+    let src = concat!(
+        "fn main():\n",
+        "    let mut m: Map<str, str> = Map<str, str>()\n",
+        "    m.insert(\"k1\", \"v1\")\n",
+        "    let mut i: i32 = 0\n",
+        "    while i < 20000000:\n",
+        "        let found = m.contains(concat(\"k\", \"1\"))\n",
+        "        i += 1\n",
+        "    println(\"done\")\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_map_contains_fresh_key_leak.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+
+    let stdout_file = std::env::temp_dir().join("map_contains_fresh_key_leak_stdout.txt");
+    let script = format!(
+        "$p = Start-Process -FilePath '{}' -PassThru -RedirectStandardOutput '{}'; \
+         $samples = New-Object System.Collections.ArrayList; \
+         while (-not $p.HasExited) {{ try {{ $p.Refresh(); [void]$samples.Add($p.WorkingSet64) }} catch {{}}; Start-Sleep -Milliseconds 100 }}; \
+         $samples -join ','",
+        exe.display(),
+        stdout_file.display()
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .expect("failed to run the PowerShell memory-sampling script");
+    assert!(output.status.success(), "sampling script failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    let program_stdout = std::fs::read_to_string(&stdout_file).unwrap_or_default();
+    assert!(program_stdout.contains("done"), "program should finish normally: {}", program_stdout);
+
+    let samples_raw = String::from_utf8_lossy(&output.stdout);
+    let samples: Vec<i64> = samples_raw.trim().split(',').filter_map(|s| s.trim().parse().ok()).collect();
+
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    let _ = std::fs::remove_file(&stdout_file);
+
+    if samples.len() < 3 {
+        return;
+    }
+    let settled = &samples[1..];
+    let min = *settled.iter().min().unwrap();
+    let max = *settled.iter().max().unwrap();
+    assert!(
+        (max - min) < 20 * 1024 * 1024,
+        "Working Set grew by {}MB across the run (samples: {:?}) -- `Map::contains` with a fresh `concat` key argument is leaking",
+        (max - min) / (1024 * 1024),
+        samples
+    );
+}
+
+/// An immediately-invoked closure *literal* (never bound to a `let`,
+/// so its environment is a fresh construction, not a borrowed read) must
+/// still call through correctly and release its environment -- guards
+/// `Codegen::emit_closure_call`'s release, which used to be skipped
+/// entirely for exactly this case.
+#[test]
+fn runtime_immediately_invoked_fresh_closure_literal_end_to_end() {
+    let src = "fn main():\n    let x = 10\n    let r = (fn(y: i32) -> i32: x + y)(5)\n    println(f\"{r}\")\n";
+    let output = compile_and_run("iife_fresh_closure", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "15");
 }

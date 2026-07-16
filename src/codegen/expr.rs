@@ -209,10 +209,21 @@ impl Codegen {
     /// `printf`/`len`/`concat` use -- so reuse it here instead of duplicating
     /// the retain/release bookkeeping.
     fn emit_extern_call(&mut self, name: &str, args: &[TypedExpr], expr: &TypedExpr) -> String {
+        // Collect each `str` argument's raw pointer alongside `call_args`,
+        // rather than releasing it inside the `.map()` below: the extern
+        // call itself is the argument's actual last use, which only happens
+        // *after* every `call_args` entry is built and the `call @{name}(...)`
+        // line below is emitted -- releasing any earlier (as an inlined part
+        // of building `call_args`) would free a fresh, non-borrowed `str`
+        // argument's buffer (e.g. `my_extern_fn(concat("a", "b"))`) before
+        // the extern function ever reads through the pointer it was handed.
+        let mut str_ptrs: Vec<String> = Vec::new();
         let call_args: Vec<String> = args.iter().map(|a| {
             let ty = self.expr_ty(a);
             if ty == Ty::Str {
-                format!("i8* {}", self.emit_raw_str_ptr(a))
+                let raw = self.emit_raw_str_ptr(a);
+                str_ptrs.push(raw.clone());
+                format!("i8* {}", raw)
             } else {
                 let reg = self.emit_expr(a);
                 let ats = self.llvm_ty(&ty);
@@ -224,14 +235,21 @@ impl Codegen {
             Ty::Named(n) if n == "unknown" => "void".to_string(),
             other => self.llvm_ty(other),
         };
-        if ret_ty == "void" {
+        let result = if ret_ty == "void" {
             self.line(&format!("  call void @{}({})", name, call_args.join(", ")));
             "%undef".into()
         } else {
             let ret = self.tmp_name();
             self.line(&format!("  {} = call {} @{}({})", ret, ret_ty, name, call_args.join(", ")));
             format!("{} {}", ret_ty, ret)
+        };
+        // Every `str` argument is done being read now that the call has
+        // executed -- release whatever `emit_raw_str_ptr` left us owning for
+        // each (see its own doc comment).
+        for ptr in &str_ptrs {
+            self.line(&format!("  call void @star_rc_release(i8* {})", ptr));
         }
+        result
     }
 
     /// Short-circuit lowering for `&&`/`and` and `||`/`or`: `rhs` is only
@@ -1073,14 +1091,13 @@ impl Codegen {
                                     fmt_str.push_str("%s");
                                     // This hole only reads the bytes for
                                     // `snprintf`, it doesn't keep the
-                                    // pointer around -- balance back out
-                                    // whatever retain `emit_expr(e)` did on
-                                    // `e`'s behalf (a no-op if `e` was a
-                                    // fresh construction), same reasoning as
-                                    // `emit_print_like`/`emit_raw_str_ptr`.
-                                    if Self::is_rc_borrowing_read(e) {
-                                        self.line(&format!("  call void @star_rc_release(i8* {})", bare_val));
-                                    }
+                                    // pointer around -- release whatever
+                                    // `emit_expr(e)` left us owning, same
+                                    // reasoning as
+                                    // `emit_print_like`/`emit_raw_str_ptr`
+                                    // (see `rc.rs`'s module doc comment for
+                                    // why this is unconditional).
+                                    self.line(&format!("  call void @star_rc_release(i8* {})", bare_val));
                                     call_args.push(format!("i8* {}", bare_val));
                                 }
                                 Ty::Bool => {
@@ -1093,20 +1110,14 @@ impl Codegen {
                                     // Same reasoning as the `Str` arm above:
                                     // this hole only prints `bare_val`'s raw
                                     // address, it doesn't keep the value
-                                    // around, so whatever retain `emit_expr(e)`
-                                    // did on `e`'s behalf must be balanced
-                                    // back out -- generalized to any
-                                    // RC-bearing type (`List`/`Map`/`Set`/
-                                    // `Closure`/struct/payload enum) via
+                                    // around, so whatever `emit_expr(e)` left
+                                    // us owning must be released -- generalized
+                                    // to any RC-bearing type (`List`/`Map`/
+                                    // `Set`/`Closure`/struct/payload enum) via
                                     // `emit_release_bare`, since (unlike
                                     // `Str`) there's no single flat pointer to
-                                    // release directly here. Previously
-                                    // missing entirely, this leaked one
-                                    // reference per interpolation of any such
-                                    // value.
-                                    if Self::is_rc_borrowing_read(e) {
-                                        self.emit_release_bare(&bare_val, &ty);
-                                    }
+                                    // release directly here.
+                                    self.emit_release_bare(&bare_val, &ty);
                                     call_args.push(format!("i8* {}", bare_val));
                                 }
                             }

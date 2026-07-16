@@ -371,17 +371,17 @@ impl Codegen {
         self.line(&format!("  {} = extractvalue {{ i8*, i8* }} {}, 0", fnptr_i8, bare));
         let envptr = self.tmp_name();
         self.line(&format!("  {} = extractvalue {{ i8*, i8* }} {}, 1", envptr, bare));
-        // If `callee` reads an existing owned slot, `emit_expr` above
-        // already retained a fresh reference to the closure's environment
-        // on its behalf (see `rc.rs`) -- but *calling* a closure is a
-        // transient use (unpack `fn_ptr`/`env_ptr`, call through, done),
-        // not a new persistent owner, so that retain must be released
-        // right back or every call through a bare closure variable would
-        // leak one reference to its environment (same reasoning as
-        // `crate::codegen::builtins::emit_raw_str_ptr`).
-        if Self::is_rc_borrowing_read(callee) {
-            self.line(&format!("  call void @star_rc_release(i8* {})", envptr));
-        }
+        // *Calling* a closure is a transient use (unpack `fn_ptr`/`env_ptr`,
+        // call through, done), not a new persistent owner, so whatever
+        // `emit_expr` above left us owning must be released right back:
+        // a borrowed read's extra retain (or every call through a bare
+        // closure variable would leak one reference to its environment), or
+        // a fresh closure literal's sole reference (or an immediately-
+        // invoked closure literal, `(|x| x + 1)(5)`, would leak its
+        // environment every time) -- same reasoning as
+        // `crate::codegen::builtins::emit_raw_str_ptr`, see `rc.rs`'s module
+        // doc comment for why this is unconditional and always safe.
+        self.line(&format!("  call void @star_rc_release(i8* {})", envptr));
 
         let ret_llvm = self.closure_ret_llvm(ret_ty);
         let param_llvm: Vec<String> = param_tys.iter().map(|t| self.llvm_ty(t)).collect();

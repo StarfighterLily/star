@@ -397,12 +397,11 @@ impl Codegen {
                 let (data, len) = self.set_fields(base, elem_ty);
                 let (found, _) = self.emit_linear_find(&data, &len, elem_ty, &needle);
                 // `needle` is only ever compared against, never stored --
-                // release the borrow `emit_expr` retained on `args[0]`'s
-                // behalf (a no-op if `args[0]` was a fresh construction, see
-                // `is_rc_borrowing_read`), or it leaks one reference per call.
-                if Self::is_rc_borrowing_read(&args[0]) {
-                    self.emit_release_bare(&needle, elem_ty);
-                }
+                // release whatever `emit_expr` left us owning (a borrowed
+                // read's extra retain, or a fresh construction's sole
+                // reference -- see `rc.rs`'s module doc comment for why this
+                // is unconditional), or it leaks one reference per call.
+                self.emit_release_bare(&needle, elem_ty);
                 format!("i1 {}", found)
             }
             SetMethod::Insert => {
@@ -431,15 +430,13 @@ impl Codegen {
 
                 self.open_block(&already_label);
                 // The set already contains an equal element, so `clean_val`
-                // itself is never stored -- release the borrow `emit_expr`
-                // retained on `args[0]`'s behalf above (a no-op if `args[0]`
-                // was a fresh construction), or it leaks one reference per
-                // no-op `insert` call. The sibling `insert_label` branch below
-                // does store `clean_val` into a fresh slot instead, transferring
-                // that same retained reference to the set rather than releasing it.
-                if Self::is_rc_borrowing_read(&args[0]) {
-                    self.emit_release_bare(&clean_val, elem_ty);
-                }
+                // itself is never stored -- release whatever `emit_expr`
+                // left us owning, or it leaks one reference per no-op
+                // `insert` call. The sibling `insert_label` branch below
+                // does store `clean_val` into a fresh slot instead,
+                // transferring that same reference to the set rather than
+                // releasing it.
+                self.emit_release_bare(&clean_val, elem_ty);
                 let found_pred = self.current_label.clone();
                 self.line(&format!("  br label %{}", end_label));
 
@@ -524,9 +521,7 @@ impl Codegen {
                 // (the element actually stored in the set is released
                 // separately, below, when the removed slot itself is torn
                 // down) -- same reasoning as `SetMethod::Contains`.
-                if Self::is_rc_borrowing_read(&args[0]) {
-                    self.emit_release_bare(&needle, elem_ty);
-                }
+                self.emit_release_bare(&needle, elem_ty);
 
                 let do_label = self.block_label("set_remove_do");
                 let end_label = self.block_label("set_remove_end");

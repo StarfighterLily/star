@@ -109,6 +109,9 @@ impl Codegen {
         self.line(&format!("  {} = call i16 @htons(i16 {})", port_be, port16));
         let addr = self.tmp_name();
         self.line(&format!("  {} = call i32 @inet_addr(i8* {})", addr, host));
+        // `host` is done being read -- release whatever `emit_raw_str_ptr`
+        // left us owning (see its own doc comment).
+        self.line(&format!("  call void @star_rc_release(i8* {})", host));
 
         // `inet_addr` returns `INADDR_NONE` (`0xFFFFFFFF`, i.e. `-1` as a
         // signed `i32`) for a malformed address string -- indistinguishable
@@ -198,6 +201,9 @@ impl Codegen {
         self.line(&format!("  {} = call i32 @strlen(i8* {})", len, data));
         let n = self.tmp_name();
         self.line(&format!("  {} = call i32 @send(i8* {}, i8* {}, i32 {}, i32 0)", n, handle, data, len));
+        // `data` is done being read -- release whatever `emit_raw_str_ptr`
+        // left us owning (see its own doc comment).
+        self.line(&format!("  call void @star_rc_release(i8* {})", data));
         let ok = self.tmp_name();
         self.line(&format!("  {} = icmp eq i32 {}, {}", ok, n, len));
         format!("i1 {}", ok)
