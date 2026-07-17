@@ -18,6 +18,7 @@
 //! an out-of-bounds *write* is a silent no-op, mirroring `despawn`'s
 //! already-dead-slot handling in `crate::codegen::arena`.
 
+use crate::diagnostics::Span;
 use crate::types::*;
 
 use super::Codegen;
@@ -173,6 +174,76 @@ impl Codegen {
         self.line(&format!("  store i64 {}, i64* {}", n, cap_field));
 
         format!("i8* {}", obj_raw)
+    }
+
+    /// `bytes_from_str(s) -> Bytes`: a fresh, independent copy of `s`'s bytes
+    /// (excluding the trailing null terminator `str` always carries but
+    /// `Bytes` never does), wrapped in the exact same `{ u8*, i64, i64 }`/
+    /// `star_rc_alloc` object `List<u8>` uses -- see `Ty::Bytes`'s doc
+    /// comment for why `Bytes` reuses `List<u8>`'s layout wholesale.
+    /// Structurally `emit_list_lit`'s tail (malloc a tightly-sized buffer,
+    /// wrap it in a fresh RC object), just filling the buffer via one
+    /// `memcpy` from `s`'s own bytes instead of a compile-time list of
+    /// element expressions.
+    pub(super) fn emit_bytes_from_str(&mut self, args: &[TypedExpr]) -> String {
+        let Some(arg) = args.first() else {
+            self.err("bytes_from_str(..) expects 1 argument", Span::dummy());
+            return "i8* null".into();
+        };
+        let raw = self.emit_raw_str_ptr(arg);
+        let len32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", len32, raw));
+        let n = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", n, len32));
+
+        let new_raw = self.tmp_name();
+        self.line(&format!("  {} = call i8* @malloc(i64 {})", new_raw, n));
+        self.line(&format!("  call i8* @memcpy(i8* {}, i8* {}, i64 {})", new_raw, raw, n));
+        // `raw` is done being read -- release whatever `emit_raw_str_ptr`
+        // left us owning (see its own doc comment for why this can't happen
+        // inside that function itself).
+        self.line(&format!("  call void @star_rc_release(i8* {})", raw));
+
+        let payload_ty = self.list_payload_llvm_ty(&Ty::U8);
+        let release_fn = self.list_release_thunk_operand(&Ty::U8);
+        let obj_raw = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 24, i8* {})", obj_raw, release_fn));
+        let payload = self.tmp_name();
+        self.line(&format!("  {} = bitcast i8* {} to {}*", payload, obj_raw, payload_ty));
+        let data_field = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0", data_field, payload_ty, payload_ty, payload));
+        self.line(&format!("  store i8* {}, i8** {}", new_raw, data_field));
+        let len_field = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 1", len_field, payload_ty, payload_ty, payload));
+        self.line(&format!("  store i64 {}, i64* {}", n, len_field));
+        let cap_field = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 2", cap_field, payload_ty, payload_ty, payload));
+        self.line(&format!("  store i64 {}, i64* {}", n, cap_field));
+
+        format!("i8* {}", obj_raw)
+    }
+
+    /// `str_from_bytes(b) -> str`: a fresh, independent, null-terminated
+    /// copy of `b`'s bytes -- the reverse of `emit_bytes_from_str`. Reads
+    /// `b`'s fields via `list_fields` (retain-free, matching every other
+    /// plain-read builtin/method -- `b` itself is untouched).
+    pub(super) fn emit_str_from_bytes(&mut self, args: &[TypedExpr]) -> String {
+        let Some(arg) = args.first() else {
+            self.err("str_from_bytes(..) expects 1 argument", Span::dummy());
+            return "i8* null".into();
+        };
+        let (data, len) = self.list_fields(arg, &Ty::U8);
+
+        let total = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", total, len));
+        let buf = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", buf, total));
+        self.line(&format!("  call i8* @memcpy(i8* {}, i8* {}, i64 {})", buf, data, len));
+        let nul = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", nul, buf, len));
+        self.line(&format!("  store i8 0, i8* {}", nul));
+
+        format!("i8* {}", buf)
     }
 
     /// `args() -> List<str>`: the process's command-line arguments,

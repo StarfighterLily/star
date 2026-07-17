@@ -13867,3 +13867,264 @@ fn runtime_named_args_in_declaration_order_end_to_end() {
     assert!(output.status.success(), "{:?}", output.status);
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "Hero 100");
 }
+
+// === `Bytes` (docs/design.md's "Text and bytes" section) ===================
+
+/// `Bytes()` starts empty; `push`/`len`/`[i]` behave exactly like `List<u8>`
+/// (`Ty::Bytes` reuses that codegen wholesale -- see `Ty::Bytes`'s doc
+/// comment).
+#[test]
+fn runtime_bytes_construct_push_len_index_end_to_end() {
+    let src = "fn main():\n    let mut b = Bytes()\n    println(f\"{b.len()}\")\n    \
+               b.push(10 as u8)\n    b.push(20 as u8)\n    b.push(30 as u8)\n    \
+               println(f\"{b.len()}\")\n    println(f\"{b[0]} {b[1]} {b[2]}\")\n";
+    let output = compile_and_run("bytes_construct_push_len_index", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["0", "3", "10 20 30"], "{}", stdout);
+}
+
+/// `bytes[i] = v` writes through in place, and a `u8` value wider than one
+/// byte (via `as u8`) truncates, matching `List<u8>`'s own element-store
+/// convention.
+#[test]
+fn runtime_bytes_index_write_end_to_end() {
+    let src = "fn main():\n    let mut b = Bytes()\n    b.push(1 as u8)\n    b.push(2 as u8)\n    \
+               b[0] = 250 as u8\n    b[1] = 321 as u8\n    println(f\"{b[0]} {b[1]}\")\n";
+    let output = compile_and_run("bytes_index_write", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    // 321 truncated to u8 is 321 - 256 = 65.
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "250 65");
+}
+
+/// `pop()` removes the last-pushed byte, LIFO.
+#[test]
+fn runtime_bytes_pop_end_to_end() {
+    let src = "fn main():\n    let mut b = Bytes()\n    b.push(1 as u8)\n    b.push(2 as u8)\n    b.push(3 as u8)\n    \
+               println(f\"{b.pop()}\")\n    println(f\"{b.pop()}\")\n    println(f\"{b.len()}\")\n";
+    let output = compile_and_run("bytes_pop", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["3", "2", "1"], "{}", stdout);
+}
+
+/// An out-of-bounds read/pop on an empty (never-pushed) `Bytes` yields `0`,
+/// the element type's zero value -- the same "safe null equivalent"
+/// convention `List<T>` uses, not a crash or trap.
+#[test]
+fn runtime_bytes_out_of_bounds_reads_are_safe_end_to_end() {
+    let src = "fn main():\n    let mut b = Bytes()\n    println(f\"{b[0]}\")\n    println(f\"{b.pop()}\")\n    \
+               b.push(9 as u8)\n    println(f\"{b[5]}\")\n";
+    let output = compile_and_run("bytes_oob_safe", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["0", "0", "0"], "{}", stdout);
+}
+
+/// `let b = a` is an O(1) refcount bump sharing one buffer; mutating one
+/// binding (`push`) must not be visible through the other -- the same
+/// copy-on-write guarantee `List<T>` gives (`Ty::Bytes`'s doc comment: it
+/// reuses that exact codegen).
+#[test]
+fn runtime_bytes_copy_on_write_end_to_end() {
+    let src = "fn main():\n    let mut a = Bytes()\n    a.push(1 as u8)\n    a.push(2 as u8)\n    \
+               let b = a\n    a.push(3 as u8)\n    println(f\"{a.len()} {b.len()}\")\n";
+    let output = compile_and_run("bytes_cow", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "3 2");
+}
+
+/// `bytes_from_str`/`str_from_bytes` round-trip a `str`'s bytes exactly,
+/// including the empty string (a real `malloc(0)`, not special-cased).
+#[test]
+fn runtime_bytes_from_str_round_trip_end_to_end() {
+    let src = "fn main():\n    let b = bytes_from_str(\"Hi!\")\n    println(f\"{b.len()}\")\n    println(f\"{b[0]} {b[1]} {b[2]}\")\n    \
+               println(str_from_bytes(b))\n    let empty = bytes_from_str(\"\")\n    println(f\"{empty.len()}\")\n    \
+               println(f\"[{str_from_bytes(empty)}]\")\n";
+    let output = compile_and_run("bytes_from_str_round_trip", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["3", "72 105 33", "Hi!", "0", "[]"], "{}", stdout);
+}
+
+/// `Bytes` is a nominally distinct type from `List<u8>`, even though they
+/// share an identical runtime layout (mirrors `Handle<T>` vs. `GenRef<T>`).
+#[test]
+fn rejects_bytes_passed_where_list_u8_expected() {
+    let src = "fn take(xs: List<u8>) -> i32:\n    xs.len()\nfn main():\n    let b = Bytes()\n    take(b)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("Bytes should not satisfy a List<u8> parameter");
+    assert!(!diags.is_empty(), "{:?}", diags);
+}
+
+#[test]
+fn rejects_bytes_constructor_with_arguments() {
+    let src = "fn main():\n    let b = Bytes(1 as u8)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("Bytes() should take no arguments");
+    assert!(diags.iter().any(|d| d.message.contains("takes no arguments")), "{:?}", diags);
+}
+
+/// `Bytes` has no structural-equality story (mirrors `List<T>`), so it can't
+/// be used as a `Map`/`Set` key.
+#[test]
+fn rejects_bytes_used_as_map_key() {
+    let src = "fn main():\n    let m: Map<Bytes, i32> = Map<Bytes, i32>()\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("Bytes should not be a legal Map key type");
+    assert!(diags.iter().any(|d| d.message.contains("cannot be used as a `Map`/`Set` key")), "{:?}", diags);
+}
+
+/// Repeated push/pop churn well past the initial capacity doubles -- a
+/// regression guard on `emit_bytes_from_str`/`ListMethod::Push`'s grow path
+/// leaking the buffer it replaces every time it doubles.
+#[test]
+fn runtime_bytes_push_growth_does_not_leak_end_to_end() {
+    let src = "fn main():\n    let mut b = Bytes()\n    let mut i: i32 = 0\n    let mut total: i32 = 0\n    \
+               while i < 400000:\n        b.push((i as u8))\n        total = total + (b[b.len() - 1] as i32)\n        \
+               if b.len() > 1000:\n            b.pop()\n        i += 1\n    println(\"done\")\n";
+    assert_no_leak("bytes_push_growth_leak", src, 20 * 1024 * 1024);
+}
+
+// === `Symbol` (docs/design.md's "Text and bytes" section) ==================
+
+/// Two `Symbol(..)` constructions of equal strings intern to the same id,
+/// so `==` between them is `true` -- the core guarantee this type exists
+/// for (`docs/design.md`: "comparing tags... every frame is a real cost").
+#[test]
+fn runtime_symbol_equal_strings_intern_to_same_id_end_to_end() {
+    let src = "fn main():\n    let a = Symbol(\"player\")\n    let b = Symbol(\"player\")\n    println(f\"{a == b}\")\n";
+    let output = compile_and_run("symbol_equal_strings_same_id", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "true");
+}
+
+/// Distinct strings intern to distinct ids.
+#[test]
+fn runtime_symbol_distinct_strings_differ_end_to_end() {
+    let src = "fn main():\n    let a = Symbol(\"player\")\n    let b = Symbol(\"enemy\")\n    println(f\"{a == b}\")\n    println(f\"{a != b}\")\n";
+    let output = compile_and_run("symbol_distinct_strings_differ", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["false", "true"], "{}", stdout);
+}
+
+/// `Symbol <-> i64` is a free bit-preserving relabel; interning order is
+/// deterministic (first-seen order) within one run, so ids are stable.
+#[test]
+fn runtime_symbol_cast_round_trip_end_to_end() {
+    let src = "fn main():\n    let a = Symbol(\"first\")\n    let b = Symbol(\"second\")\n    \
+               let a_id = a as i64\n    let b_id = b as i64\n    println(f\"{a_id} {b_id}\")\n    \
+               let back = b_id as Symbol\n    println(f\"{back == b}\")\n";
+    let output = compile_and_run("symbol_cast_round_trip", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["0 1", "true"], "{}", stdout);
+}
+
+/// `symbol_name` reverses the interning lookup, returning the original
+/// string -- and a fresh, independently-owned copy (a second call, or
+/// releasing the caller's copy, must not corrupt the table's own entry).
+#[test]
+fn runtime_symbol_name_round_trip_end_to_end() {
+    let src = "fn main():\n    let a = Symbol(\"hello world\")\n    println(symbol_name(a))\n    println(symbol_name(a))\n";
+    let output = compile_and_run("symbol_name_round_trip", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["hello world", "hello world"], "{}", stdout);
+}
+
+/// A `Symbol` id that never came from `Symbol(..)` (here, an out-of-range
+/// `as`-cast integer) is a safe out-of-bounds read rather than a crash:
+/// `symbol_name` returns `str`'s zero value (a `null` pointer, same as
+/// `List<T>::pop()` on an empty `List<str>` -- this libc's `printf` renders
+/// a `null` `%s` argument as the literal text `(null)`, not an empty
+/// string).
+#[test]
+fn runtime_symbol_name_out_of_range_returns_zero_value_end_to_end() {
+    let src = "fn main():\n    let a = Symbol(\"only one\")\n    let bogus = (999999 as i64) as Symbol\n    println(f\"[{symbol_name(bogus)}]\")\n";
+    let output = compile_and_run("symbol_name_out_of_range", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "[(null)]");
+}
+
+/// `Symbol` is a legal `Map`/`Set` key (`Checker::check_hashable_ty`) --
+/// comparison is a single `i64` compare, so re-inserting an equal `Symbol`
+/// overwrites rather than duplicating.
+#[test]
+fn runtime_symbol_as_map_key_end_to_end() {
+    let src = "fn main():\n    let mut hp: Map<Symbol, i32> = Map<Symbol, i32>()\n    \
+               hp.insert(Symbol(\"player\"), 100)\n    hp.insert(Symbol(\"enemy\"), 40)\n    hp.insert(Symbol(\"player\"), 80)\n    \
+               println(f\"{hp.len()}\")\n    \
+               match hp.get(Symbol(\"player\")):\n        Option::Some(v) -> println(f\"{v}\")\n        Option::None -> println(\"missing\")\n";
+    let output = compile_and_run("symbol_as_map_key", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["2", "80"], "{}", stdout);
+}
+
+/// `Set<Symbol>` dedups equal-string `Symbol`s -- this is the regression
+/// this section's `eq.rs` fix guards: before adding a dedicated
+/// `Ty::Symbol` arm to `emit_eq_body`, its `_ => "true".into()` fallback
+/// made every `Symbol` compare equal to every other one inside a
+/// `Map`/`Set`, silently collapsing all keys/elements to one.
+#[test]
+fn runtime_symbol_as_set_key_dedups_end_to_end() {
+    let src = "fn main():\n    let mut tags: Set<Symbol> = Set<Symbol>()\n    \
+               tags.insert(Symbol(\"flying\"))\n    tags.insert(Symbol(\"flying\"))\n    tags.insert(Symbol(\"armored\"))\n    \
+               println(f\"{tags.len()}\")\n    println(f\"{tags.contains(Symbol(\"flying\"))}\")\n    println(f\"{tags.contains(Symbol(\"stealth\"))}\")\n";
+    let output = compile_and_run("symbol_as_set_key_dedups", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["2", "true", "false"], "{}", stdout);
+}
+
+#[test]
+fn rejects_symbol_constructor_with_non_str_argument() {
+    let src = "fn main():\n    let a = Symbol(1)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("Symbol(..) should require a str argument");
+    assert!(diags.iter().any(|d| d.message.contains("expects 1 `str` argument")), "{:?}", diags);
+}
+
+/// Only `==`/`!=` are supported between `Symbol` values -- interning order
+/// is an implementation detail, not a meaningful sort.
+#[test]
+fn rejects_symbol_ordering_comparison() {
+    let src = "fn main():\n    let a = Symbol(\"a\")\n    let b = Symbol(\"b\")\n    let c = a < b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("`<` between Symbols should be rejected");
+    assert!(diags.iter().any(|d| d.message.contains("only `==`/`!=` are supported between `Symbol` values")), "{:?}", diags);
+}
+
+/// `Symbol` never implicitly mixes with a bare `i64` -- same "no implicit
+/// anything" rule every other explicit-width/nominal type in this section
+/// follows (an explicit `as` cast is always required).
+#[test]
+fn rejects_binop_between_symbol_and_bare_i64() {
+    let src = "fn main():\n    let a = Symbol(\"a\")\n    let n: i64 = 0\n    let c = a == n\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("Symbol == i64 without a cast should be rejected");
+    assert!(!diags.is_empty(), "{:?}", diags);
+}
+
+/// Repeatedly re-interning the *same* string exercises the "already
+/// present" path (release-then-return-existing-id) in a loop -- a
+/// regression guard on that path leaking the freshly-constructed `str`
+/// argument instead of releasing it once its id is found.
+#[test]
+fn runtime_symbol_repeated_interning_of_same_string_does_not_leak_end_to_end() {
+    let src = "fn main():\n    let mut i: i32 = 0\n    let mut total: i64 = 0 as i64\n    \
+               while i < 400000:\n        let s = Symbol(\"same tag every time\")\n        total = total + (s as i64)\n        i += 1\n    \
+               println(\"done\")\n";
+    assert_no_leak("symbol_repeated_intern_leak", src, 20 * 1024 * 1024);
+}

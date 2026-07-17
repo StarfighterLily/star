@@ -29,6 +29,7 @@ mod reflect;
 mod ring;
 mod set;
 mod stmt;
+mod symbol;
 mod table;
 mod time;
 mod vector_math;
@@ -444,6 +445,16 @@ impl Codegen {
         // explicitly reseeded via `rand_seed(..)`.
         self.line("@rng.state = global i32 123456789");
         self.line("");
+        // The `Symbol` intern table -- see `crate::codegen::symbol` and
+        // `Ty::Symbol`'s doc comment. A plain growable global array of owned
+        // `str` object pointers (doubled on grow, the same recipe
+        // `List<T>::push` uses -- see `crate::codegen::list`), since there's
+        // exactly one intern table for the whole process, never copied or
+        // reference-counted itself.
+        self.line("@sym.data = global i8** null");
+        self.line("@sym.len = global i64 0");
+        self.line("@sym.cap = global i64 0");
+        self.line("");
         self.emit_rc_runtime();
     }
 
@@ -592,6 +603,11 @@ impl Codegen {
             Ty::Fixed(bits, _) => bits / 8,
             // Bare `i64` -- see `Ty::Tick`'s doc comment.
             Ty::Tick | Ty::Duration | Ty::Instant => 8,
+            // Same RC'd `i8*` object-pointer bucket as `Ty::List` -- see
+            // `Ty::Bytes`'s doc comment.
+            Ty::Bytes => 8,
+            // Bare `i64` -- see `Ty::Symbol`'s doc comment.
+            Ty::Symbol => 8,
         }
     }
 
@@ -704,6 +720,11 @@ impl Codegen {
             Ty::Fixed(bits, _) => bits / 8,
             // Bare `i64` -- see `Ty::Tick`'s doc comment.
             Ty::Tick | Ty::Duration | Ty::Instant => 8,
+            // A reference-counted `i8*` object pointer, same as `Ty::List`
+            // -- see `Ty::Bytes`'s doc comment.
+            Ty::Bytes => 8,
+            // Bare `i64` -- see `Ty::Symbol`'s doc comment.
+            Ty::Symbol => 8,
         }
     }
 
@@ -791,6 +812,11 @@ impl Codegen {
             Ty::Fixed(bits, _) => format!("i{}", bits),
             // A bare `i64` -- see `Ty::Tick`'s doc comment.
             Ty::Tick | Ty::Duration | Ty::Instant => "i64".into(),
+            // The exact same RC'd object-pointer scheme as `Ty::List` -- see
+            // `Ty::Bytes`'s doc comment.
+            Ty::Bytes => "i8*".into(),
+            // A bare `i64` id -- see `Ty::Symbol`'s doc comment.
+            Ty::Symbol => "i64".into(),
         }
     }
 
@@ -866,6 +892,14 @@ impl Codegen {
             Ty::Tick => "tick".into(),
             Ty::Duration => "duration".into(),
             Ty::Instant => "instant".into(),
+            // `Bytes`'s own generated helpers (`push`/`pop`/`len`'s release
+            // thunk) are always reached by calling `crate::codegen::list`'s
+            // functions with `elem_ty = Ty::U8` directly -- see `Ty::Bytes`'s
+            // doc comment -- so this arm (like `Tick`/`Duration`/`Instant`
+            // above) is never actually reached today; it exists for match
+            // exhaustiveness.
+            Ty::Bytes => "bytes".into(),
+            Ty::Symbol => "symbol".into(),
         }
     }
 
@@ -947,6 +981,11 @@ impl Codegen {
             | Ty::Array(..) | Ty::Ring(..) => "zeroinitializer".into(),
             Ty::Wrapping(inner) => self.zero_value(inner),
             Ty::Fixed(..) => "0".into(),
+            // Same "never-allocated" null object pointer as `Ty::List` --
+            // see `Ty::Bytes`'s doc comment.
+            Ty::Bytes => "null".into(),
+            // Bare `i64` zero -- see `Ty::Symbol`'s doc comment.
+            Ty::Symbol => "0".into(),
         }
     }
 

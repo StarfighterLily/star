@@ -156,9 +156,15 @@ impl Codegen {
                 self.line(&format!("  {} = icmp eq i{} {}, {}", r, bits, a, b));
                 r
             }
+            // A bare `i64` interned id -- see `Ty::Symbol`'s doc comment.
+            Ty::Symbol => {
+                let r = self.tmp_name();
+                self.line(&format!("  {} = icmp eq i64 {}, {}", r, a, b));
+                r
+            }
             // Unreachable in practice -- `Checker::check_hashable_ty` rejects
-            // every other `Ty` (GenRef/List/Map/Set/Closure/Ptr/Mat4) as a
-            // Map/Set key/element type before codegen ever sees one here.
+            // every other `Ty` (GenRef/List/Map/Set/Closure/Ptr/Mat4/Bytes) as
+            // a Map/Set key/element type before codegen ever sees one here.
             _ => "true".into(),
         }
     }

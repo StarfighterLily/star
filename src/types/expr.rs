@@ -168,6 +168,11 @@ impl Checker {
                     if let Ty::List(elem_ty) = base_typed.clone().into_ty() {
                         return Ok(self.infer_list_method(base_typed, field, *elem_ty, args, vars, *span));
                     }
+                    // `Bytes` reuses `List<u8>`'s method surface wholesale
+                    // (`push`/`pop`/`len`) -- see `Ty::Bytes`'s doc comment.
+                    if let Ty::Bytes = base_typed.clone().into_ty() {
+                        return Ok(self.infer_list_method(base_typed, field, Ty::U8, args, vars, *span));
+                    }
                     if let Ty::Map(key_ty, val_ty) = base_typed.clone().into_ty() {
                         return Ok(self.infer_map_method(base_typed, field, *key_ty, *val_ty, args, vars, *span));
                     }
@@ -641,6 +646,12 @@ impl Checker {
                     Ty::List(inner) => {
                         Ok(TypedExpr::ListIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: *inner, span: *span })
                     }
+                    // `bytes[i]` -- reuses the exact same `TypedExpr::ListIndex`
+                    // node/codegen as `List<u8>` indexing -- see `Ty::Bytes`'s
+                    // doc comment.
+                    Ty::Bytes => {
+                        Ok(TypedExpr::ListIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: Ty::U8, span: *span })
+                    }
                     Ty::Array(inner, _) => {
                         Ok(TypedExpr::ArrayIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: *inner, span: *span })
                     }
@@ -657,7 +668,7 @@ impl Checker {
                         Ok(TypedExpr::StrIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: Ty::Int, span: *span })
                     }
                     other => {
-                        self.error(format!("`[..]` indexing requires a `GenRef<T>`, `Handle<T>`, `List<T>`, `[T; N]`, `Ring<T,N>`, `Table<T>`, or `str`, found `{:?}`", other), *span);
+                        self.error(format!("`[..]` indexing requires a `GenRef<T>`, `Handle<T>`, `List<T>`, `Bytes`, `[T; N]`, `Ring<T,N>`, `Table<T>`, or `str`, found `{:?}`", other), *span);
                         Ok(TypedExpr::Error(Ty::Named("unknown".into())))
                     }
                 }
@@ -832,13 +843,18 @@ impl Checker {
                     (&inner_ty, &target),
                     (Ty::Tick | Ty::Duration | Ty::Instant, Ty::I64) | (Ty::I64, Ty::Tick | Ty::Duration | Ty::Instant)
                 );
+                // `Symbol <-> i64`: a free bit-preserving relabel, same
+                // reasoning as `Tick`/`Duration`/`Instant <-> i64` above --
+                // see `Ty::Symbol`'s doc comment.
+                let symbol_ok = matches!((&inner_ty, &target), (Ty::Symbol, Ty::I64) | (Ty::I64, Ty::Symbol));
                 let ok = (inner_ty.is_numeric() && target.is_numeric())
                     || (inner_ty.is_numeric() && target == Ty::Char)
                     || (inner_ty == Ty::Char && target.is_numeric())
                     || (inner_ty == Ty::Char && target == Ty::Char)
                     || wrapping_ok
                     || fixed_ok
-                    || time_ok;
+                    || time_ok
+                    || symbol_ok;
                 if !ok && !Self::is_placeholder_ty(&inner_ty) && !Self::is_placeholder_ty(&target) {
                     self.error(
                         format!(
@@ -1499,6 +1515,19 @@ impl Checker {
                     self.error(format!("{}(..) expects 1 integer argument", name), span);
                 }
             }
+            // `docs/design.md`'s "Text and bytes" section: `Bytes()` starts
+            // empty (mirrors `List<T>()`); `Symbol(s)` interns a `str` --
+            // see `Ty::Symbol`'s doc comment.
+            Ty::Bytes => {
+                if !args.is_empty() {
+                    self.error(format!("{}() takes no arguments", name), span);
+                }
+            }
+            Ty::Symbol => {
+                if args.len() != 1 || !matches!(args[0].clone().into_ty(), Ty::Str) {
+                    self.error(format!("{}(..) expects 1 `str` argument", name), span);
+                }
+            }
             _ => {}
         }
     }
@@ -1846,6 +1875,21 @@ impl Checker {
             "read_line" | "rand" | "null_ptr" => {
                 arity_ok(0, self);
             }
+            "bytes_from_str" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Str) {
+                    self.error(format!("`bytes_from_str` expects a `str` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "str_from_bytes" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Bytes) {
+                    self.error(format!("`str_from_bytes` expects a `Bytes` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "symbol_name" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Symbol) {
+                    self.error(format!("`symbol_name` expects a `Symbol` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
             "dot" => {
                 if arity_ok(2, self) {
                     if !is_vec(&arg_tys[0]) {
@@ -2070,6 +2114,15 @@ impl Checker {
                 if *lhs_ty == Ty::Str && *rhs_ty == Ty::Str {
                     if !matches!(op, BinOp::Eq | BinOp::Ne) {
                         self.error("only `==`/`!=` are supported between `str` values", span);
+                    }
+                    return Ty::Bool;
+                }
+                // `Symbol == Symbol` / `!=` -- a single `i64` id comparison
+                // (see `Ty::Symbol`'s doc comment). No ordering: interning
+                // order is an implementation detail, not a meaningful sort.
+                if *lhs_ty == Ty::Symbol && *rhs_ty == Ty::Symbol {
+                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
+                        self.error("only `==`/`!=` are supported between `Symbol` values", span);
                     }
                     return Ty::Bool;
                 }

@@ -293,6 +293,12 @@ impl Codegen {
         if matches!((&src_ty, target), (Ty::Tick | Ty::Duration | Ty::Instant, Ty::I64) | (Ty::I64, Ty::Tick | Ty::Duration | Ty::Instant)) {
             return format!("{} {}", target_llty, bare);
         }
+        // `Symbol <-> i64`: same free bit-preserving relabel as
+        // `Tick`/`Duration`/`Instant <-> i64` just above -- see
+        // `Ty::Symbol`'s doc comment.
+        if matches!((&src_ty, target), (Ty::Symbol, Ty::I64) | (Ty::I64, Ty::Symbol)) {
+            return format!("{} {}", target_llty, bare);
+        }
         // `Fixed<Bits,Frac> <-> float/f64`: a true scaled conversion, not a
         // bit reinterpret -- see `Ty::Fixed`'s doc comment.
         if let Ty::Fixed(bits, frac) = &src_ty {
@@ -614,6 +620,25 @@ impl Codegen {
                 }
                 _ => {
                     self.err("only `==`/`!=` are supported on `ptr` values", Span::dummy());
+                    "%undef".into()
+                }
+            };
+        }
+        // `Symbol == Symbol` / `!=` -- a single `i64` id comparison, no
+        // `strcmp`/RC involved at all (unlike `str == str` just below) --
+        // see `Ty::Symbol`'s doc comment.
+        if matches!((lty, rty), (Ty::Symbol, Ty::Symbol)) {
+            return match op {
+                BinOp::Eq | BinOp::Ne => {
+                    let l = self.untag(lhs, &Ty::Symbol);
+                    let r = self.untag(rhs, &Ty::Symbol);
+                    let pred = if op == BinOp::Eq { "eq" } else { "ne" };
+                    let reg = self.tmp_name();
+                    self.line(&format!("  {} = icmp {} i64 {}, {}", reg, pred, l, r));
+                    format!("i1 {}", reg)
+                }
+                _ => {
+                    self.err("only `==`/`!=` are supported between `Symbol` values", Span::dummy());
                     "%undef".into()
                 }
             };

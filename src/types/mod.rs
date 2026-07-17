@@ -256,6 +256,48 @@ pub enum Ty {
     /// value, widened/narrowed to `i64`. See `Ty::Tick`'s doc comment for why
     /// this isn't folded into `is_numeric()`/`int_shape()`.
     Instant,
+    /// An owned, growable byte buffer -- `docs/design.md`'s "Text and bytes"
+    /// section: asset formats, binary save data, and network payloads that
+    /// aren't text, distinct from `Ty::Str` (which is always a null-terminated
+    /// UTF-8-ish C string used by `strlen`/`strcmp`/`printf`'s `%s`). Rather
+    /// than invent a new heap layout, `Bytes` reuses `List<u8>`'s exact
+    /// reference-counted, copy-on-write `i8*` object-pointer scheme wholesale
+    /// (same `{ u8*, i64, i64 }` payload, same `push`/`pop`/`len`/`[i]`
+    /// method surface, routed through the very same `crate::codegen::list`
+    /// functions called with `elem_ty = Ty::U8`) -- the only difference is
+    /// `Ty::Bytes` is a nominally distinct type from `Ty::List(Ty::U8)` (so a
+    /// function declared to take `Bytes` rejects a `List<u8>` argument and
+    /// vice versa, mirroring `Ty::Handle` vs. `Ty::GenRef`), and it's
+    /// constructed as a plain non-generic `Bytes()` literal rather than
+    /// through `List<T>`'s turbofish. `bytes_from_str`/`str_from_bytes`
+    /// (`crate::codegen::list`) convert to/from `Ty::Str` by copying bytes,
+    /// since the two have different heap representations (a `Bytes` isn't
+    /// null-terminated and is never passed to `strlen`/`%s`).
+    Bytes,
+    /// An interned string with O(1) equality comparison -- `docs/design.md`'s
+    /// "Text and bytes" section: at AAA entity counts, comparing tags/event
+    /// names with a byte-for-byte `str` compare every frame is a real cost.
+    /// Lowers to a bare `i64` id into a single process-wide intern table
+    /// (`crate::codegen::symbol`, `@sym.data`/`@sym.len`/`@sym.cap`) --
+    /// zero overhead beyond the one table, like `Ty::Tick`. `Symbol(s)`
+    /// interns `s` (a linear `strcmp` scan against every already-interned
+    /// string -- the same "no hashing yet" honesty `Map`/`Set` already have,
+    /// see `crate::codegen::map`'s doc comment -- so *construction* cost
+    /// grows with the table size), returning its id; every *comparison*
+    /// between two already-constructed `Symbol` values is then a single
+    /// `icmp eq i64`, which is the O(1) guarantee this type actually
+    /// promises. Deliberately excluded from `is_numeric()`/`int_shape()`
+    /// (same reasoning as `Ty::Tick`) -- only `==`/`!=` are supported
+    /// (no ordering: interning order is an implementation detail, not a
+    /// meaningful sort), dispatched through their own dedicated branch
+    /// rather than the numeric fast path. `Symbol <-> i64` is a free
+    /// bit-preserving relabel via `as`, same as `Ty::Tick <-> i64`, for
+    /// interop/debugging (e.g. printing the raw id). `symbol_name(sym) ->
+    /// str` (`crate::codegen::symbol`) reverses the lookup, retaining a
+    /// fresh, independently-owned copy of the table's permanent string
+    /// reference. A legal `Map`/`Set` key (`Checker::check_hashable_ty`),
+    /// unlike `Bytes`/`List<T>` -- comparison is just an integer compare.
+    Symbol,
 }
 
 impl Ty {
@@ -390,6 +432,14 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         // `crate::codegen::builtins::emit_chr`/`emit_ord`.
         "chr" => Some(Ty::Str),
         "ord" => Some(Ty::Int),
+        // `docs/design.md`'s "Text and bytes" section: `Bytes`/`Str`
+        // conversion (a real byte copy, since the two have different heap
+        // representations -- see `Ty::Bytes`'s doc comment) and `Symbol`'s
+        // reverse-interning lookup -- see `crate::codegen::list`/
+        // `crate::codegen::symbol`.
+        "bytes_from_str" => Some(Ty::Bytes),
+        "str_from_bytes" => Some(Ty::Str),
+        "symbol_name" => Some(Ty::Str),
         // Reads one line of text from stdin (trailing newline stripped, EOF
         // yielding whatever was read so far -- possibly empty). See
         // `crate::codegen::builtins::emit_read_line`.
@@ -1398,6 +1448,10 @@ impl Checker {
     fn check_hashable_ty(&mut self, ty: &Ty, visited: &mut HashSet<String>) -> bool {
         match ty {
             Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Vec2 | Ty::Vec3 | Ty::Vec4 => true,
+            // A bare `i64` id comparison -- see `Ty::Symbol`'s doc comment.
+            // Unlike `Ty::Bytes`/`Ty::List`, there's no heap buffer to hash
+            // structurally: the id itself is the comparable value.
+            Ty::Symbol => true,
             // Every explicit-width integer/float plus `char` is a plain
             // fixed-size scalar, structurally comparable exactly like
             // `Ty::Int`/`Ty::Float` above.
@@ -1565,6 +1619,10 @@ impl Checker {
                 "Tick" => Some(Ty::Tick),
                 "Duration" => Some(Ty::Duration),
                 "Instant" => Some(Ty::Instant),
+                // `docs/design.md`'s "Text and bytes" section -- see
+                // `Ty::Bytes`/`Ty::Symbol`'s doc comments.
+                "Bytes" => Some(Ty::Bytes),
+                "Symbol" => Some(Ty::Symbol),
                 // Every other candidate is undeclared by this point: a
                 // declared struct, enum, or generic template is already
                 // caught by the guarded arms above this one. Previously this
@@ -2267,6 +2325,10 @@ fn mangle_ty(ty: &Ty) -> String {
         Ty::Tick => "Tick".into(),
         Ty::Duration => "Duration".into(),
         Ty::Instant => "Instant".into(),
+        // Never used as a generic type argument today, same reasoning as
+        // `Tick`/`Duration`/`Instant` above -- exists for match exhaustiveness.
+        Ty::Bytes => "Bytes".into(),
+        Ty::Symbol => "Symbol".into(),
     }
 }
 
@@ -2325,6 +2387,8 @@ fn ty_to_type(ty: &Ty) -> Type {
         Ty::Tick => Type::Named("Tick".into()),
         Ty::Duration => Type::Named("Duration".into()),
         Ty::Instant => Type::Named("Instant".into()),
+        Ty::Bytes => Type::Named("Bytes".into()),
+        Ty::Symbol => Type::Named("Symbol".into()),
     }
 }
 

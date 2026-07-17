@@ -496,6 +496,9 @@ impl Codegen {
                     Some("concat") => self.emit_str_concat(args),
                     Some("chr") => self.emit_chr(args),
                     Some("ord") => self.emit_ord(args),
+                    Some("bytes_from_str") => self.emit_bytes_from_str(args),
+                    Some("str_from_bytes") => self.emit_str_from_bytes(args),
+                    Some("symbol_name") => self.emit_symbol_name(args),
                     Some("read_line") => self.emit_read_line(),
                     Some("dot") => self.emit_dot(args),
                     Some("length") => self.emit_length(args),
@@ -995,6 +998,13 @@ impl Codegen {
                         format!("{} {}", mat_t, acc)
                     }
                     Ty::Tick | Ty::Duration | Ty::Instant => self.emit_time_new(&args[0]),
+                    // `Bytes()` starts empty -- reuses `List<T>()`'s own
+                    // "null object pointer" construction wholesale (see
+                    // `Ty::Bytes`'s doc comment).
+                    Ty::Bytes => self.emit_list_new(&Ty::U8),
+                    // `Symbol(s)` interns `s` -- see `Ty::Symbol`'s doc
+                    // comment and `crate::codegen::symbol`.
+                    Ty::Symbol => self.emit_symbol_intern(&args[0]),
                     _ => {
                         let ptr = self.tmp_name();
                         self.line(&format!("  {} = alloca %{}", ptr, name));
@@ -1256,6 +1266,9 @@ impl Codegen {
                 // memory layout -- recover that from `base`'s own type.
                 let elem_ty = match self.expr_ty(base) {
                     Ty::List(inner) => *inner,
+                    // `Bytes` reuses `List<u8>`'s method codegen wholesale --
+                    // see `Ty::Bytes`'s doc comment.
+                    Ty::Bytes => Ty::U8,
                     other => { self.err("internal error: list method receiver is not a List<T>", Span::dummy()); other }
                 };
                 self.emit_list_method(base, *method, args, &elem_ty)

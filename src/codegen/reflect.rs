@@ -78,6 +78,8 @@ impl Codegen {
             Ty::Tick => "Tick".into(),
             Ty::Duration => "Duration".into(),
             Ty::Instant => "Instant".into(),
+            Ty::Bytes => "Bytes".into(),
+            Ty::Symbol => "Symbol".into(),
         }
     }
 

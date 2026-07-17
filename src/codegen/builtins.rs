@@ -46,6 +46,11 @@ impl Codegen {
                             // All three lower to a bare signed `i64` -- see
                             // `Ty::Tick`'s doc comment.
                             Ty::Tick | Ty::Duration | Ty::Instant => { fmt_str.push_str("%lld"); }
+                            // A bare signed `i64` id -- see `Ty::Symbol`'s
+                            // doc comment. Prints the raw interned id (use
+                            // `symbol_name(sym)` to print the original
+                            // string instead).
+                            Ty::Symbol => { fmt_str.push_str("%lld"); }
                             Ty::U64 => { fmt_str.push_str("%llu"); }
                             Ty::Float | Ty::F64 => { fmt_str.push_str("%f"); }
                             Ty::Char => { fmt_str.push_str("%c"); }
