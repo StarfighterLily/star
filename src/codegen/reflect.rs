@@ -5,28 +5,88 @@ use crate::types::*;
 use super::Codegen;
 
 impl Codegen {
-    /// Register an enum's variant names/payload field types and, for a
-    /// payload-carrying enum, emit its tagged-union LLVM struct type
-    /// declaration: `{ i32 tag, [W x i64] payload }`, where `W` is sized to
-    /// the largest variant's fields (see `enum_payload_words`). A fully
-    /// fieldless enum (every variant has no fields) gets no struct
-    /// declaration at all -- it stays a bare `i32` (see `llvm_ty`).
-    pub(super) fn emit_enum_decl(&mut self, e: &TypedEnumDef) {
+    /// Register an enum's variant names/payload field types into
+    /// `enum_variants`/`enum_variant_fields`, with no LLVM text emitted --
+    /// split out of `emit_enum_decl` (which now only emits text) so
+    /// `Codegen::emit` can run this for *every* struct/enum first, before
+    /// any type's textual declaration is emitted. `llvm_ty(Ty::Enum(n))`
+    /// (consulted by `emit_struct_decl` for any field of a payload-enum
+    /// type, e.g. `struct Holder: opt: Option<str>`) depends on
+    /// `enum_is_payload`, which reads `enum_variant_fields` -- if that
+    /// lookup misses because this enum's own registration hadn't run yet,
+    /// `enum_is_payload` silently (and wrongly) returns `false`, mistagging
+    /// the field as a bare `i32` instead of `%Option__str` in the *struct's
+    /// own* permanent `%Holder = type { .. }` text. See `register_struct`'s
+    /// doc comment for the full ordering hazard this was closing.
+    pub(super) fn register_enum(&mut self, e: &TypedEnumDef) {
         let names: Vec<String> = e.variants.iter().map(|v| v.name.clone()).collect();
         let field_tys: Vec<Vec<Ty>> = e.variants.iter().map(|v| v.fields.iter().map(|f| f.ty.clone()).collect()).collect();
         self.enum_variants.insert(e.name.clone(), names);
         self.enum_variant_fields.insert(e.name.clone(), field_tys);
+    }
+
+    /// For a payload-carrying enum, emit its tagged-union LLVM struct type
+    /// declaration: `{ i32 tag, [W x i64] payload }`, where `W` is sized to
+    /// the largest variant's fields (see `enum_payload_words`). A fully
+    /// fieldless enum (every variant has no fields) gets no struct
+    /// declaration at all -- it stays a bare `i32` (see `llvm_ty`). Requires
+    /// `register_enum` (this enum's own) and `register_struct` (any struct
+    /// referenced, directly or transitively, by a variant field) to have
+    /// already run for every item in the module -- see `Codegen::emit`.
+    pub(super) fn emit_enum_decl(&mut self, e: &TypedEnumDef) {
         if self.enum_is_payload(&e.name) {
             let words = self.enum_payload_words(&e.name);
             self.line(&format!("%{} = type {{ i32, [{} x i64] }}", e.name, words));
         }
     }
 
-    pub(super) fn emit_struct_decl(&mut self, s: &TypedStructDef) {
+    /// Register a struct's field names/types into `struct_fields`/
+    /// `struct_field_types`, with no LLVM text emitted -- see
+    /// `register_enum`'s doc comment for why this needs to be a separate
+    /// pass from `emit_struct_decl`'s text emission.
+    ///
+    /// The hazard this closes, concretely: `Codegen::emit`'s original single
+    /// interleaved pass called `emit_struct_decl`/`emit_enum_decl` in
+    /// `module.items` order -- but every monomorphized generic enum
+    /// instantiation (`Option<str>` -> `Option__str`, `Result<i32,str>` ->
+    /// ..., anything instantiated on demand while type-checking, including
+    /// the builtin `Option`/`Result` templates) is appended to the item list
+    /// *after* every item that appears in the source (`Checker::check`'s
+    /// `typed_items.append(&mut self.mono_items)`), regardless of where in
+    /// the source it was first used. A struct declared *anywhere* in the
+    /// source with an `Option<T>`/`Result<T,E>`-typed field (e.g. `struct
+    /// Holder: opt: Option<str>`) therefore always had its own `%Holder =
+    /// type { .. }` text emitted *before* `Option__str`'s registration ever
+    /// ran, so `llvm_ty(Ty::Enum("Option__str"))` (reached while computing
+    /// `Holder`'s field list) always saw a not-yet-populated
+    /// `enum_variant_fields`, `enum_is_payload` always returned `false`, and
+    /// `Holder`'s permanent LLVM struct type baked in a bare `i32` for that
+    /// field instead of the real `%Option__str` tagged-union type -- every
+    /// later `store %Option__str .., %Option__str* <gep into a %Holder>`
+    /// wrote a multi-word payload into a slot LLVM/`clang` had only sized
+    /// for one `i32`, corrupting adjacent stack memory. Confirmed via a real
+    /// `star build`+run segfaulting (`ExitStatus` `0xC0000005`, access
+    /// violation) on exactly this minimal shape -- `struct Holder: opt:
+    /// Option<str>` plus a `let v = match h.opt: ...` -- with as few as one
+    /// loop iteration, no `Table`/`Ring`/generics-nesting involved at all.
+    /// Fixed by having `Codegen::emit` run `register_struct`/`register_enum`
+    /// for *every* item first, in one pass, before emitting any type's text
+    /// in a second pass -- LLVM's textual IR allows named struct types to
+    /// reference each other regardless of which is declared first (unlike
+    /// SSA values, which need dominance), so only the *data* (`enum_is_payload`,
+    /// `enum_payload_words`, a field's `llvm_ty`) needs to be fully
+    /// registered first, not the text itself in any particular order.
+    pub(super) fn register_struct(&mut self, s: &TypedStructDef) {
         self.struct_fields
             .insert(s.name.clone(), s.fields.iter().map(|f| f.name.clone()).collect());
         self.struct_field_types
             .insert(s.name.clone(), s.fields.iter().map(|f| f.ty.clone()).collect());
+    }
+
+    /// Emit a struct's LLVM type declaration and reflection metadata.
+    /// Requires `register_struct`/`register_enum` to have already run for
+    /// every item in the module -- see `register_struct`'s doc comment.
+    pub(super) fn emit_struct_decl(&mut self, s: &TypedStructDef) {
         self.write(&format!("%{} = type {{ ", s.name));
         let parts: Vec<String> = s.fields.iter().map(|f| self.llvm_ty(&f.ty)).collect();
         self.write(&parts.join(", "));

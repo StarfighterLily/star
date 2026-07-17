@@ -91,6 +91,10 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 @rng.state = global i32 123456789
 
+@sym.data = global i8** null
+@sym.len = global i64 0
+@sym.cap = global i64 0
+
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
   %total = add i64 %size, 16
@@ -190,10 +194,12 @@ logic_end_2:
   br i1 %t7, label %if_then_3, label %if_else_4
 if_then_3:
   %t8 = getelementptr inbounds { i64, i8*, [27 x i8] }, { i64, i8*, [27 x i8] }* @.str.1, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t8)
   call i32 (i8*, ...) @printf(i8* %t8)
   br label %if_end_5
 if_else_4:
   %t9 = getelementptr inbounds { i64, i8*, [18 x i8] }, { i64, i8*, [18 x i8] }* @.str.2, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t9)
   call i32 (i8*, ...) @printf(i8* %t9)
   br label %if_end_5
 if_end_5:
@@ -211,6 +217,7 @@ logic_end_8:
   br i1 %t14, label %if_then_9, label %if_else_10
 if_then_9:
   %t15 = getelementptr inbounds { i64, i8*, [22 x i8] }, { i64, i8*, [22 x i8] }* @.str.3, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t15)
   call i32 (i8*, ...) @printf(i8* %t15)
   br label %if_end_11
 if_else_10:
@@ -231,6 +238,7 @@ logic_end_14:
   br i1 %t21, label %if_then_15, label %if_else_16
 if_then_15:
   %t22 = getelementptr inbounds { i64, i8*, [18 x i8] }, { i64, i8*, [18 x i8] }* @.str.4, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t22)
   call i32 (i8*, ...) @printf(i8* %t22)
   br label %if_end_17
 if_else_16:
@@ -250,6 +258,7 @@ logic_end_20:
   br i1 %t27, label %if_then_21, label %if_else_22
 if_then_21:
   %t28 = getelementptr inbounds { i64, i8*, [18 x i8] }, { i64, i8*, [18 x i8] }* @.str.5, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t28)
   call i32 (i8*, ...) @printf(i8* %t28)
   br label %if_end_23
 if_else_22:
@@ -269,6 +278,7 @@ logic_end_26:
   br i1 %t33, label %if_then_27, label %if_else_28
 if_then_27:
   %t34 = getelementptr inbounds { i64, i8*, [18 x i8] }, { i64, i8*, [18 x i8] }* @.str.6, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t34)
   call i32 (i8*, ...) @printf(i8* %t34)
   br label %if_end_29
 if_else_28:
@@ -286,12 +296,14 @@ logic_end_32:
   br i1 %t37, label %if_then_33, label %if_else_34
 if_then_33:
   %t38 = getelementptr inbounds { i64, i8*, [12 x i8] }, { i64, i8*, [12 x i8] }* @.str.8, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t38)
   call i32 (i8*, ...) @printf(i8* %t38)
   br label %if_end_35
 if_else_34:
   br label %if_end_35
 if_end_35:
   %t39 = getelementptr inbounds { i64, i8*, [26 x i8] }, { i64, i8*, [26 x i8] }* @.str.9, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t39)
   call i32 (i8*, ...) @printf(i8* %t39)
   br i1 true, label %logic_short_37, label %logic_rhs_36
 logic_rhs_36:
@@ -305,6 +317,7 @@ logic_end_38:
   br i1 %t42, label %if_then_39, label %if_else_40
 if_then_39:
   %t43 = getelementptr inbounds { i64, i8*, [24 x i8] }, { i64, i8*, [24 x i8] }* @.str.11, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t43)
   call i32 (i8*, ...) @printf(i8* %t43)
   br label %if_end_41
 if_else_40:

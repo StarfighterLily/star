@@ -702,7 +702,31 @@ impl Checker {
                 // circular, so return-type checking is suspended for the
                 // duration of this body (see `current_ret_ty`'s doc comment).
                 let saved_ret_ty = std::mem::replace(&mut self.current_ret_ty, None);
+                // A closure literal lowers to its own independent top-level
+                // LLVM function (see `Codegen::emit_closure_lit`), not an
+                // inline block of the function it's lexically written inside
+                // -- so `break`/`continue` in its body have no well-defined
+                // target even when the literal sits lexically inside an
+                // enclosing `while`/`for` loop, exactly like `Stmt::Par`'s
+                // body above (see that arm's own `saved_loop_depth` comment).
+                // Previously `self.loop_depth` was left untouched here, so a
+                // closure defined inside a loop inherited that loop's nonzero
+                // depth and a bare `break`/`continue` directly in the
+                // closure's body type-checked cleanly -- but
+                // `emit_closure_lit` never saves/restores `self.loop_stack`
+                // either (nothing needs to: this now-fixed checker gap was
+                // the only way a closure body could ever contain one), so
+                // codegen emitted a `br label %<outer loop's block>`
+                // referencing a basic block that only exists in the
+                // *enclosing* function, not the closure's own deferred
+                // `closure_N` function -- invalid LLVM IR ("use of undefined
+                // value") that `clang` rejected outright, confirmed via a
+                // real `star build` failure on a closure containing a bare
+                // `break` defined inside a `while` loop.
+                let saved_loop_depth = self.loop_depth;
+                self.loop_depth = 0;
                 let body_typed = self.check_block_inner(body, &mut inner_vars);
+                self.loop_depth = saved_loop_depth;
                 self.current_ret_ty = saved_ret_ty;
                 self.mut_vars = saved_mut_vars;
                 // A declared `-> Ret` is used as-is; otherwise (mirroring the

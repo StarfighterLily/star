@@ -91,6 +91,10 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 @rng.state = global i32 123456789
 
+@sym.data = global i8** null
+@sym.len = global i64 0
+@sym.cap = global i64 0
+
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
   %total = add i64 %size, 16
@@ -178,11 +182,11 @@ tcp_socket_ok_1:
   %t8 = load i8*, i8** %t0
   %t9 = load i8*, i8** %t0
   call void @star_rc_retain(i8* %t9)
-  call void @star_rc_release(i8* %t8)
   %t10 = load i32, i32* %t2
   %t11 = trunc i32 %t10 to i16
   %t12 = call i16 @htons(i16 %t11)
   %t13 = call i32 @inet_addr(i8* %t8)
+  call void @star_rc_release(i8* %t8)
   %t14 = icmp eq i32 %t13, -1
   br i1 %t14, label %tcp_addr_invalid_3, label %tcp_addr_valid_4
 tcp_addr_invalid_3:
@@ -243,9 +247,9 @@ tcp_handle_ok_11:
   %t40 = load i8*, i8** %t34
   %t41 = load i8*, i8** %t34
   call void @star_rc_retain(i8* %t41)
-  call void @star_rc_release(i8* %t40)
   %t42 = call i32 @strlen(i8* %t40)
   %t43 = call i32 @send(i8* %t37, i8* %t40, i32 %t42, i32 0)
+  call void @star_rc_release(i8* %t40)
   %t44 = icmp eq i32 %t43, %t42
   store i1 %t44, i1* %t36
   %t45 = load i1, i1* %t36

@@ -91,6 +91,10 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 @rng.state = global i32 123456789
 
+@sym.data = global i8** null
+@sym.len = global i64 0
+@sym.cap = global i64 0
+
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
   %total = add i64 %size, 16
@@ -193,6 +197,18 @@ match_then_1_13:
 match_next_1_14:
   br label %match_end_1
 match_end_1:
+  %t24 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t0, i32 0, i32 0
+  %t25 = load i32, i32* %t24
+  %t26 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t0, i32 0, i32 1
+  %t27 = icmp eq i32 %t25, 1
+  br i1 %t27, label %enum_rc_variant_0, label %enum_rc_next_1
+enum_rc_variant_0:
+  %t28 = bitcast [1 x i64]* %t26 to { i8* }*
+  %t29 = getelementptr inbounds { i8* }, { i8* }* %t28, i32 0, i32 0
+  %t30 = load i8*, i8** %t29
+  call void @star_rc_release(i8* %t30)
+  br label %enum_rc_next_1
+enum_rc_next_1:
   ret void
 }
 
@@ -272,16 +288,64 @@ entry:
   %t50 = load %Result__i32__str, %Result__i32__str* %t44
   store %Result__i32__str %t50, %Result__i32__str* %t43
   %t51 = load %Result__i32__str, %Result__i32__str* %t36
+  %t52 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t36, i32 0, i32 0
+  %t53 = load i32, i32* %t52
+  %t54 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t36, i32 0, i32 1
+  %t55 = icmp eq i32 %t53, 1
+  br i1 %t55, label %enum_rc_variant_2, label %enum_rc_next_3
+enum_rc_variant_2:
+  %t56 = bitcast [1 x i64]* %t54 to { i8* }*
+  %t57 = getelementptr inbounds { i8* }, { i8* }* %t56, i32 0, i32 0
+  %t58 = load i8*, i8** %t57
+  call void @star_rc_retain(i8* %t58)
+  br label %enum_rc_next_3
+enum_rc_next_3:
   call void @print_result(%Result__i32__str %t51)
-  %t52 = load %Result__i32__str, %Result__i32__str* %t43
-  call void @print_result(%Result__i32__str %t52)
-  %t53 = call i32 @identity__i32(i32 7)
-  %t54 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.7, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t54, i32 %t53)
-  %t55 = call float @identity__f32(float 0x400C000000000000)
-  %t56 = getelementptr inbounds [20 x i8], [20 x i8]* @.str.8, i64 0, i64 0
-  %t57 = fpext float %t55 to double
-  call i32 (i8*, ...) @printf(i8* %t56, double %t57)
+  %t59 = load %Result__i32__str, %Result__i32__str* %t43
+  %t60 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t43, i32 0, i32 0
+  %t61 = load i32, i32* %t60
+  %t62 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t43, i32 0, i32 1
+  %t63 = icmp eq i32 %t61, 1
+  br i1 %t63, label %enum_rc_variant_4, label %enum_rc_next_5
+enum_rc_variant_4:
+  %t64 = bitcast [1 x i64]* %t62 to { i8* }*
+  %t65 = getelementptr inbounds { i8* }, { i8* }* %t64, i32 0, i32 0
+  %t66 = load i8*, i8** %t65
+  call void @star_rc_retain(i8* %t66)
+  br label %enum_rc_next_5
+enum_rc_next_5:
+  call void @print_result(%Result__i32__str %t59)
+  %t67 = call i32 @identity__i32(i32 7)
+  %t68 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.7, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t68, i32 %t67)
+  %t69 = call float @identity__f32(float 0x400C000000000000)
+  %t70 = getelementptr inbounds [20 x i8], [20 x i8]* @.str.8, i64 0, i64 0
+  %t71 = fpext float %t69 to double
+  call i32 (i8*, ...) @printf(i8* %t70, double %t71)
+  %t72 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t43, i32 0, i32 0
+  %t73 = load i32, i32* %t72
+  %t74 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t43, i32 0, i32 1
+  %t75 = icmp eq i32 %t73, 1
+  br i1 %t75, label %enum_rc_variant_6, label %enum_rc_next_7
+enum_rc_variant_6:
+  %t76 = bitcast [1 x i64]* %t74 to { i8* }*
+  %t77 = getelementptr inbounds { i8* }, { i8* }* %t76, i32 0, i32 0
+  %t78 = load i8*, i8** %t77
+  call void @star_rc_release(i8* %t78)
+  br label %enum_rc_next_7
+enum_rc_next_7:
+  %t79 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t36, i32 0, i32 0
+  %t80 = load i32, i32* %t79
+  %t81 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t36, i32 0, i32 1
+  %t82 = icmp eq i32 %t80, 1
+  br i1 %t82, label %enum_rc_variant_8, label %enum_rc_next_9
+enum_rc_variant_8:
+  %t83 = bitcast [1 x i64]* %t81 to { i8* }*
+  %t84 = getelementptr inbounds { i8* }, { i8* }* %t83, i32 0, i32 0
+  %t85 = load i8*, i8** %t84
+  call void @star_rc_release(i8* %t85)
+  br label %enum_rc_next_9
+enum_rc_next_9:
   ret i32 0
 }
 

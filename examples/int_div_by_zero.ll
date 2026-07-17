@@ -91,6 +91,10 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 @rng.state = global i32 123456789
 
+@sym.data = global i8** null
+@sym.len = global i64 0
+@sym.cap = global i64 0
+
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
   %total = add i64 %size, 16
@@ -165,6 +169,7 @@ entry:
   %t3 = load %Enemy, %Enemy* %t1
   store %Enemy %t3, %Enemy* %t0
   %t4 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.0, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t4)
   call i32 (i8*, ...) @printf(i8* %t4)
   %t6 = getelementptr inbounds %Enemy, %Enemy* %t0, i32 0, i32 0
   %t7 = load i32, i32* %t6

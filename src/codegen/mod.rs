@@ -249,6 +249,27 @@ impl Codegen {
             }
         }
 
+        // Register every struct's field list and every enum's variant/field
+        // list *before* emitting any type's LLVM text below -- a struct
+        // field's `llvm_ty` (specifically `enum_is_payload`, for a field
+        // typed as a payload enum like `Option<T>`/`Result<T,E>`) needs the
+        // referenced enum's registration to have already happened,
+        // regardless of item order. This matters in practice because every
+        // monomorphized generic enum instantiation is appended to
+        // `module.items` *after* every item from the source (see
+        // `Checker::check`'s `mono_items` doc comment), so a struct
+        // declared anywhere in the source with an `Option<T>`/`Result<T,E>`-
+        // typed field would otherwise always see that enum's registration
+        // run too late. See `Codegen::register_struct`'s doc comment for the
+        // real segfault this closes.
+        for item in &module.items {
+            match item {
+                TypedItem::Struct(s) => self.register_struct(s),
+                TypedItem::Enum(e) => self.register_enum(e),
+                _ => {}
+            }
+        }
+
         for item in &module.items {
             match item {
                 TypedItem::Struct(s) => self.emit_struct_decl(s),
@@ -1084,32 +1105,39 @@ impl Codegen {
                 let ptr = self.tmp_name();
                 self.line(&format!("  {} = alloca {}", ptr, ty_str));
                 self.line(&format!("  store {} {}, {}* {}", ty_str, bare, ty_str, ptr));
-                // `List`/`Map`/`Set`/`Table` are each a single bare `i8*`
-                // object-pointer value with no decomposition-without-retain
-                // convention (unlike a plain struct/tuple/array, whose
-                // `Field`/`TupleIndex`/`ArrayIndex` read arms deliberately
-                // extract a sub-value *without* retaining when `base` isn't
-                // `place_is_shared_storage` -- see that function's doc
-                // comment -- relying on nothing else ever separately
-                // releasing this same spilled temporary, so a subsequent
-                // `track_owned` here would double-release that already-
-                // transferred field). `list_fields`/`map_fields`/
-                // `set_fields`/`table_fields` never rely on that convention:
-                // every element they hand out is read from the object's own
-                // live backing buffer and independently retained there
-                // (the buffer itself remains the owner), so this spilled
-                // pointer is the *only* reference to the whole collection
-                // object and must be released once the current scope ends
-                // -- same reasoning as the match-scrutinee spill in
-                // `Codegen::emit_match`'s `Pattern::Binding` arm. Previously
-                // untracked here: every method call or index reached
-                // directly off a bare `Call`/`If`/`Match` producing a
-                // collection (e.g. `make_list()[0]`, with no intervening
-                // `let`) leaked the entire returned collection object on
-                // every evaluation, since nothing ever released this alloca.
-                if matches!(ty, Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) | Ty::Table(_)) {
-                    self.track_owned(&ptr, &ty);
-                }
+                // This spilled pointer is the *only* reference to whatever
+                // `expr` evaluated to (a `List`/`Map`/`Set`/`Table` object
+                // pointer, or a struct/tuple/array/ring value that may itself
+                // carry RC-bearing fields at any nesting depth) -- track it so
+                // it's released once the current scope ends, exactly like a
+                // real `let`-bound local (`Codegen::track_owned` already
+                // no-ops for a non-RC-bearing type, so this is always safe to
+                // call unconditionally). Paired with `Field`/`TupleIndex`/
+                // `ArrayIndex`/`RingIndex`'s read arms now retaining
+                // unconditionally on every read (see those arms' doc
+                // comments) rather than skipping the retain for a spilled
+                // base: the two together reproduce plain `Ident`-field-read
+                // semantics for a temporary exactly -- the one field actually
+                // extracted ends up retained-then-released-back to a single
+                // net owning reference for its new owner, while every
+                // *un*-extracted sibling field gets properly released here
+                // instead of silently leaking. Previously this was only
+                // tracked for `List`/`Map`/`Set`/`Table` (whose elements are
+                // always retained on read regardless, from their own separate
+                // heap buffer, so only the container pointer itself needed
+                // tracking) paired with a no-retain convention for every other
+                // type -- correct only when the spilled value carried at most
+                // one RC-bearing leaf. A struct/tuple returned by a bare
+                // `Call`/`If`/`Match` (no intervening `let`) with *two or
+                // more* RC-bearing fields leaked every field except the one
+                // actually accessed, confirmed via real unbounded working-set
+                // growth (~3MB flat control vs. ~800MB in under 4 seconds of
+                // 30,000,000 iterations of `make().a` where `make()` returns
+                // a two-`str`-field struct and only field `a` is read) --
+                // `Table<T>`'s own `TableIndex` (which also falls into this
+                // same generic fallback, see its own doc comment above) had
+                // the identical latent gap for any `T` with 2+ RC fields.
+                self.track_owned(&ptr, &ty);
                 ptr
             }
         }

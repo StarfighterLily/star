@@ -91,6 +91,10 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 @rng.state = global i32 123456789
 
+@sym.data = global i8** null
+@sym.len = global i64 0
+@sym.cap = global i64 0
+
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
   %total = add i64 %size, 16
@@ -281,6 +285,7 @@ for_step_14:
 for_end_15:
   %t81 = getelementptr inbounds { i64, i8*, [41 x i8] }, { i64, i8*, [41 x i8] }* @.str.2, i64 0, i32 2, i64 0
   %t82 = call i8* @getenv(i8* %t81)
+  call void @star_rc_release(i8* %t81)
   %t83 = icmp eq i8* %t82, null
   br i1 %t83, label %env_get_null_22, label %env_get_real_23
 env_get_null_22:
@@ -300,8 +305,8 @@ env_get_end_24:
   %t90 = load i8*, i8** %t80
   %t91 = load i8*, i8** %t80
   call void @star_rc_retain(i8* %t91)
-  call void @star_rc_release(i8* %t90)
   %t92 = call i32 @strlen(i8* %t90)
+  call void @star_rc_release(i8* %t90)
   %t93 = icmp eq i32 %t92, 0
   %t94 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.3, i64 0, i64 0
   %t95 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.4, i64 0, i64 0
@@ -311,6 +316,8 @@ env_get_end_24:
   %t99 = getelementptr inbounds { i64, i8*, [28 x i8] }, { i64, i8*, [28 x i8] }* @.str.6, i64 0, i32 2, i64 0
   %t100 = getelementptr inbounds { i64, i8*, [16 x i8] }, { i64, i8*, [16 x i8] }* @.str.7, i64 0, i32 2, i64 0
   %t101 = call i32 @_putenv_s(i8* %t99, i8* %t100)
+  call void @star_rc_release(i8* %t99)
+  call void @star_rc_release(i8* %t100)
   %t102 = icmp eq i32 %t101, 0
   store i1 %t102, i1* %t98
   %t103 = load i1, i1* %t98
@@ -321,6 +328,7 @@ env_get_end_24:
   call i32 (i8*, ...) @printf(i8* %t107, i8* %t106)
   %t109 = getelementptr inbounds { i64, i8*, [28 x i8] }, { i64, i8*, [28 x i8] }* @.str.11, i64 0, i32 2, i64 0
   %t110 = call i8* @getenv(i8* %t109)
+  call void @star_rc_release(i8* %t109)
   %t111 = icmp eq i8* %t110, null
   br i1 %t111, label %env_get_null_25, label %env_get_real_26
 env_get_null_25:

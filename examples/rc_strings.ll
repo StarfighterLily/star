@@ -91,6 +91,10 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 @rng.state = global i32 123456789
 
+@sym.data = global i8** null
+@sym.len = global i64 0
+@sym.cap = global i64 0
+
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
   %total = add i64 %size, 16
@@ -161,7 +165,6 @@ entry:
   %t2 = load i8*, i8** %t0
   %t3 = load i8*, i8** %t0
   call void @star_rc_retain(i8* %t3)
-  call void @star_rc_release(i8* %t2)
   %t4 = getelementptr inbounds { i64, i8*, [4 x i8] }, { i64, i8*, [4 x i8] }* @.str.0, i64 0, i32 2, i64 0
   %t5 = call i32 @strlen(i8* %t2)
   %t6 = call i32 @strlen(i8* %t4)
@@ -171,12 +174,14 @@ entry:
   %t10 = call i8* @star_rc_alloc(i64 %t9, i8* null)
   call i8* @strcpy(i8* %t10, i8* %t2)
   call i8* @strcat(i8* %t10, i8* %t4)
+  call void @star_rc_release(i8* %t2)
+  call void @star_rc_release(i8* %t4)
   store i8* %t10, i8** %t1
   %t11 = load i8*, i8** %t1
   %t12 = load i8*, i8** %t1
   call void @star_rc_retain(i8* %t12)
-  call void @star_rc_release(i8* %t11)
   %t13 = call i32 @strlen(i8* %t11)
+  call void @star_rc_release(i8* %t11)
   %t14 = load i8*, i8** %t1
   call void @star_rc_release(i8* %t14)
   %t15 = load i8*, i8** %t0
@@ -207,6 +212,8 @@ entry:
   %t8 = call i8* @star_rc_alloc(i64 %t7, i8* null)
   call i8* @strcpy(i8* %t8, i8* %t1)
   call i8* @strcat(i8* %t8, i8* %t2)
+  call void @star_rc_release(i8* %t1)
+  call void @star_rc_release(i8* %t2)
   store i8* %t8, i8** %t0
   %t9 = load i8*, i8** %t0
   %t10 = load i8*, i8** %t0
@@ -218,7 +225,6 @@ entry:
   %t12 = load i8*, i8** %t0
   %t13 = load i8*, i8** %t0
   call void @star_rc_retain(i8* %t13)
-  call void @star_rc_release(i8* %t12)
   %t14 = getelementptr inbounds { i64, i8*, [4 x i8] }, { i64, i8*, [4 x i8] }* @.str.4, i64 0, i32 2, i64 0
   %t15 = call i32 @strlen(i8* %t12)
   %t16 = call i32 @strlen(i8* %t14)
@@ -228,6 +234,8 @@ entry:
   %t20 = call i8* @star_rc_alloc(i64 %t19, i8* null)
   call i8* @strcpy(i8* %t20, i8* %t12)
   call i8* @strcat(i8* %t20, i8* %t14)
+  call void @star_rc_release(i8* %t12)
+  call void @star_rc_release(i8* %t14)
   %t21 = load i8*, i8** %t0
   call void @star_rc_release(i8* %t21)
   store i8* %t20, i8** %t0
@@ -248,6 +256,8 @@ entry:
   %t34 = call i8* @star_rc_alloc(i64 %t33, i8* null)
   call i8* @strcpy(i8* %t34, i8* %t27)
   call i8* @strcat(i8* %t34, i8* %t28)
+  call void @star_rc_release(i8* %t27)
+  call void @star_rc_release(i8* %t28)
   %t35 = getelementptr inbounds %Greeting, %Greeting* %t26, i32 0, i32 0
   store i8* %t34, i8** %t35
   %t36 = load %Greeting, %Greeting* %t26
@@ -288,6 +298,8 @@ entry:
   %t62 = call i8* @star_rc_alloc(i64 %t61, i8* null)
   call i8* @strcpy(i8* %t62, i8* %t55)
   call i8* @strcat(i8* %t62, i8* %t56)
+  call void @star_rc_release(i8* %t55)
+  call void @star_rc_release(i8* %t56)
   %t63 = getelementptr inbounds i8*, i8** %t54, i64 0
   store i8* %t62, i8** %t63
   %t64 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.12, i64 0, i32 2, i64 0
@@ -300,6 +312,8 @@ entry:
   %t71 = call i8* @star_rc_alloc(i64 %t70, i8* null)
   call i8* @strcpy(i8* %t71, i8* %t64)
   call i8* @strcat(i8* %t71, i8* %t65)
+  call void @star_rc_release(i8* %t64)
+  call void @star_rc_release(i8* %t65)
   %t72 = getelementptr inbounds i8*, i8** %t54, i64 1
   store i8* %t71, i8** %t72
   %t85 = bitcast void (i8*)* @list_release_str to i8*
@@ -398,6 +412,8 @@ list_cow_done_5:
   %t144 = call i8* @star_rc_alloc(i64 %t143, i8* null)
   call i8* @strcpy(i8* %t144, i8* %t137)
   call i8* @strcat(i8* %t144, i8* %t138)
+  call void @star_rc_release(i8* %t137)
+  call void @star_rc_release(i8* %t138)
   %t145 = load i64, i64* %t136
   %t146 = load i8**, i8*** %t132
   %t147 = load i64, i64* %t134
@@ -551,6 +567,8 @@ list_read_end_36:
   %t230 = call i8* @star_rc_alloc(i64 %t229, i8* null)
   call i8* @strcpy(i8* %t230, i8* %t223)
   call i8* @strcat(i8* %t230, i8* %t224)
+  call void @star_rc_release(i8* %t223)
+  call void @star_rc_release(i8* %t224)
   store i8* %t230, i8** %t222
   %t231 = load i8*, i8** %t222
   %t232 = load i8*, i8** %t222
@@ -570,7 +588,6 @@ while_body_38:
   %t240 = load i8*, i8** %t236
   %t241 = load i8*, i8** %t236
   call void @star_rc_retain(i8* %t241)
-  call void @star_rc_release(i8* %t240)
   %t242 = getelementptr inbounds { i64, i8*, [3 x i8] }, { i64, i8*, [3 x i8] }* @.str.24, i64 0, i32 2, i64 0
   %t243 = call i32 @strlen(i8* %t240)
   %t244 = call i32 @strlen(i8* %t242)
@@ -580,6 +597,8 @@ while_body_38:
   %t248 = call i8* @star_rc_alloc(i64 %t247, i8* null)
   call i8* @strcpy(i8* %t248, i8* %t240)
   call i8* @strcat(i8* %t248, i8* %t242)
+  call void @star_rc_release(i8* %t240)
+  call void @star_rc_release(i8* %t242)
   %t249 = load i8*, i8** %t236
   call void @star_rc_release(i8* %t249)
   store i8* %t248, i8** %t236

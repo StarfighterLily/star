@@ -91,6 +91,10 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 @rng.state = global i32 123456789
 
+@sym.data = global i8** null
+@sym.len = global i64 0
+@sym.cap = global i64 0
+
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
   %total = add i64 %size, 16
@@ -167,11 +171,9 @@ entry:
   %t2 = load i8*, i8** %t0
   %t3 = load i8*, i8** %t0
   call void @star_rc_retain(i8* %t3)
-  call void @star_rc_release(i8* %t2)
   %t4 = load i8*, i8** %t1
   %t5 = load i8*, i8** %t1
   call void @star_rc_retain(i8* %t5)
-  call void @star_rc_release(i8* %t4)
   %t6 = call i32 @strlen(i8* %t2)
   %t7 = call i32 @strlen(i8* %t4)
   %t8 = add i32 %t6, %t7
@@ -180,6 +182,8 @@ entry:
   %t11 = call i8* @star_rc_alloc(i64 %t10, i8* null)
   call i8* @strcpy(i8* %t11, i8* %t2)
   call i8* @strcat(i8* %t11, i8* %t4)
+  call void @star_rc_release(i8* %t2)
+  call void @star_rc_release(i8* %t4)
   %t12 = load i8*, i8** %t1
   call void @star_rc_release(i8* %t12)
   %t13 = load i8*, i8** %t0
@@ -194,12 +198,14 @@ entry:
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @fresh_literal()
+  call void @star_rc_release(i8* %t0)
   call i32 (i8*, ...) @printf(i8* %t0)
   %t1 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.1, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t1)
   %t2 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.2, i64 0, i32 2, i64 0
   %t3 = getelementptr inbounds { i64, i8*, [14 x i8] }, { i64, i8*, [14 x i8] }* @.str.3, i64 0, i32 2, i64 0
   %t4 = call i8* @fresh_concat(i8* %t2, i8* %t3)
+  call void @star_rc_release(i8* %t4)
   call i32 (i8*, ...) @printf(i8* %t4)
   %t5 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.4, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t5)
@@ -282,6 +288,7 @@ list_idx_end_8:
   call void @star_rc_release(i8* %t83)
   %t84 = bitcast i8* %t82 to i8* (i8*)*
   %t85 = call i8* %t84(i8* %t83)
+  call void @star_rc_release(i8* %t85)
   call i32 (i8*, ...) @printf(i8* %t85)
   %t86 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.11, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t86)
@@ -340,6 +347,8 @@ entry:
   %t64 = call i8* @star_rc_alloc(i64 %t63, i8* null)
   call i8* @strcpy(i8* %t64, i8* %t57)
   call i8* @strcat(i8* %t64, i8* %t58)
+  call void @star_rc_release(i8* %t57)
+  call void @star_rc_release(i8* %t58)
   ret i8* %t64
 }
 

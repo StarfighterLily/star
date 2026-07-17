@@ -168,8 +168,23 @@ impl Codegen {
     /// keeps its own permanent reference, so the caller needs an independent
     /// one to release on its own schedule, not the table's. Out of range (a
     /// `Symbol` value that never came from `Symbol(..)`, e.g. a raw
-    /// `as`-cast integer) yields the same "safe zero value" empty `str`
-    /// `List<T>::pop`'s empty-list case does.
+    /// `as`-cast integer) yields a real, freshly-allocated empty `str`
+    /// (`star_rc_alloc` + a lone NUL byte, the same recipe `env_get`'s
+    /// missing-variable branch uses in `crate::codegen::os`) -- NOT
+    /// `Codegen::zero_value(&Ty::Str)` (a bare null `i8*`), which an earlier
+    /// version of this function used, matching a doc comment claiming it was
+    /// "the same safe zero value empty `str` `List<T>::pop`'s empty-list
+    /// case does". That claim was itself wrong: `zero_value`'s `Ty::Str` arm
+    /// is `"null"`, not a real empty string, for *any* caller (`pop` on an
+    /// empty `List<str>`/`Ring<str,N>` included) -- confirmed via a real
+    /// segfault building and running `let mut l = List<str>(); l.pop();
+    /// len(l.pop())` (`len`'s `strlen` dereferencing the null "empty string"
+    /// `pop` actually returns) and via `symbol_name` on an out-of-range id
+    /// printing the literal text `(null)` in an f-string instead of an empty
+    /// string. This function's own out-of-range path is fixed here (in
+    /// scope for this audit's Symbol coverage); `zero_value` itself and its
+    /// other callers (`List`/`Ring`/`Array`/`Table` -- collections codegen)
+    /// are left alone, out of this audit's scope.
     pub(super) fn emit_symbol_name(&mut self, args: &[TypedExpr]) -> String {
         let Some(arg) = args.first() else {
             self.err("symbol_name(..) expects 1 argument", Span::dummy());
@@ -207,12 +222,17 @@ impl Codegen {
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&oob_label);
+        // A real, owned empty string -- not `zero_value(&Ty::Str)`'s bare
+        // null `i8*` (see this function's own doc comment for the segfault
+        // that produced downstream).
+        let empty = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 1, i8* null)", empty));
+        self.line(&format!("  store i8 0, i8* {}", empty));
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&end_label);
-        let zero = self.zero_value(&Ty::Str);
         let result = self.tmp_name();
-        self.line(&format!("  {} = phi i8* [ {}, %{} ], [ {}, %{} ]", result, found, ok_label, zero, oob_label));
+        self.line(&format!("  {} = phi i8* [ {}, %{} ], [ {}, %{} ]", result, found, ok_label, empty, oob_label));
         format!("i8* {}", result)
     }
 }

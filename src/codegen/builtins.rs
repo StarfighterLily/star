@@ -652,6 +652,20 @@ impl Codegen {
     /// function -- `p` itself has no RC header (see `Ty::Ptr`'s doc comment
     /// in `crate::types`), so it must never be treated as a Star `Str`
     /// directly.
+    ///
+    /// Aborts loudly (rather than segfaulting) on a null `p`, the same
+    /// "check first, abort with a message" convention every other builtin
+    /// that dereferences a `ptr` handle already follows (`file_io.rs`'s
+    /// `abort_if_null_handle`, `net.rs`'s `abort_if_null_socket`) -- an
+    /// earlier version of this function had no such guard and called
+    /// `strlen` directly on `p`, undefined behavior (a null-pointer
+    /// dereference) whenever `p` is null. Confirmed via a real, unguarded
+    /// segfault building and running `ptr_to_str(null_ptr())` -- a real,
+    /// realistic call shape (`extern "C"` functions commonly return a null
+    /// `char*` to signal "not found"/failure, exactly the `strstr` shape
+    /// `examples/extern_ffi.star` demonstrates checking with `is_null`
+    /// *before* calling `ptr_to_str` -- but nothing enforced that check
+    /// actually happens first).
     pub(super) fn emit_ptr_to_str(&mut self, args: &[TypedExpr]) -> String {
         let Some(arg) = args.first() else {
             self.err("ptr_to_str(..) expects 1 argument", Span::dummy());
@@ -659,6 +673,16 @@ impl Codegen {
         };
         let val = self.emit_expr(arg);
         let p = self.untag(&val, &Ty::Ptr);
+        let is_null = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i8* {}, null", is_null, p));
+        let fail_label = self.block_label("ptr_to_str_null");
+        let ok_label = self.block_label("ptr_to_str_ok");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, fail_label, ok_label));
+
+        self.open_block(&fail_label);
+        self.emit_abort_with_message("star runtime error: ptr_to_str(..) called with a null ptr\n");
+
+        self.open_block(&ok_label);
         let len = self.tmp_name();
         self.line(&format!("  {} = call i32 @strlen(i8* {})", len, p));
         let total = self.tmp_name();

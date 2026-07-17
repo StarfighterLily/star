@@ -91,6 +91,10 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 @rng.state = global i32 123456789
 
+@sym.data = global i8** null
+@sym.len = global i64 0
+@sym.cap = global i64 0
+
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
   %total = add i64 %size, 16
@@ -215,6 +219,7 @@ entry:
   call void @star_rc_release(i8* %t7)
   %t8 = bitcast i8* %t6 to i8* (i8*)*
   %t9 = call i8* %t8(i8* %t7)
+  call void @star_rc_release(i8* %t9)
   %t10 = getelementptr inbounds [4 x i8], [4 x i8]* @.str.1, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t10, i8* %t9)
   %t13 = getelementptr inbounds { i64, i8*, [4 x i8] }, { i64, i8*, [4 x i8] }* @.str.2, i64 0, i32 2, i64 0
@@ -233,6 +238,7 @@ entry:
   call void @star_rc_release(i8* %t22)
   %t23 = bitcast i8* %t21 to i8* (i8*)*
   %t24 = call i8* %t23(i8* %t22)
+  call void @star_rc_release(i8* %t24)
   %t25 = getelementptr inbounds [4 x i8], [4 x i8]* @.str.3, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t25, i8* %t24)
   %t27 = getelementptr { i8*, i8* }, { i8*, i8* }* null, i32 1
@@ -292,6 +298,7 @@ list_idx_end_10:
   call void @star_rc_release(i8* %t74)
   %t75 = bitcast i8* %t73 to i8* (i8*)*
   %t76 = call i8* %t75(i8* %t74)
+  call void @star_rc_release(i8* %t76)
   %t77 = getelementptr inbounds [4 x i8], [4 x i8]* @.str.6, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t77, i8* %t76)
   %t78 = load i8*, i8** %t26
@@ -328,6 +335,7 @@ list_idx_end_16:
   call void @star_rc_release(i8* %t95)
   %t96 = bitcast i8* %t94 to i8* (i8*)*
   %t97 = call i8* %t96(i8* %t95)
+  call void @star_rc_release(i8* %t97)
   %t98 = getelementptr inbounds [4 x i8], [4 x i8]* @.str.7, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t98, i8* %t97)
   %t100 = call { i8*, i8* } @make_adder(i32 5)
@@ -393,6 +401,7 @@ while_body_19:
   call void @star_rc_release(i8* %t177)
   %t178 = bitcast i8* %t176 to i8* (i8*)*
   %t179 = call i8* %t178(i8* %t177)
+  call void @star_rc_release(i8* %t179)
   %t180 = getelementptr inbounds [13 x i8], [13 x i8]* @.str.9, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t180, i32 %t172, i8* %t179)
   %t181 = load i32, i32* %t169

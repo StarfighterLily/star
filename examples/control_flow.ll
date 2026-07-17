@@ -91,6 +91,10 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 @rng.state = global i32 123456789
 
+@sym.data = global i8** null
+@sym.len = global i64 0
+@sym.cap = global i64 0
+
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
   %total = add i64 %size, 16
@@ -163,6 +167,7 @@ match_scrutinee_3:
   br i1 %t6, label %match_then_0_4, label %match_next_0_5
 match_then_0_4:
   %t7 = getelementptr inbounds { i64, i8*, [11 x i8] }, { i64, i8*, [11 x i8] }* @.str.0, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t7)
   call i32 (i8*, ...) @printf(i8* %t7)
   %t8 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.1, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t8)
@@ -172,6 +177,7 @@ match_next_0_5:
   br i1 %t11, label %match_then_1_9, label %match_next_1_10
 match_then_1_9:
   %t12 = getelementptr inbounds { i64, i8*, [11 x i8] }, { i64, i8*, [11 x i8] }* @.str.2, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t12)
   call i32 (i8*, ...) @printf(i8* %t12)
   %t13 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.3, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t13)
@@ -181,6 +187,7 @@ match_next_1_10:
   br i1 %t16, label %match_then_2_14, label %match_next_2_15
 match_then_2_14:
   %t17 = getelementptr inbounds { i64, i8*, [10 x i8] }, { i64, i8*, [10 x i8] }* @.str.4, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t17)
   call i32 (i8*, ...) @printf(i8* %t17)
   %t18 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.5, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t18)
@@ -190,6 +197,7 @@ match_next_2_15:
   br i1 %t21, label %match_then_3_19, label %match_next_3_20
 match_then_3_19:
   %t22 = getelementptr inbounds { i64, i8*, [10 x i8] }, { i64, i8*, [10 x i8] }* @.str.6, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t22)
   call i32 (i8*, ...) @printf(i8* %t22)
   %t23 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.7, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t23)

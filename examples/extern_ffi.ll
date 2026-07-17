@@ -91,6 +91,10 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 @rng.state = global i32 123456789
 
+@sym.data = global i8** null
+@sym.len = global i64 0
+@sym.cap = global i64 0
+
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
   %total = add i64 %size, 16
@@ -171,13 +175,15 @@ entry:
   %t4 = load i8*, i8** %t2
   %t5 = load i8*, i8** %t2
   call void @star_rc_retain(i8* %t5)
-  call void @star_rc_release(i8* %t4)
   %t6 = call i32 @atoi(i8* %t4)
+  call void @star_rc_release(i8* %t4)
   %t7 = getelementptr inbounds [13 x i8], [13 x i8]* @.str.2, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t7, i32 %t6)
   %t9 = getelementptr inbounds { i64, i8*, [12 x i8] }, { i64, i8*, [12 x i8] }* @.str.3, i64 0, i32 2, i64 0
   %t10 = getelementptr inbounds { i64, i8*, [4 x i8] }, { i64, i8*, [4 x i8] }* @.str.4, i64 0, i32 2, i64 0
   %t11 = call i8* @strstr(i8* %t9, i8* %t10)
+  call void @star_rc_release(i8* %t9)
+  call void @star_rc_release(i8* %t10)
   store i8* %t11, i8** %t8
   %t12 = load i8*, i8** %t8
   %t13 = icmp eq i8* %t12, null
@@ -189,6 +195,8 @@ entry:
   %t19 = getelementptr inbounds { i64, i8*, [12 x i8] }, { i64, i8*, [12 x i8] }* @.str.8, i64 0, i32 2, i64 0
   %t20 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.9, i64 0, i32 2, i64 0
   %t21 = call i8* @strstr(i8* %t19, i8* %t20)
+  call void @star_rc_release(i8* %t19)
+  call void @star_rc_release(i8* %t20)
   store i8* %t21, i8** %t18
   %t22 = load i8*, i8** %t18
   %t23 = icmp eq i8* %t22, null
@@ -203,32 +211,40 @@ entry:
   br i1 %t30, label %if_then_0, label %if_else_1
 if_then_0:
   %t32 = load i8*, i8** %t18
-  %t33 = call i32 @strlen(i8* %t32)
-  %t34 = add i32 %t33, 1
-  %t35 = sext i32 %t34 to i64
-  %t36 = call i8* @star_rc_alloc(i64 %t35, i8* null)
-  call i8* @strcpy(i8* %t36, i8* %t32)
-  store i8* %t36, i8** %t31
-  %t37 = load i8*, i8** %t31
-  %t38 = load i8*, i8** %t31
-  call void @star_rc_retain(i8* %t38)
-  call void @star_rc_release(i8* %t37)
-  %t39 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.13, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t39, i8* %t37)
+  %t33 = icmp eq i8* %t32, null
+  br i1 %t33, label %ptr_to_str_null_3, label %ptr_to_str_ok_4
+ptr_to_str_null_3:
+  %t34 = getelementptr inbounds [59 x i8], [59 x i8]* @.str.13, i64 0, i64 0
+  call i32 @puts(i8* %t34)
+  call void @exit(i32 1)
+  unreachable
+ptr_to_str_ok_4:
+  %t35 = call i32 @strlen(i8* %t32)
+  %t36 = add i32 %t35, 1
+  %t37 = sext i32 %t36 to i64
+  %t38 = call i8* @star_rc_alloc(i64 %t37, i8* null)
+  call i8* @strcpy(i8* %t38, i8* %t32)
+  store i8* %t38, i8** %t31
+  %t39 = load i8*, i8** %t31
   %t40 = load i8*, i8** %t31
-  call void @star_rc_release(i8* %t40)
+  call void @star_rc_retain(i8* %t40)
+  call void @star_rc_release(i8* %t39)
+  %t41 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.14, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t41, i8* %t39)
+  %t42 = load i8*, i8** %t31
+  call void @star_rc_release(i8* %t42)
   br label %if_end_2
 if_else_1:
   br label %if_end_2
 if_end_2:
-  %t41 = icmp eq i8* null, null
-  %t42 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.14, i64 0, i64 0
-  %t43 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.15, i64 0, i64 0
-  %t44 = select i1 %t41, i8* %t42, i8* %t43
-  %t45 = getelementptr inbounds [30 x i8], [30 x i8]* @.str.16, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t45, i8* %t44)
-  %t46 = load i8*, i8** %t2
-  call void @star_rc_release(i8* %t46)
+  %t43 = icmp eq i8* null, null
+  %t44 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.15, i64 0, i64 0
+  %t45 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.16, i64 0, i64 0
+  %t46 = select i1 %t43, i8* %t44, i8* %t45
+  %t47 = getelementptr inbounds [30 x i8], [30 x i8]* @.str.17, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t47, i8* %t46)
+  %t48 = load i8*, i8** %t2
+  call void @star_rc_release(i8* %t48)
   ret i32 0
 }
 
@@ -247,7 +263,8 @@ if_end_2:
 @.str.10 = private unnamed_addr constant [5 x i8] c"true\00"
 @.str.11 = private unnamed_addr constant [6 x i8] c"false\00"
 @.str.12 = private unnamed_addr constant [30 x i8] c"is_null(found substring): %s\0A\00"
-@.str.13 = private unnamed_addr constant [21 x i8] c"found substring: %s\0A\00"
-@.str.14 = private unnamed_addr constant [5 x i8] c"true\00"
-@.str.15 = private unnamed_addr constant [6 x i8] c"false\00"
-@.str.16 = private unnamed_addr constant [30 x i8] c"null_ptr() == null_ptr(): %s\0A\00"
+@.str.13 = private unnamed_addr constant [59 x i8] c"star runtime error: ptr_to_str(..) called with a null ptr\0A\00"
+@.str.14 = private unnamed_addr constant [21 x i8] c"found substring: %s\0A\00"
+@.str.15 = private unnamed_addr constant [5 x i8] c"true\00"
+@.str.16 = private unnamed_addr constant [6 x i8] c"false\00"
+@.str.17 = private unnamed_addr constant [30 x i8] c"null_ptr() == null_ptr(): %s\0A\00"

@@ -91,6 +91,10 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 @rng.state = global i32 123456789
 
+@sym.data = global i8** null
+@sym.len = global i64 0
+@sym.cap = global i64 0
+
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
   %total = add i64 %size, 16
@@ -175,8 +179,8 @@ entry:
   %t3 = load i8*, i8** %t0
   %t4 = load i8*, i8** %t0
   call void @star_rc_retain(i8* %t4)
-  call void @star_rc_release(i8* %t3)
   %t5 = call i32 @strlen(i8* %t3)
+  call void @star_rc_release(i8* %t3)
   store i32 %t5, i32* %t2
   store i8* null, i8** %t6
   store i32 0, i32* %t7
@@ -409,7 +413,6 @@ while_body_29:
   %t143 = load i8*, i8** %t0
   %t144 = load i8*, i8** %t0
   call void @star_rc_retain(i8* %t144)
-  call void @star_rc_release(i8* %t143)
   %t145 = load i32, i32* %t7
   %t146 = sext i32 %t145 to i64
   %t147 = icmp eq i8* %t143, null
@@ -428,6 +431,7 @@ str_idx_oob_34:
   br label %str_idx_end_35
 str_idx_end_35:
   %t154 = phi i32 [ %t153, %str_idx_ok_33 ], [ 0, %str_idx_oob_34 ]
+  call void @star_rc_release(i8* %t143)
   store i32 %t154, i32* %t142
   %t155 = load i32, i32* %t142
   %t156 = icmp eq i32 %t155, 91
@@ -783,7 +787,6 @@ while_body_80:
   %t363 = load i8*, i8** %t0
   %t364 = load i8*, i8** %t0
   call void @star_rc_retain(i8* %t364)
-  call void @star_rc_release(i8* %t363)
   %t365 = load i32, i32* %t358
   %t366 = sext i32 %t365 to i64
   %t367 = icmp eq i8* %t363, null
@@ -802,6 +805,7 @@ str_idx_oob_85:
   br label %str_idx_end_86
 str_idx_end_86:
   %t374 = phi i32 [ %t373, %str_idx_ok_84 ], [ 0, %str_idx_oob_85 ]
+  call void @star_rc_release(i8* %t363)
   store i32 %t374, i32* %t362
   %t375 = load i32, i32* %t362
   br label %match_scrutinee_377

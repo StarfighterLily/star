@@ -91,6 +91,10 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 @rng.state = global i32 123456789
 
+@sym.data = global i8** null
+@sym.len = global i64 0
+@sym.cap = global i64 0
+
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
   %total = add i64 %size, 16
@@ -172,15 +176,17 @@ entry:
   %t5 = load i8*, i8** %t0
   %t6 = load i8*, i8** %t0
   call void @star_rc_retain(i8* %t6)
-  call void @star_rc_release(i8* %t5)
   %t7 = getelementptr inbounds { i64, i8*, [2 x i8] }, { i64, i8*, [2 x i8] }* @.str.2, i64 0, i32 2, i64 0
   %t8 = call i8* @fopen(i8* %t5, i8* %t7)
+  call void @star_rc_release(i8* %t5)
+  call void @star_rc_release(i8* %t7)
   store i8* %t8, i8** %t4
   %t9 = load i8*, i8** %t4
   %t10 = icmp eq i8* %t9, null
   br i1 %t10, label %if_then_0, label %if_else_1
 if_then_0:
   %t11 = getelementptr inbounds { i64, i8*, [27 x i8] }, { i64, i8*, [27 x i8] }* @.str.3, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t11)
   call i32 (i8*, ...) @printf(i8* %t11)
   %t12 = load i8*, i8** %t2
   call void @star_rc_release(i8* %t12)
@@ -203,6 +209,7 @@ file_handle_ok_4:
   %t18 = call i32 @strlen(i8* %t17)
   %t19 = sext i32 %t18 to i64
   %t20 = call i64 @fwrite(i8* %t17, i64 1, i64 %t19, i8* %t14)
+  call void @star_rc_release(i8* %t17)
   %t21 = icmp eq i64 %t20, %t19
   %t22 = load i8*, i8** %t4
   %t23 = icmp eq i8* %t22, null
@@ -217,6 +224,7 @@ file_handle_ok_6:
   %t26 = call i32 @strlen(i8* %t25)
   %t27 = sext i32 %t26 to i64
   %t28 = call i64 @fwrite(i8* %t25, i64 1, i64 %t27, i8* %t22)
+  call void @star_rc_release(i8* %t25)
   %t29 = icmp eq i64 %t28, %t27
   %t30 = load i8*, i8** %t4
   %t31 = icmp eq i8* %t30, null
@@ -232,9 +240,9 @@ file_handle_ok_8:
   %t34 = load i8*, i8** %t0
   %t35 = load i8*, i8** %t0
   call void @star_rc_retain(i8* %t35)
-  call void @star_rc_release(i8* %t34)
   %t36 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.9, i64 0, i64 0
   %t37 = call i8* @fopen(i8* %t34, i8* %t36)
+  call void @star_rc_release(i8* %t34)
   %t38 = icmp ne i8* %t37, null
   br i1 %t38, label %file_exists_close_9, label %file_exists_end_10
 file_exists_close_9:
@@ -245,9 +253,9 @@ file_exists_end_10:
   %t40 = load i8*, i8** %t2
   %t41 = load i8*, i8** %t2
   call void @star_rc_retain(i8* %t41)
-  call void @star_rc_release(i8* %t40)
   %t42 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.10, i64 0, i64 0
   %t43 = call i8* @fopen(i8* %t40, i8* %t42)
+  call void @star_rc_release(i8* %t40)
   %t44 = icmp ne i8* %t43, null
   br i1 %t44, label %file_exists_close_11, label %file_exists_end_12
 file_exists_close_11:
@@ -270,15 +278,17 @@ file_exists_end_12:
   %t56 = load i8*, i8** %t0
   %t57 = load i8*, i8** %t0
   call void @star_rc_retain(i8* %t57)
-  call void @star_rc_release(i8* %t56)
   %t58 = getelementptr inbounds { i64, i8*, [2 x i8] }, { i64, i8*, [2 x i8] }* @.str.17, i64 0, i32 2, i64 0
   %t59 = call i8* @fopen(i8* %t56, i8* %t58)
+  call void @star_rc_release(i8* %t56)
+  call void @star_rc_release(i8* %t58)
   store i8* %t59, i8** %t55
   %t60 = load i8*, i8** %t55
   %t61 = icmp eq i8* %t60, null
   br i1 %t61, label %if_then_13, label %if_else_14
 if_then_13:
   %t62 = getelementptr inbounds { i64, i8*, [27 x i8] }, { i64, i8*, [27 x i8] }* @.str.18, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t62)
   call i32 (i8*, ...) @printf(i8* %t62)
   %t63 = load i8*, i8** %t2
   call void @star_rc_release(i8* %t63)

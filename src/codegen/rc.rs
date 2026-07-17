@@ -38,53 +38,11 @@
 //! real unbounded working-set growth. Fixed by dropping the guard and
 //! releasing unconditionally at every one of those call sites.
 
-use crate::types::{Ty, TypedExpr};
+use crate::types::Ty;
 
 use super::Codegen;
 
 impl Codegen {
-    /// True if `expr` resolves (through `Codegen::emit_place`/
-    /// `emit_read_place`, possibly recursing through a chain of `Field`/
-    /// `TupleIndex`/`ArrayIndex`/`RingIndex`/`ListIndex` projections) to a
-    /// pointer into real, persistent storage that some other owner already
-    /// holds and will independently release at its own scope
-    /// exit/reassignment (an `Ident`, `self`, or a projection chained from
-    /// one; a `GenRefIndex` counts too -- it addresses an arena's own
-    /// backing array, not a spilled temporary). False for anything else (a
-    /// `Call`, `StructLit`, `If`/`Match`, `TableIndex`, a mutating
-    /// collection-method result, a `Cast`, ...): `emit_place`'s generic
-    /// fallback resolves those by spilling `emit_expr`'s already-owned
-    /// result (fresh at refcount 1, see this module's own doc comment) into
-    /// a scratch `alloca` nothing will ever separately release.
-    ///
-    /// Used by every "read a field/element out of a place pointer, then
-    /// retain" arm (`Field`, `TupleIndex`, `ArrayIndex`, `RingIndex` in
-    /// `expr.rs`/`array.rs`) to decide whether that retain is actually
-    /// needed: reading out of *real* storage hands out a genuine duplicate
-    /// that must be retained (the original slot keeps its own reference,
-    /// released independently later) -- but reading out of a freshly
-    /// spilled temporary must NOT retain again, since that temporary
-    /// already owns its content and nothing will ever release the
-    /// temporary itself to balance the extra retain back out. Previously
-    /// every one of these call sites retained unconditionally, leaking one
-    /// reference on every read through a temporary -- confirmed via real
-    /// unbounded working-set growth on both `table[i].field` (a `Table<T>`
-    /// index is never handled by `emit_place`'s explicit arms, see its own
-    /// `TableIndex` doc comment) and a direct `make_struct().field` call
-    /// chain (any struct-returning call/`if`/`match` used directly as a
-    /// field-access receiver, with no `let` binding of its own).
-    pub(super) fn place_is_shared_storage(expr: &TypedExpr) -> bool {
-        match expr {
-            TypedExpr::Ident { .. } | TypedExpr::SelfExpr(..) | TypedExpr::GenRefIndex { .. } => true,
-            TypedExpr::Field { base, .. }
-            | TypedExpr::TupleIndex { base, .. }
-            | TypedExpr::ArrayIndex { base, .. }
-            | TypedExpr::RingIndex { base, .. }
-            | TypedExpr::ListIndex { base, .. } => Self::place_is_shared_storage(base),
-            _ => false,
-        }
-    }
-
     /// True if a value of this type owns, directly or transitively (through
     /// struct fields), a `star_rc_alloc`'d heap block that needs a matching
     /// retain/release. Everything else (`Int`, `Float`, `Bool`, vectors,
@@ -121,6 +79,20 @@ impl Codegen {
                 .map(|fields| fields.iter().any(|f| self.contains_rc(f)))
                 .unwrap_or(false),
             Ty::Tuple(elems) => elems.iter().any(|f| self.contains_rc(f)),
+            // A payload enum (`Option<str>`, `Result<str, str>`, any
+            // user-defined enum with RC-bearing variant fields) shares one
+            // `[W x i64]` payload buffer across every variant (see
+            // `Codegen::enum_variant_payload_llvm_ty`'s doc comment) -- true
+            // whenever *any* variant carries an RC-bearing field, since the
+            // active variant is only known at runtime (the tag). A fieldless
+            // enum (`enum_variant_fields`'s per-variant lists all empty, e.g.
+            // a plain `enum Color: Red, Green, Blue`) correctly falls out to
+            // `false` here with no separate `enum_is_payload` check needed.
+            Ty::Enum(n) => self
+                .enum_variant_fields
+                .get(n)
+                .map(|variants| variants.iter().any(|fields| fields.iter().any(|f| self.contains_rc(f))))
+                .unwrap_or(false),
             Ty::Array(elem, count) => *count > 0 && self.contains_rc(elem),
             // A ring always has `count > 0` (rejected at parse time -- see
             // `Parser::parse_type_inner`/`parse_ring_new`), so this is just
@@ -253,6 +225,60 @@ impl Codegen {
                     let gep = self.tmp_name();
                     self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i64 {}", gep, arr_ty, arr_ty, data_ptr, i));
                     self.emit_rc_walk(&gep, elem, retain);
+                }
+            }
+            // A payload enum's active variant is only known at runtime (the
+            // tag) -- load it, then branch per variant that actually carries
+            // an RC-bearing field (skipping the rest at codegen time, same
+            // "only emit a check for what can possibly need it" shape
+            // `emit_rc_walk`'s other arms already use), bitcasting the shared
+            // payload buffer to that variant's own field layout exactly the
+            // way `TypedExpr::EnumVariant` construction and `Pattern::
+            // EnumVariant` destructuring already do, then recursing into each
+            // RC-bearing field. Previously this whole arm was missing --
+            // `Ty::Enum` fell through to the `_ => {}` no-op below, and
+            // `contains_rc` (before its own fix, just above) always returned
+            // `false` for any enum, so an `Option<str>`/`Result<str,str>`/...
+            // local that was never explicitly matched (e.g. a `let o =
+            // make_some(s)` never consumed) leaked its payload's RC content
+            // unboundedly at every scope exit -- confirmed via real unbounded
+            // working-set growth (~83MB -> 390MB+ in under 2 seconds).
+            Ty::Enum(n) => {
+                let variants = self.enum_variant_fields.get(n).cloned().unwrap_or_default();
+                if variants.iter().all(|fields| !fields.iter().any(|f| self.contains_rc(f))) {
+                    return;
+                }
+                let enum_ty = format!("%{}", n);
+                let words = self.enum_payload_words(n);
+                let tag_gep = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0", tag_gep, enum_ty, enum_ty, ptr));
+                let tag = self.tmp_name();
+                self.line(&format!("  {} = load i32, i32* {}", tag, tag_gep));
+                let payload_gep = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 1", payload_gep, enum_ty, enum_ty, ptr));
+                for (idx, fields) in variants.iter().enumerate() {
+                    if !fields.iter().any(|f| self.contains_rc(f)) {
+                        continue;
+                    }
+                    let match_label = self.block_label("enum_rc_variant");
+                    let next_label = self.block_label("enum_rc_next");
+                    let is_variant = self.tmp_name();
+                    self.line(&format!("  {} = icmp eq i32 {}, {}", is_variant, tag, idx));
+                    self.line(&format!("  br i1 {}, label %{}, label %{}", is_variant, match_label, next_label));
+                    self.open_block(&match_label);
+                    let variant_ty = self.enum_variant_payload_llvm_ty(n, idx as u32);
+                    let variant_ptr = self.tmp_name();
+                    self.line(&format!("  {} = bitcast [{} x i64]* {} to {}*", variant_ptr, words, payload_gep, variant_ty));
+                    for (fi, fty) in fields.iter().enumerate() {
+                        if !self.contains_rc(fty) {
+                            continue;
+                        }
+                        let field_gep = self.tmp_name();
+                        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", field_gep, variant_ty, variant_ty, variant_ptr, fi));
+                        self.emit_rc_walk(&field_gep, fty, retain);
+                    }
+                    self.line(&format!("  br label %{}", next_label));
+                    self.open_block(&next_label);
                 }
             }
             Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Table(_) | Ty::Bytes => {

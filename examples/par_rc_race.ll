@@ -91,6 +91,10 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 @rng.state = global i32 123456789
 
+@sym.data = global i8** null
+@sym.len = global i64 0
+@sym.cap = global i64 0
+
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
   %total = add i64 %size, 16
@@ -183,6 +187,8 @@ entry:
   %t8 = call i8* @star_rc_alloc(i64 %t7, i8* null)
   call i8* @strcpy(i8* %t8, i8* %t1)
   call i8* @strcat(i8* %t8, i8* %t2)
+  call void @star_rc_release(i8* %t1)
+  call void @star_rc_release(i8* %t2)
   store i8* %t8, i8** %t0
   store i32 0, i32* %t9
   br label %for_cond_0
