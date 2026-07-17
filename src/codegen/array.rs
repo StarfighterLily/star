@@ -77,7 +77,15 @@ impl Codegen {
         self.open_block(&oob_label);
         let dummy = self.tmp_name();
         self.line(&format!("  {} = alloca {}", dummy, elem_llvm));
-        let zero = self.zero_value(elem_ty);
+        // `zero_value_rc`, not `zero_value` -- see `crate::codegen::list`'s
+        // `emit_list_index_place`'s identical fix's doc comment: a bare
+        // `zero_value(&Ty::Str)` null disguised as `str` segfaults the
+        // moment a chained access off this dummy slot (e.g.
+        // `arr[oob].some_str_method()`, or simply `len(arr[oob])` for an
+        // `[str; N]`) reads through it. Confirmed via a real segfault
+        // building and running `let a: [str; 3] = ["x"; 3]; len(a[99])`
+        // before this fix.
+        let zero = self.zero_value_rc(elem_ty);
         self.line(&format!("  store {} {}, {}* {}", elem_llvm, zero, elem_llvm, dummy));
         self.line(&format!("  br label %{}", end_label));
 

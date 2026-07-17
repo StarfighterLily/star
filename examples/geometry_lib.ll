@@ -81,7 +81,7 @@ declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
-%GenRef = type { i32, i32 }
+%GenRef = type { i32, i64 }
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
@@ -90,6 +90,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @star.argv = global i8** null
 
 @rng.state = global i32 123456789
+@rng.lock = global i8* null
 
 @sym.data = global i8** null
 @sym.len = global i64 0

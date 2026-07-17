@@ -81,7 +81,7 @@ declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
-%GenRef = type { i32, i32 }
+%GenRef = type { i32, i64 }
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
@@ -90,6 +90,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @star.argv = global i8** null
 
 @rng.state = global i32 123456789
+@rng.lock = global i8* null
 
 @sym.data = global i8** null
 @sym.len = global i64 0
@@ -215,138 +216,140 @@ enum_rc_next_1:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t1 = alloca %Box__i32
   %t2 = alloca %Box__i32
-  %t8 = alloca %Box__Box__i32
+  %t3 = alloca %Box__i32
   %t9 = alloca %Box__Box__i32
-  %t10 = alloca %Box__i32
-  %t19 = alloca %Option__i32
+  %t10 = alloca %Box__Box__i32
+  %t11 = alloca %Box__i32
   %t20 = alloca %Option__i32
-  %t26 = alloca %Option__i32
+  %t21 = alloca %Option__i32
   %t27 = alloca %Option__i32
-  %t37 = alloca %Result__i32__str
+  %t28 = alloca %Option__i32
   %t38 = alloca %Result__i32__str
-  %t44 = alloca %Result__i32__str
+  %t39 = alloca %Result__i32__str
   %t45 = alloca %Result__i32__str
+  %t46 = alloca %Result__i32__str
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
   store i8* %t0, i8** @sym.lock
-  %t3 = getelementptr inbounds %Box__i32, %Box__i32* %t2, i32 0, i32 0
-  store i32 42, i32* %t3
-  %t4 = load %Box__i32, %Box__i32* %t2
-  store %Box__i32 %t4, %Box__i32* %t1
-  %t5 = getelementptr inbounds %Box__i32, %Box__i32* %t1, i32 0, i32 0
-  %t6 = load i32, i32* %t5
-  %t7 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.2, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t7, i32 %t6)
-  %t11 = getelementptr inbounds %Box__i32, %Box__i32* %t10, i32 0, i32 0
-  store i32 99, i32* %t11
-  %t12 = load %Box__i32, %Box__i32* %t10
-  %t13 = getelementptr inbounds %Box__Box__i32, %Box__Box__i32* %t9, i32 0, i32 0
-  store %Box__i32 %t12, %Box__i32* %t13
-  %t14 = load %Box__Box__i32, %Box__Box__i32* %t9
-  store %Box__Box__i32 %t14, %Box__Box__i32* %t8
-  %t15 = getelementptr inbounds %Box__Box__i32, %Box__Box__i32* %t8, i32 0, i32 0
-  %t16 = getelementptr inbounds %Box__i32, %Box__i32* %t15, i32 0, i32 0
-  %t17 = load i32, i32* %t16
-  %t18 = getelementptr inbounds [16 x i8], [16 x i8]* @.str.3, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t18, i32 %t17)
-  %t21 = getelementptr inbounds %Option__i32, %Option__i32* %t20, i32 0, i32 0
-  store i32 1, i32* %t21
-  %t22 = getelementptr inbounds %Option__i32, %Option__i32* %t20, i32 0, i32 1
-  %t23 = bitcast [1 x i64]* %t22 to { i32 }*
-  %t24 = getelementptr inbounds { i32 }, { i32 }* %t23, i32 0, i32 0
-  store i32 5, i32* %t24
-  %t25 = load %Option__i32, %Option__i32* %t20
-  store %Option__i32 %t25, %Option__i32* %t19
-  %t28 = getelementptr inbounds %Option__i32, %Option__i32* %t27, i32 0, i32 0
-  store i32 0, i32* %t28
-  %t29 = load %Option__i32, %Option__i32* %t27
-  store %Option__i32 %t29, %Option__i32* %t26
-  %t30 = load %Option__i32, %Option__i32* %t19
-  %t31 = call i32 @unwrap_or__i32(%Option__i32 %t30, i32 0)
-  %t32 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.4, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t32, i32 %t31)
-  %t33 = load %Option__i32, %Option__i32* %t26
-  %t34 = sub i32 0, 1
-  %t35 = call i32 @unwrap_or__i32(%Option__i32 %t33, i32 %t34)
-  %t36 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.5, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t36, i32 %t35)
-  %t39 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t38, i32 0, i32 0
-  store i32 0, i32* %t39
-  %t40 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t38, i32 0, i32 1
-  %t41 = bitcast [1 x i64]* %t40 to { i32 }*
-  %t42 = getelementptr inbounds { i32 }, { i32 }* %t41, i32 0, i32 0
-  store i32 10, i32* %t42
-  %t43 = load %Result__i32__str, %Result__i32__str* %t38
-  store %Result__i32__str %t43, %Result__i32__str* %t37
-  %t46 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t45, i32 0, i32 0
-  store i32 1, i32* %t46
-  %t47 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t45, i32 0, i32 1
-  %t48 = bitcast [1 x i64]* %t47 to { i8* }*
-  %t49 = getelementptr inbounds { i64, i8*, [4 x i8] }, { i64, i8*, [4 x i8] }* @.str.6, i64 0, i32 2, i64 0
-  %t50 = getelementptr inbounds { i8* }, { i8* }* %t48, i32 0, i32 0
-  store i8* %t49, i8** %t50
-  %t51 = load %Result__i32__str, %Result__i32__str* %t45
-  store %Result__i32__str %t51, %Result__i32__str* %t44
-  %t52 = load %Result__i32__str, %Result__i32__str* %t37
-  %t53 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t37, i32 0, i32 0
-  %t54 = load i32, i32* %t53
-  %t55 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t37, i32 0, i32 1
-  %t56 = icmp eq i32 %t54, 1
-  br i1 %t56, label %enum_rc_variant_2, label %enum_rc_next_3
+  %t1 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t1, i8** @rng.lock
+  %t4 = getelementptr inbounds %Box__i32, %Box__i32* %t3, i32 0, i32 0
+  store i32 42, i32* %t4
+  %t5 = load %Box__i32, %Box__i32* %t3
+  store %Box__i32 %t5, %Box__i32* %t2
+  %t6 = getelementptr inbounds %Box__i32, %Box__i32* %t2, i32 0, i32 0
+  %t7 = load i32, i32* %t6
+  %t8 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.2, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t8, i32 %t7)
+  %t12 = getelementptr inbounds %Box__i32, %Box__i32* %t11, i32 0, i32 0
+  store i32 99, i32* %t12
+  %t13 = load %Box__i32, %Box__i32* %t11
+  %t14 = getelementptr inbounds %Box__Box__i32, %Box__Box__i32* %t10, i32 0, i32 0
+  store %Box__i32 %t13, %Box__i32* %t14
+  %t15 = load %Box__Box__i32, %Box__Box__i32* %t10
+  store %Box__Box__i32 %t15, %Box__Box__i32* %t9
+  %t16 = getelementptr inbounds %Box__Box__i32, %Box__Box__i32* %t9, i32 0, i32 0
+  %t17 = getelementptr inbounds %Box__i32, %Box__i32* %t16, i32 0, i32 0
+  %t18 = load i32, i32* %t17
+  %t19 = getelementptr inbounds [16 x i8], [16 x i8]* @.str.3, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t19, i32 %t18)
+  %t22 = getelementptr inbounds %Option__i32, %Option__i32* %t21, i32 0, i32 0
+  store i32 1, i32* %t22
+  %t23 = getelementptr inbounds %Option__i32, %Option__i32* %t21, i32 0, i32 1
+  %t24 = bitcast [1 x i64]* %t23 to { i32 }*
+  %t25 = getelementptr inbounds { i32 }, { i32 }* %t24, i32 0, i32 0
+  store i32 5, i32* %t25
+  %t26 = load %Option__i32, %Option__i32* %t21
+  store %Option__i32 %t26, %Option__i32* %t20
+  %t29 = getelementptr inbounds %Option__i32, %Option__i32* %t28, i32 0, i32 0
+  store i32 0, i32* %t29
+  %t30 = load %Option__i32, %Option__i32* %t28
+  store %Option__i32 %t30, %Option__i32* %t27
+  %t31 = load %Option__i32, %Option__i32* %t20
+  %t32 = call i32 @unwrap_or__i32(%Option__i32 %t31, i32 0)
+  %t33 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.4, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t33, i32 %t32)
+  %t34 = load %Option__i32, %Option__i32* %t27
+  %t35 = sub i32 0, 1
+  %t36 = call i32 @unwrap_or__i32(%Option__i32 %t34, i32 %t35)
+  %t37 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.5, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t37, i32 %t36)
+  %t40 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t39, i32 0, i32 0
+  store i32 0, i32* %t40
+  %t41 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t39, i32 0, i32 1
+  %t42 = bitcast [1 x i64]* %t41 to { i32 }*
+  %t43 = getelementptr inbounds { i32 }, { i32 }* %t42, i32 0, i32 0
+  store i32 10, i32* %t43
+  %t44 = load %Result__i32__str, %Result__i32__str* %t39
+  store %Result__i32__str %t44, %Result__i32__str* %t38
+  %t47 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t46, i32 0, i32 0
+  store i32 1, i32* %t47
+  %t48 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t46, i32 0, i32 1
+  %t49 = bitcast [1 x i64]* %t48 to { i8* }*
+  %t50 = getelementptr inbounds { i64, i8*, [4 x i8] }, { i64, i8*, [4 x i8] }* @.str.6, i64 0, i32 2, i64 0
+  %t51 = getelementptr inbounds { i8* }, { i8* }* %t49, i32 0, i32 0
+  store i8* %t50, i8** %t51
+  %t52 = load %Result__i32__str, %Result__i32__str* %t46
+  store %Result__i32__str %t52, %Result__i32__str* %t45
+  %t53 = load %Result__i32__str, %Result__i32__str* %t38
+  %t54 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t38, i32 0, i32 0
+  %t55 = load i32, i32* %t54
+  %t56 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t38, i32 0, i32 1
+  %t57 = icmp eq i32 %t55, 1
+  br i1 %t57, label %enum_rc_variant_2, label %enum_rc_next_3
 enum_rc_variant_2:
-  %t57 = bitcast [1 x i64]* %t55 to { i8* }*
-  %t58 = getelementptr inbounds { i8* }, { i8* }* %t57, i32 0, i32 0
-  %t59 = load i8*, i8** %t58
-  call void @star_rc_retain(i8* %t59)
+  %t58 = bitcast [1 x i64]* %t56 to { i8* }*
+  %t59 = getelementptr inbounds { i8* }, { i8* }* %t58, i32 0, i32 0
+  %t60 = load i8*, i8** %t59
+  call void @star_rc_retain(i8* %t60)
   br label %enum_rc_next_3
 enum_rc_next_3:
-  call void @print_result(%Result__i32__str %t52)
-  %t60 = load %Result__i32__str, %Result__i32__str* %t44
-  %t61 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t44, i32 0, i32 0
-  %t62 = load i32, i32* %t61
-  %t63 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t44, i32 0, i32 1
-  %t64 = icmp eq i32 %t62, 1
-  br i1 %t64, label %enum_rc_variant_4, label %enum_rc_next_5
+  call void @print_result(%Result__i32__str %t53)
+  %t61 = load %Result__i32__str, %Result__i32__str* %t45
+  %t62 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t45, i32 0, i32 0
+  %t63 = load i32, i32* %t62
+  %t64 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t45, i32 0, i32 1
+  %t65 = icmp eq i32 %t63, 1
+  br i1 %t65, label %enum_rc_variant_4, label %enum_rc_next_5
 enum_rc_variant_4:
-  %t65 = bitcast [1 x i64]* %t63 to { i8* }*
-  %t66 = getelementptr inbounds { i8* }, { i8* }* %t65, i32 0, i32 0
-  %t67 = load i8*, i8** %t66
-  call void @star_rc_retain(i8* %t67)
+  %t66 = bitcast [1 x i64]* %t64 to { i8* }*
+  %t67 = getelementptr inbounds { i8* }, { i8* }* %t66, i32 0, i32 0
+  %t68 = load i8*, i8** %t67
+  call void @star_rc_retain(i8* %t68)
   br label %enum_rc_next_5
 enum_rc_next_5:
-  call void @print_result(%Result__i32__str %t60)
-  %t68 = call i32 @identity__i32(i32 7)
-  %t69 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.7, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t69, i32 %t68)
-  %t70 = call float @identity__f32(float 0x400C000000000000)
-  %t71 = getelementptr inbounds [20 x i8], [20 x i8]* @.str.8, i64 0, i64 0
-  %t72 = fpext float %t70 to double
-  call i32 (i8*, ...) @printf(i8* %t71, double %t72)
-  %t73 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t44, i32 0, i32 0
-  %t74 = load i32, i32* %t73
-  %t75 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t44, i32 0, i32 1
-  %t76 = icmp eq i32 %t74, 1
-  br i1 %t76, label %enum_rc_variant_6, label %enum_rc_next_7
+  call void @print_result(%Result__i32__str %t61)
+  %t69 = call i32 @identity__i32(i32 7)
+  %t70 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.7, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t70, i32 %t69)
+  %t71 = call float @identity__f32(float 0x400C000000000000)
+  %t72 = getelementptr inbounds [20 x i8], [20 x i8]* @.str.8, i64 0, i64 0
+  %t73 = fpext float %t71 to double
+  call i32 (i8*, ...) @printf(i8* %t72, double %t73)
+  %t74 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t45, i32 0, i32 0
+  %t75 = load i32, i32* %t74
+  %t76 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t45, i32 0, i32 1
+  %t77 = icmp eq i32 %t75, 1
+  br i1 %t77, label %enum_rc_variant_6, label %enum_rc_next_7
 enum_rc_variant_6:
-  %t77 = bitcast [1 x i64]* %t75 to { i8* }*
-  %t78 = getelementptr inbounds { i8* }, { i8* }* %t77, i32 0, i32 0
-  %t79 = load i8*, i8** %t78
-  call void @star_rc_release(i8* %t79)
+  %t78 = bitcast [1 x i64]* %t76 to { i8* }*
+  %t79 = getelementptr inbounds { i8* }, { i8* }* %t78, i32 0, i32 0
+  %t80 = load i8*, i8** %t79
+  call void @star_rc_release(i8* %t80)
   br label %enum_rc_next_7
 enum_rc_next_7:
-  %t80 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t37, i32 0, i32 0
-  %t81 = load i32, i32* %t80
-  %t82 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t37, i32 0, i32 1
-  %t83 = icmp eq i32 %t81, 1
-  br i1 %t83, label %enum_rc_variant_8, label %enum_rc_next_9
+  %t81 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t38, i32 0, i32 0
+  %t82 = load i32, i32* %t81
+  %t83 = getelementptr inbounds %Result__i32__str, %Result__i32__str* %t38, i32 0, i32 1
+  %t84 = icmp eq i32 %t82, 1
+  br i1 %t84, label %enum_rc_variant_8, label %enum_rc_next_9
 enum_rc_variant_8:
-  %t84 = bitcast [1 x i64]* %t82 to { i8* }*
-  %t85 = getelementptr inbounds { i8* }, { i8* }* %t84, i32 0, i32 0
-  %t86 = load i8*, i8** %t85
-  call void @star_rc_release(i8* %t86)
+  %t85 = bitcast [1 x i64]* %t83 to { i8* }*
+  %t86 = getelementptr inbounds { i8* }, { i8* }* %t85, i32 0, i32 0
+  %t87 = load i8*, i8** %t86
+  call void @star_rc_release(i8* %t87)
   br label %enum_rc_next_9
 enum_rc_next_9:
   ret i32 0

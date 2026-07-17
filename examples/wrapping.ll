@@ -81,7 +81,7 @@ declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
-%GenRef = type { i32, i32 }
+%GenRef = type { i32, i64 }
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
@@ -90,6 +90,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @star.argv = global i8** null
 
 @rng.state = global i32 123456789
+@rng.lock = global i8* null
 
 @sym.data = global i8** null
 @sym.len = global i64 0
@@ -159,99 +160,101 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t1 = alloca i8
-  %t3 = alloca i8
-  %t5 = alloca i32
-  %t16 = alloca i8
-  %t18 = alloca i8
-  %t25 = alloca i32
+  %t2 = alloca i8
+  %t4 = alloca i8
+  %t6 = alloca i32
+  %t17 = alloca i8
+  %t19 = alloca i8
   %t26 = alloca i32
-  %t37 = alloca i16
-  %t39 = alloca i16
-  %t48 = alloca i8
+  %t27 = alloca i32
+  %t38 = alloca i16
+  %t40 = alloca i16
+  %t49 = alloca i8
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
   store i8* %t0, i8** @sym.lock
-  %t2 = trunc i32 250 to i8
-  store i8 %t2, i8* %t1
-  %t4 = trunc i32 1 to i8
-  store i8 %t4, i8* %t3
-  store i32 0, i32* %t5
+  %t1 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t1, i8** @rng.lock
+  %t3 = trunc i32 250 to i8
+  store i8 %t3, i8* %t2
+  %t5 = trunc i32 1 to i8
+  store i8 %t5, i8* %t4
+  store i32 0, i32* %t6
   br label %while_cond_0
 while_cond_0:
-  %t6 = load i32, i32* %t5
-  %t7 = icmp slt i32 %t6, 10
-  br i1 %t7, label %while_body_1, label %while_else_2
+  %t7 = load i32, i32* %t6
+  %t8 = icmp slt i32 %t7, 10
+  br i1 %t8, label %while_body_1, label %while_else_2
 while_body_1:
-  %t8 = load i8, i8* %t1
-  %t9 = load i8, i8* %t3
-  %t10 = add i8 %t8, %t9
-  store i8 %t10, i8* %t1
-  %t11 = load i32, i32* %t5
-  %t12 = add i32 %t11, 1
-  store i32 %t12, i32* %t5
+  %t9 = load i8, i8* %t2
+  %t10 = load i8, i8* %t4
+  %t11 = add i8 %t9, %t10
+  store i8 %t11, i8* %t2
+  %t12 = load i32, i32* %t6
+  %t13 = add i32 %t12, 1
+  store i32 %t13, i32* %t6
   br label %while_cond_0
 while_else_2:
   br label %while_end_3
 while_end_3:
-  %t13 = load i8, i8* %t1
-  %t14 = getelementptr inbounds [37 x i8], [37 x i8]* @.str.0, i64 0, i64 0
-  %t15 = zext i8 %t13 to i32
-  call i32 (i8*, ...) @printf(i8* %t14, i32 %t15)
-  %t17 = trunc i32 127 to i8
-  store i8 %t17, i8* %t16
-  %t19 = trunc i32 1 to i8
-  store i8 %t19, i8* %t18
-  %t20 = load i8, i8* %t16
-  %t21 = load i8, i8* %t18
-  %t22 = add i8 %t20, %t21
-  %t23 = getelementptr inbounds [25 x i8], [25 x i8]* @.str.1, i64 0, i64 0
-  %t24 = sext i8 %t22 to i32
-  call i32 (i8*, ...) @printf(i8* %t23, i32 %t24)
-  store i32 -2147483648, i32* %t25
-  store i32 -1, i32* %t26
-  %t27 = load i32, i32* %t25
+  %t14 = load i8, i8* %t2
+  %t15 = getelementptr inbounds [37 x i8], [37 x i8]* @.str.0, i64 0, i64 0
+  %t16 = zext i8 %t14 to i32
+  call i32 (i8*, ...) @printf(i8* %t15, i32 %t16)
+  %t18 = trunc i32 127 to i8
+  store i8 %t18, i8* %t17
+  %t20 = trunc i32 1 to i8
+  store i8 %t20, i8* %t19
+  %t21 = load i8, i8* %t17
+  %t22 = load i8, i8* %t19
+  %t23 = add i8 %t21, %t22
+  %t24 = getelementptr inbounds [25 x i8], [25 x i8]* @.str.1, i64 0, i64 0
+  %t25 = sext i8 %t23 to i32
+  call i32 (i8*, ...) @printf(i8* %t24, i32 %t25)
+  store i32 -2147483648, i32* %t26
+  store i32 -1, i32* %t27
   %t28 = load i32, i32* %t26
-  %t29 = icmp eq i32 %t28, 0
-  br i1 %t29, label %wrap_div_zero_fail_4, label %wrap_div_zero_ok_5
+  %t29 = load i32, i32* %t27
+  %t30 = icmp eq i32 %t29, 0
+  br i1 %t30, label %wrap_div_zero_fail_4, label %wrap_div_zero_ok_5
 wrap_div_zero_fail_4:
-  %t30 = getelementptr inbounds [41 x i8], [41 x i8]* @.str.2, i64 0, i64 0
-  call i32 @puts(i8* %t30)
+  %t31 = getelementptr inbounds [41 x i8], [41 x i8]* @.str.2, i64 0, i64 0
+  call i32 @puts(i8* %t31)
   call void @exit(i32 1)
   unreachable
 wrap_div_zero_ok_5:
-  %t31 = icmp eq i32 %t27, -2147483648
-  %t32 = icmp eq i32 %t28, -1
-  %t33 = and i1 %t31, %t32
-  br i1 %t33, label %wrap_div_overflow_6, label %wrap_div_normal_7
+  %t32 = icmp eq i32 %t28, -2147483648
+  %t33 = icmp eq i32 %t29, -1
+  %t34 = and i1 %t32, %t33
+  br i1 %t34, label %wrap_div_overflow_6, label %wrap_div_normal_7
 wrap_div_overflow_6:
   br label %wrap_div_join_8
 wrap_div_normal_7:
-  %t34 = sdiv i32 %t27, %t28
+  %t35 = sdiv i32 %t28, %t29
   br label %wrap_div_join_8
 wrap_div_join_8:
-  %t35 = phi i32 [ -2147483648, %wrap_div_overflow_6 ], [ %t34, %wrap_div_normal_7 ]
-  %t36 = getelementptr inbounds [27 x i8], [27 x i8]* @.str.3, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t36, i32 %t35)
-  %t38 = trunc i32 100 to i16
-  store i16 %t38, i16* %t37
-  %t40 = trunc i32 200 to i16
-  store i16 %t40, i16* %t39
-  %t41 = load i16, i16* %t37
-  %t42 = load i16, i16* %t39
-  %t43 = icmp ult i16 %t41, %t42
-  %t44 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.4, i64 0, i64 0
-  %t45 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.5, i64 0, i64 0
-  %t46 = select i1 %t43, i8* %t44, i8* %t45
-  %t47 = getelementptr inbounds [13 x i8], [13 x i8]* @.str.6, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t47, i8* %t46)
-  %t49 = load i8, i8* %t1
-  store i8 %t49, i8* %t48
-  %t50 = load i8, i8* %t48
-  %t51 = getelementptr inbounds [16 x i8], [16 x i8]* @.str.7, i64 0, i64 0
-  %t52 = zext i8 %t50 to i32
-  call i32 (i8*, ...) @printf(i8* %t51, i32 %t52)
+  %t36 = phi i32 [ -2147483648, %wrap_div_overflow_6 ], [ %t35, %wrap_div_normal_7 ]
+  %t37 = getelementptr inbounds [27 x i8], [27 x i8]* @.str.3, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t37, i32 %t36)
+  %t39 = trunc i32 100 to i16
+  store i16 %t39, i16* %t38
+  %t41 = trunc i32 200 to i16
+  store i16 %t41, i16* %t40
+  %t42 = load i16, i16* %t38
+  %t43 = load i16, i16* %t40
+  %t44 = icmp ult i16 %t42, %t43
+  %t45 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.4, i64 0, i64 0
+  %t46 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.5, i64 0, i64 0
+  %t47 = select i1 %t44, i8* %t45, i8* %t46
+  %t48 = getelementptr inbounds [13 x i8], [13 x i8]* @.str.6, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t48, i8* %t47)
+  %t50 = load i8, i8* %t2
+  store i8 %t50, i8* %t49
+  %t51 = load i8, i8* %t49
+  %t52 = getelementptr inbounds [16 x i8], [16 x i8]* @.str.7, i64 0, i64 0
+  %t53 = zext i8 %t51 to i32
+  call i32 (i8*, ...) @printf(i8* %t52, i32 %t53)
   ret i32 0
 }
 

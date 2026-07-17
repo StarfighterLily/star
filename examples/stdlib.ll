@@ -81,7 +81,7 @@ declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
-%GenRef = type { i32, i32 }
+%GenRef = type { i32, i64 }
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
@@ -90,6 +90,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @star.argv = global i8** null
 
 @rng.state = global i32 123456789
+@rng.lock = global i8* null
 
 @sym.data = global i8** null
 @sym.len = global i64 0
@@ -184,79 +185,81 @@ entry:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t26 = alloca i8*
-  %t32 = alloca i8*
+  %t27 = alloca i8*
+  %t33 = alloca i8*
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
   store i8* %t0, i8** @sym.lock
-  %t1 = call i32 @add(i32 2, i32 3)
-  %t2 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.0, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t2, i32 %t1)
-  %t3 = call float @llvm.sqrt.f32(float 0x4030000000000000)
-  %t4 = getelementptr inbounds [10 x i8], [10 x i8]* @.str.1, i64 0, i64 0
-  %t5 = fpext float %t3 to double
-  call i32 (i8*, ...) @printf(i8* %t4, double %t5)
-  %t6 = call float @llvm.pow.f32(float 0x4000000000000000, float 0x4024000000000000)
-  %t7 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.2, i64 0, i64 0
-  %t8 = fpext float %t6 to double
-  call i32 (i8*, ...) @printf(i8* %t7, double %t8)
-  %t9 = sub i32 0, 5
-  %t10 = sub i32 0, %t9
-  %t11 = icmp slt i32 %t9, 0
-  %t12 = select i1 %t11, i32 %t10, i32 %t9
-  %t13 = getelementptr inbounds [13 x i8], [13 x i8]* @.str.3, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t13, i32 %t12)
-  %t14 = fsub float 0.0, 0x4016000000000000
-  %t15 = call float @llvm.fabs.f32(float %t14)
-  %t16 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.4, i64 0, i64 0
-  %t17 = fpext float %t15 to double
-  call i32 (i8*, ...) @printf(i8* %t16, double %t17)
-  %t18 = call float @llvm.floor.f32(float 0x400E000000000000)
-  %t19 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.5, i64 0, i64 0
-  %t20 = fpext float %t18 to double
-  call i32 (i8*, ...) @printf(i8* %t19, double %t20)
-  %t21 = call float @llvm.ceil.f32(float 0x400A000000000000)
-  %t22 = getelementptr inbounds [10 x i8], [10 x i8]* @.str.6, i64 0, i64 0
-  %t23 = fpext float %t21 to double
-  call i32 (i8*, ...) @printf(i8* %t22, double %t23)
-  %t24 = call i32 @clamp_health(i32 150)
-  %t25 = getelementptr inbounds [13 x i8], [13 x i8]* @.str.7, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t25, i32 %t24)
-  %t27 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.8, i64 0, i32 2, i64 0
-  store i8* %t27, i8** %t26
-  %t28 = load i8*, i8** %t26
-  %t29 = load i8*, i8** %t26
-  call void @star_rc_retain(i8* %t29)
-  %t30 = call i32 @strlen(i8* %t28)
-  call void @star_rc_release(i8* %t28)
-  %t31 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.9, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t31, i32 %t30)
-  %t33 = getelementptr inbounds { i64, i8*, [8 x i8] }, { i64, i8*, [8 x i8] }* @.str.10, i64 0, i32 2, i64 0
-  %t34 = load i8*, i8** %t26
-  %t35 = load i8*, i8** %t26
-  call void @star_rc_retain(i8* %t35)
-  %t36 = call i32 @strlen(i8* %t33)
+  %t1 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t1, i8** @rng.lock
+  %t2 = call i32 @add(i32 2, i32 3)
+  %t3 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.0, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t3, i32 %t2)
+  %t4 = call float @llvm.sqrt.f32(float 0x4030000000000000)
+  %t5 = getelementptr inbounds [10 x i8], [10 x i8]* @.str.1, i64 0, i64 0
+  %t6 = fpext float %t4 to double
+  call i32 (i8*, ...) @printf(i8* %t5, double %t6)
+  %t7 = call float @llvm.pow.f32(float 0x4000000000000000, float 0x4024000000000000)
+  %t8 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.2, i64 0, i64 0
+  %t9 = fpext float %t7 to double
+  call i32 (i8*, ...) @printf(i8* %t8, double %t9)
+  %t10 = sub i32 0, 5
+  %t11 = sub i32 0, %t10
+  %t12 = icmp slt i32 %t10, 0
+  %t13 = select i1 %t12, i32 %t11, i32 %t10
+  %t14 = getelementptr inbounds [13 x i8], [13 x i8]* @.str.3, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t14, i32 %t13)
+  %t15 = fsub float 0.0, 0x4016000000000000
+  %t16 = call float @llvm.fabs.f32(float %t15)
+  %t17 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.4, i64 0, i64 0
+  %t18 = fpext float %t16 to double
+  call i32 (i8*, ...) @printf(i8* %t17, double %t18)
+  %t19 = call float @llvm.floor.f32(float 0x400E000000000000)
+  %t20 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.5, i64 0, i64 0
+  %t21 = fpext float %t19 to double
+  call i32 (i8*, ...) @printf(i8* %t20, double %t21)
+  %t22 = call float @llvm.ceil.f32(float 0x400A000000000000)
+  %t23 = getelementptr inbounds [10 x i8], [10 x i8]* @.str.6, i64 0, i64 0
+  %t24 = fpext float %t22 to double
+  call i32 (i8*, ...) @printf(i8* %t23, double %t24)
+  %t25 = call i32 @clamp_health(i32 150)
+  %t26 = getelementptr inbounds [13 x i8], [13 x i8]* @.str.7, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t26, i32 %t25)
+  %t28 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.8, i64 0, i32 2, i64 0
+  store i8* %t28, i8** %t27
+  %t29 = load i8*, i8** %t27
+  %t30 = load i8*, i8** %t27
+  call void @star_rc_retain(i8* %t30)
+  %t31 = call i32 @strlen(i8* %t29)
+  call void @star_rc_release(i8* %t29)
+  %t32 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.9, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t32, i32 %t31)
+  %t34 = getelementptr inbounds { i64, i8*, [8 x i8] }, { i64, i8*, [8 x i8] }* @.str.10, i64 0, i32 2, i64 0
+  %t35 = load i8*, i8** %t27
+  %t36 = load i8*, i8** %t27
+  call void @star_rc_retain(i8* %t36)
   %t37 = call i32 @strlen(i8* %t34)
-  %t38 = add i32 %t36, %t37
-  %t39 = add i32 %t38, 1
-  %t40 = sext i32 %t39 to i64
-  %t41 = call i8* @star_rc_alloc(i64 %t40, i8* null)
-  call i8* @strcpy(i8* %t41, i8* %t33)
-  call i8* @strcat(i8* %t41, i8* %t34)
-  call void @star_rc_release(i8* %t33)
+  %t38 = call i32 @strlen(i8* %t35)
+  %t39 = add i32 %t37, %t38
+  %t40 = add i32 %t39, 1
+  %t41 = sext i32 %t40 to i64
+  %t42 = call i8* @star_rc_alloc(i64 %t41, i8* null)
+  call i8* @strcpy(i8* %t42, i8* %t34)
+  call i8* @strcat(i8* %t42, i8* %t35)
   call void @star_rc_release(i8* %t34)
-  store i8* %t41, i8** %t32
-  %t42 = load i8*, i8** %t32
-  %t43 = load i8*, i8** %t32
-  call void @star_rc_retain(i8* %t43)
-  call void @star_rc_release(i8* %t42)
-  %t44 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.11, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t44, i8* %t42)
-  %t45 = load i8*, i8** %t32
-  call void @star_rc_release(i8* %t45)
-  %t46 = load i8*, i8** %t26
+  call void @star_rc_release(i8* %t35)
+  store i8* %t42, i8** %t33
+  %t43 = load i8*, i8** %t33
+  %t44 = load i8*, i8** %t33
+  call void @star_rc_retain(i8* %t44)
+  call void @star_rc_release(i8* %t43)
+  %t45 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.11, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t45, i8* %t43)
+  %t46 = load i8*, i8** %t33
   call void @star_rc_release(i8* %t46)
+  %t47 = load i8*, i8** %t27
+  call void @star_rc_release(i8* %t47)
   ret i32 0
 }
 

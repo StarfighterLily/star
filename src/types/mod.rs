@@ -714,6 +714,24 @@ impl Checker {
     /// diagnostic well before exhausting the real Rust call stack.
     const MAX_MONO_DEPTH: u32 = 64;
 
+    /// The largest element count a single `[T; N]`/`Ring<T, N>` node may
+    /// declare. Both are stored inline (no RC header, no heap allocation of
+    /// their own -- see `Ty::Array`/`Ty::Ring`'s doc comments), so `N` flows
+    /// unchecked into: `Codegen::emit_array_repeat`'s `for i in 0..count`
+    /// loop, which emits one GEP+store *pair of LLVM IR text lines* per
+    /// element (confirmed hanging for 30+ seconds and counting, with no
+    /// `.ll` file ever written, on `[0; 999999999999]` -- a single line of
+    /// otherwise-valid source); and `Codegen::type_size`'s
+    /// `self.type_size(elem) * *count as u32`, a plain (unchecked, silently
+    /// wrapping in a release build) `u32` multiply that can under-report a
+    /// huge array's real size once `count` no longer fits `u32`. A million
+    /// elements is already far beyond any realistic inline fixed-size
+    /// buffer (particle systems, tile grids, input-replay ring buffers) --
+    /// anything larger belongs in a heap-backed `List<T>`/`Table<T>`
+    /// instead, which has no per-element codegen loop or fixed-size LLVM
+    /// array type at all.
+    const MAX_INLINE_LEN: u64 = 1_000_000;
+
     pub fn check(&mut self, module: &Module) -> Result<TypedModule, Vec<Diagnostic>> {
         // Record each `sequence`'s declared parameter count from the raw
         // AST *before* desugaring erases the distinction between a sequence's
@@ -1581,10 +1599,30 @@ impl Checker {
             }
             Type::Array(elem, count) => {
                 let elem_ty = self.resolve_type(elem)?;
+                if *count > Self::MAX_INLINE_LEN {
+                    self.error(
+                        format!(
+                            "array size `{}` is too large (max {}) -- `[T; N]` is stored inline with no heap allocation of its own, so an enormous `N` either hangs the compiler emitting one instruction per element or bakes a multi-gigabyte type into the generated code; use a heap-backed `List<T>`/`Table<T>` instead",
+                            count, Self::MAX_INLINE_LEN
+                        ),
+                        Span::dummy(),
+                    );
+                    return None;
+                }
                 Some(Ty::Array(Box::new(elem_ty), *count))
             }
             Type::Ring(elem, count) => {
                 let elem_ty = self.resolve_type(elem)?;
+                if *count > Self::MAX_INLINE_LEN {
+                    self.error(
+                        format!(
+                            "`Ring<T, N>` capacity `{}` is too large (max {}) -- like `[T; N]`, a `Ring` is stored inline with no heap allocation of its own, so an enormous `N` bakes a multi-gigabyte type into the generated code",
+                            count, Self::MAX_INLINE_LEN
+                        ),
+                        Span::dummy(),
+                    );
+                    return None;
+                }
                 Some(Ty::Ring(Box::new(elem_ty), *count))
             }
             Type::Fixed(bits, frac) => {

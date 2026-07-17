@@ -81,7 +81,7 @@ declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
-%GenRef = type { i32, i32 }
+%GenRef = type { i32, i64 }
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
@@ -90,6 +90,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @star.argv = global i8** null
 
 @rng.state = global i32 123456789
+@rng.lock = global i8* null
 
 @sym.data = global i8** null
 @sym.len = global i64 0
@@ -244,35 +245,37 @@ if_else_7:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t1 = alloca %Countdown
   %t2 = alloca %Countdown
-  %t7 = alloca i1
+  %t3 = alloca %Countdown
+  %t8 = alloca i1
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
   store i8* %t0, i8** @sym.lock
-  %t3 = getelementptr inbounds %Countdown, %Countdown* %t2, i32 0, i32 0
-  store i32 3, i32* %t3
-  %t4 = getelementptr inbounds %Countdown, %Countdown* %t2, i32 0, i32 1
-  store i32 0, i32* %t4
-  %t5 = getelementptr inbounds %Countdown, %Countdown* %t2, i32 0, i32 2
+  %t1 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t1, i8** @rng.lock
+  %t4 = getelementptr inbounds %Countdown, %Countdown* %t3, i32 0, i32 0
+  store i32 3, i32* %t4
+  %t5 = getelementptr inbounds %Countdown, %Countdown* %t3, i32 0, i32 1
   store i32 0, i32* %t5
-  %t6 = load %Countdown, %Countdown* %t2
-  store %Countdown %t6, %Countdown* %t1
-  store i1 true, i1* %t7
+  %t6 = getelementptr inbounds %Countdown, %Countdown* %t3, i32 0, i32 2
+  store i32 0, i32* %t6
+  %t7 = load %Countdown, %Countdown* %t3
+  store %Countdown %t7, %Countdown* %t2
+  store i1 true, i1* %t8
   br label %while_cond_9
 while_cond_9:
-  %t8 = load i1, i1* %t7
-  br i1 %t8, label %while_body_10, label %while_else_11
+  %t9 = load i1, i1* %t8
+  br i1 %t9, label %while_body_10, label %while_else_11
 while_body_10:
-  %t9 = call i1 @Countdown__resume(%Countdown* %t1)
-  store i1 %t9, i1* %t7
+  %t10 = call i1 @Countdown__resume(%Countdown* %t2)
+  store i1 %t10, i1* %t8
   br label %while_cond_9
 while_else_11:
   br label %while_end_12
 while_end_12:
-  %t10 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.4, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t10)
+  %t11 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.4, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t11)
   ret i32 0
 }
 

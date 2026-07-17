@@ -81,7 +81,7 @@ declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
-%GenRef = type { i32, i32 }
+%GenRef = type { i32, i64 }
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
@@ -90,6 +90,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @star.argv = global i8** null
 
 @rng.state = global i32 123456789
+@rng.lock = global i8* null
 
 @sym.data = global i8** null
 @sym.len = global i64 0
@@ -159,213 +160,233 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t1 = alloca <3 x float>
-  %t5 = alloca <3 x float>
-  %t19 = alloca <3 x float>
-  %t38 = alloca <3 x float>
-  %t81 = alloca float
-  %t92 = alloca float
-  %t120 = alloca i32
-  %t145 = alloca float
+  %t2 = alloca <3 x float>
+  %t6 = alloca <3 x float>
+  %t20 = alloca <3 x float>
+  %t39 = alloca <3 x float>
+  %t83 = alloca float
+  %t95 = alloca float
+  %t124 = alloca i32
+  %t151 = alloca float
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
   store i8* %t0, i8** @sym.lock
-  %t2 = insertelement <3 x float> undef, float 0x3FF0000000000000, i32 0
-  %t3 = insertelement <3 x float> %t2, float 0x0000000000000000, i32 1
-  %t4 = insertelement <3 x float> %t3, float 0x0000000000000000, i32 2
-  store <3 x float> %t4, <3 x float>* %t1
-  %t6 = insertelement <3 x float> undef, float 0x0000000000000000, i32 0
-  %t7 = insertelement <3 x float> %t6, float 0x3FF0000000000000, i32 1
-  %t8 = insertelement <3 x float> %t7, float 0x0000000000000000, i32 2
-  store <3 x float> %t8, <3 x float>* %t5
-  %t9 = load <3 x float>, <3 x float>* %t1
-  %t10 = load <3 x float>, <3 x float>* %t5
-  %t11 = fmul <3 x float> %t9, %t10
-  %t12 = extractelement <3 x float> %t11, i32 0
-  %t13 = extractelement <3 x float> %t11, i32 1
-  %t14 = fadd float %t12, %t13
-  %t15 = extractelement <3 x float> %t11, i32 2
-  %t16 = fadd float %t14, %t15
-  %t17 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.0, i64 0, i64 0
-  %t18 = fpext float %t16 to double
-  call i32 (i8*, ...) @printf(i8* %t17, double %t18)
-  %t20 = insertelement <3 x float> undef, float 0x4008000000000000, i32 0
-  %t21 = insertelement <3 x float> %t20, float 0x4010000000000000, i32 1
-  %t22 = insertelement <3 x float> %t21, float 0x0000000000000000, i32 2
-  store <3 x float> %t22, <3 x float>* %t19
-  %t23 = load <3 x float>, <3 x float>* %t19
-  %t24 = fmul <3 x float> %t23, %t23
-  %t25 = extractelement <3 x float> %t24, i32 0
-  %t26 = extractelement <3 x float> %t24, i32 1
-  %t27 = fadd float %t25, %t26
-  %t28 = extractelement <3 x float> %t24, i32 2
-  %t29 = fadd float %t27, %t28
-  %t30 = call float @llvm.sqrt.f32(float %t29)
-  %t31 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.1, i64 0, i64 0
-  %t32 = fpext float %t30 to double
-  call i32 (i8*, ...) @printf(i8* %t31, double %t32)
-  %t33 = fsub float 0x4024000000000000, 0x0000000000000000
-  %t34 = fmul float %t33, 0x3FE0000000000000
-  %t35 = fadd float 0x0000000000000000, %t34
-  %t36 = getelementptr inbounds [16 x i8], [16 x i8]* @.str.2, i64 0, i64 0
-  %t37 = fpext float %t35 to double
-  call i32 (i8*, ...) @printf(i8* %t36, double %t37)
-  %t39 = load <3 x float>, <3 x float>* %t1
-  %t40 = load <3 x float>, <3 x float>* %t19
-  %t41 = extractelement <3 x float> %t39, i32 0
+  %t1 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t1, i8** @rng.lock
+  %t3 = insertelement <3 x float> undef, float 0x3FF0000000000000, i32 0
+  %t4 = insertelement <3 x float> %t3, float 0x0000000000000000, i32 1
+  %t5 = insertelement <3 x float> %t4, float 0x0000000000000000, i32 2
+  store <3 x float> %t5, <3 x float>* %t2
+  %t7 = insertelement <3 x float> undef, float 0x0000000000000000, i32 0
+  %t8 = insertelement <3 x float> %t7, float 0x3FF0000000000000, i32 1
+  %t9 = insertelement <3 x float> %t8, float 0x0000000000000000, i32 2
+  store <3 x float> %t9, <3 x float>* %t6
+  %t10 = load <3 x float>, <3 x float>* %t2
+  %t11 = load <3 x float>, <3 x float>* %t6
+  %t12 = fmul <3 x float> %t10, %t11
+  %t13 = extractelement <3 x float> %t12, i32 0
+  %t14 = extractelement <3 x float> %t12, i32 1
+  %t15 = fadd float %t13, %t14
+  %t16 = extractelement <3 x float> %t12, i32 2
+  %t17 = fadd float %t15, %t16
+  %t18 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.0, i64 0, i64 0
+  %t19 = fpext float %t17 to double
+  call i32 (i8*, ...) @printf(i8* %t18, double %t19)
+  %t21 = insertelement <3 x float> undef, float 0x4008000000000000, i32 0
+  %t22 = insertelement <3 x float> %t21, float 0x4010000000000000, i32 1
+  %t23 = insertelement <3 x float> %t22, float 0x0000000000000000, i32 2
+  store <3 x float> %t23, <3 x float>* %t20
+  %t24 = load <3 x float>, <3 x float>* %t20
+  %t25 = fmul <3 x float> %t24, %t24
+  %t26 = extractelement <3 x float> %t25, i32 0
+  %t27 = extractelement <3 x float> %t25, i32 1
+  %t28 = fadd float %t26, %t27
+  %t29 = extractelement <3 x float> %t25, i32 2
+  %t30 = fadd float %t28, %t29
+  %t31 = call float @llvm.sqrt.f32(float %t30)
+  %t32 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.1, i64 0, i64 0
+  %t33 = fpext float %t31 to double
+  call i32 (i8*, ...) @printf(i8* %t32, double %t33)
+  %t34 = fsub float 0x4024000000000000, 0x0000000000000000
+  %t35 = fmul float %t34, 0x3FE0000000000000
+  %t36 = fadd float 0x0000000000000000, %t35
+  %t37 = getelementptr inbounds [16 x i8], [16 x i8]* @.str.2, i64 0, i64 0
+  %t38 = fpext float %t36 to double
+  call i32 (i8*, ...) @printf(i8* %t37, double %t38)
+  %t40 = load <3 x float>, <3 x float>* %t2
+  %t41 = load <3 x float>, <3 x float>* %t20
   %t42 = extractelement <3 x float> %t40, i32 0
-  %t43 = fsub float %t42, %t41
-  %t44 = fmul float %t43, 0x3FE0000000000000
-  %t45 = fadd float %t41, %t44
-  %t46 = insertelement <3 x float> undef, float %t45, i32 0
-  %t47 = extractelement <3 x float> %t39, i32 1
+  %t43 = extractelement <3 x float> %t41, i32 0
+  %t44 = fsub float %t43, %t42
+  %t45 = fmul float %t44, 0x3FE0000000000000
+  %t46 = fadd float %t42, %t45
+  %t47 = insertelement <3 x float> undef, float %t46, i32 0
   %t48 = extractelement <3 x float> %t40, i32 1
-  %t49 = fsub float %t48, %t47
-  %t50 = fmul float %t49, 0x3FE0000000000000
-  %t51 = fadd float %t47, %t50
-  %t52 = insertelement <3 x float> %t46, float %t51, i32 1
-  %t53 = extractelement <3 x float> %t39, i32 2
+  %t49 = extractelement <3 x float> %t41, i32 1
+  %t50 = fsub float %t49, %t48
+  %t51 = fmul float %t50, 0x3FE0000000000000
+  %t52 = fadd float %t48, %t51
+  %t53 = insertelement <3 x float> %t47, float %t52, i32 1
   %t54 = extractelement <3 x float> %t40, i32 2
-  %t55 = fsub float %t54, %t53
-  %t56 = fmul float %t55, 0x3FE0000000000000
-  %t57 = fadd float %t53, %t56
-  %t58 = insertelement <3 x float> %t52, float %t57, i32 2
-  store <3 x float> %t58, <3 x float>* %t38
-  %t59 = load <3 x float>, <3 x float>* %t38
-  %t60 = extractelement <3 x float> %t59, i32 0
-  %t61 = load <3 x float>, <3 x float>* %t38
-  %t62 = extractelement <3 x float> %t61, i32 1
-  %t63 = load <3 x float>, <3 x float>* %t38
-  %t64 = extractelement <3 x float> %t63, i32 2
-  %t65 = getelementptr inbounds [20 x i8], [20 x i8]* @.str.3, i64 0, i64 0
-  %t66 = fpext float %t60 to double
-  %t67 = fpext float %t62 to double
-  %t68 = fpext float %t64 to double
-  call i32 (i8*, ...) @printf(i8* %t65, double %t66, double %t67, double %t68)
-  %t69 = icmp sgt i32 0, 15
-  %t70 = select i1 %t69, i32 0, i32 15
-  %t71 = icmp slt i32 10, %t70
-  %t72 = select i1 %t71, i32 10, i32 %t70
-  %t73 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.4, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t73, i32 %t72)
-  %t74 = fsub float 0.0, 0x4004000000000000
-  %t75 = call float @llvm.maxnum.f32(float %t74, float 0x0000000000000000)
-  %t76 = call float @llvm.minnum.f32(float %t75, float 0x4024000000000000)
-  %t77 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.5, i64 0, i64 0
-  %t78 = fpext float %t76 to double
-  call i32 (i8*, ...) @printf(i8* %t77, double %t78)
-  %t79 = icmp eq i32 42, 0
-  %t80 = select i1 %t79, i32 1, i32 42
-  store i32 %t80, i32* @rng.state
-  %t82 = load i32, i32* @rng.state
-  %t83 = shl i32 %t82, 13
-  %t84 = xor i32 %t82, %t83
-  %t85 = lshr i32 %t84, 17
-  %t86 = xor i32 %t84, %t85
-  %t87 = shl i32 %t86, 5
-  %t88 = xor i32 %t86, %t87
-  store i32 %t88, i32* @rng.state
-  %t89 = and i32 %t88, 16777215
-  %t90 = uitofp i32 %t89 to float
-  %t91 = fdiv float %t90, 0x4170000000000000
-  store float %t91, float* %t81
-  %t93 = load i32, i32* @rng.state
-  %t94 = shl i32 %t93, 13
-  %t95 = xor i32 %t93, %t94
-  %t96 = lshr i32 %t95, 17
-  %t97 = xor i32 %t95, %t96
-  %t98 = shl i32 %t97, 5
+  %t55 = extractelement <3 x float> %t41, i32 2
+  %t56 = fsub float %t55, %t54
+  %t57 = fmul float %t56, 0x3FE0000000000000
+  %t58 = fadd float %t54, %t57
+  %t59 = insertelement <3 x float> %t53, float %t58, i32 2
+  store <3 x float> %t59, <3 x float>* %t39
+  %t60 = load <3 x float>, <3 x float>* %t39
+  %t61 = extractelement <3 x float> %t60, i32 0
+  %t62 = load <3 x float>, <3 x float>* %t39
+  %t63 = extractelement <3 x float> %t62, i32 1
+  %t64 = load <3 x float>, <3 x float>* %t39
+  %t65 = extractelement <3 x float> %t64, i32 2
+  %t66 = getelementptr inbounds [20 x i8], [20 x i8]* @.str.3, i64 0, i64 0
+  %t67 = fpext float %t61 to double
+  %t68 = fpext float %t63 to double
+  %t69 = fpext float %t65 to double
+  call i32 (i8*, ...) @printf(i8* %t66, double %t67, double %t68, double %t69)
+  %t70 = icmp sgt i32 0, 15
+  %t71 = select i1 %t70, i32 0, i32 15
+  %t72 = icmp slt i32 10, %t71
+  %t73 = select i1 %t72, i32 10, i32 %t71
+  %t74 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.4, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t74, i32 %t73)
+  %t75 = fsub float 0.0, 0x4004000000000000
+  %t76 = call float @llvm.maxnum.f32(float %t75, float 0x0000000000000000)
+  %t77 = call float @llvm.minnum.f32(float %t76, float 0x4024000000000000)
+  %t78 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.5, i64 0, i64 0
+  %t79 = fpext float %t77 to double
+  call i32 (i8*, ...) @printf(i8* %t78, double %t79)
+  %t80 = icmp eq i32 42, 0
+  %t81 = select i1 %t80, i32 1, i32 42
+  %t82 = load i8*, i8** @rng.lock
+  call i32 @WaitForSingleObject(i8* %t82, i32 -1)
+  store i32 %t81, i32* @rng.state
+  call i32 @ReleaseSemaphore(i8* %t82, i32 1, i32* null)
+  %t84 = load i8*, i8** @rng.lock
+  call i32 @WaitForSingleObject(i8* %t84, i32 -1)
+  %t85 = load i32, i32* @rng.state
+  %t86 = shl i32 %t85, 13
+  %t87 = xor i32 %t85, %t86
+  %t88 = lshr i32 %t87, 17
+  %t89 = xor i32 %t87, %t88
+  %t90 = shl i32 %t89, 5
+  %t91 = xor i32 %t89, %t90
+  store i32 %t91, i32* @rng.state
+  call i32 @ReleaseSemaphore(i8* %t84, i32 1, i32* null)
+  %t92 = and i32 %t91, 16777215
+  %t93 = uitofp i32 %t92 to float
+  %t94 = fdiv float %t93, 0x4170000000000000
+  store float %t94, float* %t83
+  %t96 = load i8*, i8** @rng.lock
+  call i32 @WaitForSingleObject(i8* %t96, i32 -1)
+  %t97 = load i32, i32* @rng.state
+  %t98 = shl i32 %t97, 13
   %t99 = xor i32 %t97, %t98
-  store i32 %t99, i32* @rng.state
-  %t100 = and i32 %t99, 16777215
-  %t101 = uitofp i32 %t100 to float
-  %t102 = fdiv float %t101, 0x4170000000000000
-  store float %t102, float* %t92
-  %t103 = load float, float* %t81
-  %t104 = fcmp oge float %t103, 0x0000000000000000
-  br i1 %t104, label %logic_rhs_0, label %logic_short_1
+  %t100 = lshr i32 %t99, 17
+  %t101 = xor i32 %t99, %t100
+  %t102 = shl i32 %t101, 5
+  %t103 = xor i32 %t101, %t102
+  store i32 %t103, i32* @rng.state
+  call i32 @ReleaseSemaphore(i8* %t96, i32 1, i32* null)
+  %t104 = and i32 %t103, 16777215
+  %t105 = uitofp i32 %t104 to float
+  %t106 = fdiv float %t105, 0x4170000000000000
+  store float %t106, float* %t95
+  %t107 = load float, float* %t83
+  %t108 = fcmp oge float %t107, 0x0000000000000000
+  br i1 %t108, label %logic_rhs_0, label %logic_short_1
 logic_rhs_0:
-  %t105 = load float, float* %t81
-  %t106 = fcmp olt float %t105, 0x3FF0000000000000
+  %t109 = load float, float* %t83
+  %t110 = fcmp olt float %t109, 0x3FF0000000000000
   br label %logic_end_2
 logic_short_1:
   br label %logic_end_2
 logic_end_2:
-  %t107 = phi i1 [ %t106, %logic_rhs_0 ], [ false, %logic_short_1 ]
-  %t108 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.6, i64 0, i64 0
-  %t109 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.7, i64 0, i64 0
-  %t110 = select i1 %t107, i8* %t108, i8* %t109
-  %t111 = load float, float* %t92
-  %t112 = fcmp oge float %t111, 0x0000000000000000
-  br i1 %t112, label %logic_rhs_3, label %logic_short_4
+  %t111 = phi i1 [ %t110, %logic_rhs_0 ], [ false, %logic_short_1 ]
+  %t112 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.6, i64 0, i64 0
+  %t113 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.7, i64 0, i64 0
+  %t114 = select i1 %t111, i8* %t112, i8* %t113
+  %t115 = load float, float* %t95
+  %t116 = fcmp oge float %t115, 0x0000000000000000
+  br i1 %t116, label %logic_rhs_3, label %logic_short_4
 logic_rhs_3:
-  %t113 = load float, float* %t92
-  %t114 = fcmp olt float %t113, 0x3FF0000000000000
+  %t117 = load float, float* %t95
+  %t118 = fcmp olt float %t117, 0x3FF0000000000000
   br label %logic_end_5
 logic_short_4:
   br label %logic_end_5
 logic_end_5:
-  %t115 = phi i1 [ %t114, %logic_rhs_3 ], [ false, %logic_short_4 ]
-  %t116 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.8, i64 0, i64 0
-  %t117 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.9, i64 0, i64 0
-  %t118 = select i1 %t115, i8* %t116, i8* %t117
-  %t119 = getelementptr inbounds [22 x i8], [22 x i8]* @.str.10, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t119, i8* %t110, i8* %t118)
-  %t121 = sub i32 20, 10
-  %t122 = icmp sle i32 %t121, 0
-  %t123 = select i1 %t122, i32 1, i32 %t121
-  %t124 = load i32, i32* @rng.state
-  %t125 = shl i32 %t124, 13
-  %t126 = xor i32 %t124, %t125
-  %t127 = lshr i32 %t126, 17
-  %t128 = xor i32 %t126, %t127
-  %t129 = shl i32 %t128, 5
-  %t130 = xor i32 %t128, %t129
-  store i32 %t130, i32* @rng.state
-  %t131 = and i32 %t130, 2147483647
-  %t132 = urem i32 %t131, %t123
-  %t133 = add i32 10, %t132
-  store i32 %t133, i32* %t120
-  %t134 = load i32, i32* %t120
-  %t135 = icmp sge i32 %t134, 10
-  br i1 %t135, label %logic_rhs_6, label %logic_short_7
+  %t119 = phi i1 [ %t118, %logic_rhs_3 ], [ false, %logic_short_4 ]
+  %t120 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.8, i64 0, i64 0
+  %t121 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.9, i64 0, i64 0
+  %t122 = select i1 %t119, i8* %t120, i8* %t121
+  %t123 = getelementptr inbounds [22 x i8], [22 x i8]* @.str.10, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t123, i8* %t114, i8* %t122)
+  %t125 = sub i32 20, 10
+  %t126 = icmp sle i32 %t125, 0
+  %t127 = select i1 %t126, i32 1, i32 %t125
+  %t128 = load i8*, i8** @rng.lock
+  call i32 @WaitForSingleObject(i8* %t128, i32 -1)
+  %t129 = load i32, i32* @rng.state
+  %t130 = shl i32 %t129, 13
+  %t131 = xor i32 %t129, %t130
+  %t132 = lshr i32 %t131, 17
+  %t133 = xor i32 %t131, %t132
+  %t134 = shl i32 %t133, 5
+  %t135 = xor i32 %t133, %t134
+  store i32 %t135, i32* @rng.state
+  call i32 @ReleaseSemaphore(i8* %t128, i32 1, i32* null)
+  %t136 = and i32 %t135, 2147483647
+  %t137 = urem i32 %t136, %t127
+  %t138 = add i32 10, %t137
+  store i32 %t138, i32* %t124
+  %t139 = load i32, i32* %t124
+  %t140 = icmp sge i32 %t139, 10
+  br i1 %t140, label %logic_rhs_6, label %logic_short_7
 logic_rhs_6:
-  %t136 = load i32, i32* %t120
-  %t137 = icmp slt i32 %t136, 20
+  %t141 = load i32, i32* %t124
+  %t142 = icmp slt i32 %t141, 20
   br label %logic_end_8
 logic_short_7:
   br label %logic_end_8
 logic_end_8:
-  %t138 = phi i1 [ %t137, %logic_rhs_6 ], [ false, %logic_short_7 ]
-  %t139 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.11, i64 0, i64 0
-  %t140 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.12, i64 0, i64 0
-  %t141 = select i1 %t138, i8* %t139, i8* %t140
-  %t142 = getelementptr inbounds [26 x i8], [26 x i8]* @.str.13, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t142, i8* %t141)
-  %t143 = icmp eq i32 42, 0
-  %t144 = select i1 %t143, i32 1, i32 42
-  store i32 %t144, i32* @rng.state
-  %t146 = load i32, i32* @rng.state
-  %t147 = shl i32 %t146, 13
-  %t148 = xor i32 %t146, %t147
-  %t149 = lshr i32 %t148, 17
-  %t150 = xor i32 %t148, %t149
-  %t151 = shl i32 %t150, 5
-  %t152 = xor i32 %t150, %t151
-  store i32 %t152, i32* @rng.state
-  %t153 = and i32 %t152, 16777215
-  %t154 = uitofp i32 %t153 to float
-  %t155 = fdiv float %t154, 0x4170000000000000
-  store float %t155, float* %t145
-  %t156 = load float, float* %t81
-  %t157 = load float, float* %t145
-  %t158 = fcmp oeq float %t156, %t157
-  %t159 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.14, i64 0, i64 0
-  %t160 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.15, i64 0, i64 0
-  %t161 = select i1 %t158, i8* %t159, i8* %t160
-  %t162 = getelementptr inbounds [44 x i8], [44 x i8]* @.str.16, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t162, i8* %t161)
+  %t143 = phi i1 [ %t142, %logic_rhs_6 ], [ false, %logic_short_7 ]
+  %t144 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.11, i64 0, i64 0
+  %t145 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.12, i64 0, i64 0
+  %t146 = select i1 %t143, i8* %t144, i8* %t145
+  %t147 = getelementptr inbounds [26 x i8], [26 x i8]* @.str.13, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t147, i8* %t146)
+  %t148 = icmp eq i32 42, 0
+  %t149 = select i1 %t148, i32 1, i32 42
+  %t150 = load i8*, i8** @rng.lock
+  call i32 @WaitForSingleObject(i8* %t150, i32 -1)
+  store i32 %t149, i32* @rng.state
+  call i32 @ReleaseSemaphore(i8* %t150, i32 1, i32* null)
+  %t152 = load i8*, i8** @rng.lock
+  call i32 @WaitForSingleObject(i8* %t152, i32 -1)
+  %t153 = load i32, i32* @rng.state
+  %t154 = shl i32 %t153, 13
+  %t155 = xor i32 %t153, %t154
+  %t156 = lshr i32 %t155, 17
+  %t157 = xor i32 %t155, %t156
+  %t158 = shl i32 %t157, 5
+  %t159 = xor i32 %t157, %t158
+  store i32 %t159, i32* @rng.state
+  call i32 @ReleaseSemaphore(i8* %t152, i32 1, i32* null)
+  %t160 = and i32 %t159, 16777215
+  %t161 = uitofp i32 %t160 to float
+  %t162 = fdiv float %t161, 0x4170000000000000
+  store float %t162, float* %t151
+  %t163 = load float, float* %t83
+  %t164 = load float, float* %t151
+  %t165 = fcmp oeq float %t163, %t164
+  %t166 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.14, i64 0, i64 0
+  %t167 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.15, i64 0, i64 0
+  %t168 = select i1 %t165, i8* %t166, i8* %t167
+  %t169 = getelementptr inbounds [44 x i8], [44 x i8]* @.str.16, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t169, i8* %t168)
   ret i32 0
 }
 

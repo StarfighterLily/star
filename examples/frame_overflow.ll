@@ -81,7 +81,7 @@ declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
-%GenRef = type { i32, i32 }
+%GenRef = type { i32, i64 }
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
@@ -90,6 +90,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @star.argv = global i8** null
 
 @rng.state = global i32 123456789
+@rng.lock = global i8* null
 
 @sym.data = global i8** null
 @sym.len = global i64 0
@@ -201,244 +202,246 @@ entry:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t11 = alloca %Big
+  %t12 = alloca %Big
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
   store i8* %t0, i8** @sym.lock
-  %t1 = load i64, i64* @frame.off
-  %t2 = getelementptr %Big, %Big* null, i32 1
-  %t3 = ptrtoint %Big* %t2 to i64
-  %t4 = load i64, i64* @frame.off
-  %t5 = add i64 %t4, %t3
-  %t6 = icmp ugt i64 %t5, 4096
-  br i1 %t6, label %frame_alloc_fail_0, label %frame_alloc_ok_1
+  %t1 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t1, i8** @rng.lock
+  %t2 = load i64, i64* @frame.off
+  %t3 = getelementptr %Big, %Big* null, i32 1
+  %t4 = ptrtoint %Big* %t3 to i64
+  %t5 = load i64, i64* @frame.off
+  %t6 = add i64 %t5, %t4
+  %t7 = icmp ugt i64 %t6, 4096
+  br i1 %t7, label %frame_alloc_fail_0, label %frame_alloc_ok_1
 frame_alloc_fail_0:
-  %t7 = getelementptr inbounds [70 x i8], [70 x i8]* @.str.0, i64 0, i64 0
-  call i32 @puts(i8* %t7)
+  %t8 = getelementptr inbounds [70 x i8], [70 x i8]* @.str.0, i64 0, i64 0
+  call i32 @puts(i8* %t8)
   call void @exit(i32 1)
   unreachable
 frame_alloc_ok_1:
-  store i64 %t5, i64* @frame.off
-  %t8 = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0
-  %t9 = getelementptr inbounds i8, i8* %t8, i64 %t4
-  %t10 = bitcast i8* %t9 to %Big*
-  %t12 = call [4 x <4 x float>] @identity()
-  %t13 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 0
-  store [4 x <4 x float>] %t12, [4 x <4 x float>]* %t13
-  %t14 = call [4 x <4 x float>] @identity()
-  %t15 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 1
-  store [4 x <4 x float>] %t14, [4 x <4 x float>]* %t15
-  %t16 = call [4 x <4 x float>] @identity()
-  %t17 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 2
-  store [4 x <4 x float>] %t16, [4 x <4 x float>]* %t17
-  %t18 = call [4 x <4 x float>] @identity()
-  %t19 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 3
-  store [4 x <4 x float>] %t18, [4 x <4 x float>]* %t19
-  %t20 = call [4 x <4 x float>] @identity()
-  %t21 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 4
-  store [4 x <4 x float>] %t20, [4 x <4 x float>]* %t21
-  %t22 = call [4 x <4 x float>] @identity()
-  %t23 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 5
-  store [4 x <4 x float>] %t22, [4 x <4 x float>]* %t23
-  %t24 = call [4 x <4 x float>] @identity()
-  %t25 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 6
-  store [4 x <4 x float>] %t24, [4 x <4 x float>]* %t25
-  %t26 = call [4 x <4 x float>] @identity()
-  %t27 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 7
-  store [4 x <4 x float>] %t26, [4 x <4 x float>]* %t27
-  %t28 = call [4 x <4 x float>] @identity()
-  %t29 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 8
-  store [4 x <4 x float>] %t28, [4 x <4 x float>]* %t29
-  %t30 = call [4 x <4 x float>] @identity()
-  %t31 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 9
-  store [4 x <4 x float>] %t30, [4 x <4 x float>]* %t31
-  %t32 = call [4 x <4 x float>] @identity()
-  %t33 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 10
-  store [4 x <4 x float>] %t32, [4 x <4 x float>]* %t33
-  %t34 = call [4 x <4 x float>] @identity()
-  %t35 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 11
-  store [4 x <4 x float>] %t34, [4 x <4 x float>]* %t35
-  %t36 = call [4 x <4 x float>] @identity()
-  %t37 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 12
-  store [4 x <4 x float>] %t36, [4 x <4 x float>]* %t37
-  %t38 = call [4 x <4 x float>] @identity()
-  %t39 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 13
-  store [4 x <4 x float>] %t38, [4 x <4 x float>]* %t39
-  %t40 = call [4 x <4 x float>] @identity()
-  %t41 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 14
-  store [4 x <4 x float>] %t40, [4 x <4 x float>]* %t41
-  %t42 = call [4 x <4 x float>] @identity()
-  %t43 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 15
-  store [4 x <4 x float>] %t42, [4 x <4 x float>]* %t43
-  %t44 = call [4 x <4 x float>] @identity()
-  %t45 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 16
-  store [4 x <4 x float>] %t44, [4 x <4 x float>]* %t45
-  %t46 = call [4 x <4 x float>] @identity()
-  %t47 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 17
-  store [4 x <4 x float>] %t46, [4 x <4 x float>]* %t47
-  %t48 = call [4 x <4 x float>] @identity()
-  %t49 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 18
-  store [4 x <4 x float>] %t48, [4 x <4 x float>]* %t49
-  %t50 = call [4 x <4 x float>] @identity()
-  %t51 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 19
-  store [4 x <4 x float>] %t50, [4 x <4 x float>]* %t51
-  %t52 = call [4 x <4 x float>] @identity()
-  %t53 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 20
-  store [4 x <4 x float>] %t52, [4 x <4 x float>]* %t53
-  %t54 = call [4 x <4 x float>] @identity()
-  %t55 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 21
-  store [4 x <4 x float>] %t54, [4 x <4 x float>]* %t55
-  %t56 = call [4 x <4 x float>] @identity()
-  %t57 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 22
-  store [4 x <4 x float>] %t56, [4 x <4 x float>]* %t57
-  %t58 = call [4 x <4 x float>] @identity()
-  %t59 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 23
-  store [4 x <4 x float>] %t58, [4 x <4 x float>]* %t59
-  %t60 = call [4 x <4 x float>] @identity()
-  %t61 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 24
-  store [4 x <4 x float>] %t60, [4 x <4 x float>]* %t61
-  %t62 = call [4 x <4 x float>] @identity()
-  %t63 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 25
-  store [4 x <4 x float>] %t62, [4 x <4 x float>]* %t63
-  %t64 = call [4 x <4 x float>] @identity()
-  %t65 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 26
-  store [4 x <4 x float>] %t64, [4 x <4 x float>]* %t65
-  %t66 = call [4 x <4 x float>] @identity()
-  %t67 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 27
-  store [4 x <4 x float>] %t66, [4 x <4 x float>]* %t67
-  %t68 = call [4 x <4 x float>] @identity()
-  %t69 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 28
-  store [4 x <4 x float>] %t68, [4 x <4 x float>]* %t69
-  %t70 = call [4 x <4 x float>] @identity()
-  %t71 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 29
-  store [4 x <4 x float>] %t70, [4 x <4 x float>]* %t71
-  %t72 = call [4 x <4 x float>] @identity()
-  %t73 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 30
-  store [4 x <4 x float>] %t72, [4 x <4 x float>]* %t73
-  %t74 = call [4 x <4 x float>] @identity()
-  %t75 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 31
-  store [4 x <4 x float>] %t74, [4 x <4 x float>]* %t75
-  %t76 = call [4 x <4 x float>] @identity()
-  %t77 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 32
-  store [4 x <4 x float>] %t76, [4 x <4 x float>]* %t77
-  %t78 = call [4 x <4 x float>] @identity()
-  %t79 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 33
-  store [4 x <4 x float>] %t78, [4 x <4 x float>]* %t79
-  %t80 = call [4 x <4 x float>] @identity()
-  %t81 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 34
-  store [4 x <4 x float>] %t80, [4 x <4 x float>]* %t81
-  %t82 = call [4 x <4 x float>] @identity()
-  %t83 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 35
-  store [4 x <4 x float>] %t82, [4 x <4 x float>]* %t83
-  %t84 = call [4 x <4 x float>] @identity()
-  %t85 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 36
-  store [4 x <4 x float>] %t84, [4 x <4 x float>]* %t85
-  %t86 = call [4 x <4 x float>] @identity()
-  %t87 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 37
-  store [4 x <4 x float>] %t86, [4 x <4 x float>]* %t87
-  %t88 = call [4 x <4 x float>] @identity()
-  %t89 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 38
-  store [4 x <4 x float>] %t88, [4 x <4 x float>]* %t89
-  %t90 = call [4 x <4 x float>] @identity()
-  %t91 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 39
-  store [4 x <4 x float>] %t90, [4 x <4 x float>]* %t91
-  %t92 = call [4 x <4 x float>] @identity()
-  %t93 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 40
-  store [4 x <4 x float>] %t92, [4 x <4 x float>]* %t93
-  %t94 = call [4 x <4 x float>] @identity()
-  %t95 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 41
-  store [4 x <4 x float>] %t94, [4 x <4 x float>]* %t95
-  %t96 = call [4 x <4 x float>] @identity()
-  %t97 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 42
-  store [4 x <4 x float>] %t96, [4 x <4 x float>]* %t97
-  %t98 = call [4 x <4 x float>] @identity()
-  %t99 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 43
-  store [4 x <4 x float>] %t98, [4 x <4 x float>]* %t99
-  %t100 = call [4 x <4 x float>] @identity()
-  %t101 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 44
-  store [4 x <4 x float>] %t100, [4 x <4 x float>]* %t101
-  %t102 = call [4 x <4 x float>] @identity()
-  %t103 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 45
-  store [4 x <4 x float>] %t102, [4 x <4 x float>]* %t103
-  %t104 = call [4 x <4 x float>] @identity()
-  %t105 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 46
-  store [4 x <4 x float>] %t104, [4 x <4 x float>]* %t105
-  %t106 = call [4 x <4 x float>] @identity()
-  %t107 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 47
-  store [4 x <4 x float>] %t106, [4 x <4 x float>]* %t107
-  %t108 = call [4 x <4 x float>] @identity()
-  %t109 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 48
-  store [4 x <4 x float>] %t108, [4 x <4 x float>]* %t109
-  %t110 = call [4 x <4 x float>] @identity()
-  %t111 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 49
-  store [4 x <4 x float>] %t110, [4 x <4 x float>]* %t111
-  %t112 = call [4 x <4 x float>] @identity()
-  %t113 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 50
-  store [4 x <4 x float>] %t112, [4 x <4 x float>]* %t113
-  %t114 = call [4 x <4 x float>] @identity()
-  %t115 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 51
-  store [4 x <4 x float>] %t114, [4 x <4 x float>]* %t115
-  %t116 = call [4 x <4 x float>] @identity()
-  %t117 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 52
-  store [4 x <4 x float>] %t116, [4 x <4 x float>]* %t117
-  %t118 = call [4 x <4 x float>] @identity()
-  %t119 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 53
-  store [4 x <4 x float>] %t118, [4 x <4 x float>]* %t119
-  %t120 = call [4 x <4 x float>] @identity()
-  %t121 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 54
-  store [4 x <4 x float>] %t120, [4 x <4 x float>]* %t121
-  %t122 = call [4 x <4 x float>] @identity()
-  %t123 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 55
-  store [4 x <4 x float>] %t122, [4 x <4 x float>]* %t123
-  %t124 = call [4 x <4 x float>] @identity()
-  %t125 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 56
-  store [4 x <4 x float>] %t124, [4 x <4 x float>]* %t125
-  %t126 = call [4 x <4 x float>] @identity()
-  %t127 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 57
-  store [4 x <4 x float>] %t126, [4 x <4 x float>]* %t127
-  %t128 = call [4 x <4 x float>] @identity()
-  %t129 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 58
-  store [4 x <4 x float>] %t128, [4 x <4 x float>]* %t129
-  %t130 = call [4 x <4 x float>] @identity()
-  %t131 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 59
-  store [4 x <4 x float>] %t130, [4 x <4 x float>]* %t131
-  %t132 = call [4 x <4 x float>] @identity()
-  %t133 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 60
-  store [4 x <4 x float>] %t132, [4 x <4 x float>]* %t133
-  %t134 = call [4 x <4 x float>] @identity()
-  %t135 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 61
-  store [4 x <4 x float>] %t134, [4 x <4 x float>]* %t135
-  %t136 = call [4 x <4 x float>] @identity()
-  %t137 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 62
-  store [4 x <4 x float>] %t136, [4 x <4 x float>]* %t137
-  %t138 = call [4 x <4 x float>] @identity()
-  %t139 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 63
-  store [4 x <4 x float>] %t138, [4 x <4 x float>]* %t139
-  %t140 = call [4 x <4 x float>] @identity()
-  %t141 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 64
-  store [4 x <4 x float>] %t140, [4 x <4 x float>]* %t141
-  %t142 = call [4 x <4 x float>] @identity()
-  %t143 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 65
-  store [4 x <4 x float>] %t142, [4 x <4 x float>]* %t143
-  %t144 = call [4 x <4 x float>] @identity()
-  %t145 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 66
-  store [4 x <4 x float>] %t144, [4 x <4 x float>]* %t145
-  %t146 = call [4 x <4 x float>] @identity()
-  %t147 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 67
-  store [4 x <4 x float>] %t146, [4 x <4 x float>]* %t147
-  %t148 = call [4 x <4 x float>] @identity()
-  %t149 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 68
-  store [4 x <4 x float>] %t148, [4 x <4 x float>]* %t149
-  %t150 = call [4 x <4 x float>] @identity()
-  %t151 = getelementptr inbounds %Big, %Big* %t11, i32 0, i32 69
-  store [4 x <4 x float>] %t150, [4 x <4 x float>]* %t151
-  %t152 = load %Big, %Big* %t11
-  store %Big %t152, %Big* %t10
-  %t153 = getelementptr inbounds { i64, i8*, [65 x i8] }, { i64, i8*, [65 x i8] }* @.str.1, i64 0, i32 2, i64 0
-  call void @star_rc_release(i8* %t153)
-  call i32 (i8*, ...) @printf(i8* %t153)
-  store i64 %t1, i64* @frame.off
+  store i64 %t6, i64* @frame.off
+  %t9 = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0
+  %t10 = getelementptr inbounds i8, i8* %t9, i64 %t5
+  %t11 = bitcast i8* %t10 to %Big*
+  %t13 = call [4 x <4 x float>] @identity()
+  %t14 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 0
+  store [4 x <4 x float>] %t13, [4 x <4 x float>]* %t14
+  %t15 = call [4 x <4 x float>] @identity()
+  %t16 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 1
+  store [4 x <4 x float>] %t15, [4 x <4 x float>]* %t16
+  %t17 = call [4 x <4 x float>] @identity()
+  %t18 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 2
+  store [4 x <4 x float>] %t17, [4 x <4 x float>]* %t18
+  %t19 = call [4 x <4 x float>] @identity()
+  %t20 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 3
+  store [4 x <4 x float>] %t19, [4 x <4 x float>]* %t20
+  %t21 = call [4 x <4 x float>] @identity()
+  %t22 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 4
+  store [4 x <4 x float>] %t21, [4 x <4 x float>]* %t22
+  %t23 = call [4 x <4 x float>] @identity()
+  %t24 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 5
+  store [4 x <4 x float>] %t23, [4 x <4 x float>]* %t24
+  %t25 = call [4 x <4 x float>] @identity()
+  %t26 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 6
+  store [4 x <4 x float>] %t25, [4 x <4 x float>]* %t26
+  %t27 = call [4 x <4 x float>] @identity()
+  %t28 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 7
+  store [4 x <4 x float>] %t27, [4 x <4 x float>]* %t28
+  %t29 = call [4 x <4 x float>] @identity()
+  %t30 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 8
+  store [4 x <4 x float>] %t29, [4 x <4 x float>]* %t30
+  %t31 = call [4 x <4 x float>] @identity()
+  %t32 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 9
+  store [4 x <4 x float>] %t31, [4 x <4 x float>]* %t32
+  %t33 = call [4 x <4 x float>] @identity()
+  %t34 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 10
+  store [4 x <4 x float>] %t33, [4 x <4 x float>]* %t34
+  %t35 = call [4 x <4 x float>] @identity()
+  %t36 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 11
+  store [4 x <4 x float>] %t35, [4 x <4 x float>]* %t36
+  %t37 = call [4 x <4 x float>] @identity()
+  %t38 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 12
+  store [4 x <4 x float>] %t37, [4 x <4 x float>]* %t38
+  %t39 = call [4 x <4 x float>] @identity()
+  %t40 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 13
+  store [4 x <4 x float>] %t39, [4 x <4 x float>]* %t40
+  %t41 = call [4 x <4 x float>] @identity()
+  %t42 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 14
+  store [4 x <4 x float>] %t41, [4 x <4 x float>]* %t42
+  %t43 = call [4 x <4 x float>] @identity()
+  %t44 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 15
+  store [4 x <4 x float>] %t43, [4 x <4 x float>]* %t44
+  %t45 = call [4 x <4 x float>] @identity()
+  %t46 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 16
+  store [4 x <4 x float>] %t45, [4 x <4 x float>]* %t46
+  %t47 = call [4 x <4 x float>] @identity()
+  %t48 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 17
+  store [4 x <4 x float>] %t47, [4 x <4 x float>]* %t48
+  %t49 = call [4 x <4 x float>] @identity()
+  %t50 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 18
+  store [4 x <4 x float>] %t49, [4 x <4 x float>]* %t50
+  %t51 = call [4 x <4 x float>] @identity()
+  %t52 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 19
+  store [4 x <4 x float>] %t51, [4 x <4 x float>]* %t52
+  %t53 = call [4 x <4 x float>] @identity()
+  %t54 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 20
+  store [4 x <4 x float>] %t53, [4 x <4 x float>]* %t54
+  %t55 = call [4 x <4 x float>] @identity()
+  %t56 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 21
+  store [4 x <4 x float>] %t55, [4 x <4 x float>]* %t56
+  %t57 = call [4 x <4 x float>] @identity()
+  %t58 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 22
+  store [4 x <4 x float>] %t57, [4 x <4 x float>]* %t58
+  %t59 = call [4 x <4 x float>] @identity()
+  %t60 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 23
+  store [4 x <4 x float>] %t59, [4 x <4 x float>]* %t60
+  %t61 = call [4 x <4 x float>] @identity()
+  %t62 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 24
+  store [4 x <4 x float>] %t61, [4 x <4 x float>]* %t62
+  %t63 = call [4 x <4 x float>] @identity()
+  %t64 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 25
+  store [4 x <4 x float>] %t63, [4 x <4 x float>]* %t64
+  %t65 = call [4 x <4 x float>] @identity()
+  %t66 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 26
+  store [4 x <4 x float>] %t65, [4 x <4 x float>]* %t66
+  %t67 = call [4 x <4 x float>] @identity()
+  %t68 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 27
+  store [4 x <4 x float>] %t67, [4 x <4 x float>]* %t68
+  %t69 = call [4 x <4 x float>] @identity()
+  %t70 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 28
+  store [4 x <4 x float>] %t69, [4 x <4 x float>]* %t70
+  %t71 = call [4 x <4 x float>] @identity()
+  %t72 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 29
+  store [4 x <4 x float>] %t71, [4 x <4 x float>]* %t72
+  %t73 = call [4 x <4 x float>] @identity()
+  %t74 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 30
+  store [4 x <4 x float>] %t73, [4 x <4 x float>]* %t74
+  %t75 = call [4 x <4 x float>] @identity()
+  %t76 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 31
+  store [4 x <4 x float>] %t75, [4 x <4 x float>]* %t76
+  %t77 = call [4 x <4 x float>] @identity()
+  %t78 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 32
+  store [4 x <4 x float>] %t77, [4 x <4 x float>]* %t78
+  %t79 = call [4 x <4 x float>] @identity()
+  %t80 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 33
+  store [4 x <4 x float>] %t79, [4 x <4 x float>]* %t80
+  %t81 = call [4 x <4 x float>] @identity()
+  %t82 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 34
+  store [4 x <4 x float>] %t81, [4 x <4 x float>]* %t82
+  %t83 = call [4 x <4 x float>] @identity()
+  %t84 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 35
+  store [4 x <4 x float>] %t83, [4 x <4 x float>]* %t84
+  %t85 = call [4 x <4 x float>] @identity()
+  %t86 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 36
+  store [4 x <4 x float>] %t85, [4 x <4 x float>]* %t86
+  %t87 = call [4 x <4 x float>] @identity()
+  %t88 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 37
+  store [4 x <4 x float>] %t87, [4 x <4 x float>]* %t88
+  %t89 = call [4 x <4 x float>] @identity()
+  %t90 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 38
+  store [4 x <4 x float>] %t89, [4 x <4 x float>]* %t90
+  %t91 = call [4 x <4 x float>] @identity()
+  %t92 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 39
+  store [4 x <4 x float>] %t91, [4 x <4 x float>]* %t92
+  %t93 = call [4 x <4 x float>] @identity()
+  %t94 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 40
+  store [4 x <4 x float>] %t93, [4 x <4 x float>]* %t94
+  %t95 = call [4 x <4 x float>] @identity()
+  %t96 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 41
+  store [4 x <4 x float>] %t95, [4 x <4 x float>]* %t96
+  %t97 = call [4 x <4 x float>] @identity()
+  %t98 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 42
+  store [4 x <4 x float>] %t97, [4 x <4 x float>]* %t98
+  %t99 = call [4 x <4 x float>] @identity()
+  %t100 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 43
+  store [4 x <4 x float>] %t99, [4 x <4 x float>]* %t100
+  %t101 = call [4 x <4 x float>] @identity()
+  %t102 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 44
+  store [4 x <4 x float>] %t101, [4 x <4 x float>]* %t102
+  %t103 = call [4 x <4 x float>] @identity()
+  %t104 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 45
+  store [4 x <4 x float>] %t103, [4 x <4 x float>]* %t104
+  %t105 = call [4 x <4 x float>] @identity()
+  %t106 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 46
+  store [4 x <4 x float>] %t105, [4 x <4 x float>]* %t106
+  %t107 = call [4 x <4 x float>] @identity()
+  %t108 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 47
+  store [4 x <4 x float>] %t107, [4 x <4 x float>]* %t108
+  %t109 = call [4 x <4 x float>] @identity()
+  %t110 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 48
+  store [4 x <4 x float>] %t109, [4 x <4 x float>]* %t110
+  %t111 = call [4 x <4 x float>] @identity()
+  %t112 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 49
+  store [4 x <4 x float>] %t111, [4 x <4 x float>]* %t112
+  %t113 = call [4 x <4 x float>] @identity()
+  %t114 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 50
+  store [4 x <4 x float>] %t113, [4 x <4 x float>]* %t114
+  %t115 = call [4 x <4 x float>] @identity()
+  %t116 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 51
+  store [4 x <4 x float>] %t115, [4 x <4 x float>]* %t116
+  %t117 = call [4 x <4 x float>] @identity()
+  %t118 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 52
+  store [4 x <4 x float>] %t117, [4 x <4 x float>]* %t118
+  %t119 = call [4 x <4 x float>] @identity()
+  %t120 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 53
+  store [4 x <4 x float>] %t119, [4 x <4 x float>]* %t120
+  %t121 = call [4 x <4 x float>] @identity()
+  %t122 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 54
+  store [4 x <4 x float>] %t121, [4 x <4 x float>]* %t122
+  %t123 = call [4 x <4 x float>] @identity()
+  %t124 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 55
+  store [4 x <4 x float>] %t123, [4 x <4 x float>]* %t124
+  %t125 = call [4 x <4 x float>] @identity()
+  %t126 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 56
+  store [4 x <4 x float>] %t125, [4 x <4 x float>]* %t126
+  %t127 = call [4 x <4 x float>] @identity()
+  %t128 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 57
+  store [4 x <4 x float>] %t127, [4 x <4 x float>]* %t128
+  %t129 = call [4 x <4 x float>] @identity()
+  %t130 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 58
+  store [4 x <4 x float>] %t129, [4 x <4 x float>]* %t130
+  %t131 = call [4 x <4 x float>] @identity()
+  %t132 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 59
+  store [4 x <4 x float>] %t131, [4 x <4 x float>]* %t132
+  %t133 = call [4 x <4 x float>] @identity()
+  %t134 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 60
+  store [4 x <4 x float>] %t133, [4 x <4 x float>]* %t134
+  %t135 = call [4 x <4 x float>] @identity()
+  %t136 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 61
+  store [4 x <4 x float>] %t135, [4 x <4 x float>]* %t136
+  %t137 = call [4 x <4 x float>] @identity()
+  %t138 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 62
+  store [4 x <4 x float>] %t137, [4 x <4 x float>]* %t138
+  %t139 = call [4 x <4 x float>] @identity()
+  %t140 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 63
+  store [4 x <4 x float>] %t139, [4 x <4 x float>]* %t140
+  %t141 = call [4 x <4 x float>] @identity()
+  %t142 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 64
+  store [4 x <4 x float>] %t141, [4 x <4 x float>]* %t142
+  %t143 = call [4 x <4 x float>] @identity()
+  %t144 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 65
+  store [4 x <4 x float>] %t143, [4 x <4 x float>]* %t144
+  %t145 = call [4 x <4 x float>] @identity()
+  %t146 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 66
+  store [4 x <4 x float>] %t145, [4 x <4 x float>]* %t146
+  %t147 = call [4 x <4 x float>] @identity()
+  %t148 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 67
+  store [4 x <4 x float>] %t147, [4 x <4 x float>]* %t148
+  %t149 = call [4 x <4 x float>] @identity()
+  %t150 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 68
+  store [4 x <4 x float>] %t149, [4 x <4 x float>]* %t150
+  %t151 = call [4 x <4 x float>] @identity()
+  %t152 = getelementptr inbounds %Big, %Big* %t12, i32 0, i32 69
+  store [4 x <4 x float>] %t151, [4 x <4 x float>]* %t152
+  %t153 = load %Big, %Big* %t12
+  store %Big %t153, %Big* %t11
+  %t154 = getelementptr inbounds { i64, i8*, [65 x i8] }, { i64, i8*, [65 x i8] }* @.str.1, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t154)
+  call i32 (i8*, ...) @printf(i8* %t154)
+  store i64 %t2, i64* @frame.off
   ret i32 0
 }
 

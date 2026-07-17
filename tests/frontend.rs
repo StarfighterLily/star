@@ -209,7 +209,12 @@ fn codegen_genref_type() {
     let ir = Driver::codegen(&typed).expect("should codegen");
 
     // GenRef type should be emitted at module level
-    assert!(ir.contains("%GenRef = type { i32, i32 }"), "GenRef type should appear");
+    // Field 1 (slot index) is `i32`; field 2 (generation counter) is `i64`
+    // -- widened from `i32` so ~2^31 despawn/spawn cycles on one slot can't
+    // wrap the live generation back to a value a stale `GenRef` still
+    // matches (see `codegen::arena`'s `%GenRef` decl doc comment and
+    // `runtime_genref_generation_counter_does_not_alias_after_i32_would_have_wrapped`).
+    assert!(ir.contains("%GenRef = type { i32, i64 }"), "GenRef type should appear with a 64-bit generation field");
 }
 
 // ===== Memory Allocation Verification Tests ===============================
@@ -276,7 +281,7 @@ fn codegen_genref_index_extracts_index() {
     // bounds-checked, then compared against the stored generation.
     assert!(ir.contains("@arena.Entities.gen"), "arena generation array should be read: {}", ir);
     assert!(ir.contains("icmp ult i64"), "bounds check should be emitted: {}", ir);
-    assert!(ir.contains("icmp eq i32"), "generation comparison should be emitted: {}", ir);
+    assert!(ir.contains("icmp eq i64"), "generation comparison (64-bit generation counter) should be emitted: {}", ir);
     assert!(ir.contains("phi"), "result should merge live-data and stale-fallback paths: {}", ir);
 }
 
@@ -368,7 +373,7 @@ fn codegen_handle_reuses_genref_struct_layout() {
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
 
-    assert!(ir.contains("%GenRef = type { i32, i32 }"), "Handle should reuse the %GenRef type, not declare its own");
+    assert!(ir.contains("%GenRef = type { i32, i64 }"), "Handle should reuse the %GenRef type, not declare its own");
     assert!(!ir.contains("%Handle ="), "no separate %Handle LLVM type should ever be declared");
     assert!(ir.contains("getelementptr inbounds %GenRef, %GenRef*"), "Handle dereference should GEP through %GenRef");
 }
@@ -1495,6 +1500,38 @@ fn runtime_genref_stale_after_despawn_falls_back_to_zero() {
     assert!(stdout.contains("after: 0"), "stale reference should fall back to zero, not crash or read stale data: {}", stdout);
 }
 
+/// Regression test for a real, reproduced ABA bypass: with a 32-bit
+/// generation counter (the width this codegen used before this fix), one
+/// arena slot cycled through despawn+spawn exactly 2^31 times returns its
+/// live generation to the exact bit pattern a `GenRef` captured *before*
+/// that churn still holds -- `2^31` cycles at +2 generation/cycle (+1 for
+/// despawn, +1 for the reclaiming spawn) wraps a 32-bit counter by exactly
+/// one full lap back to the same value. A stale handle would then pass both
+/// the equality *and* liveness-parity checks in `emit_genref_index` and
+/// read the new, unrelated occupant's data instead of being caught as
+/// stale -- confirmed for real (before this fix) via this exact program:
+/// `old_ref[0].hp` read back `777`, the marker written by the final spawn
+/// of the wraparound cycle, not `0`. `codegen::arena` now stores the
+/// generation counter as `i64` (see `%GenRef`'s decl in `Codegen::emit`),
+/// so the identical attack needs `2^63` cycles instead of `2^31` -- not
+/// reachable in any realistic program's lifetime. This test runs the exact
+/// `2^31`-cycle wraparound point a 32-bit counter would have failed at and
+/// asserts the handle is still correctly detected as stale (reads back `0`,
+/// not `777`) -- takes on the order of 30 seconds since it's a real
+/// 2.1-billion-iteration loop, not a shortcut simulation of the bug.
+#[test]
+fn runtime_genref_generation_counter_does_not_alias_after_i32_would_have_wrapped() {
+    let src = "struct Entity:\n    hp: i32\n\narena Entities: Entity\n\nfn main():\n    spawn Entities(100)\n    let old_ref = GenRef<Entity>(0)\n    let total: i64 = 2147483648 as i64\n    let mut i: i64 = 0 as i64\n    while i < (total - (1 as i64)):\n        despawn Entities[0]\n        spawn Entities(200)\n        i = i + (1 as i64)\n    despawn Entities[0]\n    spawn Entities(777)\n    let via_old = old_ref[0]\n    print(f\"via_old.hp: {via_old.hp}\")\n";
+    let output = compile_and_run("genref_generation_wrap", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("via_old.hp: 0"),
+        "a stale GenRef captured before a 2^31-cycle generation wraparound must still read back the zero value, not alias the new occupant's data (777) -- a 32-bit generation counter would fail this: {}",
+        stdout
+    );
+}
+
 // --- arena free-list (slot reclamation) ------------------------------------
 
 /// Codegen for `despawn`: pushes the freed slot onto the arena's free-list
@@ -1509,7 +1546,7 @@ fn codegen_despawn_pushes_freed_slot_onto_freelist() {
 
     assert!(ir.contains("@arena.Enemies.free ="), "arena should declare a free-list global: {}", ir);
     assert!(ir.contains("@arena.Enemies.free_top ="), "arena should declare a free-list top-of-stack counter: {}", ir);
-    assert!(ir.contains("and i32"), "despawn should check generation parity before freeing: {}", ir);
+    assert!(ir.contains("and i64"), "despawn should check generation parity (64-bit generation counter) before freeing: {}", ir);
     assert!(
         ir.contains("getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.Enemies.free"),
         "despawn should write the freed index into the free-list: {}",
@@ -3044,6 +3081,100 @@ fn resolve_detects_import_cycle() {
     let module = Driver::parse(&std::fs::read_to_string(&b_path).unwrap()).expect("should parse");
     let err = star::modules::resolve(module, &b_path).expect_err("cyclic import should fail to resolve");
     assert!(err.iter().any(|d| d.message.contains("cycle")), "{:?}", err);
+}
+
+/// A cyclic import chain three files deep (`a` -> `b` -> `c` -> `a`) must
+/// also be caught -- guards that the cycle guard (`loading`, a shared
+/// `HashSet<PathBuf>` threaded through every recursive `resolve_inner` call)
+/// really does catch an *indirect* cycle, not just the direct two-file case
+/// `resolve_detects_import_cycle` covers.
+#[test]
+fn resolve_detects_transitive_three_file_import_cycle() {
+    let dir = test_scratch_dir("resolve_detects_transitive_three_file_import_cycle");
+    write_test_file(&dir, "a.star", "import \"b.star\" as b\nfn from_a():\n    return\n");
+    write_test_file(&dir, "b.star", "import \"c.star\" as c\nfn from_b():\n    return\n");
+    let c_path = write_test_file(&dir, "c.star", "import \"a.star\" as a\nfn from_c():\n    return\n");
+    // Enter the cycle from c.star so every file involved is a real, on-disk
+    // import (mirroring `resolve_detects_import_cycle`'s own approach).
+    let module = Driver::parse(&std::fs::read_to_string(&c_path).unwrap()).expect("should parse");
+    let err = star::modules::resolve(module, &c_path).expect_err("a 3-file transitive import cycle should fail to resolve");
+    assert!(err.iter().any(|d| d.message.contains("cycle")), "{:?}", err);
+}
+
+/// A long, genuinely *acyclic* chain of imports (`a` imports `b` imports `c`
+/// imports ... some 800 levels deep, every file distinct, no cycle anywhere)
+/// must be a clean error, not a Rust stack overflow. `resolve_inner`
+/// recurses once per import level with no depth counter of its own --
+/// unlike a cyclic chain, the shared `loading` cycle guard does nothing here
+/// (every canonical path really is new), so previously this reliably
+/// overflowed the real call stack with a bare process abort ("thread 'main'
+/// has overflowed its stack") on a syntactically unremarkable chain of small
+/// files -- plausible output from a code generator emitting one file per
+/// module/scene and chaining them together, not just a hand-crafted
+/// adversarial case. Fixed by a new `MAX_IMPORT_DEPTH` counter threaded
+/// through `resolve_inner`.
+#[test]
+fn rejects_deeply_nested_acyclic_import_chain_does_not_overflow_stack() {
+    let dir = test_scratch_dir("rejects_deeply_nested_acyclic_import_chain_does_not_overflow_stack");
+    let n = 800;
+    for i in 0..n {
+        write_test_file(
+            &dir,
+            &format!("chain{}.star", i),
+            &format!("import \"chain{}.star\" as nxt\nfn f{}() -> i32:\n    return nxt::f{}()\n", i + 1, i, i + 1),
+        );
+    }
+    write_test_file(&dir, &format!("chain{}.star", n), &format!("fn f{}() -> i32:\n    return 42\n", n));
+    let main_path = write_test_file(
+        &dir, "main.star",
+        "import \"chain0.star\" as c\nfn main() -> i32:\n    return c::f0()\n",
+    );
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(!compilation.is_ok(), "an 800-level-deep acyclic import chain should be a clean error, not succeed or crash");
+    let rendered = compilation.render_diagnostics();
+    assert!(rendered.contains("nests too deeply"), "{}", rendered);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A reasonably (but not adversarially) deep acyclic import chain -- well
+/// under `MAX_IMPORT_DEPTH` -- must still resolve, type-check, build, and run
+/// correctly end to end (a regression guard against the new depth counter
+/// being so aggressive it rejects sound, if unusual, multi-file programs).
+#[test]
+fn runtime_moderately_deep_acyclic_import_chain_end_to_end() {
+    let dir = test_scratch_dir("runtime_moderately_deep_acyclic_import_chain_end_to_end");
+    let n = 20;
+    for i in 0..n {
+        write_test_file(
+            &dir,
+            &format!("mchain{}.star", i),
+            &format!("import \"mchain{}.star\" as nxt\nfn f{}() -> i32:\n    return nxt::f{}()\n", i + 1, i, i + 1),
+        );
+    }
+    write_test_file(&dir, &format!("mchain{}.star", n), &format!("fn f{}() -> i32:\n    return 42\n", n));
+    let main_path = write_test_file(
+        &dir, "main.star",
+        "import \"mchain0.star\" as c\nfn main():\n    println(f\"{c::f0()}\")\n",
+    );
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_moderately_deep_acyclic_import_chain.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "42", "{}", stdout);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Importing a file that doesn't exist is a clean error, not a panic.
@@ -5203,8 +5334,8 @@ fn codegen_genref_index_checks_liveness_parity_not_just_generation_equality() {
     let module = Driver::parse(src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    assert!(ir.contains("and i32"), "should mask the live generation to check odd/even parity: {}", ir);
-    assert!(ir.contains("icmp eq i32") && ir.matches("icmp eq i32").count() >= 2, "should check both generation equality and liveness parity: {}", ir);
+    assert!(ir.contains("and i64"), "should mask the live generation (64-bit) to check odd/even parity: {}", ir);
+    assert!(ir.contains("icmp eq i64") && ir.matches("icmp eq i64").count() >= 2, "should check both generation equality and liveness parity: {}", ir);
     assert!(ir.contains("and i1"), "the ok path should require both conditions together: {}", ir);
 }
 
@@ -6489,6 +6620,209 @@ fn parses_moderately_nested_match() {
     Driver::parse(&src).expect("20 levels of nested `match` should parse cleanly");
 }
 
+/// A *flat* chain of same-precedence binary operators (`1 + 1 + 1 + ...`, no
+/// parens/unary at all) is a fundamentally different shape from the nested-
+/// parens/unary case `rejects_deeply_nested_parens_does_not_overflow_stack`
+/// covers: precedence climbing (`Parser::parse_binary`) absorbs the whole
+/// chain into *one* invocation's iterative `while` loop, with every
+/// recursive `parse_binary(bp + 1)` call for the next operand returning
+/// immediately -- so `expr_depth`/`MAX_EXPR_DEPTH` never fires, real parser
+/// stack usage stays flat, and parsing itself never overflows. But each loop
+/// iteration still builds one more `Expr::Binary{ lhs: Box::new(previous),
+/// .. }` layer on the left, so the *result* is a boxed linked list exactly as
+/// deep as the operator count, and every later consumer that recurses on
+/// `lhs`/`rhs` with no counter of its own pays for that depth on the real
+/// Rust call stack. Confirmed via a real, unguarded stack overflow ("thread
+/// 'main' has overflowed its stack") in `Checker::infer_expr`'s
+/// `Expr::Binary` arm from a single `let x = 1 + 1 + ... + 1` line with as
+/// few as ~370 `+`s -- reached from `star check`, before codegen (whose
+/// `Codegen::emit_expr` has the identical unguarded recursion) ever runs.
+/// Fixed by a new `Parser::MAX_BINARY_CHAIN` counter local to each
+/// `parse_binary` invocation.
+#[test]
+fn rejects_long_flat_binary_chain_does_not_overflow_stack() {
+    let src = format!("fn main():\n    let x = 1{}\n    println(\"hi\")\n", " + 1".repeat(5000));
+    let result = Driver::parse(&src);
+    assert!(result.is_err(), "5000 flat `+`s should be a clean parse error, not succeed or crash");
+}
+
+/// The same flat-chain shape, but built entirely from `*` (a different
+/// precedence tier than `+`) -- guards that the chain-length counter is
+/// checked in `parse_binary`'s own loop regardless of *which* operator is
+/// repeated, not specifically tied to `+`.
+#[test]
+fn rejects_long_flat_multiply_chain_does_not_overflow_stack() {
+    let src = format!("fn main():\n    let x = 1{}\n    println(\"hi\")\n", " * 1".repeat(5000));
+    let result = Driver::parse(&src);
+    assert!(result.is_err(), "5000 flat `*`s should be a clean parse error, not succeed or crash");
+}
+
+/// A reasonably (but not adversarially) long flat binary chain -- well under
+/// `MAX_BINARY_CHAIN` -- must still parse, type-check, build, and run
+/// correctly with the right computed value (a regression guard against the
+/// new counter being so aggressive it rejects sound, if unusual, code).
+#[test]
+fn runtime_moderately_long_binary_chain_end_to_end() {
+    let src = format!("fn main():\n    let x = 1{}\n    println(f\"{{x}}\")\n", " + 1".repeat(150));
+    let output = compile_and_run("moderately_long_binary_chain", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "151", "{}", stdout);
+}
+
+/// The same failure mode as the flat binary-chain case above, but on
+/// `Parser::parse_postfix`'s own loop (`.field` accesses/calls/index/`?`)
+/// instead of `parse_binary`'s: that loop is likewise iterative (not
+/// recursive) with no depth guard at all before this fix, so a long chain of
+/// `.field` accesses (`a.b.b.b...b`) never grew `expr_depth` either, while
+/// building an identically deep left-nested `Expr::Field` spine that
+/// `Checker::infer_expr`/`Codegen::emit_expr`'s unconditional recursion on
+/// `base` then paid for on the real call stack. Fixed by the same
+/// `MAX_BINARY_CHAIN` counter, now also checked once per `parse_postfix`
+/// iteration.
+#[test]
+fn rejects_long_flat_field_access_chain_does_not_overflow_stack() {
+    let src = format!(
+        "struct S:\n    b: i32\nfn main():\n    let s = S(1)\n    let x = s{}\n    println(\"hi\")\n",
+        ".b".repeat(5000)
+    );
+    let result = Driver::parse(&src);
+    assert!(result.is_err(), "5000 flat `.b` field accesses should be a clean parse error, not succeed or crash");
+}
+
+/// Same postfix-chain guard, exercised through a call chain (`f()()()...()`)
+/// instead of field access -- a different `parse_postfix` branch
+/// (`TokenKind::LParen` building `Expr::Call`) building the same shape of
+/// left-nested tree.
+#[test]
+fn rejects_long_flat_call_chain_does_not_overflow_stack() {
+    let src = format!("fn main():\n    let x = f{}\n    println(\"hi\")\n", "()".repeat(5000));
+    let result = Driver::parse(&src);
+    assert!(result.is_err(), "5000 flat `()` calls should be a clean parse error, not succeed or crash");
+}
+
+/// A reasonably (but not adversarially) long postfix chain -- well under
+/// `MAX_BINARY_CHAIN` -- must still parse, type-check, build, and run
+/// correctly (a regression guard against the new counter being so
+/// aggressive it rejects sound, if unusual, code). Built the same way
+/// `runtime_finitely_nested_generic_struct_end_to_end` does (nested
+/// `Box(Box(Box(...)))` construction, `struct Box<T>: value: T`), just with
+/// the depth parameterized. Note the *construction* side (`Box(Box(...))`)
+/// is itself bounded by the pre-existing `MAX_EXPR_DEPTH` (80, since each
+/// nested call argument re-enters `parse_unary`) -- unlike the flat-chain
+/// cases above, a real nested `Box<Box<...>>` value can't be constructed any
+/// deeper than that regardless of this fix, so 50 keeps comfortable margin
+/// on *both* guards at once while still being a real, non-trivial
+/// `.value.value.value...` postfix read chain.
+#[test]
+fn runtime_moderately_long_field_access_chain_end_to_end() {
+    let depth = 50;
+    let ctor = format!("{}42{}", "Box(".repeat(depth), ")".repeat(depth));
+    let chain = ".value".repeat(depth);
+    let src = format!(
+        "struct Box<T>:\n    value: T\nfn main():\n    let b = {}\n    println(f\"{{b{}}}\")\n",
+        ctor, chain
+    );
+    let output = compile_and_run("moderately_long_field_access_chain", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "42", "{}", stdout);
+}
+
+/// `[value; N]`/`[T; N]` and `Ring<T, N>` are both stored inline with no heap
+/// allocation of their own (see `Ty::Array`/`Ty::Ring`'s doc comments), so an
+/// absurd `N` previously flowed uncapped into `Codegen::emit_array_repeat`'s
+/// `for i in 0..count` loop, which emits two LLVM IR text lines per element
+/// -- confirmed via a real, reproducible hang (30+ seconds and counting, no
+/// `.ll` file ever written, well past `star build`'s normal sub-second
+/// runtime) on a single line, `let x: [i32; 999999999999] = [0;
+/// 999999999999]`. Fixed by a new `Checker::MAX_INLINE_LEN` bound checked
+/// wherever an array/ring element count is resolved (`Type::Array`/
+/// `Type::Ring` in `resolve_type`, and `Expr::ArrayRepeat`/`Expr::RingNew`'s
+/// own literal `count`, which never goes through `resolve_type` at all).
+#[test]
+fn rejects_huge_array_repeat_size_does_not_hang() {
+    let src = "fn main():\n    let x: [i32; 999999999999] = [0; 999999999999]\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("an absurd inline array size should be rejected") };
+    assert!(
+        errs.iter().any(|d| d.message.contains("array size") && d.message.contains("too large")),
+        "got: {:?}",
+        errs
+    );
+}
+
+/// Same bound, `Type::Array` annotation side (no `ArrayRepeat` value
+/// expression at all) -- a struct field's declared type alone must trip the
+/// same check, since `Codegen::type_size`'s `self.type_size(elem) * *count
+/// as u32` (an unchecked, silently-wrapping-in-release `u32` multiply) is
+/// reachable from a field type with no array literal anywhere in the source.
+#[test]
+fn rejects_huge_array_field_type_does_not_hang() {
+    let src = "struct Buf:\n    data: [i32; 999999999999]\nfn main():\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("an absurd inline array field type should be rejected") };
+    assert!(
+        errs.iter().any(|d| d.message.contains("array size") && d.message.contains("too large")),
+        "got: {:?}",
+        errs
+    );
+}
+
+/// Same bound, `Ring<T, N>` construction-expression side.
+#[test]
+fn rejects_huge_ring_capacity_does_not_hang() {
+    let src = "fn main():\n    let r = Ring<i32, 999999999999>()\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("an absurd `Ring<T, N>` capacity should be rejected") };
+    assert!(
+        errs.iter().any(|d| d.message.contains("Ring<T, N>") && d.message.contains("too large")),
+        "got: {:?}",
+        errs
+    );
+}
+
+/// Same bound, `Ring<T, N>` used as a plain type annotation (a struct field)
+/// rather than a construction expression -- mirrors
+/// `rejects_huge_array_field_type_does_not_hang`.
+#[test]
+fn rejects_huge_ring_field_type_does_not_hang() {
+    let src = "struct Buf:\n    data: Ring<i32, 999999999999>\nfn main():\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("an absurd `Ring<T, N>` field type should be rejected") };
+    assert!(
+        errs.iter().any(|d| d.message.contains("Ring<T, N>") && d.message.contains("too large")),
+        "got: {:?}",
+        errs
+    );
+}
+
+/// A reasonably-sized inline array/ring -- well under `MAX_INLINE_LEN` --
+/// must still type-check, build, and run correctly (a regression guard
+/// against the new bound being so aggressive it rejects sound, ordinary
+/// fixed-size buffers).
+#[test]
+fn runtime_moderately_sized_array_and_ring_end_to_end() {
+    let src = "fn main():\n    let a: [i32; 100] = [0; 100]\n    let r = Ring<i32, 1000>()\n    \
+               println(f\"{a[0]}\")\n";
+    let output = compile_and_run("moderately_sized_array_and_ring", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "0", "{}", stdout);
+}
+
+/// An array/ring size sitting exactly at `MAX_INLINE_LEN` must still be
+/// accepted (a boundary/off-by-one regression guard) -- checked via
+/// `Driver::check` only (not a full `compile_and_run`), since actually
+/// building a million-element array would make this test itself slow for no
+/// added coverage over the moderate-size runtime test above.
+#[test]
+fn accepts_array_size_at_max_inline_len_boundary() {
+    let src = "fn main():\n    let x: [i32; 1000000] = [0; 1000000]\n    println(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("exactly MAX_INLINE_LEN elements should be accepted, not rejected");
+}
+
 /// A structurally-valid enum variant followed by garbage instead of a line
 /// ending (`Red 123`) must produce exactly one diagnostic and recover
 /// cleanly -- `parse_enum_variant` previously discarded `expect_line_end()`'s
@@ -6824,6 +7158,55 @@ fn runtime_symbol_par_race_interns_without_corruption() {
             format!("check = {}", first),
             "re-interning the same string sequentially afterward should reproduce the same id every entity already saw"
         );
+    }
+}
+
+/// Runtime test for an RNG-state thread-safety bug, the `Symbol` intern-table
+/// race's sibling: `rand`/`rand_range` (`crate::codegen::vector_math::
+/// emit_rand_next`) advance a single process-wide xorshift32 generator
+/// (`@rng.state`) via a plain load-xorshift-store sequence, with no lock.
+/// Like `Symbol(..)`, calling `rand_range(..)` inside a `par`/`swarm` body is
+/// *not* rejected by the checker's disjointness proof (`types::par_analysis`
+/// has no notion that `@rng.state` is shared global state), and `par`/
+/// `swarm` genuinely dispatches across 4 concurrent OS worker threads
+/// (`crate::codegen::par_pool`), so two threads really can both load
+/// `@rng.state` before either stores back -- computing and storing the
+/// *identical* next value, a lost-update race. Confirmed via
+/// `examples/rand_par_race.star` (64 entities, 200 ticks, every entity in a
+/// tick drawing an independent `rand_range(..)` value): before the fix,
+/// roughly 5-15% of ticks showed dozens of entities converging on duplicate
+/// values (a ~0.0000149 probability by chance alone with a 32-bit generator
+/// and 64 draws), 5/5 runs. Unlike `Symbol`'s table, a plain aligned `i32`
+/// load/store can't itself tear the heap, so this was a silent wrong-answer
+/// race rather than a crash. Fixed by adding `@rng.lock`, a binary semaphore
+/// guarding every `rand`/`rand_range`/`rand_seed` access to `@rng.state`,
+/// created once in `main`'s prologue (before any `par`/`swarm` dispatch can
+/// spin up the worker pool) -- the exact same shape as `@sym.lock`.
+///
+/// This can't deterministically *prove* the race is gone (it's inherently
+/// timing-dependent), so this runs the binary several times, checking that
+/// no tick's block of 64 drawn values ever contains a duplicate.
+#[test]
+fn runtime_rand_par_race_draws_without_duplicate_values() {
+    use std::process::Command;
+
+    for _ in 0..5 {
+        let output = Command::new("examples/rand_par_race.exe").output().expect("failed to run rand_par_race.exe");
+        assert!(output.status.success(), "rand_par_race.exe should exit cleanly: {:?}", output.status);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), 200 * 65, "expected 200 ticks of 64 values + 1 blank line each, got {} lines", lines.len());
+        for tick in 0..200 {
+            let block = &lines[tick * 65..tick * 65 + 64];
+            let unique: std::collections::HashSet<&&str> = block.iter().collect();
+            assert_eq!(
+                unique.len(),
+                block.len(),
+                "tick {} should draw 64 independent rand_range values with no duplicates (a duplicate means a lost-update race on @rng.state), got: {:?}",
+                tick,
+                block
+            );
+        }
     }
 }
 
@@ -14409,6 +14792,99 @@ fn runtime_symbol_name_out_of_range_result_is_usable_as_a_real_string_end_to_end
     let output = compile_and_run("symbol_name_out_of_range_usable", src);
     assert!(output.status.success(), "{:?}", output.status);
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+}
+
+/// `List<str>::pop()` on an empty list is a safe out-of-bounds read rather
+/// than a crash: it returns a real, freshly-allocated empty `str`.
+///
+/// Previously this returned `Codegen::zero_value(&Ty::Str)` -- a bare `null`
+/// `i8*` -- exactly the same root cause `symbol_name`'s out-of-range fix
+/// above addresses (see `runtime_symbol_name_out_of_range_returns_zero_value_
+/// end_to_end`'s doc comment), just for `List<T>`'s own OOB/empty-pop
+/// convention instead of `Symbol`'s. Confirmed as a real, separate segfault
+/// (not just symbol.rs's already-fixed case) via a real `star build`+run of
+/// `let mut l: List<str> = List<str>(); len(l.pop())` before this fix (`len`'s
+/// `strlen` dereferencing the null "empty string" `pop` actually returned).
+/// Fixed in `Codegen::zero_value_rc` (`src/codegen/mod.rs`), used by
+/// `ListMethod::Pop`'s empty-list fallback (`src/codegen/list.rs`).
+#[test]
+fn runtime_list_pop_empty_result_is_usable_as_a_real_string_end_to_end() {
+    let src = "fn main():\n    let mut l: List<str> = List<str>()\n    let s = l.pop()\n    println(f\"{len(s)}\")\n";
+    let output = compile_and_run("list_pop_empty_str_usable", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+}
+
+/// Companion to `runtime_list_pop_empty_result_is_usable_as_a_real_string_end_
+/// to_end` above, for `List<str>`'s other out-of-bounds-read path:
+/// `list[idx]` past the end. Same fix (`Codegen::zero_value_rc`), same
+/// `List<T>` module, different call site (`Codegen::emit_list_index`).
+#[test]
+fn runtime_list_index_out_of_bounds_str_result_is_usable_as_a_real_string_end_to_end() {
+    let src = "fn main():\n    let l: List<str> = List<str>()\n    let s = l[5]\n    println(f\"{len(s)}\")\n";
+    let output = compile_and_run("list_index_oob_str_usable", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+}
+
+/// `Ring<str,N>::pop()` on an empty ring is the same "safe zero-value read"
+/// bug class as `List<str>::pop()` above (`Codegen::zero_value_rc`'s other
+/// caller, `RingMethod::Pop` in `src/codegen/ring.rs`), confirmed via a real
+/// segfault building and running `let mut r: Ring<str,4> = Ring<str,4>();
+/// len(r.pop())` before this fix.
+#[test]
+fn runtime_ring_pop_empty_result_is_usable_as_a_real_string_end_to_end() {
+    let src = "fn main():\n    let mut r: Ring<str, 4> = Ring<str, 4>()\n    let s = r.pop()\n    println(f\"{len(s)}\")\n";
+    let output = compile_and_run("ring_pop_empty_str_usable", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+}
+
+/// Companion to `runtime_ring_pop_empty_result_is_usable_as_a_real_string_end_
+/// to_end` above, for `Ring<str,N>`'s other out-of-bounds-read path:
+/// `ring[idx]` past the current (dynamic) length. Same fix
+/// (`Codegen::zero_value_rc`), different call site (`ring_index_ptr`).
+#[test]
+fn runtime_ring_index_out_of_bounds_str_result_is_usable_as_a_real_string_end_to_end() {
+    let src = "fn main():\n    let r: Ring<str, 4> = Ring<str, 4>()\n    let s = r[2]\n    println(f\"{len(s)}\")\n";
+    let output = compile_and_run("ring_index_oob_str_usable", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+}
+
+/// `[str; N]` (a fixed-size array) indexed out of bounds is the same "safe
+/// zero-value read" bug class as `List<str>[idx]` above, just for
+/// `crate::codegen::array`'s own `array_index_ptr` fallback -- confirmed via
+/// a real segfault building and running `let a: [str; 3] = ["x"; 3];
+/// len(a[99])` before this fix.
+#[test]
+fn runtime_array_index_out_of_bounds_str_result_is_usable_as_a_real_string_end_to_end() {
+    let src = "fn main():\n    let a: [str; 3] = [\"x\"; 3]\n    let s = a[99]\n    println(f\"{len(s)}\")\n";
+    let output = compile_and_run("array_index_oob_str_usable", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+}
+
+/// `Table<T>::pop()` on an empty table, and `table[idx]` out of bounds, hand
+/// back `T`'s zero value -- but `T` is always a struct (`Table<T>` requires
+/// it), so `Codegen::zero_value`'s flat `zeroinitializer` would leave any
+/// `str`-typed *field* of that zeroed struct as the same bare-null-disguised-
+/// as-`str` hazard `List<str>::pop()` had, just one level of field-access
+/// deeper. Confirmed via a real segfault building and running
+/// `Table<Enemy>().pop()` (`Enemy` having a `name: str` field) then reading
+/// `len(popped.name)`, and separately `Table<Enemy>()[99]` then
+/// `len(oob.name)`, before this fix. Fixed in `Codegen::emit_table_index`'s
+/// out-of-bounds branch and `TableMethod::Pop`'s empty branch
+/// (`src/codegen/table.rs`), building the zero struct field-by-field via
+/// `Codegen::zero_value_rc` instead of one flat `zero_value(ty)` store.
+#[test]
+fn runtime_table_pop_and_index_empty_struct_str_field_is_usable_as_a_real_string_end_to_end() {
+    let src = "struct Enemy:\n    mut hp: i32\n    name: str\n\nfn main():\n    let mut t: Table<Enemy> = Table<Enemy>()\n    let popped = t.pop()\n    println(f\"{len(popped.name)}\")\n    let mut t2: Table<Enemy> = Table<Enemy>()\n    t2.push(Enemy(hp = 1, name = \"a\"))\n    let oob = t2[99]\n    println(f\"{len(oob.name)}\")\n";
+    let output = compile_and_run("table_pop_and_index_empty_str_field_usable", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["0", "0"], "{}", stdout);
 }
 
 /// `Symbol` is a legal `Map`/`Set` key (`Checker::check_hashable_ty`) --

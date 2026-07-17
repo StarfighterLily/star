@@ -441,8 +441,24 @@ impl Codegen {
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&oob_label);
-        let zero = self.zero_value(ty);
-        self.line(&format!("  store {} {}, {}* {}", struct_llvm, zero, struct_llvm, result_ptr));
+        // Per-field, not one flat `zero_value(ty)`/`zeroinitializer` store --
+        // `T`'s field types can include `str` (e.g. `examples/table.star`'s
+        // own `Enemy { hp: i32, name: str }`), and `zero_value`'s `Ty::Str`
+        // arm is a bare null `i8*` disguised as a real `str`: any later
+        // string builtin (`len`, ...) called on `table[oob].name` would
+        // `strlen` that null and segfault. Confirmed via a real segfault
+        // building and running `Table<Enemy>()[99]` then reading `.name`'s
+        // `len(..)` before this fix. Mirrors `crate::codegen::list`'s
+        // `emit_list_index`'s identical fix, just applied field-by-field
+        // since a `Table<T>` element is always a struct (never a bare `str`
+        // itself).
+        for (j, fty) in fields.iter().enumerate() {
+            let f_llvm = self.llvm_ty(fty);
+            let dest = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", dest, struct_llvm, struct_llvm, result_ptr, j));
+            let zero = self.zero_value_rc(fty);
+            self.line(&format!("  store {} {}, {}* {}", f_llvm, zero, f_llvm, dest));
+        }
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&end_label);
@@ -658,8 +674,20 @@ impl Codegen {
                 self.line(&format!("  br label %{}", end_label));
 
                 self.open_block(&empty_label);
-                let zero = self.zero_value(elem_ty);
-                self.line(&format!("  store {} {}, {}* {}", struct_llvm, zero, struct_llvm, result_ptr));
+                // Per-field, not one flat `zero_value(elem_ty)` -- same fix,
+                // same reasoning as `emit_table_index`'s identical oob branch:
+                // a `str` field would otherwise become a bare null `i8*`
+                // disguised as a real `str`. Confirmed via a real segfault
+                // building and running `Table<Enemy>().pop()` then reading
+                // the popped (empty-sentinel) result's `.name` field's
+                // `len(..)` before this fix.
+                for (j, fty) in fields.iter().enumerate() {
+                    let f_llvm = self.llvm_ty(fty);
+                    let dest = self.tmp_name();
+                    self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}", dest, struct_llvm, struct_llvm, result_ptr, j));
+                    let zero = self.zero_value_rc(fty);
+                    self.line(&format!("  store {} {}, {}* {}", f_llvm, zero, f_llvm, dest));
+                }
                 self.line(&format!("  br label %{}", end_label));
 
                 self.open_block(&end_label);

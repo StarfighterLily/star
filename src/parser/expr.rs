@@ -12,11 +12,56 @@ impl Parser {
         self.parse_binary(0)
     }
 
+    /// A bound on how many binary operators `parse_binary`'s own `while`
+    /// loop may chain into one left-nested `Expr::Binary` spine before
+    /// failing with a clean diagnostic.
+    ///
+    /// Unlike `MAX_EXPR_DEPTH`, this doesn't guard the *parser's* own
+    /// recursion -- a flat chain of same-or-mixed-precedence operators
+    /// (`1 + 1 + 1 + ... + 1`, no parens/unary at all) never grows
+    /// `expr_depth`: precedence climbing absorbs the whole run into *one*
+    /// `parse_binary` invocation's iterative loop, with each recursive
+    /// `parse_binary(bp + 1)` call for the next operand returning
+    /// immediately (the next same-tier operator's `bp` always fails that
+    /// call's own `min_bp` check), so real parser stack usage stays
+    /// constant no matter how long the chain is. But every iteration still
+    /// builds one more `Expr::Binary{ lhs: Box::new(previous), .. }` layer
+    /// on the *left*, so the chain's *result* is a linked list of nested
+    /// boxed nodes exactly as deep as the operator count -- and every later
+    /// consumer that recurses on `lhs`/`rhs` with no counter of its own
+    /// (`Checker::infer_expr`'s `Expr::Binary` arm, `Codegen::emit_expr`'s
+    /// `TypedExpr::Binary` arm, ...) pays for that depth on the real Rust
+    /// call stack. Confirmed via a real, unguarded stack overflow ("thread
+    /// 'main' has overflowed its stack") in `Checker::infer_expr` from a
+    /// single `let x = 1 + 1 + 1 + ... + 1` line with as few as ~370
+    /// `+`s -- a trivially reachable input (any generated/templated
+    /// arithmetic expression), not a contrived pathological one. 200 keeps
+    /// a comfortable margin below that empirically observed cliff, matching
+    /// `MAX_EXPR_DEPTH`/`MAX_BLOCK_DEPTH`/`MAX_MATCH_DEPTH`'s same
+    /// "conservative empirical bound" calibration philosophy -- and since
+    /// this counter is local to one `parse_binary` invocation (reset fresh
+    /// on every recursive call for a higher-precedence sub-chain, the same
+    /// way `expr_depth` composes with real parenthesized nesting), the
+    /// worst-case resulting tree depth stays bounded by this limit times
+    /// the small, fixed number of precedence tiers `peek_binop` defines,
+    /// however operators of different precedence are interleaved.
+    const MAX_BINARY_CHAIN: u32 = 200;
+
     fn parse_binary(&mut self, min_bp: u8) -> Option<Expr> {
         let mut lhs = self.parse_cast()?;
+        let mut chain_len: u32 = 0;
         while let Some((op, bp)) = self.peek_binop() {
             if bp < min_bp {
                 break;
+            }
+            chain_len += 1;
+            if chain_len > Self::MAX_BINARY_CHAIN {
+                let span = self.peek_span();
+                self.error(
+                    "expression chains too many binary operators together (over 200 at the same precedence tier) -- likely a runaway generated expression",
+                    span,
+                );
+                return None;
             }
             self.advance();
             let rhs = self.parse_binary(bp + 1)?;
@@ -123,9 +168,48 @@ impl Parser {
 
     /// Parse a primary expression followed by any number of `.field` accesses,
     /// `(...)` calls (with optional `<T>` for GenRef), and `[...]` index operations.
+    ///
+    /// Bounded by a local `chain_len` counter for the exact same reason
+    /// `parse_binary`'s own `while` loop needs `MAX_BINARY_CHAIN`: this
+    /// `loop` is iterative, not recursive, so a long postfix chain
+    /// (`a.b.b.b...b`, `f()()()...()`, `o?????...?`) never grows
+    /// `expr_depth` and parsing itself stays flat -- but every iteration
+    /// still builds one more `Expr::Field`/`Expr::Call`/`Expr::Try`/...
+    /// layer wrapping the previous `expr` in a `Box`, so the *result* is
+    /// exactly as deep as the chain is long, and every later consumer that
+    /// recurses on `base`/`callee`/`inner` with no counter of its own
+    /// (`Checker::infer_expr`'s `Expr::Field`/`Expr::Call`/`Expr::Try` arms,
+    /// `Codegen::emit_expr`'s mirrors) pays for that depth on the real Rust
+    /// call stack. Confirmed via a real, unguarded stack overflow from a
+    /// single `a.b.b.b....b` field-access chain a few hundred `.b`s long.
     fn parse_postfix(&mut self) -> Option<Expr> {
         let mut expr = self.parse_primary()?;
+        let mut chain_len: u32 = 0;
         loop {
+            // Checked once per iteration, before looking at what kind of
+            // postfix link (if any) follows -- every branch below except the
+            // final `_ => break` (no link at all) and the `Lt` arm's
+            // fallthrough (a real comparison, not a construction, so it also
+            // just `break`s with nothing built) adds one more `Box`-wrapped
+            // layer around `expr`, so bounding total iterations bounds the
+            // resulting tree's depth regardless of which link kinds make it
+            // up. See this function's own doc comment for why the loop
+            // itself (unlike `parse_binary`'s recursive rhs calls) can't rely
+            // on `expr_depth` to catch this.
+            if !matches!(self.peek_kind(), TokenKind::Dot | TokenKind::LParen | TokenKind::LBracket | TokenKind::Question)
+                && !(matches!(self.peek_kind(), TokenKind::Lt) && matches!(expr, Expr::Ident(..)))
+            {
+                break;
+            }
+            chain_len += 1;
+            if chain_len > Self::MAX_BINARY_CHAIN {
+                let span = self.peek_span();
+                self.error(
+                    "postfix chain (`.field`/call/index/`?`) nested too deeply (over 200 links) -- likely a runaway generated expression",
+                    span,
+                );
+                return None;
+            }
             match self.peek_kind() {
                 TokenKind::Dot => {
                     self.advance();

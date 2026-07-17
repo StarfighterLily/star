@@ -842,7 +842,22 @@ impl Codegen {
     /// Advance the `rand`/`rand_range` xorshift32 generator by one step,
     /// persisting the new state back to `@rng.state` and returning a bare
     /// `i32` register holding it.
+    ///
+    /// Guarded by `@rng.lock` (see its own doc comment in
+    /// `Codegen::emit_builtins`): unlike `Symbol`'s intern table, a plain
+    /// `i32` load/store can't itself tear, but the load-xorshift-store
+    /// sequence as a whole is still a real read-modify-write race across
+    /// `par`/`swarm`'s 4 concurrent worker threads -- two threads both
+    /// loading `@rng.state` before either stores back compute and store the
+    /// *identical* next value (a lost update), producing statistically
+    /// impossible duplicate "random" draws within the same tick. Confirmed
+    /// via a real run showing dozens of arena entities converging on the
+    /// same value in the same tick, 5/5 runs, before this lock was added.
     fn emit_rand_next(&mut self) -> String {
+        let lock_h = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** @rng.lock", lock_h));
+        self.line(&format!("  call i32 @WaitForSingleObject(i8* {}, i32 -1)", lock_h));
+
         let x0 = self.tmp_name();
         self.line(&format!("  {} = load i32, i32* @rng.state", x0));
         let s1 = self.tmp_name();
@@ -858,6 +873,8 @@ impl Codegen {
         let x3 = self.tmp_name();
         self.line(&format!("  {} = xor i32 {}, {}", x3, x2, s3));
         self.line(&format!("  store i32 {}, i32* @rng.state", x3));
+
+        self.line(&format!("  call i32 @ReleaseSemaphore(i8* {}, i32 1, i32* null)", lock_h));
         x3
     }
 
@@ -905,6 +922,11 @@ impl Codegen {
 
     /// `rand_seed(seed)`: reseed the generator (guarding against a `0` seed,
     /// which would make xorshift32 output `0` forever).
+    ///
+    /// Guarded by `@rng.lock` (see `emit_rand_next`'s doc comment) so a
+    /// `rand_seed(..)` call racing a concurrent `rand`/`rand_range` call's
+    /// load-xorshift-store sequence can't interleave with it and clobber/lose
+    /// either side's update to `@rng.state`.
     pub(super) fn emit_rand_seed(&mut self, args: &[TypedExpr]) {
         let Some(arg) = args.first() else {
             self.err("rand_seed(..) expects 1 argument", Span::dummy());
@@ -916,7 +938,12 @@ impl Codegen {
         self.line(&format!("  {} = icmp eq i32 {}, 0", is_zero, bare));
         let safe = self.tmp_name();
         self.line(&format!("  {} = select i1 {}, i32 1, i32 {}", safe, is_zero, bare));
+
+        let lock_h = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** @rng.lock", lock_h));
+        self.line(&format!("  call i32 @WaitForSingleObject(i8* {}, i32 -1)", lock_h));
         self.line(&format!("  store i32 {}, i32* @rng.state", safe));
+        self.line(&format!("  call i32 @ReleaseSemaphore(i8* {}, i32 1, i32* null)", lock_h));
     }
 
     pub(super) fn emit_assign_binop(&mut self, lhs: &str, lty: &Ty, rhs: &str, rty: &Ty, op: AssignOp) -> String {

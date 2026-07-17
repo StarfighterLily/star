@@ -81,7 +81,7 @@ declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
-%GenRef = type { i32, i32 }
+%GenRef = type { i32, i64 }
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
@@ -90,6 +90,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @star.argv = global i8** null
 
 @rng.state = global i32 123456789
+@rng.lock = global i8* null
 
 @sym.data = global i8** null
 @sym.len = global i64 0
@@ -162,14 +163,14 @@ done:
 %EnemyArena = type { %Point*, i64 }
 @arena.EnemyArena.data = global %Point* null
 @arena.EnemyArena.count = global i64 0
-@arena.EnemyArena.gen = global [1024 x i32] zeroinitializer
+@arena.EnemyArena.gen = global [1024 x i64] zeroinitializer
 @arena.EnemyArena.free = global [1024 x i64] zeroinitializer
 @arena.EnemyArena.free_top = global i64 0
 
 %ProjectileArena = type { %Projectile*, i64 }
 @arena.ProjectileArena.data = global %Projectile* null
 @arena.ProjectileArena.count = global i64 0
-@arena.ProjectileArena.gen = global [1024 x i32] zeroinitializer
+@arena.ProjectileArena.gen = global [1024 x i64] zeroinitializer
 @arena.ProjectileArena.free = global [1024 x i64] zeroinitializer
 @arena.ProjectileArena.free_top = global i64 0
 
@@ -267,17 +268,17 @@ entry:
   %t3 = icmp ult i64 %t2, 1024
   br i1 %t3, label %genref_create_ok_4, label %genref_create_oob_5
 genref_create_ok_4:
-  %t4 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.EnemyArena.gen, i64 0, i64 %t2
-  %t5 = load i32, i32* %t4
+  %t4 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.EnemyArena.gen, i64 0, i64 %t2
+  %t5 = load i64, i64* %t4
   br label %genref_create_end_6
 genref_create_oob_5:
   br label %genref_create_end_6
 genref_create_end_6:
-  %t6 = phi i32 [ %t5, %genref_create_ok_4 ], [ 0, %genref_create_oob_5 ]
+  %t6 = phi i64 [ %t5, %genref_create_ok_4 ], [ 0, %genref_create_oob_5 ]
   %t8 = getelementptr inbounds %GenRef, %GenRef* %t7, i32 0, i32 0
   store i32 %t1, i32* %t8
   %t9 = getelementptr inbounds %GenRef, %GenRef* %t7, i32 0, i32 1
-  store i32 %t6, i32* %t9
+  store i64 %t6, i64* %t9
   %t10 = load %GenRef, %GenRef* %t7
   ret %GenRef %t10
 }
@@ -290,16 +291,16 @@ entry:
   %t1 = getelementptr inbounds %GenRef, %GenRef* %t0, i32 0, i32 0
   %t2 = load i32, i32* %t1
   %t3 = getelementptr inbounds %GenRef, %GenRef* %t0, i32 0, i32 1
-  %t4 = load i32, i32* %t3
+  %t4 = load i64, i64* %t3
   %t5 = sext i32 %t2 to i64
   %t6 = icmp ult i64 %t5, 1024
   br i1 %t6, label %genref_place_check_7, label %genref_place_stale_9
 genref_place_check_7:
-  %t7 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.EnemyArena.gen, i64 0, i64 %t5
-  %t8 = load i32, i32* %t7
-  %t9 = icmp eq i32 %t4, %t8
-  %t10 = and i32 %t8, 1
-  %t11 = icmp eq i32 %t10, 1
+  %t7 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.EnemyArena.gen, i64 0, i64 %t5
+  %t8 = load i64, i64* %t7
+  %t9 = icmp eq i64 %t4, %t8
+  %t10 = and i64 %t8, 1
+  %t11 = icmp eq i64 %t10, 1
   %t12 = and i1 %t9, %t11
   br i1 %t12, label %genref_place_ok_8, label %genref_place_stale_9
 genref_place_ok_8:
@@ -363,10 +364,10 @@ spawn_store_15:
   %t22 = load %Point, %Point* %t19
   %t23 = getelementptr inbounds %Point, %Point* %t8, i64 %t18
   store %Point %t22, %Point* %t23
-  %t24 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.EnemyArena.gen, i64 0, i64 %t18
-  %t25 = load i32, i32* %t24
-  %t26 = add i32 %t25, 1
-  store i32 %t26, i32* %t24
+  %t24 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.EnemyArena.gen, i64 0, i64 %t18
+  %t25 = load i64, i64* %t24
+  %t26 = add i64 %t25, 1
+  store i64 %t26, i64* %t24
   br label %spawn_end_16
 spawn_end_16:
   %t27 = getelementptr i32, i32* null, i32 1
@@ -414,16 +415,18 @@ frame_alloc_ok_22:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t1 = alloca i32
+  %t2 = alloca i32
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
   store i8* %t0, i8** @sym.lock
-  %t2 = call i32 @calculate_path(i32 5, i32 10)
-  store i32 %t2, i32* %t1
-  %t3 = load i32, i32* %t1
-  %t4 = getelementptr inbounds [29 x i8], [29 x i8]* @.str.5, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t4, i32 %t3)
+  %t1 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t1, i8** @rng.lock
+  %t3 = call i32 @calculate_path(i32 5, i32 10)
+  store i32 %t3, i32* %t2
+  %t4 = load i32, i32* %t2
+  %t5 = getelementptr inbounds [29 x i8], [29 x i8]* @.str.5, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t5, i32 %t4)
   call void @game_tick()
   ret i32 0
 }

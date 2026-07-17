@@ -456,7 +456,20 @@ impl Codegen {
             self.line(&format!("declare {{ i32, i1 }} @llvm.u{op}.with.overflow.i32(i32, i32)", op = op));
         }
         self.line("");
-        self.line("%GenRef = type { i32, i32 }");
+        // Field 1 (the slot index) stays `i32` -- bounded by `ARENA_CAPACITY`
+        // (1024), nowhere near that width's range. Field 2 (the generation
+        // counter) is `i64`, not `i32`: a narrower counter is reachable in
+        // practice. Confirmed via a real, reproducible ABA bypass -- with a
+        // 32-bit counter, ~2^31 despawn/spawn cycles on one arena slot (a
+        // few seconds of a tight loop) wrap the live generation back to a
+        // value a `GenRef` captured *before* the wraparound still matches,
+        // so a stale handle is incorrectly treated as valid and reads the
+        // new, unrelated occupant's data instead of being caught by
+        // `emit_genref_index`'s staleness check. `i64` makes the identical
+        // attack need ~2^63 cycles -- not reachable in any realistic
+        // program's lifetime, closing the hole for real rather than just
+        // raising the bar to a still-reachable number.
+        self.line("%GenRef = type { i32, i64 }");
         self.line("");
         self.line("@frame.buf = global [4096 x i8] zeroinitializer");
         self.line("@frame.off = global i64 0");
@@ -477,6 +490,24 @@ impl Codegen {
         // (matters for a tick-based engine's replay/debugging story) unless
         // explicitly reseeded via `rand_seed(..)`.
         self.line("@rng.state = global i32 123456789");
+        // Binary semaphore guarding every read/mutation of `@rng.state` --
+        // same shape and same root cause as `@sym.lock` above: `rand`/
+        // `rand_range`/`rand_seed` are *not* in `Checker::unsafe_par_fns`'s
+        // ban list the way `spawn`/`despawn`/`frame:` are, so a `par`/
+        // `swarm` body really can call them, and `emit_rand_next`'s
+        // load-xorshift-store sequence (`crate::codegen::vector_math`) races
+        // for real across the 4 concurrent worker threads with no lock:
+        // confirmed via a real, reproducible run showing dozens of entities
+        // within the same tick converging on the *identical* "random" value
+        // (a lost-update race -- two threads both load the same `@rng.state`
+        // before either stores, so both compute and store the same next
+        // value), 5/5 runs. Unlike `Symbol`'s table (whose grow path can
+        // heap-corrupt), a plain `i32` load/store can't itself tear, so this
+        // is a silent wrong-answer race rather than a crash -- but the same
+        // fix shape applies: a lock created once, unconditionally, in
+        // `main`'s prologue (see `Codegen::emit_fn`'s `is_main` case),
+        // before any user/`par`/`swarm` code can run.
+        self.line("@rng.lock = global i8* null");
         self.line("");
         // The `Symbol` intern table -- see `crate::codegen::symbol` and
         // `Ty::Symbol`'s doc comment. A plain growable global array of owned
@@ -525,6 +556,19 @@ impl Codegen {
         let lock = self.tmp_name();
         self.line(&format!("  {} = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)", lock));
         self.line(&format!("  store i8* {}, i8** @sym.lock", lock));
+    }
+
+    /// One-time, single-threaded initialization of `@rng.lock` -- called
+    /// unconditionally from `main`'s prologue (see `Codegen::emit_fn`),
+    /// before any user code (and therefore before any `par`/`swarm`
+    /// dispatch) can run. Mirrors `emit_sym_lock_init` exactly, for exactly
+    /// the same reason: `@rng.state`'s first-ever access in a program could
+    /// itself be inside a `par` body, so this can't safely be a lazy
+    /// first-use init the way `par.pool.ensure_init` is.
+    pub(super) fn emit_rng_lock_init(&mut self) {
+        let lock = self.tmp_name();
+        self.line(&format!("  {} = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)", lock));
+        self.line(&format!("  store i8* {}, i8** @rng.lock", lock));
     }
 
     /// Emit the reference-counting runtime `concat`/closure environments
@@ -632,8 +676,10 @@ impl Codegen {
     /// Confirmed: `<2 x float>` aligns to 8 (its own size); `<3 x float>` and
     /// `<4 x float>` both align to 16 (LLVM stores a 3-wide float vector
     /// padded to a 4-wide vector's footprint); `[4 x <4 x float>]` (`Mat4`)
-    /// inherits its element's 16-byte alignment; `{ i32, i32 }` (`GenRef`)
-    /// aligns to 4, same as its widest field.
+    /// inherits its element's 16-byte alignment; `{ i32, i64 }` (`GenRef`)
+    /// aligns to 8, its widest (generation) field's alignment -- see
+    /// `mod.rs`'s `%GenRef` decl doc comment for why the generation field is
+    /// `i64`, not `i32`.
     fn type_align(&self, ty: &Ty) -> u32 {
         match ty {
             Ty::Int | Ty::Float => 4,
@@ -644,7 +690,7 @@ impl Codegen {
             Ty::Bool => 1,
             Ty::Str | Ty::Ptr | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Table(_) | Ty::Closure(..) => 8,
             // Same layout as `Ty::GenRef` -- see `Ty::Handle`'s doc comment.
-            Ty::GenRef(_) | Ty::Handle(_) => 4,
+            Ty::GenRef(_) | Ty::Handle(_) => 8,
             Ty::Vec2 => 8,
             Ty::Vec3 | Ty::Vec4 | Ty::Mat4 => 16,
             Ty::Named(n) => self
@@ -729,7 +775,10 @@ impl Codegen {
             Ty::I64 | Ty::U64 | Ty::F64 => 8,
             Ty::Bool => 1,
             Ty::Str => 8,
-            Ty::GenRef(_) | Ty::Handle(_) => 8, // { i32, i32 }
+            // `{ i32, i64 }`: the `i32` index field pads up to the trailing
+            // `i64` generation field's 8-byte alignment (4 bytes of padding),
+            // then 8 bytes for the generation field itself -- 16 total.
+            Ty::GenRef(_) | Ty::Handle(_) => 16,
             Ty::Vec2 => 8,
             // `<3 x float>`/`<4 x float>` both occupy 16 bytes of struct
             // layout space on this target (see `type_align`'s doc comment).
@@ -1055,6 +1104,38 @@ impl Codegen {
             Ty::Bytes => "null".into(),
             // Bare `i64` zero -- see `Ty::Symbol`'s doc comment.
             Ty::Symbol => "0".into(),
+        }
+    }
+
+    /// Like `zero_value`, but for `Ty::Str` specifically emits a real,
+    /// freshly-allocated, owned empty string (`star_rc_alloc` + a lone NUL
+    /// byte -- the same recipe `emit_symbol_name`'s out-of-range branch and
+    /// `emit_env_get`'s missing-variable branch already use) instead of
+    /// `zero_value`'s bare `null` `i8*`.
+    ///
+    /// `zero_value(&Ty::Str)` is `"null"` -- a legitimate "nothing allocated
+    /// yet" sentinel for a *fresh binding never assigned*, but every
+    /// out-of-bounds-read/pop-on-empty fallback in `List<T>`/`Ring<T,N>`/
+    /// `[T; N]`/`Table<T>` reuses that same `zero_value` call to hand the
+    /// *caller* a value indistinguishable from a real element -- exactly the
+    /// same root cause `emit_symbol_name`'s doc comment documents in detail
+    /// (`src/codegen/symbol.rs`): a null `i8*` disguised as `str` segfaults
+    /// the instant any string builtin (`len`, `concat`, ...) calls `strlen`
+    /// on it. Confirmed via real, reproducible segfaults building and running
+    /// `List<str>::pop()`/`list[oob]`/`Ring<str,N>::pop()`/`ring[oob]`/
+    /// `[str; N][oob]` before this fix existed. Used by every call site that
+    /// hands its "zero" result directly back to Star code as a `str` value
+    /// (not by `Ring`'s own internal "zero the vacated slot" bookkeeping
+    /// store, which never becomes a caller-visible value and is left as a
+    /// bare `null` -- see `RingMethod::Pop`'s own comment).
+    fn zero_value_rc(&mut self, ty: &Ty) -> String {
+        if matches!(ty, Ty::Str) {
+            let empty = self.tmp_name();
+            self.line(&format!("  {} = call i8* @star_rc_alloc(i64 1, i8* null)", empty));
+            self.line(&format!("  store i8 0, i8* {}", empty));
+            empty
+        } else {
+            self.zero_value(ty)
         }
     }
 

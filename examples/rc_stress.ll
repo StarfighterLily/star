@@ -81,7 +81,7 @@ declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
-%GenRef = type { i32, i32 }
+%GenRef = type { i32, i64 }
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
@@ -90,6 +90,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @star.argv = global i8** null
 
 @rng.state = global i32 123456789
+@rng.lock = global i8* null
 
 @sym.data = global i8** null
 @sym.len = global i64 0
@@ -226,35 +227,37 @@ entry:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t1 = alloca i32
   %t2 = alloca i32
+  %t3 = alloca i32
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
   store i8* %t0, i8** @sym.lock
-  store i32 0, i32* %t1
+  %t1 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t1, i8** @rng.lock
   store i32 0, i32* %t2
+  store i32 0, i32* %t3
   br label %while_cond_1
 while_cond_1:
-  %t3 = load i32, i32* %t1
-  %t4 = icmp slt i32 %t3, 10000000
-  br i1 %t4, label %while_body_2, label %while_else_3
+  %t4 = load i32, i32* %t2
+  %t5 = icmp slt i32 %t4, 10000000
+  br i1 %t5, label %while_body_2, label %while_else_3
 while_body_2:
-  %t5 = load i32, i32* %t1
-  %t6 = call i32 @make_stuff(i32 %t5)
-  %t7 = load i32, i32* %t2
-  %t8 = add i32 %t7, %t6
-  store i32 %t8, i32* %t2
-  %t9 = load i32, i32* %t1
-  %t10 = add i32 %t9, 1
-  store i32 %t10, i32* %t1
+  %t6 = load i32, i32* %t2
+  %t7 = call i32 @make_stuff(i32 %t6)
+  %t8 = load i32, i32* %t3
+  %t9 = add i32 %t8, %t7
+  store i32 %t9, i32* %t3
+  %t10 = load i32, i32* %t2
+  %t11 = add i32 %t10, 1
+  store i32 %t11, i32* %t2
   br label %while_cond_1
 while_else_3:
   br label %while_end_4
 while_end_4:
-  %t11 = load i32, i32* %t2
-  %t12 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.2, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t12, i32 %t11)
+  %t12 = load i32, i32* %t3
+  %t13 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.2, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t13, i32 %t12)
   ret i32 0
 }
 

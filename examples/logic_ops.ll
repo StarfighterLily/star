@@ -81,7 +81,7 @@ declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
-%GenRef = type { i32, i32 }
+%GenRef = type { i32, i64 }
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
@@ -90,6 +90,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @star.argv = global i8** null
 
 @rng.state = global i32 123456789
+@rng.lock = global i8* null
 
 @sym.data = global i8** null
 @sym.len = global i64 0
@@ -174,154 +175,156 @@ entry:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t1 = alloca i32
   %t2 = alloca i32
+  %t3 = alloca i32
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
   store i8* %t0, i8** @sym.lock
-  store i32 5, i32* %t1
-  %t3 = sub i32 0, 3
-  store i32 %t3, i32* %t2
-  %t4 = load i32, i32* %t1
-  %t5 = icmp sgt i32 %t4, 0
-  br i1 %t5, label %logic_rhs_0, label %logic_short_1
+  %t1 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t1, i8** @rng.lock
+  store i32 5, i32* %t2
+  %t4 = sub i32 0, 3
+  store i32 %t4, i32* %t3
+  %t5 = load i32, i32* %t2
+  %t6 = icmp sgt i32 %t5, 0
+  br i1 %t6, label %logic_rhs_0, label %logic_short_1
 logic_rhs_0:
-  %t6 = load i32, i32* %t2
-  %t7 = icmp sgt i32 %t6, 0
+  %t7 = load i32, i32* %t3
+  %t8 = icmp sgt i32 %t7, 0
   br label %logic_end_2
 logic_short_1:
   br label %logic_end_2
 logic_end_2:
-  %t8 = phi i1 [ %t7, %logic_rhs_0 ], [ false, %logic_short_1 ]
-  br i1 %t8, label %if_then_3, label %if_else_4
+  %t9 = phi i1 [ %t8, %logic_rhs_0 ], [ false, %logic_short_1 ]
+  br i1 %t9, label %if_then_3, label %if_else_4
 if_then_3:
-  %t9 = getelementptr inbounds { i64, i8*, [27 x i8] }, { i64, i8*, [27 x i8] }* @.str.1, i64 0, i32 2, i64 0
-  call void @star_rc_release(i8* %t9)
-  call i32 (i8*, ...) @printf(i8* %t9)
-  br label %if_end_5
-if_else_4:
-  %t10 = getelementptr inbounds { i64, i8*, [18 x i8] }, { i64, i8*, [18 x i8] }* @.str.2, i64 0, i32 2, i64 0
+  %t10 = getelementptr inbounds { i64, i8*, [27 x i8] }, { i64, i8*, [27 x i8] }* @.str.1, i64 0, i32 2, i64 0
   call void @star_rc_release(i8* %t10)
   call i32 (i8*, ...) @printf(i8* %t10)
   br label %if_end_5
+if_else_4:
+  %t11 = getelementptr inbounds { i64, i8*, [18 x i8] }, { i64, i8*, [18 x i8] }* @.str.2, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t11)
+  call i32 (i8*, ...) @printf(i8* %t11)
+  br label %if_end_5
 if_end_5:
-  %t11 = load i32, i32* %t1
-  %t12 = icmp sgt i32 %t11, 0
-  br i1 %t12, label %logic_short_7, label %logic_rhs_6
+  %t12 = load i32, i32* %t2
+  %t13 = icmp sgt i32 %t12, 0
+  br i1 %t13, label %logic_short_7, label %logic_rhs_6
 logic_rhs_6:
-  %t13 = load i32, i32* %t2
-  %t14 = icmp sgt i32 %t13, 0
+  %t14 = load i32, i32* %t3
+  %t15 = icmp sgt i32 %t14, 0
   br label %logic_end_8
 logic_short_7:
   br label %logic_end_8
 logic_end_8:
-  %t15 = phi i1 [ %t14, %logic_rhs_6 ], [ true, %logic_short_7 ]
-  br i1 %t15, label %if_then_9, label %if_else_10
+  %t16 = phi i1 [ %t15, %logic_rhs_6 ], [ true, %logic_short_7 ]
+  br i1 %t16, label %if_then_9, label %if_else_10
 if_then_9:
-  %t16 = getelementptr inbounds { i64, i8*, [22 x i8] }, { i64, i8*, [22 x i8] }* @.str.3, i64 0, i32 2, i64 0
-  call void @star_rc_release(i8* %t16)
-  call i32 (i8*, ...) @printf(i8* %t16)
+  %t17 = getelementptr inbounds { i64, i8*, [22 x i8] }, { i64, i8*, [22 x i8] }* @.str.3, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t17)
+  call i32 (i8*, ...) @printf(i8* %t17)
   br label %if_end_11
 if_else_10:
   br label %if_end_11
 if_end_11:
-  %t17 = load i32, i32* %t1
-  %t18 = icmp sgt i32 %t17, 0
-  br i1 %t18, label %logic_rhs_12, label %logic_short_13
+  %t18 = load i32, i32* %t2
+  %t19 = icmp sgt i32 %t18, 0
+  br i1 %t19, label %logic_rhs_12, label %logic_short_13
 logic_rhs_12:
-  %t19 = load i32, i32* %t2
-  %t20 = icmp sgt i32 %t19, 0
+  %t20 = load i32, i32* %t3
+  %t21 = icmp sgt i32 %t20, 0
   br label %logic_end_14
 logic_short_13:
   br label %logic_end_14
 logic_end_14:
-  %t21 = phi i1 [ %t20, %logic_rhs_12 ], [ false, %logic_short_13 ]
-  %t22 = xor i1 true, %t21
-  br i1 %t22, label %if_then_15, label %if_else_16
+  %t22 = phi i1 [ %t21, %logic_rhs_12 ], [ false, %logic_short_13 ]
+  %t23 = xor i1 true, %t22
+  br i1 %t23, label %if_then_15, label %if_else_16
 if_then_15:
-  %t23 = getelementptr inbounds { i64, i8*, [18 x i8] }, { i64, i8*, [18 x i8] }* @.str.4, i64 0, i32 2, i64 0
-  call void @star_rc_release(i8* %t23)
-  call i32 (i8*, ...) @printf(i8* %t23)
+  %t24 = getelementptr inbounds { i64, i8*, [18 x i8] }, { i64, i8*, [18 x i8] }* @.str.4, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t24)
+  call i32 (i8*, ...) @printf(i8* %t24)
   br label %if_end_17
 if_else_16:
   br label %if_end_17
 if_end_17:
-  %t24 = load i32, i32* %t1
-  %t25 = icmp sgt i32 %t24, 0
-  br i1 %t25, label %logic_rhs_18, label %logic_short_19
+  %t25 = load i32, i32* %t2
+  %t26 = icmp sgt i32 %t25, 0
+  br i1 %t26, label %logic_rhs_18, label %logic_short_19
 logic_rhs_18:
-  %t26 = load i32, i32* %t2
-  %t27 = icmp slt i32 %t26, 0
+  %t27 = load i32, i32* %t3
+  %t28 = icmp slt i32 %t27, 0
   br label %logic_end_20
 logic_short_19:
   br label %logic_end_20
 logic_end_20:
-  %t28 = phi i1 [ %t27, %logic_rhs_18 ], [ false, %logic_short_19 ]
-  br i1 %t28, label %if_then_21, label %if_else_22
+  %t29 = phi i1 [ %t28, %logic_rhs_18 ], [ false, %logic_short_19 ]
+  br i1 %t29, label %if_then_21, label %if_else_22
 if_then_21:
-  %t29 = getelementptr inbounds { i64, i8*, [18 x i8] }, { i64, i8*, [18 x i8] }* @.str.5, i64 0, i32 2, i64 0
-  call void @star_rc_release(i8* %t29)
-  call i32 (i8*, ...) @printf(i8* %t29)
+  %t30 = getelementptr inbounds { i64, i8*, [18 x i8] }, { i64, i8*, [18 x i8] }* @.str.5, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t30)
+  call i32 (i8*, ...) @printf(i8* %t30)
   br label %if_end_23
 if_else_22:
   br label %if_end_23
 if_end_23:
-  %t30 = load i32, i32* %t1
-  %t31 = icmp slt i32 %t30, 0
-  br i1 %t31, label %logic_short_25, label %logic_rhs_24
+  %t31 = load i32, i32* %t2
+  %t32 = icmp slt i32 %t31, 0
+  br i1 %t32, label %logic_short_25, label %logic_rhs_24
 logic_rhs_24:
-  %t32 = load i32, i32* %t2
-  %t33 = icmp slt i32 %t32, 0
+  %t33 = load i32, i32* %t3
+  %t34 = icmp slt i32 %t33, 0
   br label %logic_end_26
 logic_short_25:
   br label %logic_end_26
 logic_end_26:
-  %t34 = phi i1 [ %t33, %logic_rhs_24 ], [ true, %logic_short_25 ]
-  br i1 %t34, label %if_then_27, label %if_else_28
+  %t35 = phi i1 [ %t34, %logic_rhs_24 ], [ true, %logic_short_25 ]
+  br i1 %t35, label %if_then_27, label %if_else_28
 if_then_27:
-  %t35 = getelementptr inbounds { i64, i8*, [18 x i8] }, { i64, i8*, [18 x i8] }* @.str.6, i64 0, i32 2, i64 0
-  call void @star_rc_release(i8* %t35)
-  call i32 (i8*, ...) @printf(i8* %t35)
+  %t36 = getelementptr inbounds { i64, i8*, [18 x i8] }, { i64, i8*, [18 x i8] }* @.str.6, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t36)
+  call i32 (i8*, ...) @printf(i8* %t36)
   br label %if_end_29
 if_else_28:
   br label %if_end_29
 if_end_29:
   br i1 false, label %logic_rhs_30, label %logic_short_31
 logic_rhs_30:
-  %t36 = getelementptr inbounds { i64, i8*, [8 x i8] }, { i64, i8*, [8 x i8] }* @.str.7, i64 0, i32 2, i64 0
-  %t37 = call i1 @side_effect(i8* %t36)
+  %t37 = getelementptr inbounds { i64, i8*, [8 x i8] }, { i64, i8*, [8 x i8] }* @.str.7, i64 0, i32 2, i64 0
+  %t38 = call i1 @side_effect(i8* %t37)
   br label %logic_end_32
 logic_short_31:
   br label %logic_end_32
 logic_end_32:
-  %t38 = phi i1 [ %t37, %logic_rhs_30 ], [ false, %logic_short_31 ]
-  br i1 %t38, label %if_then_33, label %if_else_34
+  %t39 = phi i1 [ %t38, %logic_rhs_30 ], [ false, %logic_short_31 ]
+  br i1 %t39, label %if_then_33, label %if_else_34
 if_then_33:
-  %t39 = getelementptr inbounds { i64, i8*, [12 x i8] }, { i64, i8*, [12 x i8] }* @.str.8, i64 0, i32 2, i64 0
-  call void @star_rc_release(i8* %t39)
-  call i32 (i8*, ...) @printf(i8* %t39)
+  %t40 = getelementptr inbounds { i64, i8*, [12 x i8] }, { i64, i8*, [12 x i8] }* @.str.8, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t40)
+  call i32 (i8*, ...) @printf(i8* %t40)
   br label %if_end_35
 if_else_34:
   br label %if_end_35
 if_end_35:
-  %t40 = getelementptr inbounds { i64, i8*, [26 x i8] }, { i64, i8*, [26 x i8] }* @.str.9, i64 0, i32 2, i64 0
-  call void @star_rc_release(i8* %t40)
-  call i32 (i8*, ...) @printf(i8* %t40)
+  %t41 = getelementptr inbounds { i64, i8*, [26 x i8] }, { i64, i8*, [26 x i8] }* @.str.9, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t41)
+  call i32 (i8*, ...) @printf(i8* %t41)
   br i1 true, label %logic_short_37, label %logic_rhs_36
 logic_rhs_36:
-  %t41 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.10, i64 0, i32 2, i64 0
-  %t42 = call i1 @side_effect(i8* %t41)
+  %t42 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.10, i64 0, i32 2, i64 0
+  %t43 = call i1 @side_effect(i8* %t42)
   br label %logic_end_38
 logic_short_37:
   br label %logic_end_38
 logic_end_38:
-  %t43 = phi i1 [ %t42, %logic_rhs_36 ], [ true, %logic_short_37 ]
-  br i1 %t43, label %if_then_39, label %if_else_40
+  %t44 = phi i1 [ %t43, %logic_rhs_36 ], [ true, %logic_short_37 ]
+  br i1 %t44, label %if_then_39, label %if_else_40
 if_then_39:
-  %t44 = getelementptr inbounds { i64, i8*, [24 x i8] }, { i64, i8*, [24 x i8] }* @.str.11, i64 0, i32 2, i64 0
-  call void @star_rc_release(i8* %t44)
-  call i32 (i8*, ...) @printf(i8* %t44)
+  %t45 = getelementptr inbounds { i64, i8*, [24 x i8] }, { i64, i8*, [24 x i8] }* @.str.11, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t45)
+  call i32 (i8*, ...) @printf(i8* %t45)
   br label %if_end_41
 if_else_40:
   br label %if_end_41

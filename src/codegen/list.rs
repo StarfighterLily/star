@@ -678,10 +678,15 @@ impl Codegen {
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&oob_label);
+        // Computed here, inside `oob_label`, rather than after
+        // `open_block(&end_label)` below -- `zero_value_rc`'s `Ty::Str` arm
+        // emits real instructions (not just a constant), whose defining
+        // register must dominate the `oob_label -> end_label` edge the phi
+        // below reads it from.
+        let zero = self.zero_value_rc(elem_ty);
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&end_label);
-        let zero = self.zero_value(elem_ty);
         let result = self.tmp_name();
         self.line(&format!("  {} = phi {} [ {}, %{} ], [ {}, %{} ]", result, elem_llvm, elem_val, ok_label, zero, oob_label));
         format!("{} {}", elem_llvm, result)
@@ -783,7 +788,11 @@ impl Codegen {
         self.open_block(&oob_label);
         let dummy = self.tmp_name();
         self.line(&format!("  {} = alloca {}", dummy, elem_llvm));
-        let zero = self.zero_value(elem_ty);
+        // `zero_value_rc`, not `zero_value` -- see `emit_list_index`'s
+        // identical fix's doc comment: a bare `zero_value(&Ty::Str)` null
+        // disguised as `str` segfaults the moment a chained access off this
+        // dummy slot (e.g. `list[oob].some_str_method()`) reads through it.
+        let zero = self.zero_value_rc(elem_ty);
         self.line(&format!("  store {} {}, {}* {}", elem_llvm, zero, elem_llvm, dummy));
         self.line(&format!("  br label %{}", end_label));
 
@@ -831,7 +840,11 @@ impl Codegen {
         self.open_block(&oob_label);
         let dummy = self.tmp_name();
         self.line(&format!("  {} = alloca {}", dummy, elem_llvm));
-        let zero = self.zero_value(elem_ty);
+        // `zero_value_rc`, not `zero_value` -- see `emit_list_index`'s
+        // identical fix's doc comment: a bare `zero_value(&Ty::Str)` null
+        // disguised as `str` segfaults the moment a chained access off this
+        // dummy slot (e.g. `list[oob].some_str_method()`) reads through it.
+        let zero = self.zero_value_rc(elem_ty);
         self.line(&format!("  store {} {}, {}* {}", elem_llvm, zero, elem_llvm, dummy));
         self.line(&format!("  br label %{}", end_label));
 
@@ -964,10 +977,19 @@ impl Codegen {
                 self.line(&format!("  br label %{}", end_label));
 
                 self.open_block(&empty_label);
+                // Computed here, inside `empty_label`, not after
+                // `open_block(&end_label)` -- see `emit_list_index`'s
+                // identical fix's doc comment on why `zero_value_rc`'s
+                // emitted instructions must dominate the phi edge below.
+                // `pop()` on an empty `List<str>` used to hand back
+                // `zero_value(&Ty::Str)` (a bare null `i8*`) disguised as a
+                // real `str` -- confirmed via a real segfault building and
+                // running `let mut l = List<str>(); len(l.pop())` (`len`'s
+                // `strlen` dereferencing that null) before this fix.
+                let zero = self.zero_value_rc(elem_ty);
                 self.line(&format!("  br label %{}", end_label));
 
                 self.open_block(&end_label);
-                let zero = self.zero_value(elem_ty);
                 let result = self.tmp_name();
                 self.line(&format!("  {} = phi {} [ {}, %{} ], [ {}, %{} ]", result, elem_llvm, popped, nonempty_label, zero, empty_label));
                 format!("{} {}", elem_llvm, result)

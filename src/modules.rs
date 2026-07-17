@@ -40,6 +40,28 @@ pub fn mangle_name(alias: &str, name: &str) -> String {
     format!("{alias}__{name}")
 }
 
+/// A bound on how many levels deep `resolve_inner` may recurse through a
+/// chain of `import`s (`a` imports `b` imports `c` imports ...) before
+/// failing with a clean diagnostic instead of exhausting the real Rust call
+/// stack.
+///
+/// The cycle guard (`loading`, a `HashSet<PathBuf>` shared across every
+/// recursive call) already stops a *circular* import chain from recursing
+/// forever -- but it does nothing for a long, genuinely acyclic chain of
+/// distinct files, since each new file is a fresh, never-before-seen
+/// canonical path that `loading.insert` happily accepts. `resolve_inner`
+/// recurses once per import level with no depth counter of its own,
+/// confirmed via a real, unguarded stack overflow ("thread 'main' has
+/// overflowed its stack") from a genuinely acyclic chain of a few hundred
+/// files (`a` imports `b` imports `c` imports ... some 700+ levels deep,
+/// each file distinct, no cycle anywhere) -- a somewhat exotic shape for a
+/// hand-written program, but entirely plausible from a code generator that
+/// emits one file per module/scene/level and chains them together. 200
+/// matches this codebase's other depth guards' (`MAX_EXPR_DEPTH`,
+/// `MAX_BLOCK_DEPTH`, `Checker::MAX_MONO_DEPTH`) same "comfortable margin
+/// below an empirically observed cliff" calibration.
+const MAX_IMPORT_DEPTH: u32 = 200;
+
 /// Resolve every `import` in `module` (whose own source lives at
 /// `root_path`), recursively inlining each imported file's items under a
 /// mangled name. Returns the flattened module (no `Item::Import` entries
@@ -74,7 +96,7 @@ pub fn resolve(module: Module, root_path: &Path) -> Result<(Module, Vec<(String,
     }
     let base_dir = root_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
     let mut files = Vec::new();
-    let resolved = resolve_inner(module, &base_dir, &mut loading, &mut files)?;
+    let resolved = resolve_inner(module, &base_dir, &mut loading, &mut files, 0)?;
     Ok((resolved, files))
 }
 
@@ -83,11 +105,21 @@ fn resolve_inner(
     base_dir: &Path,
     loading: &mut HashSet<PathBuf>,
     files: &mut Vec<(String, String)>,
+    depth: u32,
 ) -> Result<Module, Vec<Diagnostic>> {
     let mut items = Vec::new();
     for item in module.items {
         match item {
             Item::Import(decl) => {
+                if depth >= MAX_IMPORT_DEPTH {
+                    return Err(vec![Diagnostic::error(
+                        format!(
+                            "import chain nests too deeply while importing `{}` (over {} levels) -- likely a runaway generated chain of imports",
+                            decl.path, MAX_IMPORT_DEPTH
+                        ),
+                        decl.span,
+                    )]);
+                }
                 let resolved_path = base_dir.join(&decl.path);
                 let canonical = match resolved_path.canonicalize() {
                     Ok(p) => p,
@@ -136,7 +168,7 @@ fn resolve_inner(
                 // (see the module-level doc comment on the reach limit this
                 // implies).
                 let child_base = canonical.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-                let resolved_child = match resolve_inner(imported, &child_base, loading, files) {
+                let resolved_child = match resolve_inner(imported, &child_base, loading, files, depth + 1) {
                     Ok(m) => m,
                     Err(diags) => {
                         // Re-anchor on this level's own (meaningful) span

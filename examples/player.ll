@@ -81,7 +81,7 @@ declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
-%GenRef = type { i32, i32 }
+%GenRef = type { i32, i64 }
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
@@ -90,6 +90,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @star.argv = global i8** null
 
 @rng.state = global i32 123456789
+@rng.lock = global i8* null
 
 @sym.data = global i8** null
 @sym.len = global i64 0
@@ -213,36 +214,38 @@ entry:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t1 = alloca %Player
   %t2 = alloca %Player
-  %t4 = alloca %Vec3
+  %t3 = alloca %Player
+  %t5 = alloca %Vec3
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
   store i8* %t0, i8** @sym.lock
-  %t3 = getelementptr inbounds %Player, %Player* %t2, i32 0, i32 0
-  store i32 100, i32* %t3
-  %t5 = getelementptr inbounds %Vec3, %Vec3* %t4, i32 0, i32 0
-  store float 0x0000000000000000, float* %t5
-  %t6 = getelementptr inbounds %Vec3, %Vec3* %t4, i32 0, i32 1
+  %t1 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t1, i8** @rng.lock
+  %t4 = getelementptr inbounds %Player, %Player* %t3, i32 0, i32 0
+  store i32 100, i32* %t4
+  %t6 = getelementptr inbounds %Vec3, %Vec3* %t5, i32 0, i32 0
   store float 0x0000000000000000, float* %t6
-  %t7 = getelementptr inbounds %Vec3, %Vec3* %t4, i32 0, i32 2
+  %t7 = getelementptr inbounds %Vec3, %Vec3* %t5, i32 0, i32 1
   store float 0x0000000000000000, float* %t7
-  %t8 = load %Vec3, %Vec3* %t4
-  %t9 = getelementptr inbounds %Player, %Player* %t2, i32 0, i32 1
-  store %Vec3 %t8, %Vec3* %t9
-  %t10 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.2, i64 0, i32 2, i64 0
-  %t11 = getelementptr inbounds %Player, %Player* %t2, i32 0, i32 2
-  store i8* %t10, i8** %t11
-  %t12 = load %Player, %Player* %t2
-  store %Player %t12, %Player* %t1
-  %t13 = call i32 @Player__remaining_health(%Player* %t1)
-  %t14 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.3, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t14, i32 %t13)
-  call void @Player__take_damage(%Player* %t1, i32 150)
-  %t16 = getelementptr inbounds %Player, %Player* %t1, i32 0, i32 2
-  %t17 = load i8*, i8** %t16
-  call void @star_rc_release(i8* %t17)
+  %t8 = getelementptr inbounds %Vec3, %Vec3* %t5, i32 0, i32 2
+  store float 0x0000000000000000, float* %t8
+  %t9 = load %Vec3, %Vec3* %t5
+  %t10 = getelementptr inbounds %Player, %Player* %t3, i32 0, i32 1
+  store %Vec3 %t9, %Vec3* %t10
+  %t11 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.2, i64 0, i32 2, i64 0
+  %t12 = getelementptr inbounds %Player, %Player* %t3, i32 0, i32 2
+  store i8* %t11, i8** %t12
+  %t13 = load %Player, %Player* %t3
+  store %Player %t13, %Player* %t2
+  %t14 = call i32 @Player__remaining_health(%Player* %t2)
+  %t15 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.3, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t15, i32 %t14)
+  call void @Player__take_damage(%Player* %t2, i32 150)
+  %t17 = getelementptr inbounds %Player, %Player* %t2, i32 0, i32 2
+  %t18 = load i8*, i8** %t17
+  call void @star_rc_release(i8* %t18)
   ret i32 0
 }
 

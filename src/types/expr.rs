@@ -795,10 +795,39 @@ impl Checker {
             Expr::ArrayRepeat { value, count, span } => {
                 let value_typed = self.infer_expr(value, vars)?;
                 let elem_ty = value_typed.clone().into_ty();
+                // Mirrors `Checker::resolve_type`'s `Type::Array` bound --
+                // `[value; N]` never goes through that path at all (`count`
+                // here is already a bare `u64`, not a `Type::Array` node), so
+                // without this check a huge `N` reached `Codegen::
+                // emit_array_repeat`'s `for i in 0..count` loop directly,
+                // which emits two LLVM IR text lines per iteration and hangs
+                // the compiler indefinitely on e.g. `[0; 999999999999]`.
+                if *count > Self::MAX_INLINE_LEN {
+                    self.error(
+                        format!(
+                            "array size `{}` is too large (max {}) -- `[value; N]` is stored inline with no heap allocation of its own, so an enormous `N` either hangs the compiler emitting one instruction per element or bakes a multi-gigabyte type into the generated code; use a heap-backed `List<T>` instead",
+                            count, Self::MAX_INLINE_LEN
+                        ),
+                        *span,
+                    );
+                }
                 Ok(TypedExpr::ArrayRepeat { value: Box::new(value_typed), count: *count, elem_ty, span: *span })
             }
             Expr::RingNew { elem_ty, count, span } => {
                 let elem_ty = self.resolve_type(elem_ty).unwrap_or(Ty::Named("unknown".into()));
+                // Mirrors `Checker::resolve_type`'s `Type::Ring` bound -- see
+                // `Expr::ArrayRepeat`'s identical check just above for why
+                // `Ring<T, N>()`'s literal `count` needs its own check too
+                // rather than relying on `resolve_type` alone.
+                if *count > Self::MAX_INLINE_LEN {
+                    self.error(
+                        format!(
+                            "`Ring<T, N>` capacity `{}` is too large (max {}) -- a `Ring` is stored inline with no heap allocation of its own, so an enormous `N` bakes a multi-gigabyte type into the generated code",
+                            count, Self::MAX_INLINE_LEN
+                        ),
+                        *span,
+                    );
+                }
                 Ok(TypedExpr::RingNew { elem_ty, count: *count, span: *span })
             }
             Expr::Cast { expr, ty, span } => {

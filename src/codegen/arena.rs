@@ -24,7 +24,15 @@ impl Codegen {
         // slot's generation at creation time and a dereference is only
         // trusted if it still matches this array's live value -- see
         // `emit_despawn_stmt`/`GenRefCreate`/`GenRefIndex`.
-        self.line(&format!("@arena.{}.gen = global [{} x i32] zeroinitializer", a.name, Self::ARENA_CAPACITY));
+        //
+        // `i64`, not `i32`: a 32-bit counter wraps after only ~2^31
+        // despawn/spawn cycles on one slot -- a few seconds of a tight loop,
+        // confirmed via a real repro (a `GenRef` captured before the wrap
+        // matching the post-wrap live generation and reading the new
+        // occupant's data instead of being caught as stale). `i64` needs
+        // ~2^63 cycles for the same attack -- not reachable in any
+        // realistic program's lifetime.
+        self.line(&format!("@arena.{}.gen = global [{} x i64] zeroinitializer", a.name, Self::ARENA_CAPACITY));
         // Free-list stack of despawned slot indices, so `spawn` can reclaim a
         // slot's memory instead of only ever growing `count` -- this is the
         // "internal free-list to manage fragmentation" design.md promises.
@@ -165,15 +173,15 @@ impl Codegen {
         // skip every despawned/never-spawned slot in this chunk.
         let gen_ptr = self.tmp_name();
         self.line(&format!(
-            "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
+            "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
             gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, i_reg
         ));
         let gen_val = self.tmp_name();
-        self.line(&format!("  {} = load i32, i32* {}", gen_val, gen_ptr));
+        self.line(&format!("  {} = load i64, i64* {}", gen_val, gen_ptr));
         let parity = self.tmp_name();
-        self.line(&format!("  {} = and i32 {}, 1", parity, gen_val));
+        self.line(&format!("  {} = and i64 {}, 1", parity, gen_val));
         let is_live = self.tmp_name();
-        self.line(&format!("  {} = icmp eq i32 {}, 1", is_live, parity));
+        self.line(&format!("  {} = icmp eq i64 {}, 1", is_live, parity));
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_live, live_label, incr_label));
         self.open_block(&live_label);
         let elem_ptr = self.tmp_name();
@@ -352,14 +360,14 @@ impl Codegen {
         // again (the ABA problem design.md calls out).
         let gen_slot_ptr = self.tmp_name();
         self.line(&format!(
-            "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
+            "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
             gen_slot_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, slot_idx
         ));
         let cur_gen = self.tmp_name();
-        self.line(&format!("  {} = load i32, i32* {}", cur_gen, gen_slot_ptr));
+        self.line(&format!("  {} = load i64, i64* {}", cur_gen, gen_slot_ptr));
         let next_gen = self.tmp_name();
-        self.line(&format!("  {} = add i32 {}, 1", next_gen, cur_gen));
-        self.line(&format!("  store i32 {}, i32* {}", next_gen, gen_slot_ptr));
+        self.line(&format!("  {} = add i64 {}, 1", next_gen, cur_gen));
+        self.line(&format!("  store i64 {}, i64* {}", next_gen, gen_slot_ptr));
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&end_label);
@@ -391,15 +399,15 @@ impl Codegen {
         self.open_block(&do_label);
         let gen_ptr = self.tmp_name();
         self.line(&format!(
-            "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
+            "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
             gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
         ));
         let gen_val = self.tmp_name();
-        self.line(&format!("  {} = load i32, i32* {}", gen_val, gen_ptr));
+        self.line(&format!("  {} = load i64, i64* {}", gen_val, gen_ptr));
         let parity = self.tmp_name();
-        self.line(&format!("  {} = and i32 {}, 1", parity, gen_val));
+        self.line(&format!("  {} = and i64 {}, 1", parity, gen_val));
         let is_live = self.tmp_name();
-        self.line(&format!("  {} = icmp eq i32 {}, 1", is_live, parity));
+        self.line(&format!("  {} = icmp eq i64 {}, 1", is_live, parity));
         let live_label = self.block_label("despawn_live");
         self.line(&format!("  br i1 {}, label %{}, label %{}", is_live, live_label, end_label));
 
@@ -423,8 +431,8 @@ impl Codegen {
             }
         }
         let next_gen = self.tmp_name();
-        self.line(&format!("  {} = add i32 {}, 1", next_gen, gen_val));
-        self.line(&format!("  store i32 {}, i32* {}", next_gen, gen_ptr));
+        self.line(&format!("  {} = add i64 {}, 1", next_gen, gen_val));
+        self.line(&format!("  store i64 {}, i64* {}", next_gen, gen_ptr));
         let free_top_reg = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @arena.{}.free_top", free_top_reg, arena));
         let free_slot_ptr = self.tmp_name();
@@ -470,11 +478,11 @@ impl Codegen {
         self.open_block(&ok_label);
         let gen_ptr = self.tmp_name();
         self.line(&format!(
-            "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
+            "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
             gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
         ));
         let gen_ok = self.tmp_name();
-        self.line(&format!("  {} = load i32, i32* {}", gen_ok, gen_ptr));
+        self.line(&format!("  {} = load i64, i64* {}", gen_ok, gen_ptr));
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&oob_label);
@@ -483,7 +491,7 @@ impl Codegen {
         self.open_block(&end_label);
         let gen_val = self.tmp_name();
         self.line(&format!(
-            "  {} = phi i32 [ {}, %{} ], [ 0, %{} ]",
+            "  {} = phi i64 [ {}, %{} ], [ 0, %{} ]",
             gen_val, gen_ok, ok_label, oob_label
         ));
 
@@ -494,7 +502,7 @@ impl Codegen {
         self.line(&format!("  store i32 {}, i32* {}", idx_i32, field0));
         let gen_field_ptr = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 1", gen_field_ptr, ptr));
-        self.line(&format!("  store i32 {}, i32* {}", gen_val, gen_field_ptr));
+        self.line(&format!("  store i64 {}, i64* {}", gen_val, gen_field_ptr));
         let loaded = self.tmp_name();
         self.line(&format!("  {} = load %GenRef, %GenRef* {}", loaded, ptr));
         format!("%GenRef {}", loaded)
@@ -520,7 +528,7 @@ impl Codegen {
         let gen_field_ptr = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 1", gen_field_ptr, base_ptr));
         let stored_gen = self.tmp_name();
-        self.line(&format!("  {} = load i32, i32* {}", stored_gen, gen_field_ptr));
+        self.line(&format!("  {} = load i64, i64* {}", stored_gen, gen_field_ptr));
         let idx64 = self.tmp_name();
         self.line(&format!("  {} = sext i32 {} to i64", idx64, stored_idx));
 
@@ -535,13 +543,13 @@ impl Codegen {
         self.open_block(&check_label);
         let gen_ptr = self.tmp_name();
         self.line(&format!(
-            "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
+            "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
             gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
         ));
         let live_gen = self.tmp_name();
-        self.line(&format!("  {} = load i32, i32* {}", live_gen, gen_ptr));
+        self.line(&format!("  {} = load i64, i64* {}", live_gen, gen_ptr));
         let gen_match = self.tmp_name();
-        self.line(&format!("  {} = icmp eq i32 {}, {}", gen_match, stored_gen, live_gen));
+        self.line(&format!("  {} = icmp eq i64 {}, {}", gen_match, stored_gen, live_gen));
         // A never-spawned slot's generation is `0` (see `emit_arena_decl`),
         // which is indistinguishable from a freshly-created `GenRef`'s own
         // captured generation for that same slot -- `gen_match` alone would
@@ -554,9 +562,9 @@ impl Codegen {
         // segfault/uninitialized-read hole for a `GenRef` dereferenced
         // before anything was ever spawned into this arena.
         let parity = self.tmp_name();
-        self.line(&format!("  {} = and i32 {}, 1", parity, live_gen));
+        self.line(&format!("  {} = and i64 {}, 1", parity, live_gen));
         let is_live = self.tmp_name();
-        self.line(&format!("  {} = icmp eq i32 {}, 1", is_live, parity));
+        self.line(&format!("  {} = icmp eq i64 {}, 1", is_live, parity));
         let ok = self.tmp_name();
         self.line(&format!("  {} = and i1 {}, {}", ok, gen_match, is_live));
         self.line(&format!("  br i1 {}, label %{}, label %{}", ok, ok_label, stale_label));
@@ -621,7 +629,7 @@ impl Codegen {
         let gen_field_ptr = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 1", gen_field_ptr, base_ptr));
         let stored_gen = self.tmp_name();
-        self.line(&format!("  {} = load i32, i32* {}", stored_gen, gen_field_ptr));
+        self.line(&format!("  {} = load i64, i64* {}", stored_gen, gen_field_ptr));
         let idx64 = self.tmp_name();
         self.line(&format!("  {} = sext i32 {} to i64", idx64, stored_idx));
 
@@ -636,17 +644,17 @@ impl Codegen {
         self.open_block(&check_label);
         let gen_ptr = self.tmp_name();
         self.line(&format!(
-            "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
+            "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
             gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
         ));
         let live_gen = self.tmp_name();
-        self.line(&format!("  {} = load i32, i32* {}", live_gen, gen_ptr));
+        self.line(&format!("  {} = load i64, i64* {}", live_gen, gen_ptr));
         let gen_match = self.tmp_name();
-        self.line(&format!("  {} = icmp eq i32 {}, {}", gen_match, stored_gen, live_gen));
+        self.line(&format!("  {} = icmp eq i64 {}, {}", gen_match, stored_gen, live_gen));
         let parity = self.tmp_name();
-        self.line(&format!("  {} = and i32 {}, 1", parity, live_gen));
+        self.line(&format!("  {} = and i64 {}, 1", parity, live_gen));
         let is_live = self.tmp_name();
-        self.line(&format!("  {} = icmp eq i32 {}, 1", is_live, parity));
+        self.line(&format!("  {} = icmp eq i64 {}, 1", is_live, parity));
         let ok = self.tmp_name();
         self.line(&format!("  {} = and i1 {}, {}", ok, gen_match, is_live));
         self.line(&format!("  br i1 {}, label %{}, label %{}", ok, ok_label, stale_label));
@@ -707,7 +715,7 @@ impl Codegen {
         let gen_field_ptr = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds %GenRef, %GenRef* {}, i32 0, i32 1", gen_field_ptr, base_ptr));
         let stored_gen = self.tmp_name();
-        self.line(&format!("  {} = load i32, i32* {}", stored_gen, gen_field_ptr));
+        self.line(&format!("  {} = load i64, i64* {}", stored_gen, gen_field_ptr));
         let idx64 = self.tmp_name();
         self.line(&format!("  {} = sext i32 {} to i64", idx64, stored_idx));
 
@@ -722,17 +730,17 @@ impl Codegen {
         self.open_block(&check_label);
         let gen_ptr = self.tmp_name();
         self.line(&format!(
-            "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @arena.{}.gen, i64 0, i64 {}",
+            "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
             gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
         ));
         let live_gen = self.tmp_name();
-        self.line(&format!("  {} = load i32, i32* {}", live_gen, gen_ptr));
+        self.line(&format!("  {} = load i64, i64* {}", live_gen, gen_ptr));
         let gen_match = self.tmp_name();
-        self.line(&format!("  {} = icmp eq i32 {}, {}", gen_match, stored_gen, live_gen));
+        self.line(&format!("  {} = icmp eq i64 {}, {}", gen_match, stored_gen, live_gen));
         let parity = self.tmp_name();
-        self.line(&format!("  {} = and i32 {}, 1", parity, live_gen));
+        self.line(&format!("  {} = and i64 {}, 1", parity, live_gen));
         let is_live = self.tmp_name();
-        self.line(&format!("  {} = icmp eq i32 {}, 1", is_live, parity));
+        self.line(&format!("  {} = icmp eq i64 {}, 1", is_live, parity));
         let ok = self.tmp_name();
         self.line(&format!("  {} = and i1 {}, {}", ok, gen_match, is_live));
         self.line(&format!("  br i1 {}, label %{}, label %{}", ok, ok_label, stale_label));

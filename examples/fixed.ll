@@ -81,7 +81,7 @@ declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
-%GenRef = type { i32, i32 }
+%GenRef = type { i32, i64 }
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
@@ -90,6 +90,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @star.argv = global i8** null
 
 @rng.state = global i32 123456789
+@rng.lock = global i8* null
 
 @sym.data = global i8** null
 @sym.len = global i64 0
@@ -159,162 +160,164 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t1 = alloca i32
-  %t4 = alloca i32
-  %t53 = alloca i32
-  %t71 = alloca float
-  %t78 = alloca i8
-  %t81 = alloca i8
+  %t2 = alloca i32
+  %t5 = alloca i32
+  %t54 = alloca i32
+  %t72 = alloca float
+  %t79 = alloca i8
+  %t82 = alloca i8
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
   store i8* %t0, i8** @sym.lock
-  %t2 = fmul float 0x400C000000000000, 0x40F0000000000000
-  %t3 = call i32 @llvm.fptosi.sat.i32.f32(float %t2)
-  store i32 %t3, i32* %t1
-  %t5 = fmul float 0x4000000000000000, 0x40F0000000000000
-  %t6 = call i32 @llvm.fptosi.sat.i32.f32(float %t5)
-  store i32 %t6, i32* %t4
-  %t7 = load i32, i32* %t1
-  %t8 = load i32, i32* %t4
-  %t9 = call { i32, i1 } @llvm.sadd.with.overflow.i32(i32 %t7, i32 %t8)
-  %t10 = extractvalue { i32, i1 } %t9, 0
-  %t11 = extractvalue { i32, i1 } %t9, 1
-  br i1 %t11, label %int_overflow_fail_0, label %int_overflow_ok_1
+  %t1 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t1, i8** @rng.lock
+  %t3 = fmul float 0x400C000000000000, 0x40F0000000000000
+  %t4 = call i32 @llvm.fptosi.sat.i32.f32(float %t3)
+  store i32 %t4, i32* %t2
+  %t6 = fmul float 0x4000000000000000, 0x40F0000000000000
+  %t7 = call i32 @llvm.fptosi.sat.i32.f32(float %t6)
+  store i32 %t7, i32* %t5
+  %t8 = load i32, i32* %t2
+  %t9 = load i32, i32* %t5
+  %t10 = call { i32, i1 } @llvm.sadd.with.overflow.i32(i32 %t8, i32 %t9)
+  %t11 = extractvalue { i32, i1 } %t10, 0
+  %t12 = extractvalue { i32, i1 } %t10, 1
+  br i1 %t12, label %int_overflow_fail_0, label %int_overflow_ok_1
 int_overflow_fail_0:
-  %t12 = getelementptr inbounds [69 x i8], [69 x i8]* @.str.0, i64 0, i64 0
-  call i32 @puts(i8* %t12)
+  %t13 = getelementptr inbounds [69 x i8], [69 x i8]* @.str.0, i64 0, i64 0
+  call i32 @puts(i8* %t13)
   call void @exit(i32 1)
   unreachable
 int_overflow_ok_1:
-  %t13 = sitofp i32 %t10 to double
-  %t14 = fdiv double %t13, 0x40F0000000000000
-  %t15 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.1, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t15, double %t14)
-  %t16 = load i32, i32* %t1
-  %t17 = load i32, i32* %t4
-  %t18 = call { i32, i1 } @llvm.ssub.with.overflow.i32(i32 %t16, i32 %t17)
-  %t19 = extractvalue { i32, i1 } %t18, 0
-  %t20 = extractvalue { i32, i1 } %t18, 1
-  br i1 %t20, label %int_overflow_fail_2, label %int_overflow_ok_3
+  %t14 = sitofp i32 %t11 to double
+  %t15 = fdiv double %t14, 0x40F0000000000000
+  %t16 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.1, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t16, double %t15)
+  %t17 = load i32, i32* %t2
+  %t18 = load i32, i32* %t5
+  %t19 = call { i32, i1 } @llvm.ssub.with.overflow.i32(i32 %t17, i32 %t18)
+  %t20 = extractvalue { i32, i1 } %t19, 0
+  %t21 = extractvalue { i32, i1 } %t19, 1
+  br i1 %t21, label %int_overflow_fail_2, label %int_overflow_ok_3
 int_overflow_fail_2:
-  %t21 = getelementptr inbounds [69 x i8], [69 x i8]* @.str.2, i64 0, i64 0
-  call i32 @puts(i8* %t21)
+  %t22 = getelementptr inbounds [69 x i8], [69 x i8]* @.str.2, i64 0, i64 0
+  call i32 @puts(i8* %t22)
   call void @exit(i32 1)
   unreachable
 int_overflow_ok_3:
-  %t22 = sitofp i32 %t19 to double
-  %t23 = fdiv double %t22, 0x40F0000000000000
-  %t24 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.3, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t24, double %t23)
-  %t25 = load i32, i32* %t1
-  %t26 = load i32, i32* %t4
-  %t27 = sext i32 %t25 to i128
+  %t23 = sitofp i32 %t20 to double
+  %t24 = fdiv double %t23, 0x40F0000000000000
+  %t25 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.3, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t25, double %t24)
+  %t26 = load i32, i32* %t2
+  %t27 = load i32, i32* %t5
   %t28 = sext i32 %t26 to i128
-  %t29 = mul i128 %t27, %t28
-  %t30 = ashr i128 %t29, 16
-  %t31 = trunc i128 %t30 to i32
-  %t32 = sext i32 %t31 to i128
-  %t33 = icmp eq i128 %t32, %t30
-  br i1 %t33, label %fixed_overflow_ok_5, label %fixed_overflow_fail_4
+  %t29 = sext i32 %t27 to i128
+  %t30 = mul i128 %t28, %t29
+  %t31 = ashr i128 %t30, 16
+  %t32 = trunc i128 %t31 to i32
+  %t33 = sext i32 %t32 to i128
+  %t34 = icmp eq i128 %t33, %t31
+  br i1 %t34, label %fixed_overflow_ok_5, label %fixed_overflow_fail_4
 fixed_overflow_fail_4:
-  %t34 = getelementptr inbounds [62 x i8], [62 x i8]* @.str.4, i64 0, i64 0
-  call i32 @puts(i8* %t34)
+  %t35 = getelementptr inbounds [62 x i8], [62 x i8]* @.str.4, i64 0, i64 0
+  call i32 @puts(i8* %t35)
   call void @exit(i32 1)
   unreachable
 fixed_overflow_ok_5:
-  %t35 = sitofp i32 %t31 to double
-  %t36 = fdiv double %t35, 0x40F0000000000000
-  %t37 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.5, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t37, double %t36)
-  %t38 = load i32, i32* %t1
-  %t39 = load i32, i32* %t4
-  %t40 = sext i32 %t38 to i128
+  %t36 = sitofp i32 %t32 to double
+  %t37 = fdiv double %t36, 0x40F0000000000000
+  %t38 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.5, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t38, double %t37)
+  %t39 = load i32, i32* %t2
+  %t40 = load i32, i32* %t5
   %t41 = sext i32 %t39 to i128
-  %t42 = shl i128 %t40, 16
-  %t43 = icmp eq i128 %t41, 0
-  br i1 %t43, label %fixed_div_zero_fail_6, label %fixed_div_zero_ok_7
+  %t42 = sext i32 %t40 to i128
+  %t43 = shl i128 %t41, 16
+  %t44 = icmp eq i128 %t42, 0
+  br i1 %t44, label %fixed_div_zero_fail_6, label %fixed_div_zero_ok_7
 fixed_div_zero_fail_6:
-  %t44 = getelementptr inbounds [57 x i8], [57 x i8]* @.str.6, i64 0, i64 0
-  call i32 @puts(i8* %t44)
+  %t45 = getelementptr inbounds [57 x i8], [57 x i8]* @.str.6, i64 0, i64 0
+  call i32 @puts(i8* %t45)
   call void @exit(i32 1)
   unreachable
 fixed_div_zero_ok_7:
-  %t45 = sdiv i128 %t42, %t41
-  %t46 = trunc i128 %t45 to i32
-  %t47 = sext i32 %t46 to i128
-  %t48 = icmp eq i128 %t47, %t45
-  br i1 %t48, label %fixed_overflow_ok_9, label %fixed_overflow_fail_8
+  %t46 = sdiv i128 %t43, %t42
+  %t47 = trunc i128 %t46 to i32
+  %t48 = sext i32 %t47 to i128
+  %t49 = icmp eq i128 %t48, %t46
+  br i1 %t49, label %fixed_overflow_ok_9, label %fixed_overflow_fail_8
 fixed_overflow_fail_8:
-  %t49 = getelementptr inbounds [56 x i8], [56 x i8]* @.str.7, i64 0, i64 0
-  call i32 @puts(i8* %t49)
+  %t50 = getelementptr inbounds [56 x i8], [56 x i8]* @.str.7, i64 0, i64 0
+  call i32 @puts(i8* %t50)
   call void @exit(i32 1)
   unreachable
 fixed_overflow_ok_9:
-  %t50 = sitofp i32 %t46 to double
-  %t51 = fdiv double %t50, 0x40F0000000000000
-  %t52 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.8, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t52, double %t51)
-  %t54 = sext i32 10 to i128
-  %t55 = shl i128 %t54, 16
-  %t56 = trunc i128 %t55 to i32
-  %t57 = sext i32 %t56 to i128
-  %t58 = icmp eq i128 %t57, %t55
-  br i1 %t58, label %fixed_overflow_ok_11, label %fixed_overflow_fail_10
+  %t51 = sitofp i32 %t47 to double
+  %t52 = fdiv double %t51, 0x40F0000000000000
+  %t53 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.8, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t53, double %t52)
+  %t55 = sext i32 10 to i128
+  %t56 = shl i128 %t55, 16
+  %t57 = trunc i128 %t56 to i32
+  %t58 = sext i32 %t57 to i128
+  %t59 = icmp eq i128 %t58, %t56
+  br i1 %t59, label %fixed_overflow_ok_11, label %fixed_overflow_fail_10
 fixed_overflow_fail_10:
-  %t59 = getelementptr inbounds [60 x i8], [60 x i8]* @.str.9, i64 0, i64 0
-  call i32 @puts(i8* %t59)
+  %t60 = getelementptr inbounds [60 x i8], [60 x i8]* @.str.9, i64 0, i64 0
+  call i32 @puts(i8* %t60)
   call void @exit(i32 1)
   unreachable
 fixed_overflow_ok_11:
-  store i32 %t56, i32* %t53
-  %t60 = load i32, i32* %t53
-  %t61 = sitofp i32 %t60 to double
-  %t62 = fdiv double %t61, 0x40F0000000000000
-  %t63 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.10, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t63, double %t62)
-  %t64 = load i32, i32* %t1
-  %t65 = load i32, i32* %t53
-  %t66 = icmp slt i32 %t64, %t65
-  %t67 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.11, i64 0, i64 0
-  %t68 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.12, i64 0, i64 0
-  %t69 = select i1 %t66, i8* %t67, i8* %t68
-  %t70 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.13, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t70, i8* %t69)
-  %t72 = load i32, i32* %t1
-  %t73 = sitofp i32 %t72 to float
-  %t74 = fdiv float %t73, 0x40F0000000000000
-  store float %t74, float* %t71
-  %t75 = load float, float* %t71
-  %t76 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.14, i64 0, i64 0
-  %t77 = fpext float %t75 to double
-  call i32 (i8*, ...) @printf(i8* %t76, double %t77)
-  %t79 = fmul float 0x400C000000000000, 0x4030000000000000
-  %t80 = call i8 @llvm.fptosi.sat.i8.f32(float %t79)
-  store i8 %t80, i8* %t78
-  %t82 = fmul float 0x3FF8000000000000, 0x4030000000000000
-  %t83 = call i8 @llvm.fptosi.sat.i8.f32(float %t82)
-  store i8 %t83, i8* %t81
-  %t84 = load i8, i8* %t78
-  %t85 = load i8, i8* %t81
-  %t86 = sext i8 %t84 to i128
+  store i32 %t57, i32* %t54
+  %t61 = load i32, i32* %t54
+  %t62 = sitofp i32 %t61 to double
+  %t63 = fdiv double %t62, 0x40F0000000000000
+  %t64 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.10, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t64, double %t63)
+  %t65 = load i32, i32* %t2
+  %t66 = load i32, i32* %t54
+  %t67 = icmp slt i32 %t65, %t66
+  %t68 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.11, i64 0, i64 0
+  %t69 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.12, i64 0, i64 0
+  %t70 = select i1 %t67, i8* %t68, i8* %t69
+  %t71 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.13, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t71, i8* %t70)
+  %t73 = load i32, i32* %t2
+  %t74 = sitofp i32 %t73 to float
+  %t75 = fdiv float %t74, 0x40F0000000000000
+  store float %t75, float* %t72
+  %t76 = load float, float* %t72
+  %t77 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.14, i64 0, i64 0
+  %t78 = fpext float %t76 to double
+  call i32 (i8*, ...) @printf(i8* %t77, double %t78)
+  %t80 = fmul float 0x400C000000000000, 0x4030000000000000
+  %t81 = call i8 @llvm.fptosi.sat.i8.f32(float %t80)
+  store i8 %t81, i8* %t79
+  %t83 = fmul float 0x3FF8000000000000, 0x4030000000000000
+  %t84 = call i8 @llvm.fptosi.sat.i8.f32(float %t83)
+  store i8 %t84, i8* %t82
+  %t85 = load i8, i8* %t79
+  %t86 = load i8, i8* %t82
   %t87 = sext i8 %t85 to i128
-  %t88 = mul i128 %t86, %t87
-  %t89 = ashr i128 %t88, 4
-  %t90 = trunc i128 %t89 to i8
-  %t91 = sext i8 %t90 to i128
-  %t92 = icmp eq i128 %t91, %t89
-  br i1 %t92, label %fixed_overflow_ok_13, label %fixed_overflow_fail_12
+  %t88 = sext i8 %t86 to i128
+  %t89 = mul i128 %t87, %t88
+  %t90 = ashr i128 %t89, 4
+  %t91 = trunc i128 %t90 to i8
+  %t92 = sext i8 %t91 to i128
+  %t93 = icmp eq i128 %t92, %t90
+  br i1 %t93, label %fixed_overflow_ok_13, label %fixed_overflow_fail_12
 fixed_overflow_fail_12:
-  %t93 = getelementptr inbounds [62 x i8], [62 x i8]* @.str.15, i64 0, i64 0
-  call i32 @puts(i8* %t93)
+  %t94 = getelementptr inbounds [62 x i8], [62 x i8]* @.str.15, i64 0, i64 0
+  call i32 @puts(i8* %t94)
   call void @exit(i32 1)
   unreachable
 fixed_overflow_ok_13:
-  %t94 = sitofp i8 %t90 to double
-  %t95 = fdiv double %t94, 0x4030000000000000
-  %t96 = getelementptr inbounds [24 x i8], [24 x i8]* @.str.16, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t96, double %t95)
+  %t95 = sitofp i8 %t91 to double
+  %t96 = fdiv double %t95, 0x4030000000000000
+  %t97 = getelementptr inbounds [24 x i8], [24 x i8]* @.str.16, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t97, double %t96)
   ret i32 0
 }
 

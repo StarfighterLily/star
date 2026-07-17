@@ -201,6 +201,9 @@ impl Codegen {
             // in `Codegen::emit_builtins` for why this can't be a lazy
             // first-use init the way the `par`/`swarm` pool's own is.
             self.emit_sym_lock_init();
+            // Same reasoning applies to `@rng.lock` -- see its own doc
+            // comment in `Codegen::emit_builtins`.
+            self.emit_rng_lock_init();
         }
 
         for p in &f.sig.params {

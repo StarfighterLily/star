@@ -62,6 +62,127 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Bug-hunting round 4 (security-focused red-team, not a feature round): four parallel deep
+audits, run as isolated git worktrees and merged back by hand afterward (source patches
+applied cleanly with no overlapping hunks across all four -- `src/codegen/mod.rs` was
+touched by three audits and `tests/frontend.rs` by all four, both at disjoint regions
+every time), each required to reproduce every candidate via a real `star build`+run
+before being reported, not just read from code. Unlike prior rounds' general-correctness
+sweeps, this round explicitly targeted security-relevant bug classes: adversarial-input/
+compiler-crash-DoS hardening, integer-overflow-to-memory-corruption plus handle/
+generation-counter safety, FFI/pointer/string-boundary hardening, and a second sweep for
+concurrency data races following round 3's Symbol-table fix. Two of the four audits were
+interrupted mid-run by a session API limit and resumed from their saved worktree state to
+finish; both completed cleanly on resume. 7 confirmed bugs fixed (one, a GenRef
+generation-counter wraparound, a genuine use-after-free/ABA bypass); 23 new tests added
+(939 total, all green, up from 916). All 56 buildable examples still `star build` cleanly
+against the merged, fixed compiler (same pre-existing, unrelated
+`examples/geometry_lib.star` no-`main`-by-design case as every prior round); every
+example's `.exe`/`.ll` rebuilt against the fixed compiler.
+
+Seven bugs fixed, grouped by audit:
+
+**Concurrency (1, following up round 3's Symbol-table fix)**:
+1. `@rng.state`, the global xorshift32 seed backing `rand`/`rand_range`/`rand_seed`
+   (`src/codegen/vector_math.rs`), had no concurrency protection -- neither `rand`/
+   `rand_range` nor `rand_seed` is in `Checker::unsafe_par_fns`'s ban list the way
+   `spawn`/`despawn`/`frame:` are, so all three are freely callable from inside a `par`/
+   `swarm` body across `par_pool.rs`'s 4 concurrent worker threads. `emit_rand_next`'s
+   unsynchronized load-xorshift-store sequence is a lost-update race: two threads loading
+   the same value before either stores back compute and store the identical next value.
+   Confirmed via 64 arena entities x 200 ticks, each drawing an independent `rand_range`
+   value inside a `par` body -- 10-30 duplicate-value ticks out of 200 per run,
+   statistically impossible by chance for a 32-bit generator, 5/5 runs. Fixed with
+   `@rng.lock`, a binary semaphore created unconditionally in `main`'s prologue (mirroring
+   `@sym.lock`'s existing pattern) guarding `emit_rand_next`/`emit_rand_seed`'s critical
+   sections (`src/codegen/mod.rs`, `stmt.rs`, `vector_math.rs`). 10/10 clean runs after the
+   fix.
+
+**Integer overflow / handle safety (1, severe -- a real use-after-free bypass)**:
+2. The arena `GenRef<T>`/`Handle<T>` generation counter (`%GenRef = type { i32, i32 }`)
+   was stored as `i32`. Since `spawn`/`despawn` bump it by exactly 1 with no reset, ~2^31
+   despawn/spawn cycles on one arena slot wrap the counter back to a bit pattern a
+   long-stale `GenRef` already captured, so the staleness check's equality+parity test
+   incorrectly passes and the stale handle reads the new occupant's data instead of
+   falling back to zero -- a genuine ABA use-after-free bypass, not just a design
+   footnote. Confirmed via a real repro: spawn, capture a `GenRef`, loop despawn+respawn
+   exactly 2^31 times, read through the old handle -- printed the new occupant's marker
+   value before the fix (~12-19s wall-clock, not a forced timescale). Fixed by widening
+   the generation field to `i64` everywhere it's declared/loaded/stored/compared
+   (`%GenRef`'s LLVM type, `type_align`/`type_size`, every GEP/load/store/`icmp eq` site
+   across arena spawn/despawn/GenRef-index/write-check) -- the identical attack now needs
+   ~2^63 cycles (`src/codegen/arena.rs`, `mod.rs`). Post-fix re-run of the identical repro
+   correctly reports the stale handle as dead.
+
+**FFI/pointer/string boundary (1 root cause, 4 reachable sites)**:
+3. Round 3's `symbol_name` null-deref fix flagged but left unfixed a sibling bug:
+   `Codegen::zero_value(&Ty::Str)` (a bare null `i8*`) was reused as the "empty result"
+   for `List<str>::pop()`/`list[oob]` on an empty/out-of-bounds list, `Ring<str,N>::pop()`/
+   `ring[oob]`, `[str; N][oob]`, and `Table<T>::pop()`/`table[idx]` out of bounds where `T`
+   has a `str` field -- any subsequent string op (e.g. `len()`) on the "empty" result then
+   segfaulted on the disguised null pointer. Confirmed via real, reproducible segfaults
+   building and running each of the four shapes before the fix. Fixed by adding
+   `Codegen::zero_value_rc`, which allocates a real owned empty string
+   (`star_rc_alloc(1)` + NUL) for `Ty::Str` specifically, mirroring `emit_symbol_name`'s
+   existing fix, applied at all five call sites (`src/codegen/mod.rs`, `list.rs`,
+   `ring.rs`, `array.rs`, `table.rs`). Verified no leak via a 20M-iteration
+   sustained-pop-on-empty loop (flat ~3MB).
+
+**Adversarial input / compiler-crash hardening (4, DoS-class)**:
+4. A flat binary-operator chain (`1 + 1 + 1 + ...`, ~370+ operators) overflowed the
+   native stack during both type-checking and codegen -- `Parser::parse_binary`'s
+   iterative precedence-climbing loop still builds one more boxed `Expr::Binary` layer
+   per iteration with no depth counter, and neither `Checker::infer_expr` nor
+   `Codegen::emit_expr` guards recursion depth on the resulting linked-list-shaped AST.
+   Confirmed via a real "thread 'main' has overflowed its stack" crash. Fixed with a
+   `Parser::MAX_BINARY_CHAIN = 200` counter local to each `parse_binary` call, reporting a
+   clean diagnostic instead (`src/parser/expr.rs`).
+5. The identical stack-overflow shape reproduced independently via a flat postfix chain
+   (`.field` chains, `f()()()...()` call chains) through `Parser::parse_postfix`'s equally
+   unguarded loop. Fixed by reusing the same counter in `parse_postfix`
+   (`src/parser/expr.rs`).
+6. `[T; N]`/`Ring<T, N>` with a huge `N` (e.g. 999999999999) hung `star build` for 30+
+   seconds with no output -- `Codegen::emit_array_repeat` emits two IR lines per element
+   and `type_size`'s `element_size * count` silently overflows/wraps in a release build.
+   Fixed with `Checker::MAX_INLINE_LEN = 1_000_000`, checked in `resolve_type` for
+   `Type::Array`/`Type::Ring` and in `Expr::ArrayRepeat`/`Expr::RingNew` (whose literal
+   `count` bypasses `resolve_type`) (`src/types/mod.rs`, `src/types/expr.rs`).
+7. A long but genuinely acyclic module import chain (~700-800 files, each importing the
+   next) overflowed the stack in `star check` -- the existing cycle guard only catches
+   real cycles (every canonical path in a long acyclic chain is new, so it never trips),
+   and does nothing to bound plain chain depth. Fixed with `MAX_IMPORT_DEPTH = 200`
+   threaded through `modules::resolve_inner` (`src/modules.rs`).
+
+**Areas audited with no bugs found** (see each audit's own report for the full list):
+List/Map/Set/Table/Symbol-intern-table malloc/realloc/memcpy size arithmetic (already all
+`i64`, unreachable overflow short of exabyte-scale allocation); boundary/negative-index
+handling across List/Array/Ring/GenRef/str; `Ring<T,0>` (already rejected at type-check)
+and `[T;0]`; every `ptr`/handle-consuming builtin's existing null guards (round 2/3 fixes
+hold); `Bytes` boundary cases and non-UTF-8 round-tripping; `extern "C" fn` null/
+scalar-width marshaling; `file_read`/`tcp_recv` huge/negative-length arguments (already
+clamped); `env_get`/`env_set` under concurrent `par`/`swarm` stress (this runtime's UCRT
+appears to serialize environment access internally, unlike the POSIX contract that would
+otherwise make this a race); `@frame.buf`/arena globals/thread-pool machinery (already
+banned or provably per-worker/not user-reachable); deeply nested parens/blocks/generics/
+match (already guarded from earlier rounds); huge numeric literals across every width;
+malformed/nested f-string interpolations; null bytes/invalid UTF-8 source; megabyte-scale
+identifiers; self-referential structs/generics (already caught); direct 2-/3-file import
+cycles.
+
+Two real, reproduced findings noted but explicitly left unfixed as out of scope for this
+round (each would need a larger redesign, not a minimal targeted fix): `[T; N]`
+array-repeat literals fully unroll at compile time into N individual instructions --
+N=50,000 already crashes `clang` itself (a stack overflow inside clang's own compilation)
+and N=1,000,000 takes 2.5 minutes to fail; a proper fix needs a runtime-loop/memset-style
+lowering instead of full unrolling. An f-string interpolation of an `i64` struct field
+(`f"{e.id}"`) hits a `clang` vararg type mismatch (`i64` passed where `printf`-family's
+vararg expects a pointer) -- noticed in passing during the concurrency audit's example
+runs, not chased down.
+
+---
+
+### Previous round
+
 Bug-hunting round 3 (not a feature round): four parallel deep audits, run as isolated
 git worktrees and merged back by hand afterward (source patches applied cleanly with no
 overlapping hunks; only `src/codegen/mod.rs` was touched by two audits, at disjoint
@@ -166,125 +287,3 @@ field default expression referencing an undefined name gets independently re-typ
 construction call site using that default -- duplicate messages, not a wrong or missing
 one, and not specific to any type added this round.
 
----
-
-### Previous round
-
-Bug-hunting round 2 (not a feature round): four parallel deep audits, run as isolated
-git worktrees and merged back by hand afterward, each required to reproduce every
-candidate via a real `star build`+run before being reported, not just read from code --
-numeric types/casts/generics/Option-Result, collections/memory model (RC leak hunting
-via sustained-iteration working-set growth), concurrency/control-flow (`par`/`swarm`/
-`sequence`/closures/pattern-matching), and FFI/IO/modules/parser-lexer/vector-math/
-time/misc types. 8 confirmed bugs found and fixed; 15 new tests in `tests/frontend.rs`
-(902 total, all green); all 52 buildable examples still `star build` cleanly (the same
-pre-existing, unrelated `examples/geometry_lib.star` no-`main`-by-design and
-`examples/tcp_socket.star` `-l ws2_32` cases noted in every prior round); every
-example's `.exe`/`.ll` rebuilt against the fixed compiler.
-
-Eight bugs fixed, grouped by audit:
-
-**Concurrency/control-flow (1)**:
-1. A closure literal defined lexically inside a `while`/`for` loop silently inherited
-   the enclosing loop's `Checker::loop_depth`, so a bare `break`/`continue` directly in
-   the closure's own body (with no loop of its own) type-checked cleanly even though a
-   closure lowers to its own independent top-level LLVM function (`Codegen::
-   emit_closure_lit`) with no well-defined branch target for the outer loop's exit
-   block. `Stmt::Par`'s body already resets `loop_depth` to `0` for the identical
-   reason; the same reset was simply missing from `Expr::Lambda`. Confirmed via a real
-   `star build` failure: `clang` rejected the generated IR with "use of undefined value
-   '%while_end_3'" (a label that only exists in the enclosing function). Fixed by
-   saving/resetting `self.loop_depth` around a closure body's type-checking, mirroring
-   `Stmt::Par`'s existing pattern (`src/types/expr.rs`).
-
-**Collections/memory model (1, but a broad one)**:
-2. `Codegen::emit_place`'s generic fallback (reached whenever a struct-returning
-   `Call`/`If`/`Match`/`TableIndex`/`Table::pop()` is used directly as a `Field`/
-   `TupleIndex`/`ArrayIndex`/`RingIndex` base with no intervening `let`) leaked every
-   RC-bearing field of the spilled temporary *except* the one actually read. A prior
-   round's fix for the "double-retain via generic-fallback spill" bug
-   (`Codegen::place_is_shared_storage`) correctly stopped double-retaining the one
-   extracted field, but only released the spilled temporary itself when its type was
-   `List`/`Map`/`Set`/`Table` -- any other RC-bearing type (a struct/tuple/array with
-   2+ RC-bearing leaves) had nothing ever release it, so every un-accessed sibling
-   field leaked permanently. Confirmed via real unbounded working-set growth: `make().a`
-   (a two-`str`-field struct, only `a` ever read) grew ~3MB flat (control with a `let`
-   binding) to ~790MB in under 4 seconds of 30,000,000 iterations; `t.pop().name` (a
-   `Table<T>` element, `tag` field never read) grew ~3MB to ~96MB over 5,000,000
-   iterations. Fixed by making `Field`/`TupleIndex`/`ArrayIndex`/`RingIndex` retain
-   unconditionally on every read (removing `place_is_shared_storage` entirely, now
-   obsolete) and always tracking the fallback's spilled temporary for release for any
-   `contains_rc` type, not just the four collection types -- the two together exactly
-   reproduce plain `Ident`-field-read semantics for a temporary (`src/codegen/rc.rs`,
-   `mod.rs`, `expr.rs`, `array.rs`).
-
-**Numeric/generics/Option-Result (3, one severe)**:
-3. Any `Option<T>`/`Result<T,E>` (payload enum) local never explicitly matched leaked
-   its payload forever: `Codegen::contains_rc`/`emit_rc_walk` had no arm at all for
-   `Ty::Enum`, so `track_owned` never registered a payload-enum local for scope-exit
-   release. Confirmed via `let o = make_some(s)` (never matched) growing working set
-   ~83MB->390MB+ within 2s over 30M iterations, flat on a control without the
-   `Option<str>` wrapper. Fixed by adding a `Ty::Enum` arm to both: `contains_rc` is
-   true whenever any variant carries an RC-bearing field; `emit_rc_walk` loads the
-   runtime tag and branches per RC-bearing variant, bitcasting the shared payload
-   buffer the same way construction/pattern-matching already do (`src/codegen/rc.rs`).
-4. `match`/`?` over a fresh (non-place) payload-enum scrutinee leaked the scrutinee's
-   own reference -- addressed via `emit_place`'s generic fallback, which spills it into
-   a scratch alloca. This is the same fallback bug #2 above generalized to release
-   unconditionally, so the fix for #2 (tracking *any* `contains_rc` type in the
-   fallback, not just collections) already covers this case once the two audits'
-   overlapping `rc.rs`/`mod.rs`/`expr.rs` changes were reconciled during merge -- no
-   separate call site needed. Confirmed independently via a hand-written
-   `match Result::Ok(v)/Err(e) -> v/e` (no `?`) and via `?`-propagation itself (which
-   desugars to the identical `Match` shape), both showing unbounded growth before the
-   fix.
-5. (Most severe) A struct with an `Option<T>`/`Result<T,E>`-typed field baked a corrupt
-   LLVM layout, causing memory corruption/segfaults. `Codegen::emit`'s single
-   interleaved struct/enum-declaration pass processed items in `module.items` order,
-   but every monomorphized generic enum instantiation is appended after every source
-   item (`Checker::check`'s `mono_items`), so a struct's own field-type computation
-   (`llvm_ty` -> `enum_is_payload`) always ran before the referenced enum was
-   registered -- silently mistagging the field as bare `i32` in the struct's
-   *permanent* LLVM type text instead of the real tagged-union type. Confirmed via a
-   real segfault (`0xC0000005`) on `struct Holder: opt: Option<str>` plus a single
-   match, one iteration, no collections/generics-nesting involved. Fixed by splitting
-   registration (`register_struct`/`register_enum`) from text emission
-   (`emit_struct_decl`/`emit_enum_decl`) into two passes over every item
-   (`src/codegen/mod.rs`, `reflect.rs`).
-
-**FFI/IO/modules/parser (2)**:
-6. `ptr_to_str` segfaulted on a null `ptr`. Unlike every other `ptr`-handle builtin in
-   this codegen (`file_close`/`file_read`/`tcp_send`/...), which all abort loudly via
-   `abort_if_null_handle`/`abort_if_null_socket` before dereferencing, `ptr_to_str`
-   called `strlen` on its argument with no null check. Confirmed via a real, unguarded
-   segfault building and running `ptr_to_str(null_ptr())` -- a realistic shape since
-   `extern "C"` functions commonly return null on failure. Fixed by adding the same
-   "check first, abort with a message" branch every sibling builtin already uses
-   (`src/codegen/builtins.rs`).
-7. `symbol_name` on an out-of-range `Symbol` id returned a null pointer disguised as
-   `str`, not a real empty string -- it returned `Codegen::zero_value(&Ty::Str)`, which
-   is literally a bare null `i8*`, documented (wrongly) as "safe" in a pre-existing
-   comment. `len(symbol_name(bogus))` (`strlen` on that null) segfaulted for real.
-   Fixed by allocating a real owned empty string (`star_rc_alloc(1)` + NUL byte, the
-   same recipe `env_get`'s missing-variable branch uses) instead
-   (`src/codegen/symbol.rs`). The same root cause (`zero_value(&Ty::Str)` used as a
-   fake "empty string" elsewhere, e.g. `List<str>::pop()` on an empty list) was noted
-   but left unfixed as out-of-scope collections codegen for this round.
-
-**Areas audited with no bugs found** (see each audit's own report for the full list):
-par/swarm disjointness proof and thread-pool nesting, sequence/yield nested-position
-scanning, RC-release-on-break/continue/return, match exhaustiveness, `Map`/`Set`/
-`Ring`/`Table` CoW invariants, arena spawn/despawn/`GenRef` generation checks,
-structural equality codegen, frame escape analysis, FFI scalar/ptr/str marshaling
-across every width, file/TCP I/O edge cases, module resolution (3-level nesting,
-sibling imports, diamond imports), lexer/parser edge cases (f-strings, number
-literals), Vec2/3/4/Mat4, Tick/Duration/Instant, overflow-trapping and
-`Wrapping<T>`/`Fixed<Bits,Frac>` across every numeric width, multi-type-parameter
-generic monomorphization independence.
-
-Two real gaps noted but explicitly out of scope / not correctness bugs, left for a
-future round: integer literals can't spell a `u64` value above `i64::MAX` (lexer caps
-at `i64` regardless of target cast type); two independently-imported files that both
-declare the same `extern "C" fn` collide as "declared more than once" when combined
-into one program (a module-system re-export/dedup limitation already tracked by
-roadmap item #5, not a new bug).

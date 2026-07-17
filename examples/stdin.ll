@@ -81,7 +81,7 @@ declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
-%GenRef = type { i32, i32 }
+%GenRef = type { i32, i64 }
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
@@ -90,6 +90,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @star.argv = global i8** null
 
 @rng.state = global i32 123456789
+@rng.lock = global i8* null
 
 @sym.data = global i8** null
 @sym.len = global i64 0
@@ -159,115 +160,117 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t1 = alloca i8*
-  %t3 = alloca i64
-  %t18 = alloca i8*
-  %t20 = alloca i64
-  %t35 = alloca i8*
-  %t37 = alloca i64
+  %t2 = alloca i8*
+  %t4 = alloca i64
+  %t19 = alloca i8*
+  %t21 = alloca i64
+  %t36 = alloca i8*
+  %t38 = alloca i64
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
   store i8* %t0, i8** @sym.lock
-  %t2 = call i8* @star_rc_alloc(i64 1024, i8* null)
-  store i64 0, i64* %t3
+  %t1 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t1, i8** @rng.lock
+  %t3 = call i8* @star_rc_alloc(i64 1024, i8* null)
+  store i64 0, i64* %t4
   br label %read_line_cond_0
 read_line_cond_0:
-  %t4 = load i64, i64* %t3
-  %t5 = icmp ult i64 %t4, 1023
-  br i1 %t5, label %read_line_body_1, label %read_line_end_3
+  %t5 = load i64, i64* %t4
+  %t6 = icmp ult i64 %t5, 1023
+  br i1 %t6, label %read_line_body_1, label %read_line_end_3
 read_line_body_1:
-  %t6 = call i32 @getchar()
-  %t7 = icmp eq i32 %t6, -1
-  %t8 = icmp eq i32 %t6, 10
-  %t9 = or i1 %t7, %t8
-  br i1 %t9, label %read_line_end_3, label %read_line_store_2
+  %t7 = call i32 @getchar()
+  %t8 = icmp eq i32 %t7, -1
+  %t9 = icmp eq i32 %t7, 10
+  %t10 = or i1 %t8, %t9
+  br i1 %t10, label %read_line_end_3, label %read_line_store_2
 read_line_store_2:
-  %t10 = getelementptr inbounds i8, i8* %t2, i64 %t4
-  %t11 = trunc i32 %t6 to i8
-  store i8 %t11, i8* %t10
-  %t12 = add i64 %t4, 1
-  store i64 %t12, i64* %t3
+  %t11 = getelementptr inbounds i8, i8* %t3, i64 %t5
+  %t12 = trunc i32 %t7 to i8
+  store i8 %t12, i8* %t11
+  %t13 = add i64 %t5, 1
+  store i64 %t13, i64* %t4
   br label %read_line_cond_0
 read_line_end_3:
-  %t13 = load i64, i64* %t3
-  %t14 = getelementptr inbounds i8, i8* %t2, i64 %t13
-  store i8 0, i8* %t14
-  store i8* %t2, i8** %t1
-  %t15 = load i8*, i8** %t1
-  %t16 = load i8*, i8** %t1
-  call void @star_rc_retain(i8* %t16)
-  call void @star_rc_release(i8* %t15)
-  %t17 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.0, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t17, i8* %t15)
-  %t19 = call i8* @star_rc_alloc(i64 1024, i8* null)
-  store i64 0, i64* %t20
+  %t14 = load i64, i64* %t4
+  %t15 = getelementptr inbounds i8, i8* %t3, i64 %t14
+  store i8 0, i8* %t15
+  store i8* %t3, i8** %t2
+  %t16 = load i8*, i8** %t2
+  %t17 = load i8*, i8** %t2
+  call void @star_rc_retain(i8* %t17)
+  call void @star_rc_release(i8* %t16)
+  %t18 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.0, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t18, i8* %t16)
+  %t20 = call i8* @star_rc_alloc(i64 1024, i8* null)
+  store i64 0, i64* %t21
   br label %read_line_cond_4
 read_line_cond_4:
-  %t21 = load i64, i64* %t20
-  %t22 = icmp ult i64 %t21, 1023
-  br i1 %t22, label %read_line_body_5, label %read_line_end_7
+  %t22 = load i64, i64* %t21
+  %t23 = icmp ult i64 %t22, 1023
+  br i1 %t23, label %read_line_body_5, label %read_line_end_7
 read_line_body_5:
-  %t23 = call i32 @getchar()
-  %t24 = icmp eq i32 %t23, -1
-  %t25 = icmp eq i32 %t23, 10
-  %t26 = or i1 %t24, %t25
-  br i1 %t26, label %read_line_end_7, label %read_line_store_6
+  %t24 = call i32 @getchar()
+  %t25 = icmp eq i32 %t24, -1
+  %t26 = icmp eq i32 %t24, 10
+  %t27 = or i1 %t25, %t26
+  br i1 %t27, label %read_line_end_7, label %read_line_store_6
 read_line_store_6:
-  %t27 = getelementptr inbounds i8, i8* %t19, i64 %t21
-  %t28 = trunc i32 %t23 to i8
-  store i8 %t28, i8* %t27
-  %t29 = add i64 %t21, 1
-  store i64 %t29, i64* %t20
+  %t28 = getelementptr inbounds i8, i8* %t20, i64 %t22
+  %t29 = trunc i32 %t24 to i8
+  store i8 %t29, i8* %t28
+  %t30 = add i64 %t22, 1
+  store i64 %t30, i64* %t21
   br label %read_line_cond_4
 read_line_end_7:
-  %t30 = load i64, i64* %t20
-  %t31 = getelementptr inbounds i8, i8* %t19, i64 %t30
-  store i8 0, i8* %t31
-  store i8* %t19, i8** %t18
-  %t32 = load i8*, i8** %t18
-  %t33 = load i8*, i8** %t18
-  call void @star_rc_retain(i8* %t33)
-  call void @star_rc_release(i8* %t32)
-  %t34 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.1, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t34, i8* %t32)
-  %t36 = call i8* @star_rc_alloc(i64 1024, i8* null)
-  store i64 0, i64* %t37
+  %t31 = load i64, i64* %t21
+  %t32 = getelementptr inbounds i8, i8* %t20, i64 %t31
+  store i8 0, i8* %t32
+  store i8* %t20, i8** %t19
+  %t33 = load i8*, i8** %t19
+  %t34 = load i8*, i8** %t19
+  call void @star_rc_retain(i8* %t34)
+  call void @star_rc_release(i8* %t33)
+  %t35 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.1, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t35, i8* %t33)
+  %t37 = call i8* @star_rc_alloc(i64 1024, i8* null)
+  store i64 0, i64* %t38
   br label %read_line_cond_8
 read_line_cond_8:
-  %t38 = load i64, i64* %t37
-  %t39 = icmp ult i64 %t38, 1023
-  br i1 %t39, label %read_line_body_9, label %read_line_end_11
+  %t39 = load i64, i64* %t38
+  %t40 = icmp ult i64 %t39, 1023
+  br i1 %t40, label %read_line_body_9, label %read_line_end_11
 read_line_body_9:
-  %t40 = call i32 @getchar()
-  %t41 = icmp eq i32 %t40, -1
-  %t42 = icmp eq i32 %t40, 10
-  %t43 = or i1 %t41, %t42
-  br i1 %t43, label %read_line_end_11, label %read_line_store_10
+  %t41 = call i32 @getchar()
+  %t42 = icmp eq i32 %t41, -1
+  %t43 = icmp eq i32 %t41, 10
+  %t44 = or i1 %t42, %t43
+  br i1 %t44, label %read_line_end_11, label %read_line_store_10
 read_line_store_10:
-  %t44 = getelementptr inbounds i8, i8* %t36, i64 %t38
-  %t45 = trunc i32 %t40 to i8
-  store i8 %t45, i8* %t44
-  %t46 = add i64 %t38, 1
-  store i64 %t46, i64* %t37
+  %t45 = getelementptr inbounds i8, i8* %t37, i64 %t39
+  %t46 = trunc i32 %t41 to i8
+  store i8 %t46, i8* %t45
+  %t47 = add i64 %t39, 1
+  store i64 %t47, i64* %t38
   br label %read_line_cond_8
 read_line_end_11:
-  %t47 = load i64, i64* %t37
-  %t48 = getelementptr inbounds i8, i8* %t36, i64 %t47
-  store i8 0, i8* %t48
-  store i8* %t36, i8** %t35
-  %t49 = load i8*, i8** %t35
-  %t50 = load i8*, i8** %t35
-  call void @star_rc_retain(i8* %t50)
-  call void @star_rc_release(i8* %t49)
-  %t51 = getelementptr inbounds [10 x i8], [10 x i8]* @.str.2, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t51, i8* %t49)
-  %t52 = load i8*, i8** %t35
-  call void @star_rc_release(i8* %t52)
-  %t53 = load i8*, i8** %t18
+  %t48 = load i64, i64* %t38
+  %t49 = getelementptr inbounds i8, i8* %t37, i64 %t48
+  store i8 0, i8* %t49
+  store i8* %t37, i8** %t36
+  %t50 = load i8*, i8** %t36
+  %t51 = load i8*, i8** %t36
+  call void @star_rc_retain(i8* %t51)
+  call void @star_rc_release(i8* %t50)
+  %t52 = getelementptr inbounds [10 x i8], [10 x i8]* @.str.2, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t52, i8* %t50)
+  %t53 = load i8*, i8** %t36
   call void @star_rc_release(i8* %t53)
-  %t54 = load i8*, i8** %t1
+  %t54 = load i8*, i8** %t19
   call void @star_rc_release(i8* %t54)
+  %t55 = load i8*, i8** %t2
+  call void @star_rc_release(i8* %t55)
   ret i32 0
 }
 

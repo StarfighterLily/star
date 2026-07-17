@@ -81,7 +81,7 @@ declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
 declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
-%GenRef = type { i32, i32 }
+%GenRef = type { i32, i64 }
 
 @frame.buf = global [4096 x i8] zeroinitializer
 @frame.off = global i64 0
@@ -90,6 +90,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @star.argv = global i8** null
 
 @rng.state = global i32 123456789
+@rng.lock = global i8* null
 
 @sym.data = global i8** null
 @sym.len = global i64 0
@@ -242,52 +243,54 @@ match_end_1:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t1 = alloca %geo__Point
   %t2 = alloca %geo__Point
-  %t7 = alloca %geo__Point
-  %t13 = alloca %geo__Shape
-  %t21 = alloca %geo__Shape
+  %t3 = alloca %geo__Point
+  %t8 = alloca %geo__Point
+  %t14 = alloca %geo__Shape
+  %t22 = alloca %geo__Shape
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
   store i8* %t0, i8** @sym.lock
-  %t3 = getelementptr inbounds %geo__Point, %geo__Point* %t2, i32 0, i32 0
-  store i32 3, i32* %t3
-  %t4 = getelementptr inbounds %geo__Point, %geo__Point* %t2, i32 0, i32 1
-  store i32 4, i32* %t4
-  %t5 = load %geo__Point, %geo__Point* %t2
-  store %geo__Point %t5, %geo__Point* %t1
-  %t6 = load %geo__Point, %geo__Point* %t1
-  %t8 = getelementptr inbounds %geo__Point, %geo__Point* %t7, i32 0, i32 0
-  store i32 1, i32* %t8
-  %t9 = getelementptr inbounds %geo__Point, %geo__Point* %t7, i32 0, i32 1
-  store i32 2, i32* %t9
-  %t10 = load %geo__Point, %geo__Point* %t7
-  %t11 = call i32 @geo__dot(%geo__Point %t6, %geo__Point %t10)
-  %t12 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.0, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t12, i32 %t11)
-  %t14 = getelementptr inbounds %geo__Shape, %geo__Shape* %t13, i32 0, i32 0
-  store i32 0, i32* %t14
-  %t15 = getelementptr inbounds %geo__Shape, %geo__Shape* %t13, i32 0, i32 1
-  %t16 = bitcast [1 x i64]* %t15 to { i32 }*
-  %t17 = getelementptr inbounds { i32 }, { i32 }* %t16, i32 0, i32 0
-  store i32 2, i32* %t17
-  %t18 = load %geo__Shape, %geo__Shape* %t13
-  %t19 = call i32 @geo__area(%geo__Shape %t18)
-  %t20 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.1, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t20, i32 %t19)
-  %t22 = getelementptr inbounds %geo__Shape, %geo__Shape* %t21, i32 0, i32 0
-  store i32 1, i32* %t22
-  %t23 = getelementptr inbounds %geo__Shape, %geo__Shape* %t21, i32 0, i32 1
-  %t24 = bitcast [1 x i64]* %t23 to { i32, i32 }*
-  %t25 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t24, i32 0, i32 0
-  store i32 3, i32* %t25
-  %t26 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t24, i32 0, i32 1
-  store i32 4, i32* %t26
-  %t27 = load %geo__Shape, %geo__Shape* %t21
-  %t28 = call i32 @geo__area(%geo__Shape %t27)
-  %t29 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.2, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t29, i32 %t28)
+  %t1 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t1, i8** @rng.lock
+  %t4 = getelementptr inbounds %geo__Point, %geo__Point* %t3, i32 0, i32 0
+  store i32 3, i32* %t4
+  %t5 = getelementptr inbounds %geo__Point, %geo__Point* %t3, i32 0, i32 1
+  store i32 4, i32* %t5
+  %t6 = load %geo__Point, %geo__Point* %t3
+  store %geo__Point %t6, %geo__Point* %t2
+  %t7 = load %geo__Point, %geo__Point* %t2
+  %t9 = getelementptr inbounds %geo__Point, %geo__Point* %t8, i32 0, i32 0
+  store i32 1, i32* %t9
+  %t10 = getelementptr inbounds %geo__Point, %geo__Point* %t8, i32 0, i32 1
+  store i32 2, i32* %t10
+  %t11 = load %geo__Point, %geo__Point* %t8
+  %t12 = call i32 @geo__dot(%geo__Point %t7, %geo__Point %t11)
+  %t13 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.0, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t13, i32 %t12)
+  %t15 = getelementptr inbounds %geo__Shape, %geo__Shape* %t14, i32 0, i32 0
+  store i32 0, i32* %t15
+  %t16 = getelementptr inbounds %geo__Shape, %geo__Shape* %t14, i32 0, i32 1
+  %t17 = bitcast [1 x i64]* %t16 to { i32 }*
+  %t18 = getelementptr inbounds { i32 }, { i32 }* %t17, i32 0, i32 0
+  store i32 2, i32* %t18
+  %t19 = load %geo__Shape, %geo__Shape* %t14
+  %t20 = call i32 @geo__area(%geo__Shape %t19)
+  %t21 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.1, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t21, i32 %t20)
+  %t23 = getelementptr inbounds %geo__Shape, %geo__Shape* %t22, i32 0, i32 0
+  store i32 1, i32* %t23
+  %t24 = getelementptr inbounds %geo__Shape, %geo__Shape* %t22, i32 0, i32 1
+  %t25 = bitcast [1 x i64]* %t24 to { i32, i32 }*
+  %t26 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t25, i32 0, i32 0
+  store i32 3, i32* %t26
+  %t27 = getelementptr inbounds { i32, i32 }, { i32, i32 }* %t25, i32 0, i32 1
+  store i32 4, i32* %t27
+  %t28 = load %geo__Shape, %geo__Shape* %t22
+  %t29 = call i32 @geo__area(%geo__Shape %t28)
+  %t30 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.2, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t30, i32 %t29)
   ret i32 0
 }
 

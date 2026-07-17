@@ -140,7 +140,12 @@ impl Codegen {
         self.open_block(&oob_label);
         let dummy = self.tmp_name();
         self.line(&format!("  {} = alloca {}", dummy, elem_llvm));
-        let zero = self.zero_value(elem_ty);
+        // `zero_value_rc`, not `zero_value` -- see `crate::codegen::list`'s
+        // `emit_list_index_place`'s identical fix's doc comment: a bare
+        // `zero_value(&Ty::Str)` null disguised as `str` segfaults the
+        // moment a chained access off this dummy slot (e.g.
+        // `ring[oob].some_str_method()`) reads through it.
+        let zero = self.zero_value_rc(elem_ty);
         self.line(&format!("  store {} {}, {}* {}", elem_llvm, zero, elem_llvm, dummy));
         self.line(&format!("  br label %{}", end_label));
 
@@ -346,10 +351,24 @@ impl Codegen {
                 self.line(&format!("  br label %{}", end_label));
 
                 self.open_block(&empty_label);
+                // Computed here, inside `empty_label`, not after
+                // `open_block(&end_label)` -- see `crate::codegen::list`'s
+                // `ListMethod::Pop`'s identical fix's doc comment on why
+                // `zero_value_rc`'s emitted instructions must dominate the
+                // phi edge below. `pop()` on an empty `Ring<str,N>` used to
+                // hand back `zero_value(&Ty::Str)` (a bare null `i8*`)
+                // disguised as a real `str` -- confirmed via a real segfault
+                // building and running `let mut r = Ring<str,4>();
+                // len(r.pop())` before this fix. (Unlike this one, the
+                // vacated-slot zeroing a few lines above is never handed back
+                // to the caller as a value -- it stays a bare `zero_value`
+                // null, which is exactly what this module's "every non-live
+                // slot is zero" invariant wants and what `star_rc_release`'s
+                // null no-op already handles safely.)
+                let zero_result = self.zero_value_rc(elem_ty);
                 self.line(&format!("  br label %{}", end_label));
 
                 self.open_block(&end_label);
-                let zero_result = self.zero_value(elem_ty);
                 let result = self.tmp_name();
                 self.line(&format!("  {} = phi {} [ {}, %{} ], [ {}, %{} ]", result, elem_llvm, popped, nonempty_label, zero_result, empty_label));
                 format!("{} {}", elem_llvm, result)
