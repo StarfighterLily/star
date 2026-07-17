@@ -35,6 +35,16 @@ impl Codegen {
         let s = self.emit_expr(str_expr);
         let s_raw = self.untag(&s, &Ty::Str);
 
+        // Acquire the table lock before touching `@sym.len`/`@sym.data`/
+        // `@sym.cap` -- see `@sym.lock`'s doc comment in
+        // `Codegen::emit_builtins`. Held across the whole scan-then-insert
+        // sequence (not just the grow) since a lost update to `@sym.len`
+        // alone (two threads both computing `old_len + 1`) is just as real a
+        // race as the grow's `malloc`/`memcpy`/`free`.
+        let lock_h = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** @sym.lock", lock_h));
+        self.line(&format!("  call i32 @WaitForSingleObject(i8* {}, i32 -1)", lock_h));
+
         let len = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @sym.len", len));
         let data0 = self.tmp_name();
@@ -160,6 +170,13 @@ impl Codegen {
         self.open_block(&done_label);
         let result = self.tmp_name();
         self.line(&format!("  {} = phi i64 [ {}, %{} ], [ {}, %{} ]", result, final_i, found_label, len, store_label));
+        // Both paths into here (found an existing entry, or just inserted a
+        // new one) have finished every table mutation by this point, so it's
+        // safe to release the lock acquired at the top of this function.
+        // Must come *after* the phi above -- LLVM requires every phi in a
+        // block to be grouped at the block's top, before any other
+        // instruction.
+        self.line(&format!("  call i32 @ReleaseSemaphore(i8* {}, i32 1, i32* null)", lock_h));
         format!("i64 {}", result)
     }
 
@@ -192,6 +209,15 @@ impl Codegen {
         };
         let val = self.emit_expr(arg);
         let id = self.untag(&val, &Ty::Symbol);
+
+        // Same lock `emit_symbol_intern` takes -- a concurrent `Symbol(..)`
+        // growing the table (freeing the old `@sym.data` buffer) while this
+        // reads `@sym.len`/`@sym.data` unsynchronized is a real
+        // use-after-free/torn-read hazard, not just the insert path's own
+        // race. See `@sym.lock`'s doc comment in `Codegen::emit_builtins`.
+        let lock_h = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** @sym.lock", lock_h));
+        self.line(&format!("  call i32 @WaitForSingleObject(i8* {}, i32 -1)", lock_h));
 
         let len = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @sym.len", len));
@@ -233,6 +259,10 @@ impl Codegen {
         self.open_block(&end_label);
         let result = self.tmp_name();
         self.line(&format!("  {} = phi i8* [ {}, %{} ], [ {}, %{} ]", result, found, ok_label, empty, oob_label));
+        // Both paths (found or out-of-range) have finished reading the
+        // table by this point, so it's safe to release. Must come *after*
+        // the phi above -- see the identical note in `emit_symbol_intern`.
+        self.line(&format!("  call i32 @ReleaseSemaphore(i8* {}, i32 1, i32* null)", lock_h));
         format!("i8* {}", result)
     }
 }

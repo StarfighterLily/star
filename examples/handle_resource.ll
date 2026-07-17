@@ -94,6 +94,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @sym.data = global i8** null
 @sym.len = global i64 0
 @sym.cap = global i64 0
+@sym.lock = global i8* null
 
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
@@ -166,160 +167,162 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t18 = alloca %Texture
-  %t26 = alloca %GenRef
-  %t32 = alloca %GenRef
-  %t36 = alloca %Texture
-  %t68 = alloca %Texture
+  %t19 = alloca %Texture
+  %t27 = alloca %GenRef
+  %t33 = alloca %GenRef
+  %t37 = alloca %Texture
+  %t69 = alloca %Texture
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t0 = load %Texture*, %Texture** @arena.Textures.data
-  %t1 = icmp eq %Texture* %t0, null
-  br i1 %t1, label %spawn_init_0, label %spawn_ready_1
+  %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t0, i8** @sym.lock
+  %t1 = load %Texture*, %Texture** @arena.Textures.data
+  %t2 = icmp eq %Texture* %t1, null
+  br i1 %t2, label %spawn_init_0, label %spawn_ready_1
 spawn_init_0:
-  %t2 = getelementptr %Texture, %Texture* null, i32 1
-  %t3 = ptrtoint %Texture* %t2 to i64
-  %t4 = mul i64 %t3, 1024
-  %t5 = call i8* @malloc(i64 %t4)
-  %t6 = bitcast i8* %t5 to %Texture*
-  store %Texture* %t6, %Texture** @arena.Textures.data
+  %t3 = getelementptr %Texture, %Texture* null, i32 1
+  %t4 = ptrtoint %Texture* %t3 to i64
+  %t5 = mul i64 %t4, 1024
+  %t6 = call i8* @malloc(i64 %t5)
+  %t7 = bitcast i8* %t6 to %Texture*
+  store %Texture* %t7, %Texture** @arena.Textures.data
   br label %spawn_ready_1
 spawn_ready_1:
-  %t7 = load %Texture*, %Texture** @arena.Textures.data
-  %t8 = load i64, i64* @arena.Textures.free_top
-  %t9 = icmp sgt i64 %t8, 0
-  br i1 %t9, label %spawn_reuse_2, label %spawn_grow_3
+  %t8 = load %Texture*, %Texture** @arena.Textures.data
+  %t9 = load i64, i64* @arena.Textures.free_top
+  %t10 = icmp sgt i64 %t9, 0
+  br i1 %t10, label %spawn_reuse_2, label %spawn_grow_3
 spawn_reuse_2:
-  %t10 = sub i64 %t8, 1
-  store i64 %t10, i64* @arena.Textures.free_top
-  %t11 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.Textures.free, i64 0, i64 %t10
-  %t12 = load i64, i64* %t11
+  %t11 = sub i64 %t9, 1
+  store i64 %t11, i64* @arena.Textures.free_top
+  %t12 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.Textures.free, i64 0, i64 %t11
+  %t13 = load i64, i64* %t12
   br label %spawn_store_4
 spawn_grow_3:
-  %t13 = load i64, i64* @arena.Textures.count
-  %t14 = icmp slt i64 %t13, 1024
-  br i1 %t14, label %spawn_grow_ok_6, label %spawn_capacity_warn_7
+  %t14 = load i64, i64* @arena.Textures.count
+  %t15 = icmp slt i64 %t14, 1024
+  br i1 %t15, label %spawn_grow_ok_6, label %spawn_capacity_warn_7
 spawn_capacity_warn_7:
-  %t15 = getelementptr inbounds [86 x i8], [86 x i8]* @.str.0, i64 0, i64 0
-  call i32 @puts(i8* %t15)
+  %t16 = getelementptr inbounds [86 x i8], [86 x i8]* @.str.0, i64 0, i64 0
+  call i32 @puts(i8* %t16)
   br label %spawn_end_5
 spawn_grow_ok_6:
-  %t16 = add i64 %t13, 1
-  store i64 %t16, i64* @arena.Textures.count
+  %t17 = add i64 %t14, 1
+  store i64 %t17, i64* @arena.Textures.count
   br label %spawn_store_4
 spawn_store_4:
-  %t17 = phi i64 [ %t12, %spawn_reuse_2 ], [ %t13, %spawn_grow_ok_6 ]
-  %t19 = getelementptr inbounds %Texture, %Texture* %t18, i32 0, i32 0
-  store i32 256, i32* %t19
-  %t20 = getelementptr inbounds %Texture, %Texture* %t18, i32 0, i32 1
+  %t18 = phi i64 [ %t13, %spawn_reuse_2 ], [ %t14, %spawn_grow_ok_6 ]
+  %t20 = getelementptr inbounds %Texture, %Texture* %t19, i32 0, i32 0
   store i32 256, i32* %t20
-  %t21 = load %Texture, %Texture* %t18
-  %t22 = getelementptr inbounds %Texture, %Texture* %t7, i64 %t17
-  store %Texture %t21, %Texture* %t22
-  %t23 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Textures.gen, i64 0, i64 %t17
-  %t24 = load i32, i32* %t23
-  %t25 = add i32 %t24, 1
-  store i32 %t25, i32* %t23
+  %t21 = getelementptr inbounds %Texture, %Texture* %t19, i32 0, i32 1
+  store i32 256, i32* %t21
+  %t22 = load %Texture, %Texture* %t19
+  %t23 = getelementptr inbounds %Texture, %Texture* %t8, i64 %t18
+  store %Texture %t22, %Texture* %t23
+  %t24 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Textures.gen, i64 0, i64 %t18
+  %t25 = load i32, i32* %t24
+  %t26 = add i32 %t25, 1
+  store i32 %t26, i32* %t24
   br label %spawn_end_5
 spawn_end_5:
-  %t27 = sext i32 0 to i64
-  %t28 = icmp ult i64 %t27, 1024
-  br i1 %t28, label %genref_create_ok_8, label %genref_create_oob_9
+  %t28 = sext i32 0 to i64
+  %t29 = icmp ult i64 %t28, 1024
+  br i1 %t29, label %genref_create_ok_8, label %genref_create_oob_9
 genref_create_ok_8:
-  %t29 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Textures.gen, i64 0, i64 %t27
-  %t30 = load i32, i32* %t29
+  %t30 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Textures.gen, i64 0, i64 %t28
+  %t31 = load i32, i32* %t30
   br label %genref_create_end_10
 genref_create_oob_9:
   br label %genref_create_end_10
 genref_create_end_10:
-  %t31 = phi i32 [ %t30, %genref_create_ok_8 ], [ 0, %genref_create_oob_9 ]
-  %t33 = getelementptr inbounds %GenRef, %GenRef* %t32, i32 0, i32 0
-  store i32 0, i32* %t33
-  %t34 = getelementptr inbounds %GenRef, %GenRef* %t32, i32 0, i32 1
-  store i32 %t31, i32* %t34
-  %t35 = load %GenRef, %GenRef* %t32
-  store %GenRef %t35, %GenRef* %t26
-  %t37 = getelementptr inbounds %GenRef, %GenRef* %t26, i32 0, i32 0
-  %t38 = load i32, i32* %t37
-  %t39 = getelementptr inbounds %GenRef, %GenRef* %t26, i32 0, i32 1
-  %t40 = load i32, i32* %t39
-  %t41 = sext i32 %t38 to i64
-  %t42 = icmp ult i64 %t41, 1024
-  br i1 %t42, label %genref_check_11, label %genref_stale_13
+  %t32 = phi i32 [ %t31, %genref_create_ok_8 ], [ 0, %genref_create_oob_9 ]
+  %t34 = getelementptr inbounds %GenRef, %GenRef* %t33, i32 0, i32 0
+  store i32 0, i32* %t34
+  %t35 = getelementptr inbounds %GenRef, %GenRef* %t33, i32 0, i32 1
+  store i32 %t32, i32* %t35
+  %t36 = load %GenRef, %GenRef* %t33
+  store %GenRef %t36, %GenRef* %t27
+  %t38 = getelementptr inbounds %GenRef, %GenRef* %t27, i32 0, i32 0
+  %t39 = load i32, i32* %t38
+  %t40 = getelementptr inbounds %GenRef, %GenRef* %t27, i32 0, i32 1
+  %t41 = load i32, i32* %t40
+  %t42 = sext i32 %t39 to i64
+  %t43 = icmp ult i64 %t42, 1024
+  br i1 %t43, label %genref_check_11, label %genref_stale_13
 genref_check_11:
-  %t43 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Textures.gen, i64 0, i64 %t41
-  %t44 = load i32, i32* %t43
-  %t45 = icmp eq i32 %t40, %t44
-  %t46 = and i32 %t44, 1
-  %t47 = icmp eq i32 %t46, 1
-  %t48 = and i1 %t45, %t47
-  br i1 %t48, label %genref_ok_12, label %genref_stale_13
+  %t44 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Textures.gen, i64 0, i64 %t42
+  %t45 = load i32, i32* %t44
+  %t46 = icmp eq i32 %t41, %t45
+  %t47 = and i32 %t45, 1
+  %t48 = icmp eq i32 %t47, 1
+  %t49 = and i1 %t46, %t48
+  br i1 %t49, label %genref_ok_12, label %genref_stale_13
 genref_ok_12:
-  %t49 = load %Texture*, %Texture** @arena.Textures.data
-  %t50 = getelementptr inbounds %Texture, %Texture* %t49, i64 %t41
-  %t51 = load %Texture, %Texture* %t50
+  %t50 = load %Texture*, %Texture** @arena.Textures.data
+  %t51 = getelementptr inbounds %Texture, %Texture* %t50, i64 %t42
+  %t52 = load %Texture, %Texture* %t51
   br label %genref_end_14
 genref_stale_13:
   br label %genref_end_14
 genref_end_14:
-  %t52 = phi %Texture [ %t51, %genref_ok_12 ], [ zeroinitializer, %genref_stale_13 ]
-  store %Texture %t52, %Texture* %t36
-  %t53 = getelementptr inbounds %Texture, %Texture* %t36, i32 0, i32 0
-  %t54 = load i32, i32* %t53
-  %t55 = getelementptr inbounds %Texture, %Texture* %t36, i32 0, i32 1
-  %t56 = load i32, i32* %t55
-  %t57 = getelementptr inbounds [22 x i8], [22 x i8]* @.str.1, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t57, i32 %t54, i32 %t56)
-  %t58 = sext i32 0 to i64
-  %t59 = icmp ult i64 %t58, 1024
-  br i1 %t59, label %despawn_do_15, label %despawn_end_16
+  %t53 = phi %Texture [ %t52, %genref_ok_12 ], [ zeroinitializer, %genref_stale_13 ]
+  store %Texture %t53, %Texture* %t37
+  %t54 = getelementptr inbounds %Texture, %Texture* %t37, i32 0, i32 0
+  %t55 = load i32, i32* %t54
+  %t56 = getelementptr inbounds %Texture, %Texture* %t37, i32 0, i32 1
+  %t57 = load i32, i32* %t56
+  %t58 = getelementptr inbounds [22 x i8], [22 x i8]* @.str.1, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t58, i32 %t55, i32 %t57)
+  %t59 = sext i32 0 to i64
+  %t60 = icmp ult i64 %t59, 1024
+  br i1 %t60, label %despawn_do_15, label %despawn_end_16
 despawn_do_15:
-  %t60 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Textures.gen, i64 0, i64 %t58
-  %t61 = load i32, i32* %t60
-  %t62 = and i32 %t61, 1
-  %t63 = icmp eq i32 %t62, 1
-  br i1 %t63, label %despawn_live_17, label %despawn_end_16
+  %t61 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Textures.gen, i64 0, i64 %t59
+  %t62 = load i32, i32* %t61
+  %t63 = and i32 %t62, 1
+  %t64 = icmp eq i32 %t63, 1
+  br i1 %t64, label %despawn_live_17, label %despawn_end_16
 despawn_live_17:
-  %t64 = add i32 %t61, 1
-  store i32 %t64, i32* %t60
-  %t65 = load i64, i64* @arena.Textures.free_top
-  %t66 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.Textures.free, i64 0, i64 %t65
-  store i64 %t58, i64* %t66
-  %t67 = add i64 %t65, 1
-  store i64 %t67, i64* @arena.Textures.free_top
+  %t65 = add i32 %t62, 1
+  store i32 %t65, i32* %t61
+  %t66 = load i64, i64* @arena.Textures.free_top
+  %t67 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.Textures.free, i64 0, i64 %t66
+  store i64 %t59, i64* %t67
+  %t68 = add i64 %t66, 1
+  store i64 %t68, i64* @arena.Textures.free_top
   br label %despawn_end_16
 despawn_end_16:
-  %t69 = getelementptr inbounds %GenRef, %GenRef* %t26, i32 0, i32 0
-  %t70 = load i32, i32* %t69
-  %t71 = getelementptr inbounds %GenRef, %GenRef* %t26, i32 0, i32 1
-  %t72 = load i32, i32* %t71
-  %t73 = sext i32 %t70 to i64
-  %t74 = icmp ult i64 %t73, 1024
-  br i1 %t74, label %genref_check_18, label %genref_stale_20
+  %t70 = getelementptr inbounds %GenRef, %GenRef* %t27, i32 0, i32 0
+  %t71 = load i32, i32* %t70
+  %t72 = getelementptr inbounds %GenRef, %GenRef* %t27, i32 0, i32 1
+  %t73 = load i32, i32* %t72
+  %t74 = sext i32 %t71 to i64
+  %t75 = icmp ult i64 %t74, 1024
+  br i1 %t75, label %genref_check_18, label %genref_stale_20
 genref_check_18:
-  %t75 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Textures.gen, i64 0, i64 %t73
-  %t76 = load i32, i32* %t75
-  %t77 = icmp eq i32 %t72, %t76
-  %t78 = and i32 %t76, 1
-  %t79 = icmp eq i32 %t78, 1
-  %t80 = and i1 %t77, %t79
-  br i1 %t80, label %genref_ok_19, label %genref_stale_20
+  %t76 = getelementptr inbounds [1024 x i32], [1024 x i32]* @arena.Textures.gen, i64 0, i64 %t74
+  %t77 = load i32, i32* %t76
+  %t78 = icmp eq i32 %t73, %t77
+  %t79 = and i32 %t77, 1
+  %t80 = icmp eq i32 %t79, 1
+  %t81 = and i1 %t78, %t80
+  br i1 %t81, label %genref_ok_19, label %genref_stale_20
 genref_ok_19:
-  %t81 = load %Texture*, %Texture** @arena.Textures.data
-  %t82 = getelementptr inbounds %Texture, %Texture* %t81, i64 %t73
-  %t83 = load %Texture, %Texture* %t82
+  %t82 = load %Texture*, %Texture** @arena.Textures.data
+  %t83 = getelementptr inbounds %Texture, %Texture* %t82, i64 %t74
+  %t84 = load %Texture, %Texture* %t83
   br label %genref_end_21
 genref_stale_20:
   br label %genref_end_21
 genref_end_21:
-  %t84 = phi %Texture [ %t83, %genref_ok_19 ], [ zeroinitializer, %genref_stale_20 ]
-  store %Texture %t84, %Texture* %t68
-  %t85 = getelementptr inbounds %Texture, %Texture* %t68, i32 0, i32 0
-  %t86 = load i32, i32* %t85
-  %t87 = getelementptr inbounds %Texture, %Texture* %t68, i32 0, i32 1
-  %t88 = load i32, i32* %t87
-  %t89 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.2, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t89, i32 %t86, i32 %t88)
+  %t85 = phi %Texture [ %t84, %genref_ok_19 ], [ zeroinitializer, %genref_stale_20 ]
+  store %Texture %t85, %Texture* %t69
+  %t86 = getelementptr inbounds %Texture, %Texture* %t69, i32 0, i32 0
+  %t87 = load i32, i32* %t86
+  %t88 = getelementptr inbounds %Texture, %Texture* %t69, i32 0, i32 1
+  %t89 = load i32, i32* %t88
+  %t90 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.2, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t90, i32 %t87, i32 %t89)
   ret i32 0
 }
 

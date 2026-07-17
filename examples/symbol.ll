@@ -94,6 +94,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @sym.data = global i8** null
 @sym.len = global i64 0
 @sym.cap = global i64 0
+@sym.lock = global i8* null
 
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
@@ -159,1610 +160,1642 @@ done:
 %Option__i32 = type { i32, [1 x i64] }
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t0 = alloca i64
-  %t4 = alloca i64
-  %t29 = alloca i64
-  %t33 = alloca i64
-  %t58 = alloca i64
-  %t62 = alloca i64
-  %t108 = alloca i64
-  %t110 = alloca i64
-  %t126 = alloca i64
-  %t157 = alloca i8*
-  %t222 = alloca i64
-  %t316 = alloca i64
-  %t410 = alloca i64
-  %t437 = alloca i64
-  %t502 = alloca i64
-  %t513 = alloca %Option__i32
-  %t519 = alloca %Option__i32
-  %t523 = alloca %Option__i32
-  %t542 = alloca i8*
-  %t590 = alloca i64
-  %t617 = alloca i64
-  %t618 = alloca i1
-  %t688 = alloca i64
-  %t715 = alloca i64
-  %t716 = alloca i1
-  %t786 = alloca i64
-  %t813 = alloca i64
-  %t814 = alloca i1
-  %t852 = alloca i1
-  %t856 = alloca i64
-  %t890 = alloca i64
-  %t891 = alloca i1
+  %t1 = alloca i64
+  %t6 = alloca i64
+  %t31 = alloca i64
+  %t36 = alloca i64
+  %t61 = alloca i64
+  %t66 = alloca i64
+  %t112 = alloca i64
+  %t114 = alloca i64
+  %t130 = alloca i64
+  %t163 = alloca i8*
+  %t228 = alloca i64
+  %t322 = alloca i64
+  %t417 = alloca i64
+  %t444 = alloca i64
+  %t509 = alloca i64
+  %t520 = alloca %Option__i32
+  %t526 = alloca %Option__i32
+  %t530 = alloca %Option__i32
+  %t549 = alloca i8*
+  %t598 = alloca i64
+  %t625 = alloca i64
+  %t626 = alloca i1
+  %t697 = alloca i64
+  %t724 = alloca i64
+  %t725 = alloca i1
+  %t796 = alloca i64
+  %t823 = alloca i64
+  %t824 = alloca i1
+  %t862 = alloca i1
+  %t867 = alloca i64
+  %t901 = alloca i64
+  %t902 = alloca i1
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t1 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.0, i64 0, i32 2, i64 0
-  %t2 = load i64, i64* @sym.len
-  %t3 = load i8**, i8*** @sym.data
-  store i64 0, i64* %t4
+  %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t0, i8** @sym.lock
+  %t2 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.0, i64 0, i32 2, i64 0
+  %t3 = load i8*, i8** @sym.lock
+  call i32 @WaitForSingleObject(i8* %t3, i32 -1)
+  %t4 = load i64, i64* @sym.len
+  %t5 = load i8**, i8*** @sym.data
+  store i64 0, i64* %t6
   br label %sym_find_cond_0
 sym_find_cond_0:
-  %t5 = load i64, i64* %t4
-  %t6 = icmp slt i64 %t5, %t2
-  br i1 %t6, label %sym_find_body_1, label %sym_find_end_3
+  %t7 = load i64, i64* %t6
+  %t8 = icmp slt i64 %t7, %t4
+  br i1 %t8, label %sym_find_body_1, label %sym_find_end_3
 sym_find_body_1:
-  %t7 = getelementptr inbounds i8*, i8** %t3, i64 %t5
-  %t8 = load i8*, i8** %t7
-  %t9 = call i32 @strcmp(i8* %t8, i8* %t1)
-  %t10 = icmp eq i32 %t9, 0
-  br i1 %t10, label %sym_find_end_3, label %sym_find_next_2
+  %t9 = getelementptr inbounds i8*, i8** %t5, i64 %t7
+  %t10 = load i8*, i8** %t9
+  %t11 = call i32 @strcmp(i8* %t10, i8* %t2)
+  %t12 = icmp eq i32 %t11, 0
+  br i1 %t12, label %sym_find_end_3, label %sym_find_next_2
 sym_find_next_2:
-  %t11 = add i64 %t5, 1
-  store i64 %t11, i64* %t4
+  %t13 = add i64 %t7, 1
+  store i64 %t13, i64* %t6
   br label %sym_find_cond_0
 sym_find_end_3:
-  %t12 = load i64, i64* %t4
-  %t13 = icmp slt i64 %t12, %t2
-  br i1 %t13, label %sym_found_4, label %sym_notfound_5
+  %t14 = load i64, i64* %t6
+  %t15 = icmp slt i64 %t14, %t4
+  br i1 %t15, label %sym_found_4, label %sym_notfound_5
 sym_found_4:
-  call void @star_rc_release(i8* %t1)
+  call void @star_rc_release(i8* %t2)
   br label %sym_done_6
 sym_notfound_5:
-  %t14 = load i64, i64* @sym.cap
-  %t15 = icmp sge i64 %t2, %t14
-  br i1 %t15, label %sym_grow_7, label %sym_store_8
+  %t16 = load i64, i64* @sym.cap
+  %t17 = icmp sge i64 %t4, %t16
+  br i1 %t17, label %sym_grow_7, label %sym_store_8
 sym_grow_7:
-  %t16 = mul i64 %t14, 2
-  %t17 = icmp sgt i64 %t16, 0
-  %t18 = select i1 %t17, i64 %t16, i64 1
-  %t19 = mul i64 %t18, 8
-  %t20 = call i8* @malloc(i64 %t19)
-  %t21 = bitcast i8* %t20 to i8**
-  %t22 = icmp sgt i64 %t14, 0
-  br i1 %t22, label %sym_copy_9, label %sym_after_copy_10
+  %t18 = mul i64 %t16, 2
+  %t19 = icmp sgt i64 %t18, 0
+  %t20 = select i1 %t19, i64 %t18, i64 1
+  %t21 = mul i64 %t20, 8
+  %t22 = call i8* @malloc(i64 %t21)
+  %t23 = bitcast i8* %t22 to i8**
+  %t24 = icmp sgt i64 %t16, 0
+  br i1 %t24, label %sym_copy_9, label %sym_after_copy_10
 sym_copy_9:
-  %t23 = mul i64 %t2, 8
-  %t24 = bitcast i8** %t3 to i8*
-  call i8* @memcpy(i8* %t20, i8* %t24, i64 %t23)
-  call void @free(i8* %t24)
+  %t25 = mul i64 %t4, 8
+  %t26 = bitcast i8** %t5 to i8*
+  call i8* @memcpy(i8* %t22, i8* %t26, i64 %t25)
+  call void @free(i8* %t26)
   br label %sym_after_copy_10
 sym_after_copy_10:
-  store i8** %t21, i8*** @sym.data
-  store i64 %t18, i64* @sym.cap
+  store i8** %t23, i8*** @sym.data
+  store i64 %t20, i64* @sym.cap
   br label %sym_store_8
 sym_store_8:
-  %t25 = load i8**, i8*** @sym.data
-  %t26 = getelementptr inbounds i8*, i8** %t25, i64 %t2
-  store i8* %t1, i8** %t26
-  %t27 = add i64 %t2, 1
-  store i64 %t27, i64* @sym.len
+  %t27 = load i8**, i8*** @sym.data
+  %t28 = getelementptr inbounds i8*, i8** %t27, i64 %t4
+  store i8* %t2, i8** %t28
+  %t29 = add i64 %t4, 1
+  store i64 %t29, i64* @sym.len
   br label %sym_done_6
 sym_done_6:
-  %t28 = phi i64 [ %t12, %sym_found_4 ], [ %t2, %sym_store_8 ]
-  store i64 %t28, i64* %t0
-  %t30 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.1, i64 0, i32 2, i64 0
-  %t31 = load i64, i64* @sym.len
-  %t32 = load i8**, i8*** @sym.data
-  store i64 0, i64* %t33
+  %t30 = phi i64 [ %t14, %sym_found_4 ], [ %t4, %sym_store_8 ]
+  call i32 @ReleaseSemaphore(i8* %t3, i32 1, i32* null)
+  store i64 %t30, i64* %t1
+  %t32 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.1, i64 0, i32 2, i64 0
+  %t33 = load i8*, i8** @sym.lock
+  call i32 @WaitForSingleObject(i8* %t33, i32 -1)
+  %t34 = load i64, i64* @sym.len
+  %t35 = load i8**, i8*** @sym.data
+  store i64 0, i64* %t36
   br label %sym_find_cond_11
 sym_find_cond_11:
-  %t34 = load i64, i64* %t33
-  %t35 = icmp slt i64 %t34, %t31
-  br i1 %t35, label %sym_find_body_12, label %sym_find_end_14
+  %t37 = load i64, i64* %t36
+  %t38 = icmp slt i64 %t37, %t34
+  br i1 %t38, label %sym_find_body_12, label %sym_find_end_14
 sym_find_body_12:
-  %t36 = getelementptr inbounds i8*, i8** %t32, i64 %t34
-  %t37 = load i8*, i8** %t36
-  %t38 = call i32 @strcmp(i8* %t37, i8* %t30)
-  %t39 = icmp eq i32 %t38, 0
-  br i1 %t39, label %sym_find_end_14, label %sym_find_next_13
+  %t39 = getelementptr inbounds i8*, i8** %t35, i64 %t37
+  %t40 = load i8*, i8** %t39
+  %t41 = call i32 @strcmp(i8* %t40, i8* %t32)
+  %t42 = icmp eq i32 %t41, 0
+  br i1 %t42, label %sym_find_end_14, label %sym_find_next_13
 sym_find_next_13:
-  %t40 = add i64 %t34, 1
-  store i64 %t40, i64* %t33
+  %t43 = add i64 %t37, 1
+  store i64 %t43, i64* %t36
   br label %sym_find_cond_11
 sym_find_end_14:
-  %t41 = load i64, i64* %t33
-  %t42 = icmp slt i64 %t41, %t31
-  br i1 %t42, label %sym_found_15, label %sym_notfound_16
+  %t44 = load i64, i64* %t36
+  %t45 = icmp slt i64 %t44, %t34
+  br i1 %t45, label %sym_found_15, label %sym_notfound_16
 sym_found_15:
-  call void @star_rc_release(i8* %t30)
+  call void @star_rc_release(i8* %t32)
   br label %sym_done_17
 sym_notfound_16:
-  %t43 = load i64, i64* @sym.cap
-  %t44 = icmp sge i64 %t31, %t43
-  br i1 %t44, label %sym_grow_18, label %sym_store_19
+  %t46 = load i64, i64* @sym.cap
+  %t47 = icmp sge i64 %t34, %t46
+  br i1 %t47, label %sym_grow_18, label %sym_store_19
 sym_grow_18:
-  %t45 = mul i64 %t43, 2
-  %t46 = icmp sgt i64 %t45, 0
-  %t47 = select i1 %t46, i64 %t45, i64 1
-  %t48 = mul i64 %t47, 8
-  %t49 = call i8* @malloc(i64 %t48)
-  %t50 = bitcast i8* %t49 to i8**
-  %t51 = icmp sgt i64 %t43, 0
-  br i1 %t51, label %sym_copy_20, label %sym_after_copy_21
+  %t48 = mul i64 %t46, 2
+  %t49 = icmp sgt i64 %t48, 0
+  %t50 = select i1 %t49, i64 %t48, i64 1
+  %t51 = mul i64 %t50, 8
+  %t52 = call i8* @malloc(i64 %t51)
+  %t53 = bitcast i8* %t52 to i8**
+  %t54 = icmp sgt i64 %t46, 0
+  br i1 %t54, label %sym_copy_20, label %sym_after_copy_21
 sym_copy_20:
-  %t52 = mul i64 %t31, 8
-  %t53 = bitcast i8** %t32 to i8*
-  call i8* @memcpy(i8* %t49, i8* %t53, i64 %t52)
-  call void @free(i8* %t53)
+  %t55 = mul i64 %t34, 8
+  %t56 = bitcast i8** %t35 to i8*
+  call i8* @memcpy(i8* %t52, i8* %t56, i64 %t55)
+  call void @free(i8* %t56)
   br label %sym_after_copy_21
 sym_after_copy_21:
-  store i8** %t50, i8*** @sym.data
-  store i64 %t47, i64* @sym.cap
+  store i8** %t53, i8*** @sym.data
+  store i64 %t50, i64* @sym.cap
   br label %sym_store_19
 sym_store_19:
-  %t54 = load i8**, i8*** @sym.data
-  %t55 = getelementptr inbounds i8*, i8** %t54, i64 %t31
-  store i8* %t30, i8** %t55
-  %t56 = add i64 %t31, 1
-  store i64 %t56, i64* @sym.len
+  %t57 = load i8**, i8*** @sym.data
+  %t58 = getelementptr inbounds i8*, i8** %t57, i64 %t34
+  store i8* %t32, i8** %t58
+  %t59 = add i64 %t34, 1
+  store i64 %t59, i64* @sym.len
   br label %sym_done_17
 sym_done_17:
-  %t57 = phi i64 [ %t41, %sym_found_15 ], [ %t31, %sym_store_19 ]
-  store i64 %t57, i64* %t29
-  %t59 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.2, i64 0, i32 2, i64 0
-  %t60 = load i64, i64* @sym.len
-  %t61 = load i8**, i8*** @sym.data
-  store i64 0, i64* %t62
+  %t60 = phi i64 [ %t44, %sym_found_15 ], [ %t34, %sym_store_19 ]
+  call i32 @ReleaseSemaphore(i8* %t33, i32 1, i32* null)
+  store i64 %t60, i64* %t31
+  %t62 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.2, i64 0, i32 2, i64 0
+  %t63 = load i8*, i8** @sym.lock
+  call i32 @WaitForSingleObject(i8* %t63, i32 -1)
+  %t64 = load i64, i64* @sym.len
+  %t65 = load i8**, i8*** @sym.data
+  store i64 0, i64* %t66
   br label %sym_find_cond_22
 sym_find_cond_22:
-  %t63 = load i64, i64* %t62
-  %t64 = icmp slt i64 %t63, %t60
-  br i1 %t64, label %sym_find_body_23, label %sym_find_end_25
+  %t67 = load i64, i64* %t66
+  %t68 = icmp slt i64 %t67, %t64
+  br i1 %t68, label %sym_find_body_23, label %sym_find_end_25
 sym_find_body_23:
-  %t65 = getelementptr inbounds i8*, i8** %t61, i64 %t63
-  %t66 = load i8*, i8** %t65
-  %t67 = call i32 @strcmp(i8* %t66, i8* %t59)
-  %t68 = icmp eq i32 %t67, 0
-  br i1 %t68, label %sym_find_end_25, label %sym_find_next_24
+  %t69 = getelementptr inbounds i8*, i8** %t65, i64 %t67
+  %t70 = load i8*, i8** %t69
+  %t71 = call i32 @strcmp(i8* %t70, i8* %t62)
+  %t72 = icmp eq i32 %t71, 0
+  br i1 %t72, label %sym_find_end_25, label %sym_find_next_24
 sym_find_next_24:
-  %t69 = add i64 %t63, 1
-  store i64 %t69, i64* %t62
+  %t73 = add i64 %t67, 1
+  store i64 %t73, i64* %t66
   br label %sym_find_cond_22
 sym_find_end_25:
-  %t70 = load i64, i64* %t62
-  %t71 = icmp slt i64 %t70, %t60
-  br i1 %t71, label %sym_found_26, label %sym_notfound_27
+  %t74 = load i64, i64* %t66
+  %t75 = icmp slt i64 %t74, %t64
+  br i1 %t75, label %sym_found_26, label %sym_notfound_27
 sym_found_26:
-  call void @star_rc_release(i8* %t59)
+  call void @star_rc_release(i8* %t62)
   br label %sym_done_28
 sym_notfound_27:
-  %t72 = load i64, i64* @sym.cap
-  %t73 = icmp sge i64 %t60, %t72
-  br i1 %t73, label %sym_grow_29, label %sym_store_30
+  %t76 = load i64, i64* @sym.cap
+  %t77 = icmp sge i64 %t64, %t76
+  br i1 %t77, label %sym_grow_29, label %sym_store_30
 sym_grow_29:
-  %t74 = mul i64 %t72, 2
-  %t75 = icmp sgt i64 %t74, 0
-  %t76 = select i1 %t75, i64 %t74, i64 1
-  %t77 = mul i64 %t76, 8
-  %t78 = call i8* @malloc(i64 %t77)
-  %t79 = bitcast i8* %t78 to i8**
-  %t80 = icmp sgt i64 %t72, 0
-  br i1 %t80, label %sym_copy_31, label %sym_after_copy_32
+  %t78 = mul i64 %t76, 2
+  %t79 = icmp sgt i64 %t78, 0
+  %t80 = select i1 %t79, i64 %t78, i64 1
+  %t81 = mul i64 %t80, 8
+  %t82 = call i8* @malloc(i64 %t81)
+  %t83 = bitcast i8* %t82 to i8**
+  %t84 = icmp sgt i64 %t76, 0
+  br i1 %t84, label %sym_copy_31, label %sym_after_copy_32
 sym_copy_31:
-  %t81 = mul i64 %t60, 8
-  %t82 = bitcast i8** %t61 to i8*
-  call i8* @memcpy(i8* %t78, i8* %t82, i64 %t81)
-  call void @free(i8* %t82)
+  %t85 = mul i64 %t64, 8
+  %t86 = bitcast i8** %t65 to i8*
+  call i8* @memcpy(i8* %t82, i8* %t86, i64 %t85)
+  call void @free(i8* %t86)
   br label %sym_after_copy_32
 sym_after_copy_32:
-  store i8** %t79, i8*** @sym.data
-  store i64 %t76, i64* @sym.cap
+  store i8** %t83, i8*** @sym.data
+  store i64 %t80, i64* @sym.cap
   br label %sym_store_30
 sym_store_30:
-  %t83 = load i8**, i8*** @sym.data
-  %t84 = getelementptr inbounds i8*, i8** %t83, i64 %t60
-  store i8* %t59, i8** %t84
-  %t85 = add i64 %t60, 1
-  store i64 %t85, i64* @sym.len
+  %t87 = load i8**, i8*** @sym.data
+  %t88 = getelementptr inbounds i8*, i8** %t87, i64 %t64
+  store i8* %t62, i8** %t88
+  %t89 = add i64 %t64, 1
+  store i64 %t89, i64* @sym.len
   br label %sym_done_28
 sym_done_28:
-  %t86 = phi i64 [ %t70, %sym_found_26 ], [ %t60, %sym_store_30 ]
-  store i64 %t86, i64* %t58
-  %t87 = load i64, i64* %t0
-  %t88 = load i64, i64* %t29
-  %t89 = icmp eq i64 %t87, %t88
-  %t90 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.3, i64 0, i64 0
-  %t91 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.4, i64 0, i64 0
-  %t92 = select i1 %t89, i8* %t90, i8* %t91
-  %t93 = getelementptr inbounds [44 x i8], [44 x i8]* @.str.5, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t93, i8* %t92)
-  %t94 = load i64, i64* %t0
-  %t95 = load i64, i64* %t58
-  %t96 = icmp eq i64 %t94, %t95
-  %t97 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.6, i64 0, i64 0
-  %t98 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.7, i64 0, i64 0
-  %t99 = select i1 %t96, i8* %t97, i8* %t98
-  %t100 = getelementptr inbounds [43 x i8], [43 x i8]* @.str.8, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t100, i8* %t99)
-  %t101 = load i64, i64* %t0
-  %t102 = load i64, i64* %t58
-  %t103 = icmp ne i64 %t101, %t102
-  %t104 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.9, i64 0, i64 0
-  %t105 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.10, i64 0, i64 0
-  %t106 = select i1 %t103, i8* %t104, i8* %t105
-  %t107 = getelementptr inbounds [43 x i8], [43 x i8]* @.str.11, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t107, i8* %t106)
-  %t109 = load i64, i64* %t0
-  store i64 %t109, i64* %t108
-  %t111 = load i64, i64* %t58
-  store i64 %t111, i64* %t110
-  %t112 = load i64, i64* %t108
-  %t113 = sext i32 0 to i64
-  %t114 = icmp eq i64 %t112, %t113
-  %t115 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.12, i64 0, i64 0
-  %t116 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.13, i64 0, i64 0
-  %t117 = select i1 %t114, i8* %t115, i8* %t116
-  %t118 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.14, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t118, i8* %t117)
-  %t119 = load i64, i64* %t110
-  %t120 = sext i32 1 to i64
-  %t121 = icmp eq i64 %t119, %t120
-  %t122 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.15, i64 0, i64 0
-  %t123 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.16, i64 0, i64 0
-  %t124 = select i1 %t121, i8* %t122, i8* %t123
-  %t125 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.17, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t125, i8* %t124)
-  %t127 = load i64, i64* %t110
-  store i64 %t127, i64* %t126
-  %t128 = load i64, i64* %t126
-  %t129 = load i64, i64* %t58
-  %t130 = icmp eq i64 %t128, %t129
-  %t131 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.18, i64 0, i64 0
-  %t132 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.19, i64 0, i64 0
-  %t133 = select i1 %t130, i8* %t131, i8* %t132
-  %t134 = getelementptr inbounds [29 x i8], [29 x i8]* @.str.20, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t134, i8* %t133)
-  %t135 = load i64, i64* %t0
-  %t136 = load i64, i64* @sym.len
-  %t137 = icmp sge i64 %t135, 0
-  %t138 = icmp slt i64 %t135, %t136
-  %t139 = and i1 %t137, %t138
-  br i1 %t139, label %sym_name_ok_33, label %sym_name_oob_34
+  %t90 = phi i64 [ %t74, %sym_found_26 ], [ %t64, %sym_store_30 ]
+  call i32 @ReleaseSemaphore(i8* %t63, i32 1, i32* null)
+  store i64 %t90, i64* %t61
+  %t91 = load i64, i64* %t1
+  %t92 = load i64, i64* %t31
+  %t93 = icmp eq i64 %t91, %t92
+  %t94 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.3, i64 0, i64 0
+  %t95 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.4, i64 0, i64 0
+  %t96 = select i1 %t93, i8* %t94, i8* %t95
+  %t97 = getelementptr inbounds [44 x i8], [44 x i8]* @.str.5, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t97, i8* %t96)
+  %t98 = load i64, i64* %t1
+  %t99 = load i64, i64* %t61
+  %t100 = icmp eq i64 %t98, %t99
+  %t101 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.6, i64 0, i64 0
+  %t102 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.7, i64 0, i64 0
+  %t103 = select i1 %t100, i8* %t101, i8* %t102
+  %t104 = getelementptr inbounds [43 x i8], [43 x i8]* @.str.8, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t104, i8* %t103)
+  %t105 = load i64, i64* %t1
+  %t106 = load i64, i64* %t61
+  %t107 = icmp ne i64 %t105, %t106
+  %t108 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.9, i64 0, i64 0
+  %t109 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.10, i64 0, i64 0
+  %t110 = select i1 %t107, i8* %t108, i8* %t109
+  %t111 = getelementptr inbounds [43 x i8], [43 x i8]* @.str.11, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t111, i8* %t110)
+  %t113 = load i64, i64* %t1
+  store i64 %t113, i64* %t112
+  %t115 = load i64, i64* %t61
+  store i64 %t115, i64* %t114
+  %t116 = load i64, i64* %t112
+  %t117 = sext i32 0 to i64
+  %t118 = icmp eq i64 %t116, %t117
+  %t119 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.12, i64 0, i64 0
+  %t120 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.13, i64 0, i64 0
+  %t121 = select i1 %t118, i8* %t119, i8* %t120
+  %t122 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.14, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t122, i8* %t121)
+  %t123 = load i64, i64* %t114
+  %t124 = sext i32 1 to i64
+  %t125 = icmp eq i64 %t123, %t124
+  %t126 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.15, i64 0, i64 0
+  %t127 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.16, i64 0, i64 0
+  %t128 = select i1 %t125, i8* %t126, i8* %t127
+  %t129 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.17, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t129, i8* %t128)
+  %t131 = load i64, i64* %t114
+  store i64 %t131, i64* %t130
+  %t132 = load i64, i64* %t130
+  %t133 = load i64, i64* %t61
+  %t134 = icmp eq i64 %t132, %t133
+  %t135 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.18, i64 0, i64 0
+  %t136 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.19, i64 0, i64 0
+  %t137 = select i1 %t134, i8* %t135, i8* %t136
+  %t138 = getelementptr inbounds [29 x i8], [29 x i8]* @.str.20, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t138, i8* %t137)
+  %t139 = load i64, i64* %t1
+  %t140 = load i8*, i8** @sym.lock
+  call i32 @WaitForSingleObject(i8* %t140, i32 -1)
+  %t141 = load i64, i64* @sym.len
+  %t142 = icmp sge i64 %t139, 0
+  %t143 = icmp slt i64 %t139, %t141
+  %t144 = and i1 %t142, %t143
+  br i1 %t144, label %sym_name_ok_33, label %sym_name_oob_34
 sym_name_ok_33:
-  %t140 = load i8**, i8*** @sym.data
-  %t141 = getelementptr inbounds i8*, i8** %t140, i64 %t135
-  %t142 = load i8*, i8** %t141
-  call void @star_rc_retain(i8* %t142)
+  %t145 = load i8**, i8*** @sym.data
+  %t146 = getelementptr inbounds i8*, i8** %t145, i64 %t139
+  %t147 = load i8*, i8** %t146
+  call void @star_rc_retain(i8* %t147)
   br label %sym_name_end_35
 sym_name_oob_34:
-  %t143 = call i8* @star_rc_alloc(i64 1, i8* null)
-  store i8 0, i8* %t143
+  %t148 = call i8* @star_rc_alloc(i64 1, i8* null)
+  store i8 0, i8* %t148
   br label %sym_name_end_35
 sym_name_end_35:
-  %t144 = phi i8* [ %t142, %sym_name_ok_33 ], [ %t143, %sym_name_oob_34 ]
-  call void @star_rc_release(i8* %t144)
-  %t145 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.21, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t145, i8* %t144)
-  %t146 = load i64, i64* %t58
-  %t147 = load i64, i64* @sym.len
-  %t148 = icmp sge i64 %t146, 0
-  %t149 = icmp slt i64 %t146, %t147
-  %t150 = and i1 %t148, %t149
-  br i1 %t150, label %sym_name_ok_36, label %sym_name_oob_37
+  %t149 = phi i8* [ %t147, %sym_name_ok_33 ], [ %t148, %sym_name_oob_34 ]
+  call i32 @ReleaseSemaphore(i8* %t140, i32 1, i32* null)
+  call void @star_rc_release(i8* %t149)
+  %t150 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.21, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t150, i8* %t149)
+  %t151 = load i64, i64* %t61
+  %t152 = load i8*, i8** @sym.lock
+  call i32 @WaitForSingleObject(i8* %t152, i32 -1)
+  %t153 = load i64, i64* @sym.len
+  %t154 = icmp sge i64 %t151, 0
+  %t155 = icmp slt i64 %t151, %t153
+  %t156 = and i1 %t154, %t155
+  br i1 %t156, label %sym_name_ok_36, label %sym_name_oob_37
 sym_name_ok_36:
-  %t151 = load i8**, i8*** @sym.data
-  %t152 = getelementptr inbounds i8*, i8** %t151, i64 %t146
-  %t153 = load i8*, i8** %t152
-  call void @star_rc_retain(i8* %t153)
+  %t157 = load i8**, i8*** @sym.data
+  %t158 = getelementptr inbounds i8*, i8** %t157, i64 %t151
+  %t159 = load i8*, i8** %t158
+  call void @star_rc_retain(i8* %t159)
   br label %sym_name_end_38
 sym_name_oob_37:
-  %t154 = call i8* @star_rc_alloc(i64 1, i8* null)
-  store i8 0, i8* %t154
+  %t160 = call i8* @star_rc_alloc(i64 1, i8* null)
+  store i8 0, i8* %t160
   br label %sym_name_end_38
 sym_name_end_38:
-  %t155 = phi i8* [ %t153, %sym_name_ok_36 ], [ %t154, %sym_name_oob_37 ]
-  call void @star_rc_release(i8* %t155)
-  %t156 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.22, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t156, i8* %t155)
-  store i8* null, i8** %t157
-  %t158 = getelementptr i64, i64* null, i32 1
-  %t159 = ptrtoint i64* %t158 to i64
-  %t160 = getelementptr i32, i32* null, i32 1
-  %t161 = ptrtoint i32* %t160 to i64
-  %t162 = load i8*, i8** %t157
-  %t163 = icmp eq i8* %t162, null
-  br i1 %t163, label %map_cow_alloc_39, label %map_cow_check_40
+  %t161 = phi i8* [ %t159, %sym_name_ok_36 ], [ %t160, %sym_name_oob_37 ]
+  call i32 @ReleaseSemaphore(i8* %t152, i32 1, i32* null)
+  call void @star_rc_release(i8* %t161)
+  %t162 = getelementptr inbounds [21 x i8], [21 x i8]* @.str.22, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t162, i8* %t161)
+  store i8* null, i8** %t163
+  %t164 = getelementptr i64, i64* null, i32 1
+  %t165 = ptrtoint i64* %t164 to i64
+  %t166 = getelementptr i32, i32* null, i32 1
+  %t167 = ptrtoint i32* %t166 to i64
+  %t168 = load i8*, i8** %t163
+  %t169 = icmp eq i8* %t168, null
+  br i1 %t169, label %map_cow_alloc_39, label %map_cow_check_40
 map_cow_alloc_39:
-  %t171 = bitcast void (i8*)* @map_release_6_symboli32 to i8*
-  %t172 = call i8* @star_rc_alloc(i64 32, i8* %t171)
-  %t173 = bitcast i8* %t172 to { i64*, i32*, i64, i64 }*
-  %t174 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t173, i32 0, i32 0
-  store i64* null, i64** %t174
-  %t175 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t173, i32 0, i32 1
-  store i32* null, i32** %t175
-  %t176 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t173, i32 0, i32 2
-  store i64 0, i64* %t176
-  %t177 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t173, i32 0, i32 3
-  store i64 0, i64* %t177
-  store i8* %t172, i8** %t157
+  %t177 = bitcast void (i8*)* @map_release_6_symboli32 to i8*
+  %t178 = call i8* @star_rc_alloc(i64 32, i8* %t177)
+  %t179 = bitcast i8* %t178 to { i64*, i32*, i64, i64 }*
+  %t180 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t179, i32 0, i32 0
+  store i64* null, i64** %t180
+  %t181 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t179, i32 0, i32 1
+  store i32* null, i32** %t181
+  %t182 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t179, i32 0, i32 2
+  store i64 0, i64* %t182
+  %t183 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t179, i32 0, i32 3
+  store i64 0, i64* %t183
+  store i8* %t178, i8** %t163
   br label %map_cow_done_41
 map_cow_check_40:
-  %t178 = getelementptr inbounds i8, i8* %t162, i64 -16
-  %t179 = bitcast i8* %t178 to i64*
-  %t180 = load atomic i64, i64* %t179 seq_cst, align 8
-  %t181 = icmp eq i64 %t180, 1
-  br i1 %t181, label %map_cow_done_41, label %map_cow_clone_42
+  %t184 = getelementptr inbounds i8, i8* %t168, i64 -16
+  %t185 = bitcast i8* %t184 to i64*
+  %t186 = load atomic i64, i64* %t185 seq_cst, align 8
+  %t187 = icmp eq i64 %t186, 1
+  br i1 %t187, label %map_cow_done_41, label %map_cow_clone_42
 map_cow_clone_42:
-  %t182 = bitcast i8* %t162 to { i64*, i32*, i64, i64 }*
-  %t183 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t182, i32 0, i32 0
-  %t184 = load i64*, i64** %t183
-  %t185 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t182, i32 0, i32 1
-  %t186 = load i32*, i32** %t185
-  %t187 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t182, i32 0, i32 2
-  %t188 = load i64, i64* %t187
-  %t189 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t182, i32 0, i32 3
-  %t190 = load i64, i64* %t189
-  %t191 = bitcast void (i8*)* @map_release_6_symboli32 to i8*
-  %t192 = call i8* @star_rc_alloc(i64 32, i8* %t191)
-  %t193 = bitcast i8* %t192 to { i64*, i32*, i64, i64 }*
-  %t194 = mul i64 %t190, %t159
-  %t195 = call i8* @malloc(i64 %t194)
-  %t196 = bitcast i8* %t195 to i64*
-  %t197 = mul i64 %t190, %t161
-  %t198 = call i8* @malloc(i64 %t197)
-  %t199 = bitcast i8* %t198 to i32*
-  %t200 = icmp sgt i64 %t188, 0
-  br i1 %t200, label %map_cow_copy_43, label %map_cow_after_copy_44
+  %t188 = bitcast i8* %t168 to { i64*, i32*, i64, i64 }*
+  %t189 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t188, i32 0, i32 0
+  %t190 = load i64*, i64** %t189
+  %t191 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t188, i32 0, i32 1
+  %t192 = load i32*, i32** %t191
+  %t193 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t188, i32 0, i32 2
+  %t194 = load i64, i64* %t193
+  %t195 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t188, i32 0, i32 3
+  %t196 = load i64, i64* %t195
+  %t197 = bitcast void (i8*)* @map_release_6_symboli32 to i8*
+  %t198 = call i8* @star_rc_alloc(i64 32, i8* %t197)
+  %t199 = bitcast i8* %t198 to { i64*, i32*, i64, i64 }*
+  %t200 = mul i64 %t196, %t165
+  %t201 = call i8* @malloc(i64 %t200)
+  %t202 = bitcast i8* %t201 to i64*
+  %t203 = mul i64 %t196, %t167
+  %t204 = call i8* @malloc(i64 %t203)
+  %t205 = bitcast i8* %t204 to i32*
+  %t206 = icmp sgt i64 %t194, 0
+  br i1 %t206, label %map_cow_copy_43, label %map_cow_after_copy_44
 map_cow_copy_43:
-  %t201 = mul i64 %t188, %t159
-  %t202 = bitcast i64* %t184 to i8*
-  call i8* @memcpy(i8* %t195, i8* %t202, i64 %t201)
-  %t203 = mul i64 %t188, %t161
-  %t204 = bitcast i32* %t186 to i8*
-  call i8* @memcpy(i8* %t198, i8* %t204, i64 %t203)
+  %t207 = mul i64 %t194, %t165
+  %t208 = bitcast i64* %t190 to i8*
+  call i8* @memcpy(i8* %t201, i8* %t208, i64 %t207)
+  %t209 = mul i64 %t194, %t167
+  %t210 = bitcast i32* %t192 to i8*
+  call i8* @memcpy(i8* %t204, i8* %t210, i64 %t209)
   br label %map_cow_after_copy_44
 map_cow_after_copy_44:
-  %t205 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t193, i32 0, i32 0
-  store i64* %t196, i64** %t205
-  %t206 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t193, i32 0, i32 1
-  store i32* %t199, i32** %t206
-  %t207 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t193, i32 0, i32 2
-  store i64 %t188, i64* %t207
-  %t208 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t193, i32 0, i32 3
-  store i64 %t190, i64* %t208
-  call void @star_rc_release(i8* %t162)
-  store i8* %t192, i8** %t157
+  %t211 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t199, i32 0, i32 0
+  store i64* %t202, i64** %t211
+  %t212 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t199, i32 0, i32 1
+  store i32* %t205, i32** %t212
+  %t213 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t199, i32 0, i32 2
+  store i64 %t194, i64* %t213
+  %t214 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t199, i32 0, i32 3
+  store i64 %t196, i64* %t214
+  call void @star_rc_release(i8* %t168)
+  store i8* %t198, i8** %t163
   br label %map_cow_done_41
 map_cow_done_41:
-  %t209 = load i8*, i8** %t157
-  %t210 = bitcast i8* %t209 to { i64*, i32*, i64, i64 }*
-  %t211 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t210, i32 0, i32 0
-  %t212 = load i64*, i64** %t211
-  %t213 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t210, i32 0, i32 1
-  %t214 = load i32*, i32** %t213
-  %t215 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t210, i32 0, i32 2
-  %t216 = load i64, i64* %t215
-  %t217 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t210, i32 0, i32 3
-  %t218 = load i64, i64* %t0
-  %t219 = load i64, i64* %t215
-  %t220 = load i64*, i64** %t211
-  store i64 0, i64* %t222
+  %t215 = load i8*, i8** %t163
+  %t216 = bitcast i8* %t215 to { i64*, i32*, i64, i64 }*
+  %t217 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t216, i32 0, i32 0
+  %t218 = load i64*, i64** %t217
+  %t219 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t216, i32 0, i32 1
+  %t220 = load i32*, i32** %t219
+  %t221 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t216, i32 0, i32 2
+  %t222 = load i64, i64* %t221
+  %t223 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t216, i32 0, i32 3
+  %t224 = load i64, i64* %t1
+  %t225 = load i64, i64* %t221
+  %t226 = load i64*, i64** %t217
+  store i64 0, i64* %t228
   br label %map_find_cond_45
 map_find_cond_45:
-  %t223 = load i64, i64* %t222
-  %t224 = icmp slt i64 %t223, %t219
-  br i1 %t224, label %map_find_body_46, label %map_find_end_49
+  %t229 = load i64, i64* %t228
+  %t230 = icmp slt i64 %t229, %t225
+  br i1 %t230, label %map_find_body_46, label %map_find_end_49
 map_find_body_46:
-  %t225 = getelementptr inbounds i64, i64* %t220, i64 %t223
-  %t226 = load i64, i64* %t225
+  %t231 = getelementptr inbounds i64, i64* %t226, i64 %t229
+  %t232 = load i64, i64* %t231
   br label %map_find_eq_check_47
 map_find_eq_check_47:
-  %t227 = call i1 @eq_symbol(i64 %t226, i64 %t218)
-  br i1 %t227, label %map_find_end_49, label %map_find_next_48
+  %t233 = call i1 @eq_symbol(i64 %t232, i64 %t224)
+  br i1 %t233, label %map_find_end_49, label %map_find_next_48
 map_find_next_48:
-  %t228 = add i64 %t223, 1
-  store i64 %t228, i64* %t222
+  %t234 = add i64 %t229, 1
+  store i64 %t234, i64* %t228
   br label %map_find_cond_45
 map_find_end_49:
-  %t229 = load i64, i64* %t222
-  %t230 = icmp slt i64 %t229, %t219
-  br i1 %t230, label %map_insert_overwrite_50, label %map_insert_new_51
+  %t235 = load i64, i64* %t228
+  %t236 = icmp slt i64 %t235, %t225
+  br i1 %t236, label %map_insert_overwrite_50, label %map_insert_new_51
 map_insert_overwrite_50:
-  %t231 = load i32*, i32** %t213
-  %t232 = getelementptr inbounds i32, i32* %t231, i64 %t229
-  store i32 100, i32* %t232
+  %t237 = load i32*, i32** %t219
+  %t238 = getelementptr inbounds i32, i32* %t237, i64 %t235
+  store i32 100, i32* %t238
   br label %map_insert_after_52
 map_insert_new_51:
-  %t233 = load i64, i64* %t217
-  %t234 = icmp sge i64 %t219, %t233
-  br i1 %t234, label %map_insert_grow_53, label %map_insert_store_54
+  %t239 = load i64, i64* %t223
+  %t240 = icmp sge i64 %t225, %t239
+  br i1 %t240, label %map_insert_grow_53, label %map_insert_store_54
 map_insert_grow_53:
-  %t235 = mul i64 %t233, 2
-  %t236 = icmp sgt i64 %t235, 0
-  %t237 = select i1 %t236, i64 %t235, i64 1
-  %t238 = getelementptr i64, i64* null, i32 1
-  %t239 = ptrtoint i64* %t238 to i64
-  %t240 = mul i64 %t237, %t239
-  %t241 = call i8* @malloc(i64 %t240)
-  %t242 = bitcast i8* %t241 to i64*
-  %t243 = getelementptr i32, i32* null, i32 1
-  %t244 = ptrtoint i32* %t243 to i64
-  %t245 = mul i64 %t237, %t244
-  %t246 = call i8* @malloc(i64 %t245)
-  %t247 = bitcast i8* %t246 to i32*
-  %t248 = icmp sgt i64 %t233, 0
-  br i1 %t248, label %map_insert_copy_55, label %map_insert_after_copy_56
+  %t241 = mul i64 %t239, 2
+  %t242 = icmp sgt i64 %t241, 0
+  %t243 = select i1 %t242, i64 %t241, i64 1
+  %t244 = getelementptr i64, i64* null, i32 1
+  %t245 = ptrtoint i64* %t244 to i64
+  %t246 = mul i64 %t243, %t245
+  %t247 = call i8* @malloc(i64 %t246)
+  %t248 = bitcast i8* %t247 to i64*
+  %t249 = getelementptr i32, i32* null, i32 1
+  %t250 = ptrtoint i32* %t249 to i64
+  %t251 = mul i64 %t243, %t250
+  %t252 = call i8* @malloc(i64 %t251)
+  %t253 = bitcast i8* %t252 to i32*
+  %t254 = icmp sgt i64 %t239, 0
+  br i1 %t254, label %map_insert_copy_55, label %map_insert_after_copy_56
 map_insert_copy_55:
-  %t249 = load i64*, i64** %t211
-  %t250 = mul i64 %t219, %t239
-  %t251 = bitcast i64* %t249 to i8*
-  call i8* @memcpy(i8* %t241, i8* %t251, i64 %t250)
-  call void @free(i8* %t251)
-  %t252 = load i32*, i32** %t213
-  %t253 = mul i64 %t219, %t244
-  %t254 = bitcast i32* %t252 to i8*
-  call i8* @memcpy(i8* %t246, i8* %t254, i64 %t253)
-  call void @free(i8* %t254)
+  %t255 = load i64*, i64** %t217
+  %t256 = mul i64 %t225, %t245
+  %t257 = bitcast i64* %t255 to i8*
+  call i8* @memcpy(i8* %t247, i8* %t257, i64 %t256)
+  call void @free(i8* %t257)
+  %t258 = load i32*, i32** %t219
+  %t259 = mul i64 %t225, %t250
+  %t260 = bitcast i32* %t258 to i8*
+  call i8* @memcpy(i8* %t252, i8* %t260, i64 %t259)
+  call void @free(i8* %t260)
   br label %map_insert_after_copy_56
 map_insert_after_copy_56:
-  store i64* %t242, i64** %t211
-  store i32* %t247, i32** %t213
-  store i64 %t237, i64* %t217
+  store i64* %t248, i64** %t217
+  store i32* %t253, i32** %t219
+  store i64 %t243, i64* %t223
   br label %map_insert_store_54
 map_insert_store_54:
-  %t255 = load i64*, i64** %t211
-  %t256 = load i32*, i32** %t213
-  %t257 = getelementptr inbounds i64, i64* %t255, i64 %t219
-  store i64 %t218, i64* %t257
-  %t258 = getelementptr inbounds i32, i32* %t256, i64 %t219
-  store i32 100, i32* %t258
-  %t259 = add i64 %t219, 1
-  store i64 %t259, i64* %t215
+  %t261 = load i64*, i64** %t217
+  %t262 = load i32*, i32** %t219
+  %t263 = getelementptr inbounds i64, i64* %t261, i64 %t225
+  store i64 %t224, i64* %t263
+  %t264 = getelementptr inbounds i32, i32* %t262, i64 %t225
+  store i32 100, i32* %t264
+  %t265 = add i64 %t225, 1
+  store i64 %t265, i64* %t221
   br label %map_insert_after_52
 map_insert_after_52:
-  %t260 = getelementptr i64, i64* null, i32 1
-  %t261 = ptrtoint i64* %t260 to i64
-  %t262 = getelementptr i32, i32* null, i32 1
-  %t263 = ptrtoint i32* %t262 to i64
-  %t264 = load i8*, i8** %t157
-  %t265 = icmp eq i8* %t264, null
-  br i1 %t265, label %map_cow_alloc_57, label %map_cow_check_58
+  %t266 = getelementptr i64, i64* null, i32 1
+  %t267 = ptrtoint i64* %t266 to i64
+  %t268 = getelementptr i32, i32* null, i32 1
+  %t269 = ptrtoint i32* %t268 to i64
+  %t270 = load i8*, i8** %t163
+  %t271 = icmp eq i8* %t270, null
+  br i1 %t271, label %map_cow_alloc_57, label %map_cow_check_58
 map_cow_alloc_57:
-  %t266 = bitcast void (i8*)* @map_release_6_symboli32 to i8*
-  %t267 = call i8* @star_rc_alloc(i64 32, i8* %t266)
-  %t268 = bitcast i8* %t267 to { i64*, i32*, i64, i64 }*
-  %t269 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t268, i32 0, i32 0
-  store i64* null, i64** %t269
-  %t270 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t268, i32 0, i32 1
-  store i32* null, i32** %t270
-  %t271 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t268, i32 0, i32 2
-  store i64 0, i64* %t271
-  %t272 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t268, i32 0, i32 3
-  store i64 0, i64* %t272
-  store i8* %t267, i8** %t157
+  %t272 = bitcast void (i8*)* @map_release_6_symboli32 to i8*
+  %t273 = call i8* @star_rc_alloc(i64 32, i8* %t272)
+  %t274 = bitcast i8* %t273 to { i64*, i32*, i64, i64 }*
+  %t275 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t274, i32 0, i32 0
+  store i64* null, i64** %t275
+  %t276 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t274, i32 0, i32 1
+  store i32* null, i32** %t276
+  %t277 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t274, i32 0, i32 2
+  store i64 0, i64* %t277
+  %t278 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t274, i32 0, i32 3
+  store i64 0, i64* %t278
+  store i8* %t273, i8** %t163
   br label %map_cow_done_59
 map_cow_check_58:
-  %t273 = getelementptr inbounds i8, i8* %t264, i64 -16
-  %t274 = bitcast i8* %t273 to i64*
-  %t275 = load atomic i64, i64* %t274 seq_cst, align 8
-  %t276 = icmp eq i64 %t275, 1
-  br i1 %t276, label %map_cow_done_59, label %map_cow_clone_60
+  %t279 = getelementptr inbounds i8, i8* %t270, i64 -16
+  %t280 = bitcast i8* %t279 to i64*
+  %t281 = load atomic i64, i64* %t280 seq_cst, align 8
+  %t282 = icmp eq i64 %t281, 1
+  br i1 %t282, label %map_cow_done_59, label %map_cow_clone_60
 map_cow_clone_60:
-  %t277 = bitcast i8* %t264 to { i64*, i32*, i64, i64 }*
-  %t278 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t277, i32 0, i32 0
-  %t279 = load i64*, i64** %t278
-  %t280 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t277, i32 0, i32 1
-  %t281 = load i32*, i32** %t280
-  %t282 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t277, i32 0, i32 2
-  %t283 = load i64, i64* %t282
-  %t284 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t277, i32 0, i32 3
-  %t285 = load i64, i64* %t284
-  %t286 = bitcast void (i8*)* @map_release_6_symboli32 to i8*
-  %t287 = call i8* @star_rc_alloc(i64 32, i8* %t286)
-  %t288 = bitcast i8* %t287 to { i64*, i32*, i64, i64 }*
-  %t289 = mul i64 %t285, %t261
-  %t290 = call i8* @malloc(i64 %t289)
-  %t291 = bitcast i8* %t290 to i64*
-  %t292 = mul i64 %t285, %t263
-  %t293 = call i8* @malloc(i64 %t292)
-  %t294 = bitcast i8* %t293 to i32*
-  %t295 = icmp sgt i64 %t283, 0
-  br i1 %t295, label %map_cow_copy_61, label %map_cow_after_copy_62
+  %t283 = bitcast i8* %t270 to { i64*, i32*, i64, i64 }*
+  %t284 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t283, i32 0, i32 0
+  %t285 = load i64*, i64** %t284
+  %t286 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t283, i32 0, i32 1
+  %t287 = load i32*, i32** %t286
+  %t288 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t283, i32 0, i32 2
+  %t289 = load i64, i64* %t288
+  %t290 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t283, i32 0, i32 3
+  %t291 = load i64, i64* %t290
+  %t292 = bitcast void (i8*)* @map_release_6_symboli32 to i8*
+  %t293 = call i8* @star_rc_alloc(i64 32, i8* %t292)
+  %t294 = bitcast i8* %t293 to { i64*, i32*, i64, i64 }*
+  %t295 = mul i64 %t291, %t267
+  %t296 = call i8* @malloc(i64 %t295)
+  %t297 = bitcast i8* %t296 to i64*
+  %t298 = mul i64 %t291, %t269
+  %t299 = call i8* @malloc(i64 %t298)
+  %t300 = bitcast i8* %t299 to i32*
+  %t301 = icmp sgt i64 %t289, 0
+  br i1 %t301, label %map_cow_copy_61, label %map_cow_after_copy_62
 map_cow_copy_61:
-  %t296 = mul i64 %t283, %t261
-  %t297 = bitcast i64* %t279 to i8*
-  call i8* @memcpy(i8* %t290, i8* %t297, i64 %t296)
-  %t298 = mul i64 %t283, %t263
-  %t299 = bitcast i32* %t281 to i8*
-  call i8* @memcpy(i8* %t293, i8* %t299, i64 %t298)
+  %t302 = mul i64 %t289, %t267
+  %t303 = bitcast i64* %t285 to i8*
+  call i8* @memcpy(i8* %t296, i8* %t303, i64 %t302)
+  %t304 = mul i64 %t289, %t269
+  %t305 = bitcast i32* %t287 to i8*
+  call i8* @memcpy(i8* %t299, i8* %t305, i64 %t304)
   br label %map_cow_after_copy_62
 map_cow_after_copy_62:
-  %t300 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t288, i32 0, i32 0
-  store i64* %t291, i64** %t300
-  %t301 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t288, i32 0, i32 1
-  store i32* %t294, i32** %t301
-  %t302 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t288, i32 0, i32 2
-  store i64 %t283, i64* %t302
-  %t303 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t288, i32 0, i32 3
-  store i64 %t285, i64* %t303
-  call void @star_rc_release(i8* %t264)
-  store i8* %t287, i8** %t157
+  %t306 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t294, i32 0, i32 0
+  store i64* %t297, i64** %t306
+  %t307 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t294, i32 0, i32 1
+  store i32* %t300, i32** %t307
+  %t308 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t294, i32 0, i32 2
+  store i64 %t289, i64* %t308
+  %t309 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t294, i32 0, i32 3
+  store i64 %t291, i64* %t309
+  call void @star_rc_release(i8* %t270)
+  store i8* %t293, i8** %t163
   br label %map_cow_done_59
 map_cow_done_59:
-  %t304 = load i8*, i8** %t157
-  %t305 = bitcast i8* %t304 to { i64*, i32*, i64, i64 }*
-  %t306 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t305, i32 0, i32 0
-  %t307 = load i64*, i64** %t306
-  %t308 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t305, i32 0, i32 1
-  %t309 = load i32*, i32** %t308
-  %t310 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t305, i32 0, i32 2
-  %t311 = load i64, i64* %t310
-  %t312 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t305, i32 0, i32 3
-  %t313 = load i64, i64* %t58
-  %t314 = load i64, i64* %t310
-  %t315 = load i64*, i64** %t306
-  store i64 0, i64* %t316
+  %t310 = load i8*, i8** %t163
+  %t311 = bitcast i8* %t310 to { i64*, i32*, i64, i64 }*
+  %t312 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t311, i32 0, i32 0
+  %t313 = load i64*, i64** %t312
+  %t314 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t311, i32 0, i32 1
+  %t315 = load i32*, i32** %t314
+  %t316 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t311, i32 0, i32 2
+  %t317 = load i64, i64* %t316
+  %t318 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t311, i32 0, i32 3
+  %t319 = load i64, i64* %t61
+  %t320 = load i64, i64* %t316
+  %t321 = load i64*, i64** %t312
+  store i64 0, i64* %t322
   br label %map_find_cond_63
 map_find_cond_63:
-  %t317 = load i64, i64* %t316
-  %t318 = icmp slt i64 %t317, %t314
-  br i1 %t318, label %map_find_body_64, label %map_find_end_67
+  %t323 = load i64, i64* %t322
+  %t324 = icmp slt i64 %t323, %t320
+  br i1 %t324, label %map_find_body_64, label %map_find_end_67
 map_find_body_64:
-  %t319 = getelementptr inbounds i64, i64* %t315, i64 %t317
-  %t320 = load i64, i64* %t319
+  %t325 = getelementptr inbounds i64, i64* %t321, i64 %t323
+  %t326 = load i64, i64* %t325
   br label %map_find_eq_check_65
 map_find_eq_check_65:
-  %t321 = call i1 @eq_symbol(i64 %t320, i64 %t313)
-  br i1 %t321, label %map_find_end_67, label %map_find_next_66
+  %t327 = call i1 @eq_symbol(i64 %t326, i64 %t319)
+  br i1 %t327, label %map_find_end_67, label %map_find_next_66
 map_find_next_66:
-  %t322 = add i64 %t317, 1
-  store i64 %t322, i64* %t316
+  %t328 = add i64 %t323, 1
+  store i64 %t328, i64* %t322
   br label %map_find_cond_63
 map_find_end_67:
-  %t323 = load i64, i64* %t316
-  %t324 = icmp slt i64 %t323, %t314
-  br i1 %t324, label %map_insert_overwrite_68, label %map_insert_new_69
+  %t329 = load i64, i64* %t322
+  %t330 = icmp slt i64 %t329, %t320
+  br i1 %t330, label %map_insert_overwrite_68, label %map_insert_new_69
 map_insert_overwrite_68:
-  %t325 = load i32*, i32** %t308
-  %t326 = getelementptr inbounds i32, i32* %t325, i64 %t323
-  store i32 40, i32* %t326
+  %t331 = load i32*, i32** %t314
+  %t332 = getelementptr inbounds i32, i32* %t331, i64 %t329
+  store i32 40, i32* %t332
   br label %map_insert_after_70
 map_insert_new_69:
-  %t327 = load i64, i64* %t312
-  %t328 = icmp sge i64 %t314, %t327
-  br i1 %t328, label %map_insert_grow_71, label %map_insert_store_72
+  %t333 = load i64, i64* %t318
+  %t334 = icmp sge i64 %t320, %t333
+  br i1 %t334, label %map_insert_grow_71, label %map_insert_store_72
 map_insert_grow_71:
-  %t329 = mul i64 %t327, 2
-  %t330 = icmp sgt i64 %t329, 0
-  %t331 = select i1 %t330, i64 %t329, i64 1
-  %t332 = getelementptr i64, i64* null, i32 1
-  %t333 = ptrtoint i64* %t332 to i64
-  %t334 = mul i64 %t331, %t333
-  %t335 = call i8* @malloc(i64 %t334)
-  %t336 = bitcast i8* %t335 to i64*
-  %t337 = getelementptr i32, i32* null, i32 1
-  %t338 = ptrtoint i32* %t337 to i64
-  %t339 = mul i64 %t331, %t338
-  %t340 = call i8* @malloc(i64 %t339)
-  %t341 = bitcast i8* %t340 to i32*
-  %t342 = icmp sgt i64 %t327, 0
-  br i1 %t342, label %map_insert_copy_73, label %map_insert_after_copy_74
+  %t335 = mul i64 %t333, 2
+  %t336 = icmp sgt i64 %t335, 0
+  %t337 = select i1 %t336, i64 %t335, i64 1
+  %t338 = getelementptr i64, i64* null, i32 1
+  %t339 = ptrtoint i64* %t338 to i64
+  %t340 = mul i64 %t337, %t339
+  %t341 = call i8* @malloc(i64 %t340)
+  %t342 = bitcast i8* %t341 to i64*
+  %t343 = getelementptr i32, i32* null, i32 1
+  %t344 = ptrtoint i32* %t343 to i64
+  %t345 = mul i64 %t337, %t344
+  %t346 = call i8* @malloc(i64 %t345)
+  %t347 = bitcast i8* %t346 to i32*
+  %t348 = icmp sgt i64 %t333, 0
+  br i1 %t348, label %map_insert_copy_73, label %map_insert_after_copy_74
 map_insert_copy_73:
-  %t343 = load i64*, i64** %t306
-  %t344 = mul i64 %t314, %t333
-  %t345 = bitcast i64* %t343 to i8*
-  call i8* @memcpy(i8* %t335, i8* %t345, i64 %t344)
-  call void @free(i8* %t345)
-  %t346 = load i32*, i32** %t308
-  %t347 = mul i64 %t314, %t338
-  %t348 = bitcast i32* %t346 to i8*
-  call i8* @memcpy(i8* %t340, i8* %t348, i64 %t347)
-  call void @free(i8* %t348)
+  %t349 = load i64*, i64** %t312
+  %t350 = mul i64 %t320, %t339
+  %t351 = bitcast i64* %t349 to i8*
+  call i8* @memcpy(i8* %t341, i8* %t351, i64 %t350)
+  call void @free(i8* %t351)
+  %t352 = load i32*, i32** %t314
+  %t353 = mul i64 %t320, %t344
+  %t354 = bitcast i32* %t352 to i8*
+  call i8* @memcpy(i8* %t346, i8* %t354, i64 %t353)
+  call void @free(i8* %t354)
   br label %map_insert_after_copy_74
 map_insert_after_copy_74:
-  store i64* %t336, i64** %t306
-  store i32* %t341, i32** %t308
-  store i64 %t331, i64* %t312
+  store i64* %t342, i64** %t312
+  store i32* %t347, i32** %t314
+  store i64 %t337, i64* %t318
   br label %map_insert_store_72
 map_insert_store_72:
-  %t349 = load i64*, i64** %t306
-  %t350 = load i32*, i32** %t308
-  %t351 = getelementptr inbounds i64, i64* %t349, i64 %t314
-  store i64 %t313, i64* %t351
-  %t352 = getelementptr inbounds i32, i32* %t350, i64 %t314
-  store i32 40, i32* %t352
-  %t353 = add i64 %t314, 1
-  store i64 %t353, i64* %t310
+  %t355 = load i64*, i64** %t312
+  %t356 = load i32*, i32** %t314
+  %t357 = getelementptr inbounds i64, i64* %t355, i64 %t320
+  store i64 %t319, i64* %t357
+  %t358 = getelementptr inbounds i32, i32* %t356, i64 %t320
+  store i32 40, i32* %t358
+  %t359 = add i64 %t320, 1
+  store i64 %t359, i64* %t316
   br label %map_insert_after_70
 map_insert_after_70:
-  %t354 = getelementptr i64, i64* null, i32 1
-  %t355 = ptrtoint i64* %t354 to i64
-  %t356 = getelementptr i32, i32* null, i32 1
-  %t357 = ptrtoint i32* %t356 to i64
-  %t358 = load i8*, i8** %t157
-  %t359 = icmp eq i8* %t358, null
-  br i1 %t359, label %map_cow_alloc_75, label %map_cow_check_76
+  %t360 = getelementptr i64, i64* null, i32 1
+  %t361 = ptrtoint i64* %t360 to i64
+  %t362 = getelementptr i32, i32* null, i32 1
+  %t363 = ptrtoint i32* %t362 to i64
+  %t364 = load i8*, i8** %t163
+  %t365 = icmp eq i8* %t364, null
+  br i1 %t365, label %map_cow_alloc_75, label %map_cow_check_76
 map_cow_alloc_75:
-  %t360 = bitcast void (i8*)* @map_release_6_symboli32 to i8*
-  %t361 = call i8* @star_rc_alloc(i64 32, i8* %t360)
-  %t362 = bitcast i8* %t361 to { i64*, i32*, i64, i64 }*
-  %t363 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t362, i32 0, i32 0
-  store i64* null, i64** %t363
-  %t364 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t362, i32 0, i32 1
-  store i32* null, i32** %t364
-  %t365 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t362, i32 0, i32 2
-  store i64 0, i64* %t365
-  %t366 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t362, i32 0, i32 3
-  store i64 0, i64* %t366
-  store i8* %t361, i8** %t157
+  %t366 = bitcast void (i8*)* @map_release_6_symboli32 to i8*
+  %t367 = call i8* @star_rc_alloc(i64 32, i8* %t366)
+  %t368 = bitcast i8* %t367 to { i64*, i32*, i64, i64 }*
+  %t369 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t368, i32 0, i32 0
+  store i64* null, i64** %t369
+  %t370 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t368, i32 0, i32 1
+  store i32* null, i32** %t370
+  %t371 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t368, i32 0, i32 2
+  store i64 0, i64* %t371
+  %t372 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t368, i32 0, i32 3
+  store i64 0, i64* %t372
+  store i8* %t367, i8** %t163
   br label %map_cow_done_77
 map_cow_check_76:
-  %t367 = getelementptr inbounds i8, i8* %t358, i64 -16
-  %t368 = bitcast i8* %t367 to i64*
-  %t369 = load atomic i64, i64* %t368 seq_cst, align 8
-  %t370 = icmp eq i64 %t369, 1
-  br i1 %t370, label %map_cow_done_77, label %map_cow_clone_78
+  %t373 = getelementptr inbounds i8, i8* %t364, i64 -16
+  %t374 = bitcast i8* %t373 to i64*
+  %t375 = load atomic i64, i64* %t374 seq_cst, align 8
+  %t376 = icmp eq i64 %t375, 1
+  br i1 %t376, label %map_cow_done_77, label %map_cow_clone_78
 map_cow_clone_78:
-  %t371 = bitcast i8* %t358 to { i64*, i32*, i64, i64 }*
-  %t372 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t371, i32 0, i32 0
-  %t373 = load i64*, i64** %t372
-  %t374 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t371, i32 0, i32 1
-  %t375 = load i32*, i32** %t374
-  %t376 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t371, i32 0, i32 2
-  %t377 = load i64, i64* %t376
-  %t378 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t371, i32 0, i32 3
-  %t379 = load i64, i64* %t378
-  %t380 = bitcast void (i8*)* @map_release_6_symboli32 to i8*
-  %t381 = call i8* @star_rc_alloc(i64 32, i8* %t380)
-  %t382 = bitcast i8* %t381 to { i64*, i32*, i64, i64 }*
-  %t383 = mul i64 %t379, %t355
-  %t384 = call i8* @malloc(i64 %t383)
-  %t385 = bitcast i8* %t384 to i64*
-  %t386 = mul i64 %t379, %t357
-  %t387 = call i8* @malloc(i64 %t386)
-  %t388 = bitcast i8* %t387 to i32*
-  %t389 = icmp sgt i64 %t377, 0
-  br i1 %t389, label %map_cow_copy_79, label %map_cow_after_copy_80
+  %t377 = bitcast i8* %t364 to { i64*, i32*, i64, i64 }*
+  %t378 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t377, i32 0, i32 0
+  %t379 = load i64*, i64** %t378
+  %t380 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t377, i32 0, i32 1
+  %t381 = load i32*, i32** %t380
+  %t382 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t377, i32 0, i32 2
+  %t383 = load i64, i64* %t382
+  %t384 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t377, i32 0, i32 3
+  %t385 = load i64, i64* %t384
+  %t386 = bitcast void (i8*)* @map_release_6_symboli32 to i8*
+  %t387 = call i8* @star_rc_alloc(i64 32, i8* %t386)
+  %t388 = bitcast i8* %t387 to { i64*, i32*, i64, i64 }*
+  %t389 = mul i64 %t385, %t361
+  %t390 = call i8* @malloc(i64 %t389)
+  %t391 = bitcast i8* %t390 to i64*
+  %t392 = mul i64 %t385, %t363
+  %t393 = call i8* @malloc(i64 %t392)
+  %t394 = bitcast i8* %t393 to i32*
+  %t395 = icmp sgt i64 %t383, 0
+  br i1 %t395, label %map_cow_copy_79, label %map_cow_after_copy_80
 map_cow_copy_79:
-  %t390 = mul i64 %t377, %t355
-  %t391 = bitcast i64* %t373 to i8*
-  call i8* @memcpy(i8* %t384, i8* %t391, i64 %t390)
-  %t392 = mul i64 %t377, %t357
-  %t393 = bitcast i32* %t375 to i8*
-  call i8* @memcpy(i8* %t387, i8* %t393, i64 %t392)
+  %t396 = mul i64 %t383, %t361
+  %t397 = bitcast i64* %t379 to i8*
+  call i8* @memcpy(i8* %t390, i8* %t397, i64 %t396)
+  %t398 = mul i64 %t383, %t363
+  %t399 = bitcast i32* %t381 to i8*
+  call i8* @memcpy(i8* %t393, i8* %t399, i64 %t398)
   br label %map_cow_after_copy_80
 map_cow_after_copy_80:
-  %t394 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t382, i32 0, i32 0
-  store i64* %t385, i64** %t394
-  %t395 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t382, i32 0, i32 1
-  store i32* %t388, i32** %t395
-  %t396 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t382, i32 0, i32 2
-  store i64 %t377, i64* %t396
-  %t397 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t382, i32 0, i32 3
-  store i64 %t379, i64* %t397
-  call void @star_rc_release(i8* %t358)
-  store i8* %t381, i8** %t157
+  %t400 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t388, i32 0, i32 0
+  store i64* %t391, i64** %t400
+  %t401 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t388, i32 0, i32 1
+  store i32* %t394, i32** %t401
+  %t402 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t388, i32 0, i32 2
+  store i64 %t383, i64* %t402
+  %t403 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t388, i32 0, i32 3
+  store i64 %t385, i64* %t403
+  call void @star_rc_release(i8* %t364)
+  store i8* %t387, i8** %t163
   br label %map_cow_done_77
 map_cow_done_77:
-  %t398 = load i8*, i8** %t157
-  %t399 = bitcast i8* %t398 to { i64*, i32*, i64, i64 }*
-  %t400 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t399, i32 0, i32 0
-  %t401 = load i64*, i64** %t400
-  %t402 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t399, i32 0, i32 1
-  %t403 = load i32*, i32** %t402
-  %t404 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t399, i32 0, i32 2
-  %t405 = load i64, i64* %t404
-  %t406 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t399, i32 0, i32 3
-  %t407 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.23, i64 0, i32 2, i64 0
-  %t408 = load i64, i64* @sym.len
-  %t409 = load i8**, i8*** @sym.data
-  store i64 0, i64* %t410
+  %t404 = load i8*, i8** %t163
+  %t405 = bitcast i8* %t404 to { i64*, i32*, i64, i64 }*
+  %t406 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t405, i32 0, i32 0
+  %t407 = load i64*, i64** %t406
+  %t408 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t405, i32 0, i32 1
+  %t409 = load i32*, i32** %t408
+  %t410 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t405, i32 0, i32 2
+  %t411 = load i64, i64* %t410
+  %t412 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t405, i32 0, i32 3
+  %t413 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.23, i64 0, i32 2, i64 0
+  %t414 = load i8*, i8** @sym.lock
+  call i32 @WaitForSingleObject(i8* %t414, i32 -1)
+  %t415 = load i64, i64* @sym.len
+  %t416 = load i8**, i8*** @sym.data
+  store i64 0, i64* %t417
   br label %sym_find_cond_81
 sym_find_cond_81:
-  %t411 = load i64, i64* %t410
-  %t412 = icmp slt i64 %t411, %t408
-  br i1 %t412, label %sym_find_body_82, label %sym_find_end_84
+  %t418 = load i64, i64* %t417
+  %t419 = icmp slt i64 %t418, %t415
+  br i1 %t419, label %sym_find_body_82, label %sym_find_end_84
 sym_find_body_82:
-  %t413 = getelementptr inbounds i8*, i8** %t409, i64 %t411
-  %t414 = load i8*, i8** %t413
-  %t415 = call i32 @strcmp(i8* %t414, i8* %t407)
-  %t416 = icmp eq i32 %t415, 0
-  br i1 %t416, label %sym_find_end_84, label %sym_find_next_83
+  %t420 = getelementptr inbounds i8*, i8** %t416, i64 %t418
+  %t421 = load i8*, i8** %t420
+  %t422 = call i32 @strcmp(i8* %t421, i8* %t413)
+  %t423 = icmp eq i32 %t422, 0
+  br i1 %t423, label %sym_find_end_84, label %sym_find_next_83
 sym_find_next_83:
-  %t417 = add i64 %t411, 1
-  store i64 %t417, i64* %t410
+  %t424 = add i64 %t418, 1
+  store i64 %t424, i64* %t417
   br label %sym_find_cond_81
 sym_find_end_84:
-  %t418 = load i64, i64* %t410
-  %t419 = icmp slt i64 %t418, %t408
-  br i1 %t419, label %sym_found_85, label %sym_notfound_86
+  %t425 = load i64, i64* %t417
+  %t426 = icmp slt i64 %t425, %t415
+  br i1 %t426, label %sym_found_85, label %sym_notfound_86
 sym_found_85:
-  call void @star_rc_release(i8* %t407)
+  call void @star_rc_release(i8* %t413)
   br label %sym_done_87
 sym_notfound_86:
-  %t420 = load i64, i64* @sym.cap
-  %t421 = icmp sge i64 %t408, %t420
-  br i1 %t421, label %sym_grow_88, label %sym_store_89
+  %t427 = load i64, i64* @sym.cap
+  %t428 = icmp sge i64 %t415, %t427
+  br i1 %t428, label %sym_grow_88, label %sym_store_89
 sym_grow_88:
-  %t422 = mul i64 %t420, 2
-  %t423 = icmp sgt i64 %t422, 0
-  %t424 = select i1 %t423, i64 %t422, i64 1
-  %t425 = mul i64 %t424, 8
-  %t426 = call i8* @malloc(i64 %t425)
-  %t427 = bitcast i8* %t426 to i8**
-  %t428 = icmp sgt i64 %t420, 0
-  br i1 %t428, label %sym_copy_90, label %sym_after_copy_91
+  %t429 = mul i64 %t427, 2
+  %t430 = icmp sgt i64 %t429, 0
+  %t431 = select i1 %t430, i64 %t429, i64 1
+  %t432 = mul i64 %t431, 8
+  %t433 = call i8* @malloc(i64 %t432)
+  %t434 = bitcast i8* %t433 to i8**
+  %t435 = icmp sgt i64 %t427, 0
+  br i1 %t435, label %sym_copy_90, label %sym_after_copy_91
 sym_copy_90:
-  %t429 = mul i64 %t408, 8
-  %t430 = bitcast i8** %t409 to i8*
-  call i8* @memcpy(i8* %t426, i8* %t430, i64 %t429)
-  call void @free(i8* %t430)
+  %t436 = mul i64 %t415, 8
+  %t437 = bitcast i8** %t416 to i8*
+  call i8* @memcpy(i8* %t433, i8* %t437, i64 %t436)
+  call void @free(i8* %t437)
   br label %sym_after_copy_91
 sym_after_copy_91:
-  store i8** %t427, i8*** @sym.data
-  store i64 %t424, i64* @sym.cap
+  store i8** %t434, i8*** @sym.data
+  store i64 %t431, i64* @sym.cap
   br label %sym_store_89
 sym_store_89:
-  %t431 = load i8**, i8*** @sym.data
-  %t432 = getelementptr inbounds i8*, i8** %t431, i64 %t408
-  store i8* %t407, i8** %t432
-  %t433 = add i64 %t408, 1
-  store i64 %t433, i64* @sym.len
+  %t438 = load i8**, i8*** @sym.data
+  %t439 = getelementptr inbounds i8*, i8** %t438, i64 %t415
+  store i8* %t413, i8** %t439
+  %t440 = add i64 %t415, 1
+  store i64 %t440, i64* @sym.len
   br label %sym_done_87
 sym_done_87:
-  %t434 = phi i64 [ %t418, %sym_found_85 ], [ %t408, %sym_store_89 ]
-  %t435 = load i64, i64* %t404
-  %t436 = load i64*, i64** %t400
-  store i64 0, i64* %t437
+  %t441 = phi i64 [ %t425, %sym_found_85 ], [ %t415, %sym_store_89 ]
+  call i32 @ReleaseSemaphore(i8* %t414, i32 1, i32* null)
+  %t442 = load i64, i64* %t410
+  %t443 = load i64*, i64** %t406
+  store i64 0, i64* %t444
   br label %map_find_cond_92
 map_find_cond_92:
-  %t438 = load i64, i64* %t437
-  %t439 = icmp slt i64 %t438, %t435
-  br i1 %t439, label %map_find_body_93, label %map_find_end_96
+  %t445 = load i64, i64* %t444
+  %t446 = icmp slt i64 %t445, %t442
+  br i1 %t446, label %map_find_body_93, label %map_find_end_96
 map_find_body_93:
-  %t440 = getelementptr inbounds i64, i64* %t436, i64 %t438
-  %t441 = load i64, i64* %t440
+  %t447 = getelementptr inbounds i64, i64* %t443, i64 %t445
+  %t448 = load i64, i64* %t447
   br label %map_find_eq_check_94
 map_find_eq_check_94:
-  %t442 = call i1 @eq_symbol(i64 %t441, i64 %t434)
-  br i1 %t442, label %map_find_end_96, label %map_find_next_95
+  %t449 = call i1 @eq_symbol(i64 %t448, i64 %t441)
+  br i1 %t449, label %map_find_end_96, label %map_find_next_95
 map_find_next_95:
-  %t443 = add i64 %t438, 1
-  store i64 %t443, i64* %t437
+  %t450 = add i64 %t445, 1
+  store i64 %t450, i64* %t444
   br label %map_find_cond_92
 map_find_end_96:
-  %t444 = load i64, i64* %t437
-  %t445 = icmp slt i64 %t444, %t435
-  br i1 %t445, label %map_insert_overwrite_97, label %map_insert_new_98
+  %t451 = load i64, i64* %t444
+  %t452 = icmp slt i64 %t451, %t442
+  br i1 %t452, label %map_insert_overwrite_97, label %map_insert_new_98
 map_insert_overwrite_97:
-  %t446 = load i32*, i32** %t402
-  %t447 = getelementptr inbounds i32, i32* %t446, i64 %t444
-  store i32 80, i32* %t447
+  %t453 = load i32*, i32** %t408
+  %t454 = getelementptr inbounds i32, i32* %t453, i64 %t451
+  store i32 80, i32* %t454
   br label %map_insert_after_99
 map_insert_new_98:
-  %t448 = load i64, i64* %t406
-  %t449 = icmp sge i64 %t435, %t448
-  br i1 %t449, label %map_insert_grow_100, label %map_insert_store_101
+  %t455 = load i64, i64* %t412
+  %t456 = icmp sge i64 %t442, %t455
+  br i1 %t456, label %map_insert_grow_100, label %map_insert_store_101
 map_insert_grow_100:
-  %t450 = mul i64 %t448, 2
-  %t451 = icmp sgt i64 %t450, 0
-  %t452 = select i1 %t451, i64 %t450, i64 1
-  %t453 = getelementptr i64, i64* null, i32 1
-  %t454 = ptrtoint i64* %t453 to i64
-  %t455 = mul i64 %t452, %t454
-  %t456 = call i8* @malloc(i64 %t455)
-  %t457 = bitcast i8* %t456 to i64*
-  %t458 = getelementptr i32, i32* null, i32 1
-  %t459 = ptrtoint i32* %t458 to i64
-  %t460 = mul i64 %t452, %t459
-  %t461 = call i8* @malloc(i64 %t460)
-  %t462 = bitcast i8* %t461 to i32*
-  %t463 = icmp sgt i64 %t448, 0
-  br i1 %t463, label %map_insert_copy_102, label %map_insert_after_copy_103
+  %t457 = mul i64 %t455, 2
+  %t458 = icmp sgt i64 %t457, 0
+  %t459 = select i1 %t458, i64 %t457, i64 1
+  %t460 = getelementptr i64, i64* null, i32 1
+  %t461 = ptrtoint i64* %t460 to i64
+  %t462 = mul i64 %t459, %t461
+  %t463 = call i8* @malloc(i64 %t462)
+  %t464 = bitcast i8* %t463 to i64*
+  %t465 = getelementptr i32, i32* null, i32 1
+  %t466 = ptrtoint i32* %t465 to i64
+  %t467 = mul i64 %t459, %t466
+  %t468 = call i8* @malloc(i64 %t467)
+  %t469 = bitcast i8* %t468 to i32*
+  %t470 = icmp sgt i64 %t455, 0
+  br i1 %t470, label %map_insert_copy_102, label %map_insert_after_copy_103
 map_insert_copy_102:
-  %t464 = load i64*, i64** %t400
-  %t465 = mul i64 %t435, %t454
-  %t466 = bitcast i64* %t464 to i8*
-  call i8* @memcpy(i8* %t456, i8* %t466, i64 %t465)
-  call void @free(i8* %t466)
-  %t467 = load i32*, i32** %t402
-  %t468 = mul i64 %t435, %t459
-  %t469 = bitcast i32* %t467 to i8*
-  call i8* @memcpy(i8* %t461, i8* %t469, i64 %t468)
-  call void @free(i8* %t469)
+  %t471 = load i64*, i64** %t406
+  %t472 = mul i64 %t442, %t461
+  %t473 = bitcast i64* %t471 to i8*
+  call i8* @memcpy(i8* %t463, i8* %t473, i64 %t472)
+  call void @free(i8* %t473)
+  %t474 = load i32*, i32** %t408
+  %t475 = mul i64 %t442, %t466
+  %t476 = bitcast i32* %t474 to i8*
+  call i8* @memcpy(i8* %t468, i8* %t476, i64 %t475)
+  call void @free(i8* %t476)
   br label %map_insert_after_copy_103
 map_insert_after_copy_103:
-  store i64* %t457, i64** %t400
-  store i32* %t462, i32** %t402
-  store i64 %t452, i64* %t406
+  store i64* %t464, i64** %t406
+  store i32* %t469, i32** %t408
+  store i64 %t459, i64* %t412
   br label %map_insert_store_101
 map_insert_store_101:
-  %t470 = load i64*, i64** %t400
-  %t471 = load i32*, i32** %t402
-  %t472 = getelementptr inbounds i64, i64* %t470, i64 %t435
-  store i64 %t434, i64* %t472
-  %t473 = getelementptr inbounds i32, i32* %t471, i64 %t435
-  store i32 80, i32* %t473
-  %t474 = add i64 %t435, 1
-  store i64 %t474, i64* %t404
+  %t477 = load i64*, i64** %t406
+  %t478 = load i32*, i32** %t408
+  %t479 = getelementptr inbounds i64, i64* %t477, i64 %t442
+  store i64 %t441, i64* %t479
+  %t480 = getelementptr inbounds i32, i32* %t478, i64 %t442
+  store i32 80, i32* %t480
+  %t481 = add i64 %t442, 1
+  store i64 %t481, i64* %t410
   br label %map_insert_after_99
 map_insert_after_99:
-  %t475 = load i8*, i8** %t157
-  %t476 = icmp eq i8* %t475, null
-  br i1 %t476, label %map_read_null_104, label %map_read_real_105
+  %t482 = load i8*, i8** %t163
+  %t483 = icmp eq i8* %t482, null
+  br i1 %t483, label %map_read_null_104, label %map_read_real_105
 map_read_null_104:
   br label %map_read_end_106
 map_read_real_105:
-  %t477 = bitcast i8* %t475 to { i64*, i32*, i64, i64 }*
-  %t478 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t477, i32 0, i32 0
-  %t479 = load i64*, i64** %t478
-  %t480 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t477, i32 0, i32 1
-  %t481 = load i32*, i32** %t480
-  %t482 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t477, i32 0, i32 2
-  %t483 = load i64, i64* %t482
+  %t484 = bitcast i8* %t482 to { i64*, i32*, i64, i64 }*
+  %t485 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t484, i32 0, i32 0
+  %t486 = load i64*, i64** %t485
+  %t487 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t484, i32 0, i32 1
+  %t488 = load i32*, i32** %t487
+  %t489 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t484, i32 0, i32 2
+  %t490 = load i64, i64* %t489
   br label %map_read_end_106
 map_read_end_106:
-  %t484 = phi i64* [ null, %map_read_null_104 ], [ %t479, %map_read_real_105 ]
-  %t485 = phi i32* [ null, %map_read_null_104 ], [ %t481, %map_read_real_105 ]
-  %t486 = phi i64 [ 0, %map_read_null_104 ], [ %t483, %map_read_real_105 ]
-  %t487 = trunc i64 %t486 to i32
-  %t488 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.24, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t488, i32 %t487)
-  %t489 = load i64, i64* %t0
-  %t490 = load i8*, i8** %t157
-  %t491 = icmp eq i8* %t490, null
-  br i1 %t491, label %map_read_null_107, label %map_read_real_108
+  %t491 = phi i64* [ null, %map_read_null_104 ], [ %t486, %map_read_real_105 ]
+  %t492 = phi i32* [ null, %map_read_null_104 ], [ %t488, %map_read_real_105 ]
+  %t493 = phi i64 [ 0, %map_read_null_104 ], [ %t490, %map_read_real_105 ]
+  %t494 = trunc i64 %t493 to i32
+  %t495 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.24, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t495, i32 %t494)
+  %t496 = load i64, i64* %t1
+  %t497 = load i8*, i8** %t163
+  %t498 = icmp eq i8* %t497, null
+  br i1 %t498, label %map_read_null_107, label %map_read_real_108
 map_read_null_107:
   br label %map_read_end_109
 map_read_real_108:
-  %t492 = bitcast i8* %t490 to { i64*, i32*, i64, i64 }*
-  %t493 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t492, i32 0, i32 0
-  %t494 = load i64*, i64** %t493
-  %t495 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t492, i32 0, i32 1
-  %t496 = load i32*, i32** %t495
-  %t497 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t492, i32 0, i32 2
-  %t498 = load i64, i64* %t497
+  %t499 = bitcast i8* %t497 to { i64*, i32*, i64, i64 }*
+  %t500 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t499, i32 0, i32 0
+  %t501 = load i64*, i64** %t500
+  %t502 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t499, i32 0, i32 1
+  %t503 = load i32*, i32** %t502
+  %t504 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t499, i32 0, i32 2
+  %t505 = load i64, i64* %t504
   br label %map_read_end_109
 map_read_end_109:
-  %t499 = phi i64* [ null, %map_read_null_107 ], [ %t494, %map_read_real_108 ]
-  %t500 = phi i32* [ null, %map_read_null_107 ], [ %t496, %map_read_real_108 ]
-  %t501 = phi i64 [ 0, %map_read_null_107 ], [ %t498, %map_read_real_108 ]
-  store i64 0, i64* %t502
+  %t506 = phi i64* [ null, %map_read_null_107 ], [ %t501, %map_read_real_108 ]
+  %t507 = phi i32* [ null, %map_read_null_107 ], [ %t503, %map_read_real_108 ]
+  %t508 = phi i64 [ 0, %map_read_null_107 ], [ %t505, %map_read_real_108 ]
+  store i64 0, i64* %t509
   br label %map_find_cond_110
 map_find_cond_110:
-  %t503 = load i64, i64* %t502
-  %t504 = icmp slt i64 %t503, %t501
-  br i1 %t504, label %map_find_body_111, label %map_find_end_114
+  %t510 = load i64, i64* %t509
+  %t511 = icmp slt i64 %t510, %t508
+  br i1 %t511, label %map_find_body_111, label %map_find_end_114
 map_find_body_111:
-  %t505 = getelementptr inbounds i64, i64* %t499, i64 %t503
-  %t506 = load i64, i64* %t505
+  %t512 = getelementptr inbounds i64, i64* %t506, i64 %t510
+  %t513 = load i64, i64* %t512
   br label %map_find_eq_check_112
 map_find_eq_check_112:
-  %t507 = call i1 @eq_symbol(i64 %t506, i64 %t489)
-  br i1 %t507, label %map_find_end_114, label %map_find_next_113
+  %t514 = call i1 @eq_symbol(i64 %t513, i64 %t496)
+  br i1 %t514, label %map_find_end_114, label %map_find_next_113
 map_find_next_113:
-  %t508 = add i64 %t503, 1
-  store i64 %t508, i64* %t502
+  %t515 = add i64 %t510, 1
+  store i64 %t515, i64* %t509
   br label %map_find_cond_110
 map_find_end_114:
-  %t509 = load i64, i64* %t502
-  %t510 = icmp slt i64 %t509, %t501
-  br i1 %t510, label %map_get_some_115, label %map_get_none_116
+  %t516 = load i64, i64* %t509
+  %t517 = icmp slt i64 %t516, %t508
+  br i1 %t517, label %map_get_some_115, label %map_get_none_116
 map_get_some_115:
-  %t511 = getelementptr inbounds i32, i32* %t500, i64 %t509
-  %t512 = load i32, i32* %t511
-  %t514 = getelementptr inbounds %Option__i32, %Option__i32* %t513, i32 0, i32 0
-  store i32 1, i32* %t514
-  %t515 = getelementptr inbounds %Option__i32, %Option__i32* %t513, i32 0, i32 1
-  %t516 = bitcast [1 x i64]* %t515 to { i32 }*
-  %t517 = getelementptr inbounds { i32 }, { i32 }* %t516, i32 0, i32 0
-  store i32 %t512, i32* %t517
-  %t518 = load %Option__i32, %Option__i32* %t513
+  %t518 = getelementptr inbounds i32, i32* %t507, i64 %t516
+  %t519 = load i32, i32* %t518
+  %t521 = getelementptr inbounds %Option__i32, %Option__i32* %t520, i32 0, i32 0
+  store i32 1, i32* %t521
+  %t522 = getelementptr inbounds %Option__i32, %Option__i32* %t520, i32 0, i32 1
+  %t523 = bitcast [1 x i64]* %t522 to { i32 }*
+  %t524 = getelementptr inbounds { i32 }, { i32 }* %t523, i32 0, i32 0
+  store i32 %t519, i32* %t524
+  %t525 = load %Option__i32, %Option__i32* %t520
   br label %map_get_end_117
 map_get_none_116:
-  %t520 = getelementptr inbounds %Option__i32, %Option__i32* %t519, i32 0, i32 0
-  store i32 0, i32* %t520
-  %t521 = load %Option__i32, %Option__i32* %t519
+  %t527 = getelementptr inbounds %Option__i32, %Option__i32* %t526, i32 0, i32 0
+  store i32 0, i32* %t527
+  %t528 = load %Option__i32, %Option__i32* %t526
   br label %map_get_end_117
 map_get_end_117:
-  %t522 = phi %Option__i32 [ %t518, %map_get_some_115 ], [ %t521, %map_get_none_116 ]
-  store %Option__i32 %t522, %Option__i32* %t523
-  br label %match_scrutinee_525
-match_scrutinee_525:
-  %t529 = getelementptr inbounds %Option__i32, %Option__i32* %t523, i32 0, i32 0
-  %t530 = load i32, i32* %t529
-  %t528 = icmp eq i32 %t530, 1
-  br i1 %t528, label %match_then_0_526, label %match_next_0_527
-match_then_0_526:
-  %t531 = getelementptr inbounds %Option__i32, %Option__i32* %t523, i32 0, i32 1
-  %t532 = bitcast [1 x i64]* %t531 to { i32 }*
-  %t533 = getelementptr inbounds { i32 }, { i32 }* %t532, i32 0, i32 0
-  %t534 = load i32, i32* %t533
-  %t535 = getelementptr inbounds [16 x i8], [16 x i8]* @.str.25, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t535, i32 %t534)
-  br label %match_end_524
-match_next_0_527:
-  %t539 = getelementptr inbounds %Option__i32, %Option__i32* %t523, i32 0, i32 0
-  %t540 = load i32, i32* %t539
-  %t538 = icmp eq i32 %t540, 0
-  br i1 %t538, label %match_then_1_536, label %match_next_1_537
-match_then_1_536:
-  %t541 = getelementptr inbounds { i64, i8*, [18 x i8] }, { i64, i8*, [18 x i8] }* @.str.26, i64 0, i32 2, i64 0
-  call void @star_rc_release(i8* %t541)
-  call i32 (i8*, ...) @printf(i8* %t541)
-  br label %match_end_524
-match_next_1_537:
-  br label %match_end_524
-match_end_524:
-  store i8* null, i8** %t542
-  %t543 = getelementptr i64, i64* null, i32 1
-  %t544 = ptrtoint i64* %t543 to i64
-  %t545 = load i8*, i8** %t542
-  %t546 = icmp eq i8* %t545, null
-  br i1 %t546, label %set_cow_alloc_118, label %set_cow_check_119
+  %t529 = phi %Option__i32 [ %t525, %map_get_some_115 ], [ %t528, %map_get_none_116 ]
+  store %Option__i32 %t529, %Option__i32* %t530
+  br label %match_scrutinee_532
+match_scrutinee_532:
+  %t536 = getelementptr inbounds %Option__i32, %Option__i32* %t530, i32 0, i32 0
+  %t537 = load i32, i32* %t536
+  %t535 = icmp eq i32 %t537, 1
+  br i1 %t535, label %match_then_0_533, label %match_next_0_534
+match_then_0_533:
+  %t538 = getelementptr inbounds %Option__i32, %Option__i32* %t530, i32 0, i32 1
+  %t539 = bitcast [1 x i64]* %t538 to { i32 }*
+  %t540 = getelementptr inbounds { i32 }, { i32 }* %t539, i32 0, i32 0
+  %t541 = load i32, i32* %t540
+  %t542 = getelementptr inbounds [16 x i8], [16 x i8]* @.str.25, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t542, i32 %t541)
+  br label %match_end_531
+match_next_0_534:
+  %t546 = getelementptr inbounds %Option__i32, %Option__i32* %t530, i32 0, i32 0
+  %t547 = load i32, i32* %t546
+  %t545 = icmp eq i32 %t547, 0
+  br i1 %t545, label %match_then_1_543, label %match_next_1_544
+match_then_1_543:
+  %t548 = getelementptr inbounds { i64, i8*, [18 x i8] }, { i64, i8*, [18 x i8] }* @.str.26, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t548)
+  call i32 (i8*, ...) @printf(i8* %t548)
+  br label %match_end_531
+match_next_1_544:
+  br label %match_end_531
+match_end_531:
+  store i8* null, i8** %t549
+  %t550 = getelementptr i64, i64* null, i32 1
+  %t551 = ptrtoint i64* %t550 to i64
+  %t552 = load i8*, i8** %t549
+  %t553 = icmp eq i8* %t552, null
+  br i1 %t553, label %set_cow_alloc_118, label %set_cow_check_119
 set_cow_alloc_118:
-  %t551 = bitcast void (i8*)* @set_release_symbol to i8*
-  %t552 = call i8* @star_rc_alloc(i64 24, i8* %t551)
-  %t553 = bitcast i8* %t552 to { i64*, i64, i64 }*
-  %t554 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t553, i32 0, i32 0
-  store i64* null, i64** %t554
-  %t555 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t553, i32 0, i32 1
-  store i64 0, i64* %t555
-  %t556 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t553, i32 0, i32 2
-  store i64 0, i64* %t556
-  store i8* %t552, i8** %t542
+  %t558 = bitcast void (i8*)* @set_release_symbol to i8*
+  %t559 = call i8* @star_rc_alloc(i64 24, i8* %t558)
+  %t560 = bitcast i8* %t559 to { i64*, i64, i64 }*
+  %t561 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t560, i32 0, i32 0
+  store i64* null, i64** %t561
+  %t562 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t560, i32 0, i32 1
+  store i64 0, i64* %t562
+  %t563 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t560, i32 0, i32 2
+  store i64 0, i64* %t563
+  store i8* %t559, i8** %t549
   br label %set_cow_done_120
 set_cow_check_119:
-  %t557 = getelementptr inbounds i8, i8* %t545, i64 -16
-  %t558 = bitcast i8* %t557 to i64*
-  %t559 = load atomic i64, i64* %t558 seq_cst, align 8
-  %t560 = icmp eq i64 %t559, 1
-  br i1 %t560, label %set_cow_done_120, label %set_cow_clone_121
+  %t564 = getelementptr inbounds i8, i8* %t552, i64 -16
+  %t565 = bitcast i8* %t564 to i64*
+  %t566 = load atomic i64, i64* %t565 seq_cst, align 8
+  %t567 = icmp eq i64 %t566, 1
+  br i1 %t567, label %set_cow_done_120, label %set_cow_clone_121
 set_cow_clone_121:
-  %t561 = bitcast i8* %t545 to { i64*, i64, i64 }*
-  %t562 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t561, i32 0, i32 0
-  %t563 = load i64*, i64** %t562
-  %t564 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t561, i32 0, i32 1
-  %t565 = load i64, i64* %t564
-  %t566 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t561, i32 0, i32 2
-  %t567 = load i64, i64* %t566
-  %t568 = bitcast void (i8*)* @set_release_symbol to i8*
-  %t569 = call i8* @star_rc_alloc(i64 24, i8* %t568)
-  %t570 = bitcast i8* %t569 to { i64*, i64, i64 }*
-  %t571 = mul i64 %t567, %t544
-  %t572 = call i8* @malloc(i64 %t571)
-  %t573 = bitcast i8* %t572 to i64*
-  %t574 = icmp sgt i64 %t565, 0
-  br i1 %t574, label %set_cow_copy_122, label %set_cow_after_copy_123
+  %t568 = bitcast i8* %t552 to { i64*, i64, i64 }*
+  %t569 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t568, i32 0, i32 0
+  %t570 = load i64*, i64** %t569
+  %t571 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t568, i32 0, i32 1
+  %t572 = load i64, i64* %t571
+  %t573 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t568, i32 0, i32 2
+  %t574 = load i64, i64* %t573
+  %t575 = bitcast void (i8*)* @set_release_symbol to i8*
+  %t576 = call i8* @star_rc_alloc(i64 24, i8* %t575)
+  %t577 = bitcast i8* %t576 to { i64*, i64, i64 }*
+  %t578 = mul i64 %t574, %t551
+  %t579 = call i8* @malloc(i64 %t578)
+  %t580 = bitcast i8* %t579 to i64*
+  %t581 = icmp sgt i64 %t572, 0
+  br i1 %t581, label %set_cow_copy_122, label %set_cow_after_copy_123
 set_cow_copy_122:
-  %t575 = mul i64 %t565, %t544
-  %t576 = bitcast i64* %t563 to i8*
-  call i8* @memcpy(i8* %t572, i8* %t576, i64 %t575)
+  %t582 = mul i64 %t572, %t551
+  %t583 = bitcast i64* %t570 to i8*
+  call i8* @memcpy(i8* %t579, i8* %t583, i64 %t582)
   br label %set_cow_after_copy_123
 set_cow_after_copy_123:
-  %t577 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t570, i32 0, i32 0
-  store i64* %t573, i64** %t577
-  %t578 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t570, i32 0, i32 1
-  store i64 %t565, i64* %t578
-  %t579 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t570, i32 0, i32 2
-  store i64 %t567, i64* %t579
-  call void @star_rc_release(i8* %t545)
-  store i8* %t569, i8** %t542
+  %t584 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t577, i32 0, i32 0
+  store i64* %t580, i64** %t584
+  %t585 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t577, i32 0, i32 1
+  store i64 %t572, i64* %t585
+  %t586 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t577, i32 0, i32 2
+  store i64 %t574, i64* %t586
+  call void @star_rc_release(i8* %t552)
+  store i8* %t576, i8** %t549
   br label %set_cow_done_120
 set_cow_done_120:
-  %t580 = load i8*, i8** %t542
-  %t581 = bitcast i8* %t580 to { i64*, i64, i64 }*
-  %t582 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t581, i32 0, i32 0
-  %t583 = load i64*, i64** %t582
-  %t584 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t581, i32 0, i32 1
-  %t585 = load i64, i64* %t584
-  %t586 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t581, i32 0, i32 2
-  %t587 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.27, i64 0, i32 2, i64 0
-  %t588 = load i64, i64* @sym.len
-  %t589 = load i8**, i8*** @sym.data
-  store i64 0, i64* %t590
+  %t587 = load i8*, i8** %t549
+  %t588 = bitcast i8* %t587 to { i64*, i64, i64 }*
+  %t589 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t588, i32 0, i32 0
+  %t590 = load i64*, i64** %t589
+  %t591 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t588, i32 0, i32 1
+  %t592 = load i64, i64* %t591
+  %t593 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t588, i32 0, i32 2
+  %t594 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.27, i64 0, i32 2, i64 0
+  %t595 = load i8*, i8** @sym.lock
+  call i32 @WaitForSingleObject(i8* %t595, i32 -1)
+  %t596 = load i64, i64* @sym.len
+  %t597 = load i8**, i8*** @sym.data
+  store i64 0, i64* %t598
   br label %sym_find_cond_124
 sym_find_cond_124:
-  %t591 = load i64, i64* %t590
-  %t592 = icmp slt i64 %t591, %t588
-  br i1 %t592, label %sym_find_body_125, label %sym_find_end_127
+  %t599 = load i64, i64* %t598
+  %t600 = icmp slt i64 %t599, %t596
+  br i1 %t600, label %sym_find_body_125, label %sym_find_end_127
 sym_find_body_125:
-  %t593 = getelementptr inbounds i8*, i8** %t589, i64 %t591
-  %t594 = load i8*, i8** %t593
-  %t595 = call i32 @strcmp(i8* %t594, i8* %t587)
-  %t596 = icmp eq i32 %t595, 0
-  br i1 %t596, label %sym_find_end_127, label %sym_find_next_126
+  %t601 = getelementptr inbounds i8*, i8** %t597, i64 %t599
+  %t602 = load i8*, i8** %t601
+  %t603 = call i32 @strcmp(i8* %t602, i8* %t594)
+  %t604 = icmp eq i32 %t603, 0
+  br i1 %t604, label %sym_find_end_127, label %sym_find_next_126
 sym_find_next_126:
-  %t597 = add i64 %t591, 1
-  store i64 %t597, i64* %t590
+  %t605 = add i64 %t599, 1
+  store i64 %t605, i64* %t598
   br label %sym_find_cond_124
 sym_find_end_127:
-  %t598 = load i64, i64* %t590
-  %t599 = icmp slt i64 %t598, %t588
-  br i1 %t599, label %sym_found_128, label %sym_notfound_129
+  %t606 = load i64, i64* %t598
+  %t607 = icmp slt i64 %t606, %t596
+  br i1 %t607, label %sym_found_128, label %sym_notfound_129
 sym_found_128:
-  call void @star_rc_release(i8* %t587)
+  call void @star_rc_release(i8* %t594)
   br label %sym_done_130
 sym_notfound_129:
-  %t600 = load i64, i64* @sym.cap
-  %t601 = icmp sge i64 %t588, %t600
-  br i1 %t601, label %sym_grow_131, label %sym_store_132
+  %t608 = load i64, i64* @sym.cap
+  %t609 = icmp sge i64 %t596, %t608
+  br i1 %t609, label %sym_grow_131, label %sym_store_132
 sym_grow_131:
-  %t602 = mul i64 %t600, 2
-  %t603 = icmp sgt i64 %t602, 0
-  %t604 = select i1 %t603, i64 %t602, i64 1
-  %t605 = mul i64 %t604, 8
-  %t606 = call i8* @malloc(i64 %t605)
-  %t607 = bitcast i8* %t606 to i8**
-  %t608 = icmp sgt i64 %t600, 0
-  br i1 %t608, label %sym_copy_133, label %sym_after_copy_134
+  %t610 = mul i64 %t608, 2
+  %t611 = icmp sgt i64 %t610, 0
+  %t612 = select i1 %t611, i64 %t610, i64 1
+  %t613 = mul i64 %t612, 8
+  %t614 = call i8* @malloc(i64 %t613)
+  %t615 = bitcast i8* %t614 to i8**
+  %t616 = icmp sgt i64 %t608, 0
+  br i1 %t616, label %sym_copy_133, label %sym_after_copy_134
 sym_copy_133:
-  %t609 = mul i64 %t588, 8
-  %t610 = bitcast i8** %t589 to i8*
-  call i8* @memcpy(i8* %t606, i8* %t610, i64 %t609)
-  call void @free(i8* %t610)
+  %t617 = mul i64 %t596, 8
+  %t618 = bitcast i8** %t597 to i8*
+  call i8* @memcpy(i8* %t614, i8* %t618, i64 %t617)
+  call void @free(i8* %t618)
   br label %sym_after_copy_134
 sym_after_copy_134:
-  store i8** %t607, i8*** @sym.data
-  store i64 %t604, i64* @sym.cap
+  store i8** %t615, i8*** @sym.data
+  store i64 %t612, i64* @sym.cap
   br label %sym_store_132
 sym_store_132:
-  %t611 = load i8**, i8*** @sym.data
-  %t612 = getelementptr inbounds i8*, i8** %t611, i64 %t588
-  store i8* %t587, i8** %t612
-  %t613 = add i64 %t588, 1
-  store i64 %t613, i64* @sym.len
+  %t619 = load i8**, i8*** @sym.data
+  %t620 = getelementptr inbounds i8*, i8** %t619, i64 %t596
+  store i8* %t594, i8** %t620
+  %t621 = add i64 %t596, 1
+  store i64 %t621, i64* @sym.len
   br label %sym_done_130
 sym_done_130:
-  %t614 = phi i64 [ %t598, %sym_found_128 ], [ %t588, %sym_store_132 ]
-  %t615 = load i64, i64* %t584
-  %t616 = load i64*, i64** %t582
-  store i64 0, i64* %t617
-  store i1 false, i1* %t618
+  %t622 = phi i64 [ %t606, %sym_found_128 ], [ %t596, %sym_store_132 ]
+  call i32 @ReleaseSemaphore(i8* %t595, i32 1, i32* null)
+  %t623 = load i64, i64* %t591
+  %t624 = load i64*, i64** %t589
+  store i64 0, i64* %t625
+  store i1 false, i1* %t626
   br label %find_cond_135
 find_cond_135:
-  %t619 = load i64, i64* %t617
-  %t620 = icmp slt i64 %t619, %t615
-  br i1 %t620, label %find_body_136, label %find_end_139
+  %t627 = load i64, i64* %t625
+  %t628 = icmp slt i64 %t627, %t623
+  br i1 %t628, label %find_body_136, label %find_end_139
 find_body_136:
-  %t621 = getelementptr inbounds i64, i64* %t616, i64 %t619
-  %t622 = load i64, i64* %t621
+  %t629 = getelementptr inbounds i64, i64* %t624, i64 %t627
+  %t630 = load i64, i64* %t629
   br label %find_eq_check_137
 find_eq_check_137:
-  %t623 = call i1 @eq_symbol(i64 %t622, i64 %t614)
-  br i1 %t623, label %find_end_139, label %find_next_138
+  %t631 = call i1 @eq_symbol(i64 %t630, i64 %t622)
+  br i1 %t631, label %find_end_139, label %find_next_138
 find_next_138:
-  %t624 = add i64 %t619, 1
-  store i64 %t624, i64* %t617
+  %t632 = add i64 %t627, 1
+  store i64 %t632, i64* %t625
   br label %find_cond_135
 find_end_139:
-  %t625 = load i64, i64* %t617
-  %t626 = icmp slt i64 %t625, %t615
-  br i1 %t626, label %set_insert_already_present_140, label %set_insert_do_141
+  %t633 = load i64, i64* %t625
+  %t634 = icmp slt i64 %t633, %t623
+  br i1 %t634, label %set_insert_already_present_140, label %set_insert_do_141
 set_insert_already_present_140:
   br label %set_insert_end_142
 set_insert_do_141:
-  %t627 = load i64, i64* %t586
-  %t628 = load i64*, i64** %t582
-  %t629 = icmp sge i64 %t615, %t627
-  br i1 %t629, label %set_insert_grow_143, label %set_insert_store_144
+  %t635 = load i64, i64* %t593
+  %t636 = load i64*, i64** %t589
+  %t637 = icmp sge i64 %t623, %t635
+  br i1 %t637, label %set_insert_grow_143, label %set_insert_store_144
 set_insert_grow_143:
-  %t630 = mul i64 %t627, 2
-  %t631 = icmp sgt i64 %t630, 0
-  %t632 = select i1 %t631, i64 %t630, i64 1
-  %t633 = getelementptr i64, i64* null, i32 1
-  %t634 = ptrtoint i64* %t633 to i64
-  %t635 = mul i64 %t632, %t634
-  %t636 = call i8* @malloc(i64 %t635)
-  %t637 = bitcast i8* %t636 to i64*
-  %t638 = icmp sgt i64 %t627, 0
-  br i1 %t638, label %set_insert_copy_145, label %set_insert_after_copy_146
+  %t638 = mul i64 %t635, 2
+  %t639 = icmp sgt i64 %t638, 0
+  %t640 = select i1 %t639, i64 %t638, i64 1
+  %t641 = getelementptr i64, i64* null, i32 1
+  %t642 = ptrtoint i64* %t641 to i64
+  %t643 = mul i64 %t640, %t642
+  %t644 = call i8* @malloc(i64 %t643)
+  %t645 = bitcast i8* %t644 to i64*
+  %t646 = icmp sgt i64 %t635, 0
+  br i1 %t646, label %set_insert_copy_145, label %set_insert_after_copy_146
 set_insert_copy_145:
-  %t639 = mul i64 %t615, %t634
-  %t640 = bitcast i64* %t628 to i8*
-  call i8* @memcpy(i8* %t636, i8* %t640, i64 %t639)
-  call void @free(i8* %t640)
+  %t647 = mul i64 %t623, %t642
+  %t648 = bitcast i64* %t636 to i8*
+  call i8* @memcpy(i8* %t644, i8* %t648, i64 %t647)
+  call void @free(i8* %t648)
   br label %set_insert_after_copy_146
 set_insert_after_copy_146:
-  store i64* %t637, i64** %t582
-  store i64 %t632, i64* %t586
+  store i64* %t645, i64** %t589
+  store i64 %t640, i64* %t593
   br label %set_insert_store_144
 set_insert_store_144:
-  %t641 = load i64*, i64** %t582
-  %t642 = getelementptr inbounds i64, i64* %t641, i64 %t615
-  store i64 %t614, i64* %t642
-  %t643 = add i64 %t615, 1
-  store i64 %t643, i64* %t584
+  %t649 = load i64*, i64** %t589
+  %t650 = getelementptr inbounds i64, i64* %t649, i64 %t623
+  store i64 %t622, i64* %t650
+  %t651 = add i64 %t623, 1
+  store i64 %t651, i64* %t591
   br label %set_insert_end_142
 set_insert_end_142:
-  %t644 = phi i1 [ false, %set_insert_already_present_140 ], [ true, %set_insert_store_144 ]
-  %t645 = getelementptr i64, i64* null, i32 1
-  %t646 = ptrtoint i64* %t645 to i64
-  %t647 = load i8*, i8** %t542
-  %t648 = icmp eq i8* %t647, null
-  br i1 %t648, label %set_cow_alloc_147, label %set_cow_check_148
+  %t652 = phi i1 [ false, %set_insert_already_present_140 ], [ true, %set_insert_store_144 ]
+  %t653 = getelementptr i64, i64* null, i32 1
+  %t654 = ptrtoint i64* %t653 to i64
+  %t655 = load i8*, i8** %t549
+  %t656 = icmp eq i8* %t655, null
+  br i1 %t656, label %set_cow_alloc_147, label %set_cow_check_148
 set_cow_alloc_147:
-  %t649 = bitcast void (i8*)* @set_release_symbol to i8*
-  %t650 = call i8* @star_rc_alloc(i64 24, i8* %t649)
-  %t651 = bitcast i8* %t650 to { i64*, i64, i64 }*
-  %t652 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t651, i32 0, i32 0
-  store i64* null, i64** %t652
-  %t653 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t651, i32 0, i32 1
-  store i64 0, i64* %t653
-  %t654 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t651, i32 0, i32 2
-  store i64 0, i64* %t654
-  store i8* %t650, i8** %t542
+  %t657 = bitcast void (i8*)* @set_release_symbol to i8*
+  %t658 = call i8* @star_rc_alloc(i64 24, i8* %t657)
+  %t659 = bitcast i8* %t658 to { i64*, i64, i64 }*
+  %t660 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t659, i32 0, i32 0
+  store i64* null, i64** %t660
+  %t661 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t659, i32 0, i32 1
+  store i64 0, i64* %t661
+  %t662 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t659, i32 0, i32 2
+  store i64 0, i64* %t662
+  store i8* %t658, i8** %t549
   br label %set_cow_done_149
 set_cow_check_148:
-  %t655 = getelementptr inbounds i8, i8* %t647, i64 -16
-  %t656 = bitcast i8* %t655 to i64*
-  %t657 = load atomic i64, i64* %t656 seq_cst, align 8
-  %t658 = icmp eq i64 %t657, 1
-  br i1 %t658, label %set_cow_done_149, label %set_cow_clone_150
+  %t663 = getelementptr inbounds i8, i8* %t655, i64 -16
+  %t664 = bitcast i8* %t663 to i64*
+  %t665 = load atomic i64, i64* %t664 seq_cst, align 8
+  %t666 = icmp eq i64 %t665, 1
+  br i1 %t666, label %set_cow_done_149, label %set_cow_clone_150
 set_cow_clone_150:
-  %t659 = bitcast i8* %t647 to { i64*, i64, i64 }*
-  %t660 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t659, i32 0, i32 0
-  %t661 = load i64*, i64** %t660
-  %t662 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t659, i32 0, i32 1
-  %t663 = load i64, i64* %t662
-  %t664 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t659, i32 0, i32 2
-  %t665 = load i64, i64* %t664
-  %t666 = bitcast void (i8*)* @set_release_symbol to i8*
-  %t667 = call i8* @star_rc_alloc(i64 24, i8* %t666)
-  %t668 = bitcast i8* %t667 to { i64*, i64, i64 }*
-  %t669 = mul i64 %t665, %t646
-  %t670 = call i8* @malloc(i64 %t669)
-  %t671 = bitcast i8* %t670 to i64*
-  %t672 = icmp sgt i64 %t663, 0
-  br i1 %t672, label %set_cow_copy_151, label %set_cow_after_copy_152
+  %t667 = bitcast i8* %t655 to { i64*, i64, i64 }*
+  %t668 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t667, i32 0, i32 0
+  %t669 = load i64*, i64** %t668
+  %t670 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t667, i32 0, i32 1
+  %t671 = load i64, i64* %t670
+  %t672 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t667, i32 0, i32 2
+  %t673 = load i64, i64* %t672
+  %t674 = bitcast void (i8*)* @set_release_symbol to i8*
+  %t675 = call i8* @star_rc_alloc(i64 24, i8* %t674)
+  %t676 = bitcast i8* %t675 to { i64*, i64, i64 }*
+  %t677 = mul i64 %t673, %t654
+  %t678 = call i8* @malloc(i64 %t677)
+  %t679 = bitcast i8* %t678 to i64*
+  %t680 = icmp sgt i64 %t671, 0
+  br i1 %t680, label %set_cow_copy_151, label %set_cow_after_copy_152
 set_cow_copy_151:
-  %t673 = mul i64 %t663, %t646
-  %t674 = bitcast i64* %t661 to i8*
-  call i8* @memcpy(i8* %t670, i8* %t674, i64 %t673)
+  %t681 = mul i64 %t671, %t654
+  %t682 = bitcast i64* %t669 to i8*
+  call i8* @memcpy(i8* %t678, i8* %t682, i64 %t681)
   br label %set_cow_after_copy_152
 set_cow_after_copy_152:
-  %t675 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t668, i32 0, i32 0
-  store i64* %t671, i64** %t675
-  %t676 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t668, i32 0, i32 1
-  store i64 %t663, i64* %t676
-  %t677 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t668, i32 0, i32 2
-  store i64 %t665, i64* %t677
-  call void @star_rc_release(i8* %t647)
-  store i8* %t667, i8** %t542
+  %t683 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t676, i32 0, i32 0
+  store i64* %t679, i64** %t683
+  %t684 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t676, i32 0, i32 1
+  store i64 %t671, i64* %t684
+  %t685 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t676, i32 0, i32 2
+  store i64 %t673, i64* %t685
+  call void @star_rc_release(i8* %t655)
+  store i8* %t675, i8** %t549
   br label %set_cow_done_149
 set_cow_done_149:
-  %t678 = load i8*, i8** %t542
-  %t679 = bitcast i8* %t678 to { i64*, i64, i64 }*
-  %t680 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t679, i32 0, i32 0
-  %t681 = load i64*, i64** %t680
-  %t682 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t679, i32 0, i32 1
-  %t683 = load i64, i64* %t682
-  %t684 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t679, i32 0, i32 2
-  %t685 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.28, i64 0, i32 2, i64 0
-  %t686 = load i64, i64* @sym.len
-  %t687 = load i8**, i8*** @sym.data
-  store i64 0, i64* %t688
+  %t686 = load i8*, i8** %t549
+  %t687 = bitcast i8* %t686 to { i64*, i64, i64 }*
+  %t688 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t687, i32 0, i32 0
+  %t689 = load i64*, i64** %t688
+  %t690 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t687, i32 0, i32 1
+  %t691 = load i64, i64* %t690
+  %t692 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t687, i32 0, i32 2
+  %t693 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.28, i64 0, i32 2, i64 0
+  %t694 = load i8*, i8** @sym.lock
+  call i32 @WaitForSingleObject(i8* %t694, i32 -1)
+  %t695 = load i64, i64* @sym.len
+  %t696 = load i8**, i8*** @sym.data
+  store i64 0, i64* %t697
   br label %sym_find_cond_153
 sym_find_cond_153:
-  %t689 = load i64, i64* %t688
-  %t690 = icmp slt i64 %t689, %t686
-  br i1 %t690, label %sym_find_body_154, label %sym_find_end_156
+  %t698 = load i64, i64* %t697
+  %t699 = icmp slt i64 %t698, %t695
+  br i1 %t699, label %sym_find_body_154, label %sym_find_end_156
 sym_find_body_154:
-  %t691 = getelementptr inbounds i8*, i8** %t687, i64 %t689
-  %t692 = load i8*, i8** %t691
-  %t693 = call i32 @strcmp(i8* %t692, i8* %t685)
-  %t694 = icmp eq i32 %t693, 0
-  br i1 %t694, label %sym_find_end_156, label %sym_find_next_155
+  %t700 = getelementptr inbounds i8*, i8** %t696, i64 %t698
+  %t701 = load i8*, i8** %t700
+  %t702 = call i32 @strcmp(i8* %t701, i8* %t693)
+  %t703 = icmp eq i32 %t702, 0
+  br i1 %t703, label %sym_find_end_156, label %sym_find_next_155
 sym_find_next_155:
-  %t695 = add i64 %t689, 1
-  store i64 %t695, i64* %t688
+  %t704 = add i64 %t698, 1
+  store i64 %t704, i64* %t697
   br label %sym_find_cond_153
 sym_find_end_156:
-  %t696 = load i64, i64* %t688
-  %t697 = icmp slt i64 %t696, %t686
-  br i1 %t697, label %sym_found_157, label %sym_notfound_158
+  %t705 = load i64, i64* %t697
+  %t706 = icmp slt i64 %t705, %t695
+  br i1 %t706, label %sym_found_157, label %sym_notfound_158
 sym_found_157:
-  call void @star_rc_release(i8* %t685)
+  call void @star_rc_release(i8* %t693)
   br label %sym_done_159
 sym_notfound_158:
-  %t698 = load i64, i64* @sym.cap
-  %t699 = icmp sge i64 %t686, %t698
-  br i1 %t699, label %sym_grow_160, label %sym_store_161
+  %t707 = load i64, i64* @sym.cap
+  %t708 = icmp sge i64 %t695, %t707
+  br i1 %t708, label %sym_grow_160, label %sym_store_161
 sym_grow_160:
-  %t700 = mul i64 %t698, 2
-  %t701 = icmp sgt i64 %t700, 0
-  %t702 = select i1 %t701, i64 %t700, i64 1
-  %t703 = mul i64 %t702, 8
-  %t704 = call i8* @malloc(i64 %t703)
-  %t705 = bitcast i8* %t704 to i8**
-  %t706 = icmp sgt i64 %t698, 0
-  br i1 %t706, label %sym_copy_162, label %sym_after_copy_163
+  %t709 = mul i64 %t707, 2
+  %t710 = icmp sgt i64 %t709, 0
+  %t711 = select i1 %t710, i64 %t709, i64 1
+  %t712 = mul i64 %t711, 8
+  %t713 = call i8* @malloc(i64 %t712)
+  %t714 = bitcast i8* %t713 to i8**
+  %t715 = icmp sgt i64 %t707, 0
+  br i1 %t715, label %sym_copy_162, label %sym_after_copy_163
 sym_copy_162:
-  %t707 = mul i64 %t686, 8
-  %t708 = bitcast i8** %t687 to i8*
-  call i8* @memcpy(i8* %t704, i8* %t708, i64 %t707)
-  call void @free(i8* %t708)
+  %t716 = mul i64 %t695, 8
+  %t717 = bitcast i8** %t696 to i8*
+  call i8* @memcpy(i8* %t713, i8* %t717, i64 %t716)
+  call void @free(i8* %t717)
   br label %sym_after_copy_163
 sym_after_copy_163:
-  store i8** %t705, i8*** @sym.data
-  store i64 %t702, i64* @sym.cap
+  store i8** %t714, i8*** @sym.data
+  store i64 %t711, i64* @sym.cap
   br label %sym_store_161
 sym_store_161:
-  %t709 = load i8**, i8*** @sym.data
-  %t710 = getelementptr inbounds i8*, i8** %t709, i64 %t686
-  store i8* %t685, i8** %t710
-  %t711 = add i64 %t686, 1
-  store i64 %t711, i64* @sym.len
+  %t718 = load i8**, i8*** @sym.data
+  %t719 = getelementptr inbounds i8*, i8** %t718, i64 %t695
+  store i8* %t693, i8** %t719
+  %t720 = add i64 %t695, 1
+  store i64 %t720, i64* @sym.len
   br label %sym_done_159
 sym_done_159:
-  %t712 = phi i64 [ %t696, %sym_found_157 ], [ %t686, %sym_store_161 ]
-  %t713 = load i64, i64* %t682
-  %t714 = load i64*, i64** %t680
-  store i64 0, i64* %t715
-  store i1 false, i1* %t716
+  %t721 = phi i64 [ %t705, %sym_found_157 ], [ %t695, %sym_store_161 ]
+  call i32 @ReleaseSemaphore(i8* %t694, i32 1, i32* null)
+  %t722 = load i64, i64* %t690
+  %t723 = load i64*, i64** %t688
+  store i64 0, i64* %t724
+  store i1 false, i1* %t725
   br label %find_cond_164
 find_cond_164:
-  %t717 = load i64, i64* %t715
-  %t718 = icmp slt i64 %t717, %t713
-  br i1 %t718, label %find_body_165, label %find_end_168
+  %t726 = load i64, i64* %t724
+  %t727 = icmp slt i64 %t726, %t722
+  br i1 %t727, label %find_body_165, label %find_end_168
 find_body_165:
-  %t719 = getelementptr inbounds i64, i64* %t714, i64 %t717
-  %t720 = load i64, i64* %t719
+  %t728 = getelementptr inbounds i64, i64* %t723, i64 %t726
+  %t729 = load i64, i64* %t728
   br label %find_eq_check_166
 find_eq_check_166:
-  %t721 = call i1 @eq_symbol(i64 %t720, i64 %t712)
-  br i1 %t721, label %find_end_168, label %find_next_167
+  %t730 = call i1 @eq_symbol(i64 %t729, i64 %t721)
+  br i1 %t730, label %find_end_168, label %find_next_167
 find_next_167:
-  %t722 = add i64 %t717, 1
-  store i64 %t722, i64* %t715
+  %t731 = add i64 %t726, 1
+  store i64 %t731, i64* %t724
   br label %find_cond_164
 find_end_168:
-  %t723 = load i64, i64* %t715
-  %t724 = icmp slt i64 %t723, %t713
-  br i1 %t724, label %set_insert_already_present_169, label %set_insert_do_170
+  %t732 = load i64, i64* %t724
+  %t733 = icmp slt i64 %t732, %t722
+  br i1 %t733, label %set_insert_already_present_169, label %set_insert_do_170
 set_insert_already_present_169:
   br label %set_insert_end_171
 set_insert_do_170:
-  %t725 = load i64, i64* %t684
-  %t726 = load i64*, i64** %t680
-  %t727 = icmp sge i64 %t713, %t725
-  br i1 %t727, label %set_insert_grow_172, label %set_insert_store_173
+  %t734 = load i64, i64* %t692
+  %t735 = load i64*, i64** %t688
+  %t736 = icmp sge i64 %t722, %t734
+  br i1 %t736, label %set_insert_grow_172, label %set_insert_store_173
 set_insert_grow_172:
-  %t728 = mul i64 %t725, 2
-  %t729 = icmp sgt i64 %t728, 0
-  %t730 = select i1 %t729, i64 %t728, i64 1
-  %t731 = getelementptr i64, i64* null, i32 1
-  %t732 = ptrtoint i64* %t731 to i64
-  %t733 = mul i64 %t730, %t732
-  %t734 = call i8* @malloc(i64 %t733)
-  %t735 = bitcast i8* %t734 to i64*
-  %t736 = icmp sgt i64 %t725, 0
-  br i1 %t736, label %set_insert_copy_174, label %set_insert_after_copy_175
+  %t737 = mul i64 %t734, 2
+  %t738 = icmp sgt i64 %t737, 0
+  %t739 = select i1 %t738, i64 %t737, i64 1
+  %t740 = getelementptr i64, i64* null, i32 1
+  %t741 = ptrtoint i64* %t740 to i64
+  %t742 = mul i64 %t739, %t741
+  %t743 = call i8* @malloc(i64 %t742)
+  %t744 = bitcast i8* %t743 to i64*
+  %t745 = icmp sgt i64 %t734, 0
+  br i1 %t745, label %set_insert_copy_174, label %set_insert_after_copy_175
 set_insert_copy_174:
-  %t737 = mul i64 %t713, %t732
-  %t738 = bitcast i64* %t726 to i8*
-  call i8* @memcpy(i8* %t734, i8* %t738, i64 %t737)
-  call void @free(i8* %t738)
+  %t746 = mul i64 %t722, %t741
+  %t747 = bitcast i64* %t735 to i8*
+  call i8* @memcpy(i8* %t743, i8* %t747, i64 %t746)
+  call void @free(i8* %t747)
   br label %set_insert_after_copy_175
 set_insert_after_copy_175:
-  store i64* %t735, i64** %t680
-  store i64 %t730, i64* %t684
+  store i64* %t744, i64** %t688
+  store i64 %t739, i64* %t692
   br label %set_insert_store_173
 set_insert_store_173:
-  %t739 = load i64*, i64** %t680
-  %t740 = getelementptr inbounds i64, i64* %t739, i64 %t713
-  store i64 %t712, i64* %t740
-  %t741 = add i64 %t713, 1
-  store i64 %t741, i64* %t682
+  %t748 = load i64*, i64** %t688
+  %t749 = getelementptr inbounds i64, i64* %t748, i64 %t722
+  store i64 %t721, i64* %t749
+  %t750 = add i64 %t722, 1
+  store i64 %t750, i64* %t690
   br label %set_insert_end_171
 set_insert_end_171:
-  %t742 = phi i1 [ false, %set_insert_already_present_169 ], [ true, %set_insert_store_173 ]
-  %t743 = getelementptr i64, i64* null, i32 1
-  %t744 = ptrtoint i64* %t743 to i64
-  %t745 = load i8*, i8** %t542
-  %t746 = icmp eq i8* %t745, null
-  br i1 %t746, label %set_cow_alloc_176, label %set_cow_check_177
+  %t751 = phi i1 [ false, %set_insert_already_present_169 ], [ true, %set_insert_store_173 ]
+  %t752 = getelementptr i64, i64* null, i32 1
+  %t753 = ptrtoint i64* %t752 to i64
+  %t754 = load i8*, i8** %t549
+  %t755 = icmp eq i8* %t754, null
+  br i1 %t755, label %set_cow_alloc_176, label %set_cow_check_177
 set_cow_alloc_176:
-  %t747 = bitcast void (i8*)* @set_release_symbol to i8*
-  %t748 = call i8* @star_rc_alloc(i64 24, i8* %t747)
-  %t749 = bitcast i8* %t748 to { i64*, i64, i64 }*
-  %t750 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t749, i32 0, i32 0
-  store i64* null, i64** %t750
-  %t751 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t749, i32 0, i32 1
-  store i64 0, i64* %t751
-  %t752 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t749, i32 0, i32 2
-  store i64 0, i64* %t752
-  store i8* %t748, i8** %t542
+  %t756 = bitcast void (i8*)* @set_release_symbol to i8*
+  %t757 = call i8* @star_rc_alloc(i64 24, i8* %t756)
+  %t758 = bitcast i8* %t757 to { i64*, i64, i64 }*
+  %t759 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t758, i32 0, i32 0
+  store i64* null, i64** %t759
+  %t760 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t758, i32 0, i32 1
+  store i64 0, i64* %t760
+  %t761 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t758, i32 0, i32 2
+  store i64 0, i64* %t761
+  store i8* %t757, i8** %t549
   br label %set_cow_done_178
 set_cow_check_177:
-  %t753 = getelementptr inbounds i8, i8* %t745, i64 -16
-  %t754 = bitcast i8* %t753 to i64*
-  %t755 = load atomic i64, i64* %t754 seq_cst, align 8
-  %t756 = icmp eq i64 %t755, 1
-  br i1 %t756, label %set_cow_done_178, label %set_cow_clone_179
+  %t762 = getelementptr inbounds i8, i8* %t754, i64 -16
+  %t763 = bitcast i8* %t762 to i64*
+  %t764 = load atomic i64, i64* %t763 seq_cst, align 8
+  %t765 = icmp eq i64 %t764, 1
+  br i1 %t765, label %set_cow_done_178, label %set_cow_clone_179
 set_cow_clone_179:
-  %t757 = bitcast i8* %t745 to { i64*, i64, i64 }*
-  %t758 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t757, i32 0, i32 0
-  %t759 = load i64*, i64** %t758
-  %t760 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t757, i32 0, i32 1
-  %t761 = load i64, i64* %t760
-  %t762 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t757, i32 0, i32 2
-  %t763 = load i64, i64* %t762
-  %t764 = bitcast void (i8*)* @set_release_symbol to i8*
-  %t765 = call i8* @star_rc_alloc(i64 24, i8* %t764)
-  %t766 = bitcast i8* %t765 to { i64*, i64, i64 }*
-  %t767 = mul i64 %t763, %t744
-  %t768 = call i8* @malloc(i64 %t767)
-  %t769 = bitcast i8* %t768 to i64*
-  %t770 = icmp sgt i64 %t761, 0
-  br i1 %t770, label %set_cow_copy_180, label %set_cow_after_copy_181
+  %t766 = bitcast i8* %t754 to { i64*, i64, i64 }*
+  %t767 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t766, i32 0, i32 0
+  %t768 = load i64*, i64** %t767
+  %t769 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t766, i32 0, i32 1
+  %t770 = load i64, i64* %t769
+  %t771 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t766, i32 0, i32 2
+  %t772 = load i64, i64* %t771
+  %t773 = bitcast void (i8*)* @set_release_symbol to i8*
+  %t774 = call i8* @star_rc_alloc(i64 24, i8* %t773)
+  %t775 = bitcast i8* %t774 to { i64*, i64, i64 }*
+  %t776 = mul i64 %t772, %t753
+  %t777 = call i8* @malloc(i64 %t776)
+  %t778 = bitcast i8* %t777 to i64*
+  %t779 = icmp sgt i64 %t770, 0
+  br i1 %t779, label %set_cow_copy_180, label %set_cow_after_copy_181
 set_cow_copy_180:
-  %t771 = mul i64 %t761, %t744
-  %t772 = bitcast i64* %t759 to i8*
-  call i8* @memcpy(i8* %t768, i8* %t772, i64 %t771)
+  %t780 = mul i64 %t770, %t753
+  %t781 = bitcast i64* %t768 to i8*
+  call i8* @memcpy(i8* %t777, i8* %t781, i64 %t780)
   br label %set_cow_after_copy_181
 set_cow_after_copy_181:
-  %t773 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t766, i32 0, i32 0
-  store i64* %t769, i64** %t773
-  %t774 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t766, i32 0, i32 1
-  store i64 %t761, i64* %t774
-  %t775 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t766, i32 0, i32 2
-  store i64 %t763, i64* %t775
-  call void @star_rc_release(i8* %t745)
-  store i8* %t765, i8** %t542
+  %t782 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t775, i32 0, i32 0
+  store i64* %t778, i64** %t782
+  %t783 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t775, i32 0, i32 1
+  store i64 %t770, i64* %t783
+  %t784 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t775, i32 0, i32 2
+  store i64 %t772, i64* %t784
+  call void @star_rc_release(i8* %t754)
+  store i8* %t774, i8** %t549
   br label %set_cow_done_178
 set_cow_done_178:
-  %t776 = load i8*, i8** %t542
-  %t777 = bitcast i8* %t776 to { i64*, i64, i64 }*
-  %t778 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t777, i32 0, i32 0
-  %t779 = load i64*, i64** %t778
-  %t780 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t777, i32 0, i32 1
-  %t781 = load i64, i64* %t780
-  %t782 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t777, i32 0, i32 2
-  %t783 = getelementptr inbounds { i64, i8*, [8 x i8] }, { i64, i8*, [8 x i8] }* @.str.29, i64 0, i32 2, i64 0
-  %t784 = load i64, i64* @sym.len
-  %t785 = load i8**, i8*** @sym.data
-  store i64 0, i64* %t786
+  %t785 = load i8*, i8** %t549
+  %t786 = bitcast i8* %t785 to { i64*, i64, i64 }*
+  %t787 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t786, i32 0, i32 0
+  %t788 = load i64*, i64** %t787
+  %t789 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t786, i32 0, i32 1
+  %t790 = load i64, i64* %t789
+  %t791 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t786, i32 0, i32 2
+  %t792 = getelementptr inbounds { i64, i8*, [8 x i8] }, { i64, i8*, [8 x i8] }* @.str.29, i64 0, i32 2, i64 0
+  %t793 = load i8*, i8** @sym.lock
+  call i32 @WaitForSingleObject(i8* %t793, i32 -1)
+  %t794 = load i64, i64* @sym.len
+  %t795 = load i8**, i8*** @sym.data
+  store i64 0, i64* %t796
   br label %sym_find_cond_182
 sym_find_cond_182:
-  %t787 = load i64, i64* %t786
-  %t788 = icmp slt i64 %t787, %t784
-  br i1 %t788, label %sym_find_body_183, label %sym_find_end_185
+  %t797 = load i64, i64* %t796
+  %t798 = icmp slt i64 %t797, %t794
+  br i1 %t798, label %sym_find_body_183, label %sym_find_end_185
 sym_find_body_183:
-  %t789 = getelementptr inbounds i8*, i8** %t785, i64 %t787
-  %t790 = load i8*, i8** %t789
-  %t791 = call i32 @strcmp(i8* %t790, i8* %t783)
-  %t792 = icmp eq i32 %t791, 0
-  br i1 %t792, label %sym_find_end_185, label %sym_find_next_184
+  %t799 = getelementptr inbounds i8*, i8** %t795, i64 %t797
+  %t800 = load i8*, i8** %t799
+  %t801 = call i32 @strcmp(i8* %t800, i8* %t792)
+  %t802 = icmp eq i32 %t801, 0
+  br i1 %t802, label %sym_find_end_185, label %sym_find_next_184
 sym_find_next_184:
-  %t793 = add i64 %t787, 1
-  store i64 %t793, i64* %t786
+  %t803 = add i64 %t797, 1
+  store i64 %t803, i64* %t796
   br label %sym_find_cond_182
 sym_find_end_185:
-  %t794 = load i64, i64* %t786
-  %t795 = icmp slt i64 %t794, %t784
-  br i1 %t795, label %sym_found_186, label %sym_notfound_187
+  %t804 = load i64, i64* %t796
+  %t805 = icmp slt i64 %t804, %t794
+  br i1 %t805, label %sym_found_186, label %sym_notfound_187
 sym_found_186:
-  call void @star_rc_release(i8* %t783)
+  call void @star_rc_release(i8* %t792)
   br label %sym_done_188
 sym_notfound_187:
-  %t796 = load i64, i64* @sym.cap
-  %t797 = icmp sge i64 %t784, %t796
-  br i1 %t797, label %sym_grow_189, label %sym_store_190
+  %t806 = load i64, i64* @sym.cap
+  %t807 = icmp sge i64 %t794, %t806
+  br i1 %t807, label %sym_grow_189, label %sym_store_190
 sym_grow_189:
-  %t798 = mul i64 %t796, 2
-  %t799 = icmp sgt i64 %t798, 0
-  %t800 = select i1 %t799, i64 %t798, i64 1
-  %t801 = mul i64 %t800, 8
-  %t802 = call i8* @malloc(i64 %t801)
-  %t803 = bitcast i8* %t802 to i8**
-  %t804 = icmp sgt i64 %t796, 0
-  br i1 %t804, label %sym_copy_191, label %sym_after_copy_192
+  %t808 = mul i64 %t806, 2
+  %t809 = icmp sgt i64 %t808, 0
+  %t810 = select i1 %t809, i64 %t808, i64 1
+  %t811 = mul i64 %t810, 8
+  %t812 = call i8* @malloc(i64 %t811)
+  %t813 = bitcast i8* %t812 to i8**
+  %t814 = icmp sgt i64 %t806, 0
+  br i1 %t814, label %sym_copy_191, label %sym_after_copy_192
 sym_copy_191:
-  %t805 = mul i64 %t784, 8
-  %t806 = bitcast i8** %t785 to i8*
-  call i8* @memcpy(i8* %t802, i8* %t806, i64 %t805)
-  call void @free(i8* %t806)
+  %t815 = mul i64 %t794, 8
+  %t816 = bitcast i8** %t795 to i8*
+  call i8* @memcpy(i8* %t812, i8* %t816, i64 %t815)
+  call void @free(i8* %t816)
   br label %sym_after_copy_192
 sym_after_copy_192:
-  store i8** %t803, i8*** @sym.data
-  store i64 %t800, i64* @sym.cap
+  store i8** %t813, i8*** @sym.data
+  store i64 %t810, i64* @sym.cap
   br label %sym_store_190
 sym_store_190:
-  %t807 = load i8**, i8*** @sym.data
-  %t808 = getelementptr inbounds i8*, i8** %t807, i64 %t784
-  store i8* %t783, i8** %t808
-  %t809 = add i64 %t784, 1
-  store i64 %t809, i64* @sym.len
+  %t817 = load i8**, i8*** @sym.data
+  %t818 = getelementptr inbounds i8*, i8** %t817, i64 %t794
+  store i8* %t792, i8** %t818
+  %t819 = add i64 %t794, 1
+  store i64 %t819, i64* @sym.len
   br label %sym_done_188
 sym_done_188:
-  %t810 = phi i64 [ %t794, %sym_found_186 ], [ %t784, %sym_store_190 ]
-  %t811 = load i64, i64* %t780
-  %t812 = load i64*, i64** %t778
-  store i64 0, i64* %t813
-  store i1 false, i1* %t814
+  %t820 = phi i64 [ %t804, %sym_found_186 ], [ %t794, %sym_store_190 ]
+  call i32 @ReleaseSemaphore(i8* %t793, i32 1, i32* null)
+  %t821 = load i64, i64* %t789
+  %t822 = load i64*, i64** %t787
+  store i64 0, i64* %t823
+  store i1 false, i1* %t824
   br label %find_cond_193
 find_cond_193:
-  %t815 = load i64, i64* %t813
-  %t816 = icmp slt i64 %t815, %t811
-  br i1 %t816, label %find_body_194, label %find_end_197
+  %t825 = load i64, i64* %t823
+  %t826 = icmp slt i64 %t825, %t821
+  br i1 %t826, label %find_body_194, label %find_end_197
 find_body_194:
-  %t817 = getelementptr inbounds i64, i64* %t812, i64 %t815
-  %t818 = load i64, i64* %t817
+  %t827 = getelementptr inbounds i64, i64* %t822, i64 %t825
+  %t828 = load i64, i64* %t827
   br label %find_eq_check_195
 find_eq_check_195:
-  %t819 = call i1 @eq_symbol(i64 %t818, i64 %t810)
-  br i1 %t819, label %find_end_197, label %find_next_196
+  %t829 = call i1 @eq_symbol(i64 %t828, i64 %t820)
+  br i1 %t829, label %find_end_197, label %find_next_196
 find_next_196:
-  %t820 = add i64 %t815, 1
-  store i64 %t820, i64* %t813
+  %t830 = add i64 %t825, 1
+  store i64 %t830, i64* %t823
   br label %find_cond_193
 find_end_197:
-  %t821 = load i64, i64* %t813
-  %t822 = icmp slt i64 %t821, %t811
-  br i1 %t822, label %set_insert_already_present_198, label %set_insert_do_199
+  %t831 = load i64, i64* %t823
+  %t832 = icmp slt i64 %t831, %t821
+  br i1 %t832, label %set_insert_already_present_198, label %set_insert_do_199
 set_insert_already_present_198:
   br label %set_insert_end_200
 set_insert_do_199:
-  %t823 = load i64, i64* %t782
-  %t824 = load i64*, i64** %t778
-  %t825 = icmp sge i64 %t811, %t823
-  br i1 %t825, label %set_insert_grow_201, label %set_insert_store_202
+  %t833 = load i64, i64* %t791
+  %t834 = load i64*, i64** %t787
+  %t835 = icmp sge i64 %t821, %t833
+  br i1 %t835, label %set_insert_grow_201, label %set_insert_store_202
 set_insert_grow_201:
-  %t826 = mul i64 %t823, 2
-  %t827 = icmp sgt i64 %t826, 0
-  %t828 = select i1 %t827, i64 %t826, i64 1
-  %t829 = getelementptr i64, i64* null, i32 1
-  %t830 = ptrtoint i64* %t829 to i64
-  %t831 = mul i64 %t828, %t830
-  %t832 = call i8* @malloc(i64 %t831)
-  %t833 = bitcast i8* %t832 to i64*
-  %t834 = icmp sgt i64 %t823, 0
-  br i1 %t834, label %set_insert_copy_203, label %set_insert_after_copy_204
+  %t836 = mul i64 %t833, 2
+  %t837 = icmp sgt i64 %t836, 0
+  %t838 = select i1 %t837, i64 %t836, i64 1
+  %t839 = getelementptr i64, i64* null, i32 1
+  %t840 = ptrtoint i64* %t839 to i64
+  %t841 = mul i64 %t838, %t840
+  %t842 = call i8* @malloc(i64 %t841)
+  %t843 = bitcast i8* %t842 to i64*
+  %t844 = icmp sgt i64 %t833, 0
+  br i1 %t844, label %set_insert_copy_203, label %set_insert_after_copy_204
 set_insert_copy_203:
-  %t835 = mul i64 %t811, %t830
-  %t836 = bitcast i64* %t824 to i8*
-  call i8* @memcpy(i8* %t832, i8* %t836, i64 %t835)
-  call void @free(i8* %t836)
+  %t845 = mul i64 %t821, %t840
+  %t846 = bitcast i64* %t834 to i8*
+  call i8* @memcpy(i8* %t842, i8* %t846, i64 %t845)
+  call void @free(i8* %t846)
   br label %set_insert_after_copy_204
 set_insert_after_copy_204:
-  store i64* %t833, i64** %t778
-  store i64 %t828, i64* %t782
+  store i64* %t843, i64** %t787
+  store i64 %t838, i64* %t791
   br label %set_insert_store_202
 set_insert_store_202:
-  %t837 = load i64*, i64** %t778
-  %t838 = getelementptr inbounds i64, i64* %t837, i64 %t811
-  store i64 %t810, i64* %t838
-  %t839 = add i64 %t811, 1
-  store i64 %t839, i64* %t780
+  %t847 = load i64*, i64** %t787
+  %t848 = getelementptr inbounds i64, i64* %t847, i64 %t821
+  store i64 %t820, i64* %t848
+  %t849 = add i64 %t821, 1
+  store i64 %t849, i64* %t789
   br label %set_insert_end_200
 set_insert_end_200:
-  %t840 = phi i1 [ false, %set_insert_already_present_198 ], [ true, %set_insert_store_202 ]
-  %t841 = load i8*, i8** %t542
-  %t842 = icmp eq i8* %t841, null
-  br i1 %t842, label %set_read_null_205, label %set_read_real_206
+  %t850 = phi i1 [ false, %set_insert_already_present_198 ], [ true, %set_insert_store_202 ]
+  %t851 = load i8*, i8** %t549
+  %t852 = icmp eq i8* %t851, null
+  br i1 %t852, label %set_read_null_205, label %set_read_real_206
 set_read_null_205:
   br label %set_read_end_207
 set_read_real_206:
-  %t843 = bitcast i8* %t841 to { i64*, i64, i64 }*
-  %t844 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t843, i32 0, i32 0
-  %t845 = load i64*, i64** %t844
-  %t846 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t843, i32 0, i32 1
-  %t847 = load i64, i64* %t846
+  %t853 = bitcast i8* %t851 to { i64*, i64, i64 }*
+  %t854 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t853, i32 0, i32 0
+  %t855 = load i64*, i64** %t854
+  %t856 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t853, i32 0, i32 1
+  %t857 = load i64, i64* %t856
   br label %set_read_end_207
 set_read_end_207:
-  %t848 = phi i64* [ null, %set_read_null_205 ], [ %t845, %set_read_real_206 ]
-  %t849 = phi i64 [ 0, %set_read_null_205 ], [ %t847, %set_read_real_206 ]
-  %t850 = trunc i64 %t849 to i32
-  %t851 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.30, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t851, i32 %t850)
-  %t853 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.31, i64 0, i32 2, i64 0
-  %t854 = load i64, i64* @sym.len
-  %t855 = load i8**, i8*** @sym.data
-  store i64 0, i64* %t856
+  %t858 = phi i64* [ null, %set_read_null_205 ], [ %t855, %set_read_real_206 ]
+  %t859 = phi i64 [ 0, %set_read_null_205 ], [ %t857, %set_read_real_206 ]
+  %t860 = trunc i64 %t859 to i32
+  %t861 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.30, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t861, i32 %t860)
+  %t863 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.31, i64 0, i32 2, i64 0
+  %t864 = load i8*, i8** @sym.lock
+  call i32 @WaitForSingleObject(i8* %t864, i32 -1)
+  %t865 = load i64, i64* @sym.len
+  %t866 = load i8**, i8*** @sym.data
+  store i64 0, i64* %t867
   br label %sym_find_cond_208
 sym_find_cond_208:
-  %t857 = load i64, i64* %t856
-  %t858 = icmp slt i64 %t857, %t854
-  br i1 %t858, label %sym_find_body_209, label %sym_find_end_211
+  %t868 = load i64, i64* %t867
+  %t869 = icmp slt i64 %t868, %t865
+  br i1 %t869, label %sym_find_body_209, label %sym_find_end_211
 sym_find_body_209:
-  %t859 = getelementptr inbounds i8*, i8** %t855, i64 %t857
-  %t860 = load i8*, i8** %t859
-  %t861 = call i32 @strcmp(i8* %t860, i8* %t853)
-  %t862 = icmp eq i32 %t861, 0
-  br i1 %t862, label %sym_find_end_211, label %sym_find_next_210
+  %t870 = getelementptr inbounds i8*, i8** %t866, i64 %t868
+  %t871 = load i8*, i8** %t870
+  %t872 = call i32 @strcmp(i8* %t871, i8* %t863)
+  %t873 = icmp eq i32 %t872, 0
+  br i1 %t873, label %sym_find_end_211, label %sym_find_next_210
 sym_find_next_210:
-  %t863 = add i64 %t857, 1
-  store i64 %t863, i64* %t856
+  %t874 = add i64 %t868, 1
+  store i64 %t874, i64* %t867
   br label %sym_find_cond_208
 sym_find_end_211:
-  %t864 = load i64, i64* %t856
-  %t865 = icmp slt i64 %t864, %t854
-  br i1 %t865, label %sym_found_212, label %sym_notfound_213
+  %t875 = load i64, i64* %t867
+  %t876 = icmp slt i64 %t875, %t865
+  br i1 %t876, label %sym_found_212, label %sym_notfound_213
 sym_found_212:
-  call void @star_rc_release(i8* %t853)
+  call void @star_rc_release(i8* %t863)
   br label %sym_done_214
 sym_notfound_213:
-  %t866 = load i64, i64* @sym.cap
-  %t867 = icmp sge i64 %t854, %t866
-  br i1 %t867, label %sym_grow_215, label %sym_store_216
+  %t877 = load i64, i64* @sym.cap
+  %t878 = icmp sge i64 %t865, %t877
+  br i1 %t878, label %sym_grow_215, label %sym_store_216
 sym_grow_215:
-  %t868 = mul i64 %t866, 2
-  %t869 = icmp sgt i64 %t868, 0
-  %t870 = select i1 %t869, i64 %t868, i64 1
-  %t871 = mul i64 %t870, 8
-  %t872 = call i8* @malloc(i64 %t871)
-  %t873 = bitcast i8* %t872 to i8**
-  %t874 = icmp sgt i64 %t866, 0
-  br i1 %t874, label %sym_copy_217, label %sym_after_copy_218
+  %t879 = mul i64 %t877, 2
+  %t880 = icmp sgt i64 %t879, 0
+  %t881 = select i1 %t880, i64 %t879, i64 1
+  %t882 = mul i64 %t881, 8
+  %t883 = call i8* @malloc(i64 %t882)
+  %t884 = bitcast i8* %t883 to i8**
+  %t885 = icmp sgt i64 %t877, 0
+  br i1 %t885, label %sym_copy_217, label %sym_after_copy_218
 sym_copy_217:
-  %t875 = mul i64 %t854, 8
-  %t876 = bitcast i8** %t855 to i8*
-  call i8* @memcpy(i8* %t872, i8* %t876, i64 %t875)
-  call void @free(i8* %t876)
+  %t886 = mul i64 %t865, 8
+  %t887 = bitcast i8** %t866 to i8*
+  call i8* @memcpy(i8* %t883, i8* %t887, i64 %t886)
+  call void @free(i8* %t887)
   br label %sym_after_copy_218
 sym_after_copy_218:
-  store i8** %t873, i8*** @sym.data
-  store i64 %t870, i64* @sym.cap
+  store i8** %t884, i8*** @sym.data
+  store i64 %t881, i64* @sym.cap
   br label %sym_store_216
 sym_store_216:
-  %t877 = load i8**, i8*** @sym.data
-  %t878 = getelementptr inbounds i8*, i8** %t877, i64 %t854
-  store i8* %t853, i8** %t878
-  %t879 = add i64 %t854, 1
-  store i64 %t879, i64* @sym.len
+  %t888 = load i8**, i8*** @sym.data
+  %t889 = getelementptr inbounds i8*, i8** %t888, i64 %t865
+  store i8* %t863, i8** %t889
+  %t890 = add i64 %t865, 1
+  store i64 %t890, i64* @sym.len
   br label %sym_done_214
 sym_done_214:
-  %t880 = phi i64 [ %t864, %sym_found_212 ], [ %t854, %sym_store_216 ]
-  %t881 = load i8*, i8** %t542
-  %t882 = icmp eq i8* %t881, null
-  br i1 %t882, label %set_read_null_219, label %set_read_real_220
+  %t891 = phi i64 [ %t875, %sym_found_212 ], [ %t865, %sym_store_216 ]
+  call i32 @ReleaseSemaphore(i8* %t864, i32 1, i32* null)
+  %t892 = load i8*, i8** %t549
+  %t893 = icmp eq i8* %t892, null
+  br i1 %t893, label %set_read_null_219, label %set_read_real_220
 set_read_null_219:
   br label %set_read_end_221
 set_read_real_220:
-  %t883 = bitcast i8* %t881 to { i64*, i64, i64 }*
-  %t884 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t883, i32 0, i32 0
-  %t885 = load i64*, i64** %t884
-  %t886 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t883, i32 0, i32 1
-  %t887 = load i64, i64* %t886
+  %t894 = bitcast i8* %t892 to { i64*, i64, i64 }*
+  %t895 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t894, i32 0, i32 0
+  %t896 = load i64*, i64** %t895
+  %t897 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t894, i32 0, i32 1
+  %t898 = load i64, i64* %t897
   br label %set_read_end_221
 set_read_end_221:
-  %t888 = phi i64* [ null, %set_read_null_219 ], [ %t885, %set_read_real_220 ]
-  %t889 = phi i64 [ 0, %set_read_null_219 ], [ %t887, %set_read_real_220 ]
-  store i64 0, i64* %t890
-  store i1 false, i1* %t891
+  %t899 = phi i64* [ null, %set_read_null_219 ], [ %t896, %set_read_real_220 ]
+  %t900 = phi i64 [ 0, %set_read_null_219 ], [ %t898, %set_read_real_220 ]
+  store i64 0, i64* %t901
+  store i1 false, i1* %t902
   br label %find_cond_222
 find_cond_222:
-  %t892 = load i64, i64* %t890
-  %t893 = icmp slt i64 %t892, %t889
-  br i1 %t893, label %find_body_223, label %find_end_226
+  %t903 = load i64, i64* %t901
+  %t904 = icmp slt i64 %t903, %t900
+  br i1 %t904, label %find_body_223, label %find_end_226
 find_body_223:
-  %t894 = getelementptr inbounds i64, i64* %t888, i64 %t892
-  %t895 = load i64, i64* %t894
+  %t905 = getelementptr inbounds i64, i64* %t899, i64 %t903
+  %t906 = load i64, i64* %t905
   br label %find_eq_check_224
 find_eq_check_224:
-  %t896 = call i1 @eq_symbol(i64 %t895, i64 %t880)
-  br i1 %t896, label %find_end_226, label %find_next_225
+  %t907 = call i1 @eq_symbol(i64 %t906, i64 %t891)
+  br i1 %t907, label %find_end_226, label %find_next_225
 find_next_225:
-  %t897 = add i64 %t892, 1
-  store i64 %t897, i64* %t890
+  %t908 = add i64 %t903, 1
+  store i64 %t908, i64* %t901
   br label %find_cond_222
 find_end_226:
-  %t898 = load i64, i64* %t890
-  %t899 = icmp slt i64 %t898, %t889
-  store i1 %t899, i1* %t852
-  %t900 = load i1, i1* %t852
-  %t901 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.32, i64 0, i64 0
-  %t902 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.33, i64 0, i64 0
-  %t903 = select i1 %t900, i8* %t901, i8* %t902
-  %t904 = getelementptr inbounds [29 x i8], [29 x i8]* @.str.34, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t904, i8* %t903)
-  %t905 = load i8*, i8** %t542
-  call void @star_rc_release(i8* %t905)
-  %t906 = load i8*, i8** %t157
-  call void @star_rc_release(i8* %t906)
+  %t909 = load i64, i64* %t901
+  %t910 = icmp slt i64 %t909, %t900
+  store i1 %t910, i1* %t862
+  %t911 = load i1, i1* %t862
+  %t912 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.32, i64 0, i64 0
+  %t913 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.33, i64 0, i64 0
+  %t914 = select i1 %t911, i8* %t912, i8* %t913
+  %t915 = getelementptr inbounds [29 x i8], [29 x i8]* @.str.34, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t915, i8* %t914)
+  %t916 = load i8*, i8** %t549
+  call void @star_rc_release(i8* %t916)
+  %t917 = load i8*, i8** %t163
+  call void @star_rc_release(i8* %t917)
   ret i32 0
 }
 
@@ -1770,33 +1803,33 @@ find_end_226:
 ; par/swarm worker functions
 define void @map_release_6_symboli32(i8* %objp) {
 entry:
-  %t164 = bitcast i8* %objp to { i64*, i32*, i64, i64 }*
-  %t165 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t164, i32 0, i32 0
-  %t166 = load i64*, i64** %t165
-  %t167 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t164, i32 0, i32 1
-  %t168 = load i32*, i32** %t167
-  %t169 = bitcast i64* %t166 to i8*
-  call void @free(i8* %t169)
-  %t170 = bitcast i32* %t168 to i8*
-  call void @free(i8* %t170)
+  %t170 = bitcast i8* %objp to { i64*, i32*, i64, i64 }*
+  %t171 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t170, i32 0, i32 0
+  %t172 = load i64*, i64** %t171
+  %t173 = getelementptr inbounds { i64*, i32*, i64, i64 }, { i64*, i32*, i64, i64 }* %t170, i32 0, i32 1
+  %t174 = load i32*, i32** %t173
+  %t175 = bitcast i64* %t172 to i8*
+  call void @free(i8* %t175)
+  %t176 = bitcast i32* %t174 to i8*
+  call void @free(i8* %t176)
   ret void
 }
 
 
 define i1 @eq_symbol(i64 %a, i64 %b) {
 entry:
-  %t221 = icmp eq i64 %a, %b
-  ret i1 %t221
+  %t227 = icmp eq i64 %a, %b
+  ret i1 %t227
 }
 
 
 define void @set_release_symbol(i8* %objp) {
 entry:
-  %t547 = bitcast i8* %objp to { i64*, i64, i64 }*
-  %t548 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t547, i32 0, i32 0
-  %t549 = load i64*, i64** %t548
-  %t550 = bitcast i64* %t549 to i8*
-  call void @free(i8* %t550)
+  %t554 = bitcast i8* %objp to { i64*, i64, i64 }*
+  %t555 = getelementptr inbounds { i64*, i64, i64 }, { i64*, i64, i64 }* %t554, i32 0, i32 0
+  %t556 = load i64*, i64** %t555
+  %t557 = bitcast i64* %t556 to i8*
+  call void @free(i8* %t557)
   ret void
 }
 

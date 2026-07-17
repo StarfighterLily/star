@@ -2334,7 +2334,25 @@ impl Checker {
         }
         let name = match &base_ty {
             Ty::Named(n) => n,
-            _ => return Ty::Named("unknown".into()),
+            // Every other concrete type (`Mat4`, `Tick`/`Duration`/
+            // `Instant`, `str`, `bool`, `List<T>`/`Map<K,V>`/`Set<T>`/
+            // `Table<T>`, every numeric width, an enum value, ...) has no
+            // fields at all -- unlike the `Ty::Named` branch below, whose
+            // "not a known struct" case can legitimately be a synthesized/
+            // inferred placeholder standing in for an error already
+            // reported elsewhere, a non-`Named`/non-vec type here is always
+            // a fully concrete, already-resolved type. Silently falling
+            // through (as this used to, returning `unknown` with no
+            // diagnostic) let something like `mat4_value.x` or
+            // `some_option.field` type-check with zero errors, only to
+            // blow up later at codegen with an unlocated "field access on
+            // non-struct type" that names neither the offending field nor
+            // its type. Report it here instead, mirroring the struct
+            // branch's own "no field on struct" diagnostic below.
+            _ => {
+                self.error(format!("no field `{}` on type `{:?}`", field, base_ty), span);
+                return Ty::Named("unknown".into());
+            }
         };
         let Some(sdef) = self.structs.get(name).cloned() else {
             // Unknown struct name: already reported elsewhere (or is a

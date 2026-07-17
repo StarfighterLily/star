@@ -94,6 +94,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @sym.data = global i8** null
 @sym.len = global i64 0
 @sym.cap = global i64 0
+@sym.lock = global i8* null
 
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
@@ -197,44 +198,46 @@ entry:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t0 = alloca { i8*, i8* }
-  %t5 = alloca i32
+  %t1 = alloca { i8*, i8* }
   %t6 = alloca i32
+  %t7 = alloca i32
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t2 = bitcast i32 (i8*, i8*)* @fnval_atoi to i8*
-  %t3 = insertvalue { i8*, i8* } undef, i8* %t2, 0
-  %t4 = insertvalue { i8*, i8* } %t3, i8* null, 1
-  store { i8*, i8* } %t4, { i8*, i8* }* %t0
-  store i32 0, i32* %t5
+  %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t0, i8** @sym.lock
+  %t3 = bitcast i32 (i8*, i8*)* @fnval_atoi to i8*
+  %t4 = insertvalue { i8*, i8* } undef, i8* %t3, 0
+  %t5 = insertvalue { i8*, i8* } %t4, i8* null, 1
+  store { i8*, i8* } %t5, { i8*, i8* }* %t1
   store i32 0, i32* %t6
+  store i32 0, i32* %t7
   br label %while_cond_0
 while_cond_0:
-  %t7 = load i32, i32* %t5
-  %t8 = icmp slt i32 %t7, 5000000
-  br i1 %t8, label %while_body_1, label %while_else_2
+  %t8 = load i32, i32* %t6
+  %t9 = icmp slt i32 %t8, 5000000
+  br i1 %t9, label %while_body_1, label %while_else_2
 while_body_1:
-  %t9 = load i32, i32* %t6
-  %t10 = load { i8*, i8* }, { i8*, i8* }* %t0
-  %t11 = load { i8*, i8* }, { i8*, i8* }* %t0
-  %t12 = extractvalue { i8*, i8* } %t11, 1
-  call void @star_rc_retain(i8* %t12)
-  %t13 = call i32 @call_it({ i8*, i8* } %t10)
-  %t14 = add i32 %t9, %t13
-  store i32 %t14, i32* %t6
-  %t15 = load i32, i32* %t5
-  %t16 = add i32 %t15, 1
-  store i32 %t16, i32* %t5
+  %t10 = load i32, i32* %t7
+  %t11 = load { i8*, i8* }, { i8*, i8* }* %t1
+  %t12 = load { i8*, i8* }, { i8*, i8* }* %t1
+  %t13 = extractvalue { i8*, i8* } %t12, 1
+  call void @star_rc_retain(i8* %t13)
+  %t14 = call i32 @call_it({ i8*, i8* } %t11)
+  %t15 = add i32 %t10, %t14
+  store i32 %t15, i32* %t7
+  %t16 = load i32, i32* %t6
+  %t17 = add i32 %t16, 1
+  store i32 %t17, i32* %t6
   br label %while_cond_0
 while_else_2:
   br label %while_end_3
 while_end_3:
-  %t17 = load i32, i32* %t6
-  %t18 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.2, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t18, i32 %t17)
-  %t19 = load { i8*, i8* }, { i8*, i8* }* %t0
-  %t20 = extractvalue { i8*, i8* } %t19, 1
-  call void @star_rc_release(i8* %t20)
+  %t18 = load i32, i32* %t7
+  %t19 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.2, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t19, i32 %t18)
+  %t20 = load { i8*, i8* }, { i8*, i8* }* %t1
+  %t21 = extractvalue { i8*, i8* } %t20, 1
+  call void @star_rc_release(i8* %t21)
   ret i32 0
 }
 
@@ -242,9 +245,9 @@ while_end_3:
 ; par/swarm worker functions
 define i32 @fnval_atoi(i8* %envp, i8* %arg_0) {
 entry:
-  %t1 = call i32 @atoi(i8* %arg_0)
+  %t2 = call i32 @atoi(i8* %arg_0)
   call void @star_rc_release(i8* %arg_0)
-  ret i32 %t1
+  ret i32 %t2
 }
 
 

@@ -94,6 +94,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @sym.data = global i8** null
 @sym.len = global i64 0
 @sym.cap = global i64 0
+@sym.lock = global i8* null
 
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
@@ -159,37 +160,39 @@ done:
 %Enemy = type { i32 }
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t0 = alloca %Enemy
   %t1 = alloca %Enemy
-  %t5 = alloca i32
+  %t2 = alloca %Enemy
+  %t6 = alloca i32
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t2 = getelementptr inbounds %Enemy, %Enemy* %t1, i32 0, i32 0
-  store i32 0, i32* %t2
-  %t3 = load %Enemy, %Enemy* %t1
-  store %Enemy %t3, %Enemy* %t0
-  %t4 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.0, i64 0, i32 2, i64 0
-  call void @star_rc_release(i8* %t4)
-  call i32 (i8*, ...) @printf(i8* %t4)
-  %t6 = getelementptr inbounds %Enemy, %Enemy* %t0, i32 0, i32 0
-  %t7 = load i32, i32* %t6
-  %t8 = icmp eq i32 %t7, 0
-  %t9 = icmp eq i32 10, -2147483648
-  %t10 = icmp eq i32 %t7, -1
-  %t11 = and i1 %t9, %t10
-  %t12 = or i1 %t8, %t11
-  br i1 %t12, label %int_div_fail_0, label %int_div_ok_1
+  %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t0, i8** @sym.lock
+  %t3 = getelementptr inbounds %Enemy, %Enemy* %t2, i32 0, i32 0
+  store i32 0, i32* %t3
+  %t4 = load %Enemy, %Enemy* %t2
+  store %Enemy %t4, %Enemy* %t1
+  %t5 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.0, i64 0, i32 2, i64 0
+  call void @star_rc_release(i8* %t5)
+  call i32 (i8*, ...) @printf(i8* %t5)
+  %t7 = getelementptr inbounds %Enemy, %Enemy* %t1, i32 0, i32 0
+  %t8 = load i32, i32* %t7
+  %t9 = icmp eq i32 %t8, 0
+  %t10 = icmp eq i32 10, -2147483648
+  %t11 = icmp eq i32 %t8, -1
+  %t12 = and i1 %t10, %t11
+  %t13 = or i1 %t9, %t12
+  br i1 %t13, label %int_div_fail_0, label %int_div_ok_1
 int_div_fail_0:
-  %t13 = getelementptr inbounds [71 x i8], [71 x i8]* @.str.1, i64 0, i64 0
-  call i32 @puts(i8* %t13)
+  %t14 = getelementptr inbounds [71 x i8], [71 x i8]* @.str.1, i64 0, i64 0
+  call i32 @puts(i8* %t14)
   call void @exit(i32 1)
   unreachable
 int_div_ok_1:
-  %t14 = sdiv i32 10, %t7
-  store i32 %t14, i32* %t5
-  %t15 = load i32, i32* %t5
-  %t16 = getelementptr inbounds [36 x i8], [36 x i8]* @.str.2, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t16, i32 %t15)
+  %t15 = sdiv i32 10, %t8
+  store i32 %t15, i32* %t6
+  %t16 = load i32, i32* %t6
+  %t17 = getelementptr inbounds [36 x i8], [36 x i8]* @.str.2, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t17, i32 %t16)
   ret i32 0
 }
 

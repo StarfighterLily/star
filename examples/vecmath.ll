@@ -94,6 +94,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @sym.data = global i8** null
 @sym.len = global i64 0
 @sym.cap = global i64 0
+@sym.lock = global i8* null
 
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
@@ -158,215 +159,217 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t0 = alloca <3 x float>
-  %t4 = alloca <3 x float>
-  %t8 = alloca <3 x float>
-  %t22 = alloca <3 x float>
-  %t38 = alloca <4 x float>
-  %t43 = alloca <4 x float>
-  %t48 = alloca <4 x float>
-  %t65 = alloca <3 x float>
-  %t78 = alloca [4 x <4 x float>]
-  %t99 = alloca <4 x float>
-  %t155 = alloca <4 x float>
-  %t169 = alloca <2 x float>
+  %t1 = alloca <3 x float>
+  %t5 = alloca <3 x float>
+  %t9 = alloca <3 x float>
+  %t23 = alloca <3 x float>
+  %t39 = alloca <4 x float>
+  %t44 = alloca <4 x float>
+  %t49 = alloca <4 x float>
+  %t66 = alloca <3 x float>
+  %t79 = alloca [4 x <4 x float>]
+  %t100 = alloca <4 x float>
+  %t156 = alloca <4 x float>
+  %t170 = alloca <2 x float>
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t1 = insertelement <3 x float> undef, float 0x3FF0000000000000, i32 0
-  %t2 = insertelement <3 x float> %t1, float 0x4000000000000000, i32 1
-  %t3 = insertelement <3 x float> %t2, float 0x4008000000000000, i32 2
-  store <3 x float> %t3, <3 x float>* %t0
-  %t5 = insertelement <3 x float> undef, float 0x4024000000000000, i32 0
-  %t6 = insertelement <3 x float> %t5, float 0x4034000000000000, i32 1
-  %t7 = insertelement <3 x float> %t6, float 0x403E000000000000, i32 2
-  store <3 x float> %t7, <3 x float>* %t4
-  %t9 = load <3 x float>, <3 x float>* %t0
-  %t10 = load <3 x float>, <3 x float>* %t4
-  %t11 = fadd <3 x float> %t9, %t10
-  store <3 x float> %t11, <3 x float>* %t8
-  %t12 = load <3 x float>, <3 x float>* %t8
-  %t13 = extractelement <3 x float> %t12, i32 0
-  %t14 = load <3 x float>, <3 x float>* %t8
-  %t15 = extractelement <3 x float> %t14, i32 1
-  %t16 = load <3 x float>, <3 x float>* %t8
-  %t17 = extractelement <3 x float> %t16, i32 2
-  %t18 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.0, i64 0, i64 0
-  %t19 = fpext float %t13 to double
-  %t20 = fpext float %t15 to double
-  %t21 = fpext float %t17 to double
-  call i32 (i8*, ...) @printf(i8* %t18, double %t19, double %t20, double %t21)
-  %t23 = load <3 x float>, <3 x float>* %t0
-  %t24 = insertelement <3 x float> undef, float 0x4000000000000000, i32 0
-  %t25 = insertelement <3 x float> %t24, float 0x4000000000000000, i32 1
-  %t26 = insertelement <3 x float> %t25, float 0x4000000000000000, i32 2
-  %t27 = fmul <3 x float> %t23, %t26
-  store <3 x float> %t27, <3 x float>* %t22
-  %t28 = load <3 x float>, <3 x float>* %t22
-  %t29 = extractelement <3 x float> %t28, i32 0
-  %t30 = load <3 x float>, <3 x float>* %t22
-  %t31 = extractelement <3 x float> %t30, i32 1
-  %t32 = load <3 x float>, <3 x float>* %t22
-  %t33 = extractelement <3 x float> %t32, i32 2
-  %t34 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.1, i64 0, i64 0
-  %t35 = fpext float %t29 to double
-  %t36 = fpext float %t31 to double
-  %t37 = fpext float %t33 to double
-  call i32 (i8*, ...) @printf(i8* %t34, double %t35, double %t36, double %t37)
-  %t39 = insertelement <4 x float> undef, float 0x3FF0000000000000, i32 0
-  %t40 = insertelement <4 x float> %t39, float 0x0000000000000000, i32 1
-  %t41 = insertelement <4 x float> %t40, float 0x0000000000000000, i32 2
-  %t42 = insertelement <4 x float> %t41, float 0x0000000000000000, i32 3
-  store <4 x float> %t42, <4 x float>* %t38
-  %t44 = insertelement <4 x float> undef, float 0x0000000000000000, i32 0
-  %t45 = insertelement <4 x float> %t44, float 0x3FF0000000000000, i32 1
-  %t46 = insertelement <4 x float> %t45, float 0x0000000000000000, i32 2
-  %t47 = insertelement <4 x float> %t46, float 0x0000000000000000, i32 3
-  store <4 x float> %t47, <4 x float>* %t43
-  %t49 = load <4 x float>, <4 x float>* %t38
-  %t50 = load <4 x float>, <4 x float>* %t43
-  %t51 = fadd <4 x float> %t49, %t50
-  store <4 x float> %t51, <4 x float>* %t48
-  %t52 = load <4 x float>, <4 x float>* %t48
-  %t53 = extractelement <4 x float> %t52, i32 0
-  %t54 = load <4 x float>, <4 x float>* %t48
-  %t55 = extractelement <4 x float> %t54, i32 1
-  %t56 = load <4 x float>, <4 x float>* %t48
-  %t57 = extractelement <4 x float> %t56, i32 2
-  %t58 = load <4 x float>, <4 x float>* %t48
-  %t59 = extractelement <4 x float> %t58, i32 3
-  %t60 = getelementptr inbounds [23 x i8], [23 x i8]* @.str.2, i64 0, i64 0
-  %t61 = fpext float %t53 to double
-  %t62 = fpext float %t55 to double
-  %t63 = fpext float %t57 to double
-  %t64 = fpext float %t59 to double
-  call i32 (i8*, ...) @printf(i8* %t60, double %t61, double %t62, double %t63, double %t64)
-  %t66 = load <3 x float>, <3 x float>* %t8
-  %t67 = shufflevector <3 x float> %t66, <3 x float> undef, <3 x i32> <i32 2, i32 1, i32 0>
-  store <3 x float> %t67, <3 x float>* %t65
-  %t68 = load <3 x float>, <3 x float>* %t65
-  %t69 = extractelement <3 x float> %t68, i32 0
-  %t70 = load <3 x float>, <3 x float>* %t65
-  %t71 = extractelement <3 x float> %t70, i32 1
-  %t72 = load <3 x float>, <3 x float>* %t65
-  %t73 = extractelement <3 x float> %t72, i32 2
-  %t74 = getelementptr inbounds [20 x i8], [20 x i8]* @.str.3, i64 0, i64 0
-  %t75 = fpext float %t69 to double
-  %t76 = fpext float %t71 to double
-  %t77 = fpext float %t73 to double
-  call i32 (i8*, ...) @printf(i8* %t74, double %t75, double %t76, double %t77)
-  %t79 = insertelement <4 x float> undef, float 0x3FF0000000000000, i32 0
-  %t80 = insertelement <4 x float> %t79, float 0x0000000000000000, i32 1
-  %t81 = insertelement <4 x float> %t80, float 0x0000000000000000, i32 2
-  %t82 = insertelement <4 x float> %t81, float 0x0000000000000000, i32 3
-  %t83 = insertvalue [4 x <4 x float>] undef, <4 x float> %t82, 0
-  %t84 = insertelement <4 x float> undef, float 0x0000000000000000, i32 0
-  %t85 = insertelement <4 x float> %t84, float 0x3FF0000000000000, i32 1
-  %t86 = insertelement <4 x float> %t85, float 0x0000000000000000, i32 2
-  %t87 = insertelement <4 x float> %t86, float 0x0000000000000000, i32 3
-  %t88 = insertvalue [4 x <4 x float>] %t83, <4 x float> %t87, 1
-  %t89 = insertelement <4 x float> undef, float 0x0000000000000000, i32 0
-  %t90 = insertelement <4 x float> %t89, float 0x0000000000000000, i32 1
-  %t91 = insertelement <4 x float> %t90, float 0x3FF0000000000000, i32 2
-  %t92 = insertelement <4 x float> %t91, float 0x0000000000000000, i32 3
-  %t93 = insertvalue [4 x <4 x float>] %t88, <4 x float> %t92, 2
-  %t94 = insertelement <4 x float> undef, float 0x0000000000000000, i32 0
-  %t95 = insertelement <4 x float> %t94, float 0x0000000000000000, i32 1
-  %t96 = insertelement <4 x float> %t95, float 0x0000000000000000, i32 2
-  %t97 = insertelement <4 x float> %t96, float 0x3FF0000000000000, i32 3
-  %t98 = insertvalue [4 x <4 x float>] %t93, <4 x float> %t97, 3
-  store [4 x <4 x float>] %t98, [4 x <4 x float>]* %t78
-  %t100 = load [4 x <4 x float>], [4 x <4 x float>]* %t78
-  %t101 = load <4 x float>, <4 x float>* %t38
-  %t102 = extractvalue [4 x <4 x float>] %t100, 0
-  %t103 = fmul <4 x float> %t102, %t101
-  %t104 = extractelement <4 x float> %t103, i32 0
-  %t105 = extractelement <4 x float> %t103, i32 1
-  %t106 = fadd float %t104, %t105
-  %t107 = extractelement <4 x float> %t103, i32 2
-  %t108 = fadd float %t106, %t107
-  %t109 = extractelement <4 x float> %t103, i32 3
-  %t110 = fadd float %t108, %t109
-  %t111 = extractvalue [4 x <4 x float>] %t100, 1
-  %t112 = fmul <4 x float> %t111, %t101
-  %t113 = extractelement <4 x float> %t112, i32 0
-  %t114 = extractelement <4 x float> %t112, i32 1
-  %t115 = fadd float %t113, %t114
-  %t116 = extractelement <4 x float> %t112, i32 2
-  %t117 = fadd float %t115, %t116
-  %t118 = extractelement <4 x float> %t112, i32 3
-  %t119 = fadd float %t117, %t118
-  %t120 = extractvalue [4 x <4 x float>] %t100, 2
-  %t121 = fmul <4 x float> %t120, %t101
-  %t122 = extractelement <4 x float> %t121, i32 0
-  %t123 = extractelement <4 x float> %t121, i32 1
-  %t124 = fadd float %t122, %t123
-  %t125 = extractelement <4 x float> %t121, i32 2
-  %t126 = fadd float %t124, %t125
-  %t127 = extractelement <4 x float> %t121, i32 3
-  %t128 = fadd float %t126, %t127
-  %t129 = extractvalue [4 x <4 x float>] %t100, 3
-  %t130 = fmul <4 x float> %t129, %t101
-  %t131 = extractelement <4 x float> %t130, i32 0
-  %t132 = extractelement <4 x float> %t130, i32 1
-  %t133 = fadd float %t131, %t132
-  %t134 = extractelement <4 x float> %t130, i32 2
-  %t135 = fadd float %t133, %t134
-  %t136 = extractelement <4 x float> %t130, i32 3
-  %t137 = fadd float %t135, %t136
-  %t138 = insertelement <4 x float> undef, float %t110, i32 0
-  %t139 = insertelement <4 x float> %t138, float %t119, i32 1
-  %t140 = insertelement <4 x float> %t139, float %t128, i32 2
-  %t141 = insertelement <4 x float> %t140, float %t137, i32 3
-  store <4 x float> %t141, <4 x float>* %t99
-  %t142 = load <4 x float>, <4 x float>* %t99
-  %t143 = extractelement <4 x float> %t142, i32 0
-  %t144 = load <4 x float>, <4 x float>* %t99
-  %t145 = extractelement <4 x float> %t144, i32 1
-  %t146 = load <4 x float>, <4 x float>* %t99
-  %t147 = extractelement <4 x float> %t146, i32 2
-  %t148 = load <4 x float>, <4 x float>* %t99
-  %t149 = extractelement <4 x float> %t148, i32 3
-  %t150 = getelementptr inbounds [33 x i8], [33 x i8]* @.str.4, i64 0, i64 0
-  %t151 = fpext float %t143 to double
-  %t152 = fpext float %t145 to double
-  %t153 = fpext float %t147 to double
-  %t154 = fpext float %t149 to double
-  call i32 (i8*, ...) @printf(i8* %t150, double %t151, double %t152, double %t153, double %t154)
-  %t156 = insertelement <4 x float> undef, float 0x3FF0000000000000, i32 0
-  %t157 = insertelement <4 x float> %t156, float 0x3FF0000000000000, i32 1
-  %t158 = insertelement <4 x float> %t157, float 0x3FF0000000000000, i32 2
-  %t159 = insertelement <4 x float> %t158, float 0x3FF0000000000000, i32 3
-  store <4 x float> %t159, <4 x float>* %t155
-  %t160 = load <4 x float>, <4 x float>* %t155
-  %t161 = insertelement <4 x float> %t160, float 0x4058C00000000000, i32 0
-  store <4 x float> %t161, <4 x float>* %t155
-  %t162 = load <4 x float>, <4 x float>* %t155
-  %t163 = extractelement <4 x float> %t162, i32 0
-  %t164 = load <4 x float>, <4 x float>* %t155
-  %t165 = extractelement <4 x float> %t164, i32 1
-  %t166 = getelementptr inbounds [26 x i8], [26 x i8]* @.str.5, i64 0, i64 0
-  %t167 = fpext float %t163 to double
-  %t168 = fpext float %t165 to double
-  call i32 (i8*, ...) @printf(i8* %t166, double %t167, double %t168)
-  %t170 = insertelement <2 x float> undef, float 0x3FF0000000000000, i32 0
-  %t171 = insertelement <2 x float> %t170, float 0x3FF0000000000000, i32 1
-  store <2 x float> %t171, <2 x float>* %t169
-  %t172 = insertelement <2 x float> undef, float 0x4014000000000000, i32 0
-  %t173 = insertelement <2 x float> %t172, float 0x4018000000000000, i32 1
-  %t174 = load <2 x float>, <2 x float>* %t169
-  %t175 = extractelement <2 x float> %t173, i32 0
-  %t176 = insertelement <2 x float> %t174, float %t175, i32 0
-  %t177 = extractelement <2 x float> %t173, i32 1
-  %t178 = insertelement <2 x float> %t176, float %t177, i32 1
-  store <2 x float> %t178, <2 x float>* %t169
-  %t179 = load <2 x float>, <2 x float>* %t169
-  %t180 = extractelement <2 x float> %t179, i32 0
-  %t181 = load <2 x float>, <2 x float>* %t169
-  %t182 = extractelement <2 x float> %t181, i32 1
-  %t183 = getelementptr inbounds [25 x i8], [25 x i8]* @.str.6, i64 0, i64 0
-  %t184 = fpext float %t180 to double
-  %t185 = fpext float %t182 to double
-  call i32 (i8*, ...) @printf(i8* %t183, double %t184, double %t185)
+  %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t0, i8** @sym.lock
+  %t2 = insertelement <3 x float> undef, float 0x3FF0000000000000, i32 0
+  %t3 = insertelement <3 x float> %t2, float 0x4000000000000000, i32 1
+  %t4 = insertelement <3 x float> %t3, float 0x4008000000000000, i32 2
+  store <3 x float> %t4, <3 x float>* %t1
+  %t6 = insertelement <3 x float> undef, float 0x4024000000000000, i32 0
+  %t7 = insertelement <3 x float> %t6, float 0x4034000000000000, i32 1
+  %t8 = insertelement <3 x float> %t7, float 0x403E000000000000, i32 2
+  store <3 x float> %t8, <3 x float>* %t5
+  %t10 = load <3 x float>, <3 x float>* %t1
+  %t11 = load <3 x float>, <3 x float>* %t5
+  %t12 = fadd <3 x float> %t10, %t11
+  store <3 x float> %t12, <3 x float>* %t9
+  %t13 = load <3 x float>, <3 x float>* %t9
+  %t14 = extractelement <3 x float> %t13, i32 0
+  %t15 = load <3 x float>, <3 x float>* %t9
+  %t16 = extractelement <3 x float> %t15, i32 1
+  %t17 = load <3 x float>, <3 x float>* %t9
+  %t18 = extractelement <3 x float> %t17, i32 2
+  %t19 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.0, i64 0, i64 0
+  %t20 = fpext float %t14 to double
+  %t21 = fpext float %t16 to double
+  %t22 = fpext float %t18 to double
+  call i32 (i8*, ...) @printf(i8* %t19, double %t20, double %t21, double %t22)
+  %t24 = load <3 x float>, <3 x float>* %t1
+  %t25 = insertelement <3 x float> undef, float 0x4000000000000000, i32 0
+  %t26 = insertelement <3 x float> %t25, float 0x4000000000000000, i32 1
+  %t27 = insertelement <3 x float> %t26, float 0x4000000000000000, i32 2
+  %t28 = fmul <3 x float> %t24, %t27
+  store <3 x float> %t28, <3 x float>* %t23
+  %t29 = load <3 x float>, <3 x float>* %t23
+  %t30 = extractelement <3 x float> %t29, i32 0
+  %t31 = load <3 x float>, <3 x float>* %t23
+  %t32 = extractelement <3 x float> %t31, i32 1
+  %t33 = load <3 x float>, <3 x float>* %t23
+  %t34 = extractelement <3 x float> %t33, i32 2
+  %t35 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.1, i64 0, i64 0
+  %t36 = fpext float %t30 to double
+  %t37 = fpext float %t32 to double
+  %t38 = fpext float %t34 to double
+  call i32 (i8*, ...) @printf(i8* %t35, double %t36, double %t37, double %t38)
+  %t40 = insertelement <4 x float> undef, float 0x3FF0000000000000, i32 0
+  %t41 = insertelement <4 x float> %t40, float 0x0000000000000000, i32 1
+  %t42 = insertelement <4 x float> %t41, float 0x0000000000000000, i32 2
+  %t43 = insertelement <4 x float> %t42, float 0x0000000000000000, i32 3
+  store <4 x float> %t43, <4 x float>* %t39
+  %t45 = insertelement <4 x float> undef, float 0x0000000000000000, i32 0
+  %t46 = insertelement <4 x float> %t45, float 0x3FF0000000000000, i32 1
+  %t47 = insertelement <4 x float> %t46, float 0x0000000000000000, i32 2
+  %t48 = insertelement <4 x float> %t47, float 0x0000000000000000, i32 3
+  store <4 x float> %t48, <4 x float>* %t44
+  %t50 = load <4 x float>, <4 x float>* %t39
+  %t51 = load <4 x float>, <4 x float>* %t44
+  %t52 = fadd <4 x float> %t50, %t51
+  store <4 x float> %t52, <4 x float>* %t49
+  %t53 = load <4 x float>, <4 x float>* %t49
+  %t54 = extractelement <4 x float> %t53, i32 0
+  %t55 = load <4 x float>, <4 x float>* %t49
+  %t56 = extractelement <4 x float> %t55, i32 1
+  %t57 = load <4 x float>, <4 x float>* %t49
+  %t58 = extractelement <4 x float> %t57, i32 2
+  %t59 = load <4 x float>, <4 x float>* %t49
+  %t60 = extractelement <4 x float> %t59, i32 3
+  %t61 = getelementptr inbounds [23 x i8], [23 x i8]* @.str.2, i64 0, i64 0
+  %t62 = fpext float %t54 to double
+  %t63 = fpext float %t56 to double
+  %t64 = fpext float %t58 to double
+  %t65 = fpext float %t60 to double
+  call i32 (i8*, ...) @printf(i8* %t61, double %t62, double %t63, double %t64, double %t65)
+  %t67 = load <3 x float>, <3 x float>* %t9
+  %t68 = shufflevector <3 x float> %t67, <3 x float> undef, <3 x i32> <i32 2, i32 1, i32 0>
+  store <3 x float> %t68, <3 x float>* %t66
+  %t69 = load <3 x float>, <3 x float>* %t66
+  %t70 = extractelement <3 x float> %t69, i32 0
+  %t71 = load <3 x float>, <3 x float>* %t66
+  %t72 = extractelement <3 x float> %t71, i32 1
+  %t73 = load <3 x float>, <3 x float>* %t66
+  %t74 = extractelement <3 x float> %t73, i32 2
+  %t75 = getelementptr inbounds [20 x i8], [20 x i8]* @.str.3, i64 0, i64 0
+  %t76 = fpext float %t70 to double
+  %t77 = fpext float %t72 to double
+  %t78 = fpext float %t74 to double
+  call i32 (i8*, ...) @printf(i8* %t75, double %t76, double %t77, double %t78)
+  %t80 = insertelement <4 x float> undef, float 0x3FF0000000000000, i32 0
+  %t81 = insertelement <4 x float> %t80, float 0x0000000000000000, i32 1
+  %t82 = insertelement <4 x float> %t81, float 0x0000000000000000, i32 2
+  %t83 = insertelement <4 x float> %t82, float 0x0000000000000000, i32 3
+  %t84 = insertvalue [4 x <4 x float>] undef, <4 x float> %t83, 0
+  %t85 = insertelement <4 x float> undef, float 0x0000000000000000, i32 0
+  %t86 = insertelement <4 x float> %t85, float 0x3FF0000000000000, i32 1
+  %t87 = insertelement <4 x float> %t86, float 0x0000000000000000, i32 2
+  %t88 = insertelement <4 x float> %t87, float 0x0000000000000000, i32 3
+  %t89 = insertvalue [4 x <4 x float>] %t84, <4 x float> %t88, 1
+  %t90 = insertelement <4 x float> undef, float 0x0000000000000000, i32 0
+  %t91 = insertelement <4 x float> %t90, float 0x0000000000000000, i32 1
+  %t92 = insertelement <4 x float> %t91, float 0x3FF0000000000000, i32 2
+  %t93 = insertelement <4 x float> %t92, float 0x0000000000000000, i32 3
+  %t94 = insertvalue [4 x <4 x float>] %t89, <4 x float> %t93, 2
+  %t95 = insertelement <4 x float> undef, float 0x0000000000000000, i32 0
+  %t96 = insertelement <4 x float> %t95, float 0x0000000000000000, i32 1
+  %t97 = insertelement <4 x float> %t96, float 0x0000000000000000, i32 2
+  %t98 = insertelement <4 x float> %t97, float 0x3FF0000000000000, i32 3
+  %t99 = insertvalue [4 x <4 x float>] %t94, <4 x float> %t98, 3
+  store [4 x <4 x float>] %t99, [4 x <4 x float>]* %t79
+  %t101 = load [4 x <4 x float>], [4 x <4 x float>]* %t79
+  %t102 = load <4 x float>, <4 x float>* %t39
+  %t103 = extractvalue [4 x <4 x float>] %t101, 0
+  %t104 = fmul <4 x float> %t103, %t102
+  %t105 = extractelement <4 x float> %t104, i32 0
+  %t106 = extractelement <4 x float> %t104, i32 1
+  %t107 = fadd float %t105, %t106
+  %t108 = extractelement <4 x float> %t104, i32 2
+  %t109 = fadd float %t107, %t108
+  %t110 = extractelement <4 x float> %t104, i32 3
+  %t111 = fadd float %t109, %t110
+  %t112 = extractvalue [4 x <4 x float>] %t101, 1
+  %t113 = fmul <4 x float> %t112, %t102
+  %t114 = extractelement <4 x float> %t113, i32 0
+  %t115 = extractelement <4 x float> %t113, i32 1
+  %t116 = fadd float %t114, %t115
+  %t117 = extractelement <4 x float> %t113, i32 2
+  %t118 = fadd float %t116, %t117
+  %t119 = extractelement <4 x float> %t113, i32 3
+  %t120 = fadd float %t118, %t119
+  %t121 = extractvalue [4 x <4 x float>] %t101, 2
+  %t122 = fmul <4 x float> %t121, %t102
+  %t123 = extractelement <4 x float> %t122, i32 0
+  %t124 = extractelement <4 x float> %t122, i32 1
+  %t125 = fadd float %t123, %t124
+  %t126 = extractelement <4 x float> %t122, i32 2
+  %t127 = fadd float %t125, %t126
+  %t128 = extractelement <4 x float> %t122, i32 3
+  %t129 = fadd float %t127, %t128
+  %t130 = extractvalue [4 x <4 x float>] %t101, 3
+  %t131 = fmul <4 x float> %t130, %t102
+  %t132 = extractelement <4 x float> %t131, i32 0
+  %t133 = extractelement <4 x float> %t131, i32 1
+  %t134 = fadd float %t132, %t133
+  %t135 = extractelement <4 x float> %t131, i32 2
+  %t136 = fadd float %t134, %t135
+  %t137 = extractelement <4 x float> %t131, i32 3
+  %t138 = fadd float %t136, %t137
+  %t139 = insertelement <4 x float> undef, float %t111, i32 0
+  %t140 = insertelement <4 x float> %t139, float %t120, i32 1
+  %t141 = insertelement <4 x float> %t140, float %t129, i32 2
+  %t142 = insertelement <4 x float> %t141, float %t138, i32 3
+  store <4 x float> %t142, <4 x float>* %t100
+  %t143 = load <4 x float>, <4 x float>* %t100
+  %t144 = extractelement <4 x float> %t143, i32 0
+  %t145 = load <4 x float>, <4 x float>* %t100
+  %t146 = extractelement <4 x float> %t145, i32 1
+  %t147 = load <4 x float>, <4 x float>* %t100
+  %t148 = extractelement <4 x float> %t147, i32 2
+  %t149 = load <4 x float>, <4 x float>* %t100
+  %t150 = extractelement <4 x float> %t149, i32 3
+  %t151 = getelementptr inbounds [33 x i8], [33 x i8]* @.str.4, i64 0, i64 0
+  %t152 = fpext float %t144 to double
+  %t153 = fpext float %t146 to double
+  %t154 = fpext float %t148 to double
+  %t155 = fpext float %t150 to double
+  call i32 (i8*, ...) @printf(i8* %t151, double %t152, double %t153, double %t154, double %t155)
+  %t157 = insertelement <4 x float> undef, float 0x3FF0000000000000, i32 0
+  %t158 = insertelement <4 x float> %t157, float 0x3FF0000000000000, i32 1
+  %t159 = insertelement <4 x float> %t158, float 0x3FF0000000000000, i32 2
+  %t160 = insertelement <4 x float> %t159, float 0x3FF0000000000000, i32 3
+  store <4 x float> %t160, <4 x float>* %t156
+  %t161 = load <4 x float>, <4 x float>* %t156
+  %t162 = insertelement <4 x float> %t161, float 0x4058C00000000000, i32 0
+  store <4 x float> %t162, <4 x float>* %t156
+  %t163 = load <4 x float>, <4 x float>* %t156
+  %t164 = extractelement <4 x float> %t163, i32 0
+  %t165 = load <4 x float>, <4 x float>* %t156
+  %t166 = extractelement <4 x float> %t165, i32 1
+  %t167 = getelementptr inbounds [26 x i8], [26 x i8]* @.str.5, i64 0, i64 0
+  %t168 = fpext float %t164 to double
+  %t169 = fpext float %t166 to double
+  call i32 (i8*, ...) @printf(i8* %t167, double %t168, double %t169)
+  %t171 = insertelement <2 x float> undef, float 0x3FF0000000000000, i32 0
+  %t172 = insertelement <2 x float> %t171, float 0x3FF0000000000000, i32 1
+  store <2 x float> %t172, <2 x float>* %t170
+  %t173 = insertelement <2 x float> undef, float 0x4014000000000000, i32 0
+  %t174 = insertelement <2 x float> %t173, float 0x4018000000000000, i32 1
+  %t175 = load <2 x float>, <2 x float>* %t170
+  %t176 = extractelement <2 x float> %t174, i32 0
+  %t177 = insertelement <2 x float> %t175, float %t176, i32 0
+  %t178 = extractelement <2 x float> %t174, i32 1
+  %t179 = insertelement <2 x float> %t177, float %t178, i32 1
+  store <2 x float> %t179, <2 x float>* %t170
+  %t180 = load <2 x float>, <2 x float>* %t170
+  %t181 = extractelement <2 x float> %t180, i32 0
+  %t182 = load <2 x float>, <2 x float>* %t170
+  %t183 = extractelement <2 x float> %t182, i32 1
+  %t184 = getelementptr inbounds [25 x i8], [25 x i8]* @.str.6, i64 0, i64 0
+  %t185 = fpext float %t181 to double
+  %t186 = fpext float %t183 to double
+  call i32 (i8*, ...) @printf(i8* %t184, double %t185, double %t186)
   ret i32 0
 }
 

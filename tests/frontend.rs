@@ -993,6 +993,37 @@ fn runtime_vecmath_end_to_end() {
     assert!(stdout.contains("vec2 multi write: 5.000000 6.000000"), "vec2 multi-swizzle write result: {}", stdout);
 }
 
+/// Runtime test: `examples/mat4_transform.exe` exercises non-identity Mat4
+/// math (`runtime_vecmath_end_to_end`'s `Mat4*Vec4` case only ever multiplies
+/// by the identity, which can't distinguish a correct row-major
+/// matrix-vector multiply from several plausible-looking bugs -- a
+/// transposed row/column read, swapped dot-product operand order, off-by-one
+/// row indexing -- since every one of those still hands the identity's own
+/// input right back unchanged). Uses a real scale+translate matrix instead,
+/// checks `Mat4*Mat4` self-composition against applying the transform twice
+/// by hand, and covers a zero vector's `length`/`dot` (`length(v) ==
+/// sqrt(dot(v,v))`, so a zero vector must produce `0.0`, not a NaN from
+/// dividing by a zero length -- there is no `normalize` builtin in this
+/// compiler to trip that specific division, but `length`/`dot` themselves
+/// must still be well-defined at the origin).
+#[test]
+fn runtime_mat4_nontrivial_transform_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/mat4_transform.exe")
+        .output()
+        .expect("failed to execute mat4_transform.exe");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("zero length: 0.000000"), "zero-vector length: {}", stdout);
+    assert!(stdout.contains("zero dot: 0.000000"), "zero-vector dot: {}", stdout);
+    assert!(stdout.contains("m*v = 12.000000 23.000000 34.000000 1.000000"), "scale+translate mat4*vec4: {}", stdout);
+    assert!(stdout.contains("m2*v = 34.000000 89.000000 166.000000 1.000000"), "mat4*mat4 self-composition: {}", stdout);
+    assert!(stdout.contains("dot(a,b) = 32.000000"), "vec3 dot product: {}", stdout);
+    assert!(stdout.contains("length(3,4) = 5.000000"), "3-4-5 triangle length: {}", stdout);
+    assert!(output.status.success(), "{:?}", output.status);
+}
+
 // ===== M7 Concurrency & Coroutines Tests ==================================
 
 // --- `sequence` / `yield` (coroutines) ------------------------------------
@@ -1684,6 +1715,52 @@ fn codegen_reflect_metadata_offsets_account_for_field_alignment() {
     assert!(ir.contains("speed:16:float:export"), "{}", ir);
 }
 
+/// A decorated field typed as a monomorphized *user-defined* generic struct
+/// (`Box<i32>`) must show that real generic spelling in its reflection
+/// metadata, not the internal flat-mangled symbol codegen actually uses
+/// (`Box__i32`) -- `Codegen::reflect_type_name`'s `Ty::Named` arm previously
+/// just cloned the mangled name verbatim (there is no dedicated `Ty`
+/// variant for a user-defined generic the way there is for `List<T>`/
+/// `Map<K,V>`/..., so it fell to the same catch-all as an ordinary,
+/// non-generic struct). Confirmed via a real `star emit llvm` on exactly
+/// this shape: the emitted `@__star_reflect_Holder` string read
+/// `boxed:0:Box__i32:export`, an internal mangling artifact indistinguishable
+/// from a plainly-named struct actually called `Box__i32`, not a name any
+/// external tool or human reading the metadata could make sense of as "a
+/// `Box` of `i32`". Fixed by threading `Checker::mono_struct_of`/
+/// `mono_enum_of` through `TypedModule::generic_instantiations` (they don't
+/// otherwise survive past type-checking -- `Codegen` never sees the
+/// `Checker` that produced its input) so `reflect_type_name` can render
+/// `Base<Arg, ...>` for any mangled name it recognizes as a generic
+/// instantiation (`src/types/hir.rs`, `src/types/mod.rs`,
+/// `src/codegen/reflect.rs`).
+#[test]
+fn codegen_reflect_metadata_shows_real_generic_name_for_user_defined_generic_field() {
+    let src = "struct Box<T>:\n    value: T\nstruct Holder:\n    @export boxed: Box<i32> = Box(1)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("boxed:0:Box<i32>:export"), "expected the real generic spelling `Box<i32>`, not the mangled `Box__i32`: {}", ir);
+    assert!(!ir.contains("Box__i32:export"), "the mangled name must not leak into reflection metadata: {}", ir);
+}
+
+/// Same bug, the compiler-*builtin* `Option<T>`/`Result<T,E>` generics
+/// (`docs/design.md`'s "Type System" §9 -- synthesized as ordinary generic
+/// enum templates, so they hit the exact same `Ty::Enum` catch-all bug as a
+/// user-defined generic enum would) -- and a *nested* generic
+/// (`Box<Option<i32>>`), confirming the fix recurses through
+/// `reflect_type_name` for each type argument rather than only handling one
+/// level of generic nesting.
+#[test]
+fn codegen_reflect_metadata_shows_real_generic_name_for_builtin_and_nested_generics() {
+    let src = "struct Box<T>:\n    value: T\nstruct Holder:\n    @export opt: Option<i32> = Option<i32>::None\n    @export nested: Box<Option<i32>> = Box(Option<i32>::None)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("opt:0:Option<i32>:export"), "expected `Option<i32>`, not the mangled `Option__i32`: {}", ir);
+    assert!(ir.contains("nested:") && ir.contains(":Box<Option<i32>>:export"), "a nested generic field must render every level, not just the outermost: {}", ir);
+}
+
 /// Spawning many instances of a struct whose fields need internal padding
 /// (a `bool` followed by a `str`, real LLVM layout `{ i1, i8* }` = 16 bytes,
 /// not the naive-sum 9 bytes) into an arena must not corrupt data or crash --
@@ -1902,6 +1979,50 @@ fn rejects_unknown_field_with_suggestion() {
     assert!(
         diags.iter().any(|d| d.note.as_deref().unwrap_or("").contains("health")),
         "expected a `did you mean health?` note: {:?}",
+        diags
+    );
+}
+
+/// Field access on a type that has no fields at all -- `Mat4` (a builtin
+/// SIMD matrix with no named-field accessor, unlike `Vec2`/`Vec3`/`Vec4`'s
+/// GLSL-style swizzles), here -- must be caught at type-check time with a
+/// located diagnostic, the same as an unknown field on a real struct just
+/// above. `Checker::resolve_field_type`'s catch-all for any non-`Named`,
+/// non-vector base type used to silently return the `unknown` placeholder
+/// type with *no* diagnostic at all, letting `m.anything` type-check
+/// cleanly and only fail much later at codegen with an unlocated "field
+/// access on non-struct type" that names neither the field nor its type.
+/// Confirmed via a real `star build`: before the fix, `target/release/
+/// star.exe build` on this exact source produced only that unlocated
+/// codegen error and no earlier diagnostic; after the fix, `Driver::check`
+/// itself rejects it with a proper span. The same catch-all also covers
+/// `Tick`/`Duration`/`Instant`, every numeric width, `str`, `bool`,
+/// `List<T>`/`Map<K,V>`/`Set<T>`/`Table<T>`, and enum values -- `Mat4` is
+/// the representative case for this audit's vector/matrix focus.
+#[test]
+fn rejects_field_access_on_fieldless_builtin_type() {
+    let src = "fn t():\n    let m = Mat4(\n        Vec4(1.0, 0.0, 0.0, 0.0),\n        Vec4(0.0, 1.0, 0.0, 0.0),\n        Vec4(0.0, 0.0, 1.0, 0.0),\n        Vec4(0.0, 0.0, 0.0, 1.0),\n    )\n    m.bogus_field\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("field access on Mat4 should be a type error") };
+    assert!(
+        diags.iter().any(|d| d.message.contains("no field `bogus_field`") && d.message.contains("Mat4")),
+        "{:?}",
+        diags
+    );
+}
+
+/// Same bug, exercised on `Instant` (this audit's other headline type):
+/// field access on a nominal `i64`-backed time type has no legitimate
+/// meaning and must be a located type error, not a silent pass-through
+/// that only fails at codegen.
+#[test]
+fn rejects_field_access_on_time_type() {
+    let src = "fn t():\n    let i = Instant(5 as i64)\n    i.nanos\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("field access on Instant should be a type error") };
+    assert!(
+        diags.iter().any(|d| d.message.contains("no field `nanos`") && d.message.contains("Instant")),
+        "{:?}",
         diags
     );
 }
@@ -6649,6 +6770,63 @@ fn runtime_par_rc_race_reads_captured_str_without_corruption() {
     }
 }
 
+/// Runtime test for a `Symbol` intern-table thread-safety bug: `Symbol(s)`
+/// (`crate::codegen::symbol::emit_symbol_intern`) mutates the process-wide
+/// intern table (`@sym.data`/`@sym.len`/`@sym.cap`) via a plain scan, and (on
+/// a miss) a `malloc`/`memcpy`/`free` doubling-grow -- with no lock. Unlike
+/// `spawn`/`despawn`/`frame:`, calling `Symbol(..)` inside a `par`/`swarm`
+/// body is *not* rejected by the checker's disjointness proof
+/// (`types::par_analysis::walk_par_expr`'s `StructLit` arm just walks into
+/// `Symbol(..)`'s argument like any other constructor, with no awareness
+/// that construction itself touches shared global state) -- and `par`/
+/// `swarm` genuinely dispatches the loop body across 4 concurrent OS worker
+/// threads (`crate::codegen::par_pool`), so every worker interning strings
+/// concurrently really did race on the table. Confirmed via
+/// `examples/symbol_par_race.star` (64 entities, 200 ticks, every entity in
+/// a tick interning the same tick-unique string concurrently and storing the
+/// resulting id on itself): before the fix this crashed with a real, 5/5-run
+/// `STATUS_HEAP_CORRUPTION` (`0xC0000374`, i.e. exit code `-1073740940`)
+/// from the grow path's unsynchronized `malloc`/`memcpy`/`free`. Fixed by
+/// adding `@sym.lock`, a binary semaphore guarding every `Symbol(..)`/
+/// `symbol_name(..)` table access, created once in `main`'s prologue (before
+/// any `par`/`swarm` dispatch can spin up the worker pool, so there's no
+/// first-use race in creating the lock itself -- see `@sym.lock`'s own doc
+/// comment in `Codegen::emit_builtins`).
+///
+/// This can't deterministically *prove* the race is gone (it's inherently
+/// timing-dependent), so this runs the binary several times, checking both
+/// that it never crashes and that every entity within a tick converged on
+/// the same id for the same string (a lock failure could produce duplicate/
+/// wrong ids without necessarily crashing the heap every time).
+#[test]
+fn runtime_symbol_par_race_interns_without_corruption() {
+    use std::process::Command;
+
+    for _ in 0..5 {
+        let output = Command::new("examples/symbol_par_race.exe").output().expect("failed to run symbol_par_race.exe");
+        assert!(
+            output.status.success(),
+            "symbol_par_race.exe should exit cleanly, not crash from intern-table heap corruption: {:?}",
+            output.status
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), 65, "expected 64 entity ids plus 1 check line, got: {:?}", lines);
+        let ids = &lines[..64];
+        let first = ids[0];
+        assert!(
+            ids.iter().all(|id| *id == first),
+            "every entity should have interned the same last-tick string to the same id, got mixed ids: {:?}",
+            ids
+        );
+        assert_eq!(
+            lines[64],
+            format!("check = {}", first),
+            "re-interning the same string sequentially afterward should reproduce the same id every entity already saw"
+        );
+    }
+}
+
 /// `print`/`println`'s non-f-string form passes its argument straight
 /// through as `printf`'s format string (see `Codegen::emit_print_like`),
 /// with no `%s` substitution -- previously the checker never validated this
@@ -7204,6 +7382,51 @@ fn extern_fn_rejects_duplicate_declaration() {
     let src = "extern \"C\" fn atoi(s: str) -> int\nextern \"C\" fn atoi(s: str) -> int\n";
     let module = Driver::parse(src).expect("should parse");
     let Err(diags) = Driver::check(&module) else { panic!("a duplicate extern fn declaration should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("declared more than once")), "{:?}", diags);
+}
+
+/// An `extern "C" fn` and an ordinary `fn` sharing one name, in the *same*
+/// file, must be rejected at check time -- both lower to the same plain
+/// LLVM function symbol `@name` (the extern's `declare`, the ordinary fn's
+/// `define`), which LLVM's textual IR parser refuses to redefine, same as
+/// two identical extern declarations (`extern_fn_rejects_duplicate_declaration`
+/// above) or two same-named ordinary `fn`s
+/// (`rejects_duplicate_top_level_function_declaration`). This is distinct
+/// from both of those and from the acknowledged cross-file extern-vs-extern
+/// collision gap (`todo.md`'s roadmap item #5): it's a single file, and one
+/// of the two colliding declarations isn't an extern fn at all, so neither
+/// existing check (`extern_fn_names_seen`, scoped to extern-vs-extern; the
+/// duplicate-name pass's own `value_names_seen`, previously populated only
+/// by ordinary `fn`s) ever looked at it. Confirmed via a real `star build`:
+/// `check` accepted this silently, and `clang` then failed on the generated
+/// IR with "invalid redefinition of function 'myfunc'" -- an opaque error
+/// pointing at generated code the user never wrote, with no diagnostic at
+/// the actual source of the problem. Fixed in `Checker::check`'s pass-1
+/// duplicate-name loop (`src/types/mod.rs`) by cross-checking each
+/// `Item::Fn`/`Item::ExternFn` against the other kind's already-seen names,
+/// symmetrically regardless of which one appears first in the source.
+#[test]
+fn extern_fn_rejects_collision_with_ordinary_fn_same_file_extern_first() {
+    let src = "extern \"C\" fn myfunc(x: i32) -> i32\nfn myfunc(x: i32) -> i32:\n    return x + 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else {
+        panic!("an extern fn colliding with an ordinary fn of the same name should be a type error")
+    };
+    assert!(diags.iter().any(|d| d.message.contains("declared more than once")), "{:?}", diags);
+}
+
+/// Same bug, opposite declaration order (the ordinary `fn` declared first,
+/// the `extern "C" fn` second) -- see
+/// `extern_fn_rejects_collision_with_ordinary_fn_same_file_extern_first`'s
+/// doc comment. Both orders must be caught since `Checker::check`'s
+/// duplicate-name pass is a single left-to-right loop over `module.items`.
+#[test]
+fn extern_fn_rejects_collision_with_ordinary_fn_same_file_fn_first() {
+    let src = "fn myfunc(x: i32) -> i32:\n    return x + 1\nextern \"C\" fn myfunc(x: i32) -> i32\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else {
+        panic!("an ordinary fn colliding with an extern fn of the same name should be a type error")
+    };
     assert!(diags.iter().any(|d| d.message.contains("declared more than once")), "{:?}", diags);
 }
 
@@ -14488,4 +14711,170 @@ fn runtime_struct_field_typed_as_generic_result_end_to_end() {
     assert!(output.status.success(), "{:?}", output.status);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["ok:42", "other:7"], "{}", stdout);
+}
+
+// =====================================================================
+// ===== Bug-hunting round 3 (memory/RC x concurrency/collections =======
+// ===== intersection audit): unlike round 2's single-feature audits ====
+// ===== (which found real `Ty::Enum`-RC-walk and generic-fallback-spill
+// ===== leaks), this round specifically targeted combinations a single- ==
+// ===== feature repro wouldn't hit -- `List`/`Map`/`Table`/`Ring` of ====
+// ===== `Option`/`Result`-payload elements under sustained push/pop/CoW-
+// ===== clone, `par`/`swarm` bodies constructing/dropping RC-bearing ===
+// ===== locals per iteration across many dispatch/join cycles, arena ===
+// ===== `spawn`/`despawn` cycling with an `Option`/`List`-bearing struct
+// ===== field, `sequence` coroutines abandoned mid-way with an RC-local
+// ===== still live across a `yield`, and `match` on a fresh payload-enum
+// ===== scrutinee inside a `par`/`swarm` body's own separate worker
+// ===== function. Every candidate below was reproduced via a real
+// ===== `star build -O2`+run first, sampling actual process Working Set
+// ===== over millions of iterations (see this round's own report for the
+// ===== exact numbers) -- every one came back flat, matching an
+// ===== RC-free control of the same shape. No new bugs were found: round
+// ===== 2's `Ty::Enum` RC-walk (`src/codegen/rc.rs`) and generic-fallback
+// ===== spill-tracking fix (`src/codegen/mod.rs`'s `emit_place`) already
+// ===== compose correctly across every one of these combinations, and
+// ===== `par`/`swarm`'s own per-callsite worker function
+// ===== (`Codegen::emit_par_stmt`, `src/codegen/arena.rs`) already swaps
+// ===== in a fresh `owned_stack`/`push_scope`/`pop_scope` per iteration
+// ===== exactly like an ordinary function body. The tests below convert
+// ===== this round's clean empirical findings into permanent regression
+// ===== coverage (using the same `assert_no_leak` Working-Set-delta
+// ===== helper as round 2's leak tests above) so a future change that
+// ===== reintroduces a leak in one of these specific combinations is
+// ===== caught immediately instead of needing another manual audit. =====
+
+/// `List<Option<str>>` (collections-of-generics x the round-2 `Ty::Enum`
+/// RC-walk fix): sustained `push`/`pop` churn, keeping the list's length
+/// bounded (so growth can't be explained by an ever-growing buffer) while
+/// every pushed element is a fresh `Option::Some(str)` payload. Manually
+/// confirmed flat (~2.7MB, zero measurable growth) over 40,000,000
+/// iterations at `-O2` before this test was written; scaled down to a size
+/// that still reliably shows a reintroduced leak (each iteration owns one
+/// heap-allocated `str` payload) within this file's usual ~20MB cap.
+#[test]
+fn runtime_list_of_option_str_sustained_push_pop_does_not_leak_end_to_end() {
+    let src = "fn main():\n    let mut lst: List<Option<str>> = List<Option<str>>()\n    let mut i: i32 = 0\n    \
+               while i < 400000:\n        lst.push(Option::Some(concat(\"item\", \"x\")))\n        \
+               if lst.len() > 50:\n            lst.pop()\n        i += 1\n    \
+               println(\"done\")\n";
+    assert_no_leak("list_option_str_sustained_push_pop_leak", src, 20 * 1024 * 1024);
+}
+
+/// `Table<T>` (struct-of-arrays) where `T` has an `Option<str>` column --
+/// exercises the per-column release thunk (`crate::codegen::table::
+/// table_release_thunk_operand`) against a payload-enum column
+/// specifically, under sustained `push`/`pop` churn identical in shape to
+/// the `List<Option<str>>` test above. Manually confirmed flat over
+/// 25,000,000 iterations at `-O2` (both the plain append/pop loop and a
+/// separate copy-on-write-clone stress variant sharing the table between
+/// two owners every iteration) before this test was written.
+#[test]
+fn runtime_table_option_field_sustained_push_pop_does_not_leak_end_to_end() {
+    let src = "struct Item:\n    tag: Option<str>\n    hp: i32\n\n\
+               fn main():\n    let mut t: Table<Item> = Table<Item>()\n    let mut i: i32 = 0\n    \
+               while i < 300000:\n        t.push(Item(tag = Option::Some(concat(\"tag\", \"x\")), hp = i))\n        \
+               if t.len() > 50:\n            t.pop()\n        i += 1\n    \
+               println(\"done\")\n";
+    assert_no_leak("table_option_field_sustained_push_pop_leak", src, 20 * 1024 * 1024);
+}
+
+/// `par` dispatched across many ticks, each iteration's per-arena-entry
+/// worker body constructing and dropping its own local `List<str>` and
+/// `Option<str>` (never captured, never escaping) -- the specific
+/// concurrency x memory-model combination this round targeted: does the
+/// persistent thread pool (`src/codegen/par_pool.rs`) correctly release a
+/// worker-local RC-bearing temporary on *every* dispatch, not just the
+/// first/last? `Codegen::emit_par_stmt` (`src/codegen/arena.rs`) swaps in a
+/// fresh `owned_stack` per worker function and calls `push_scope`/
+/// `pop_scope` once per arena element visited, same as an ordinary loop
+/// body. Manually confirmed flat (~3.1MB, zero measurable growth) over
+/// 600,000 dispatch/join cycles (16 arena entries each, ~9,600,000 total
+/// worker-body executions) at `-O2` before this test was written; scaled
+/// down here since a `par` dispatch's own OS-semaphore handoff overhead
+/// dominates at `-O0`.
+#[test]
+fn runtime_par_body_per_iteration_rc_locals_does_not_leak_end_to_end() {
+    let src = "struct Enemy:\n    mut hp: i32\n\narena Enemies: Enemy\n\n\
+               fn main():\n    let mut i: i32 = 0\n    while i < 16:\n        spawn Enemies(100)\n        i += 1\n    \
+               let mut tick: i32 = 0\n    while tick < 20000:\n        \
+               par e in Enemies:\n            let mut lst: List<str> = List<str>()\n            \
+               lst.push(concat(\"x\", \"y\"))\n            \
+               let opt: Option<str> = Option::Some(concat(\"a\", \"b\"))\n            \
+               e.hp -= 1\n        tick += 1\n    \
+               println(\"done\")\n";
+    assert_no_leak("par_body_per_iteration_rc_locals_leak", src, 20 * 1024 * 1024);
+}
+
+/// Arena `spawn`/`despawn` cycling (never growing past one live slot) where
+/// the spawned struct has an `Option<str>` field -- the specific gap round
+/// 2's arena audit noted but didn't explicitly cover ("no bugs found" was
+/// verified against a plain-data element type, not an `Option`/`Result`-
+/// bearing one). `Codegen::emit_despawn_stmt` releases the slot's RC-bearing
+/// content on despawn, and `emit_spawn_stmt` never re-releases a reused
+/// slot's *previous* occupant (already released by the despawn that freed
+/// it) -- both already correct for a plain `str` field per round 2's own
+/// `runtime_stale_genref_field_write_does_not_leak_end_to_end`-style tests,
+/// but not yet exercised against an `Option<T>` field specifically. Manually
+/// confirmed flat over 25,000,000 despawn/spawn cycles at `-O2` before this
+/// test was written.
+#[test]
+fn runtime_arena_spawn_despawn_cycle_with_option_field_does_not_leak_end_to_end() {
+    let src = "struct Item:\n    tag: Option<str>\n    hp: i32\n\narena Items: Item\n\n\
+               fn main():\n    spawn Items(Option::Some(concat(\"seed\", \"x\")), 0)\n    let mut i: i32 = 0\n    \
+               while i < 300000:\n        despawn Items[0]\n        \
+               spawn Items(Option::Some(concat(\"cycle\", \"x\")), i)\n        i += 1\n    \
+               println(\"done\")\n";
+    assert_no_leak("arena_spawn_despawn_option_field_cycle_leak", src, 20 * 1024 * 1024);
+}
+
+/// A `sequence` coroutine with a `str` local reassigned across `yield`
+/// points, `resume()`'d exactly once (never run to completion) and then
+/// dropped -- since `src/sequence.rs` desugars a `sequence` into a plain
+/// `struct` + `resume(mut self) -> bool` method (see that module's own doc
+/// comment), the hoisted local becomes an ordinary struct field, and an
+/// abandoned-mid-sequence instance is released the same way any other
+/// struct instance with RC-bearing fields is at scope exit -- no
+/// coroutine-specific release logic exists or is needed. This test locks in
+/// that behavior for the specific "abandoned before completion" case (the
+/// case a naive coroutine implementation would most plausibly get wrong,
+/// e.g. by only releasing hoisted locals along the "ran to completion"
+/// path). Manually confirmed flat over 25,000,000 create-resume-once-drop
+/// cycles at `-O2` before this test was written.
+#[test]
+fn runtime_sequence_abandoned_mid_way_releases_rc_local_end_to_end() {
+    let src = "sequence Chatter(seed: str):\n    let mut msg: str = concat(seed, \"-1\")\n    yield\n    \
+               msg = concat(seed, \"-2\")\n    yield\n    msg = concat(seed, \"-3\")\n    print(msg)\n\n\
+               fn main():\n    let mut i: i32 = 0\n    while i < 300000:\n        \
+               let mut c = Chatter(concat(\"s\", \"eed\"))\n        c.resume()\n        i += 1\n    \
+               println(\"done\")\n";
+    assert_no_leak("sequence_abandoned_mid_way_leak", src, 20 * 1024 * 1024);
+}
+
+/// `match` on a *fresh* (non-place) payload-enum scrutinee -- round 2's bug
+/// #4, addressed generally via `Codegen::emit_place`'s generic fallback --
+/// specifically inside a `par`/`swarm` body's own separate worker function
+/// (`Codegen::emit_par_stmt` builds an entirely distinct top-level LLVM
+/// function per callsite, a different function boundary than the plain
+/// top-level `fn` round 2's own regression test exercises), and nested two
+/// levels deep (`par` inside `par`, which falls back to the manually-
+/// reentrant serial path in `src/codegen/par_pool.rs` rather than the
+/// pooled dispatch). Manually confirmed flat over 60,000 outer ticks (6x6
+/// entries each, 2,160,000 total nested-match executions) at `-O2` before
+/// this test was written; scaled down here for `-O0` dispatch overhead.
+#[test]
+fn runtime_match_over_fresh_enum_inside_nested_par_does_not_leak_end_to_end() {
+    let src = "struct Enemy:\n    mut hp: i32\nstruct Bullet:\n    mut dmg: i32\n\
+               arena Enemies: Enemy\narena Bullets: Bullet\n\n\
+               fn make_opt(v: i32) -> Option<str>:\n    if v > 0:\n        return Option::Some(concat(\"p\", \"x\"))\n    \
+               Option<str>::None\n\n\
+               fn main():\n    let mut i: i32 = 0\n    while i < 4:\n        spawn Enemies(1)\n        i += 1\n    \
+               let mut j: i32 = 0\n    while j < 4:\n        spawn Bullets(0)\n        j += 1\n    \
+               let mut tick: i32 = 0\n    while tick < 8000:\n        \
+               par e in Enemies:\n            par b in Bullets:\n                \
+               match make_opt(b.dmg):\n                    Option::Some(s) ->\n                        \
+               b.dmg = b.dmg + len(s)\n                    Option::None ->\n                        \
+               b.dmg = b.dmg - 1\n        tick += 1\n    \
+               println(\"done\")\n";
+    assert_no_leak("match_fresh_enum_inside_nested_par_leak", src, 20 * 1024 * 1024);
 }

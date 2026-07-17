@@ -2,6 +2,8 @@
 //! [`crate::ast`]'s surface syntax mirrored with a resolved [`super::Ty`]
 //! attached to each expression.
 
+use std::collections::HashMap;
+
 use crate::ast::*;
 use crate::diagnostics::Span;
 
@@ -18,6 +20,25 @@ pub struct TypedArenaDecl {
 #[derive(Clone, Debug)]
 pub struct TypedModule {
     pub items: Vec<TypedItem>,
+    /// Maps a monomorphized generic struct/enum's mangled name (e.g.
+    /// `Box__i32`, `Option__str`, the flat `alias__name`-style symbol every
+    /// codegen-facing `Ty::Named`/`Ty::Enum` actually carries) back to the
+    /// `(template_name, type_args)` it was instantiated from -- so a
+    /// consumer that needs a human-readable spelling (`Box<i32>`) rather
+    /// than the internal mangled one can reconstruct it, recursively for
+    /// nested generics too, without needing to parse the mangled string
+    /// (which is ambiguous in general: a struct's own plain name can
+    /// already contain `__` from module-import mangling, see
+    /// `crate::modules::mangle_name`). Currently consulted by
+    /// `Codegen::reflect_type_name` for `@export`/`@tweakable` metadata;
+    /// see its own doc comment for the concrete bug this closes (a
+    /// generic-typed reflected field's metadata showed the raw mangled
+    /// name, e.g. `Box__i32`/`Option__i32`, instead of `Box<i32>`/
+    /// `Option<i32>`). Populated once, at the end of `Checker::check`, from
+    /// `Checker::mono_struct_of`/`Checker::mono_enum_of` (which don't
+    /// themselves survive past type-checking -- `Codegen` never sees the
+    /// `Checker` that produced its input).
+    pub generic_instantiations: HashMap<String, (String, Vec<Ty>)>,
 }
 
 #[derive(Clone, Debug)]

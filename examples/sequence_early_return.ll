@@ -94,6 +94,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @sym.data = global i8** null
 @sym.len = global i64 0
 @sym.cap = global i64 0
+@sym.lock = global i8* null
 
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
@@ -229,59 +230,61 @@ if_else_10:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t0 = alloca %Countdown
   %t1 = alloca %Countdown
-  %t6 = alloca i1
-  %t7 = alloca i32
-  %t14 = alloca %Countdown
+  %t2 = alloca %Countdown
+  %t7 = alloca i1
+  %t8 = alloca i32
   %t15 = alloca %Countdown
-  %t21 = alloca i1
+  %t16 = alloca %Countdown
+  %t22 = alloca i1
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t2 = getelementptr inbounds %Countdown, %Countdown* %t1, i32 0, i32 0
-  store i32 1, i32* %t2
-  %t3 = getelementptr inbounds %Countdown, %Countdown* %t1, i32 0, i32 1
-  store i32 0, i32* %t3
-  %t4 = getelementptr inbounds %Countdown, %Countdown* %t1, i32 0, i32 2
+  %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t0, i8** @sym.lock
+  %t3 = getelementptr inbounds %Countdown, %Countdown* %t2, i32 0, i32 0
+  store i32 1, i32* %t3
+  %t4 = getelementptr inbounds %Countdown, %Countdown* %t2, i32 0, i32 1
   store i32 0, i32* %t4
-  %t5 = load %Countdown, %Countdown* %t1
-  store %Countdown %t5, %Countdown* %t0
-  store i1 true, i1* %t6
-  store i32 0, i32* %t7
+  %t5 = getelementptr inbounds %Countdown, %Countdown* %t2, i32 0, i32 2
+  store i32 0, i32* %t5
+  %t6 = load %Countdown, %Countdown* %t2
+  store %Countdown %t6, %Countdown* %t1
+  store i1 true, i1* %t7
+  store i32 0, i32* %t8
   br label %while_cond_12
 while_cond_12:
-  %t8 = load i1, i1* %t6
-  br i1 %t8, label %while_body_13, label %while_else_14
+  %t9 = load i1, i1* %t7
+  br i1 %t9, label %while_body_13, label %while_else_14
 while_body_13:
-  %t9 = call i1 @Countdown__resume(%Countdown* %t0)
-  store i1 %t9, i1* %t6
-  %t10 = load i32, i32* %t7
-  %t11 = add i32 %t10, 1
-  store i32 %t11, i32* %t7
+  %t10 = call i1 @Countdown__resume(%Countdown* %t1)
+  store i1 %t10, i1* %t7
+  %t11 = load i32, i32* %t8
+  %t12 = add i32 %t11, 1
+  store i32 %t12, i32* %t8
   br label %while_cond_12
 while_else_14:
   br label %while_end_15
 while_end_15:
-  %t12 = load i32, i32* %t7
-  %t13 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.0, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t13, i32 %t12)
-  %t16 = sub i32 0, 1
-  %t17 = getelementptr inbounds %Countdown, %Countdown* %t15, i32 0, i32 0
-  store i32 %t16, i32* %t17
-  %t18 = getelementptr inbounds %Countdown, %Countdown* %t15, i32 0, i32 1
-  store i32 0, i32* %t18
-  %t19 = getelementptr inbounds %Countdown, %Countdown* %t15, i32 0, i32 2
+  %t13 = load i32, i32* %t8
+  %t14 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.0, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t14, i32 %t13)
+  %t17 = sub i32 0, 1
+  %t18 = getelementptr inbounds %Countdown, %Countdown* %t16, i32 0, i32 0
+  store i32 %t17, i32* %t18
+  %t19 = getelementptr inbounds %Countdown, %Countdown* %t16, i32 0, i32 1
   store i32 0, i32* %t19
-  %t20 = load %Countdown, %Countdown* %t15
-  store %Countdown %t20, %Countdown* %t14
-  %t22 = call i1 @Countdown__resume(%Countdown* %t14)
-  store i1 %t22, i1* %t21
-  %t23 = load i1, i1* %t21
-  %t24 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.1, i64 0, i64 0
-  %t25 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.2, i64 0, i64 0
-  %t26 = select i1 %t23, i8* %t24, i8* %t25
-  %t27 = getelementptr inbounds [31 x i8], [31 x i8]* @.str.3, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t27, i8* %t26)
+  %t20 = getelementptr inbounds %Countdown, %Countdown* %t16, i32 0, i32 2
+  store i32 0, i32* %t20
+  %t21 = load %Countdown, %Countdown* %t16
+  store %Countdown %t21, %Countdown* %t15
+  %t23 = call i1 @Countdown__resume(%Countdown* %t15)
+  store i1 %t23, i1* %t22
+  %t24 = load i1, i1* %t22
+  %t25 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.1, i64 0, i64 0
+  %t26 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.2, i64 0, i64 0
+  %t27 = select i1 %t24, i8* %t25, i8* %t26
+  %t28 = getelementptr inbounds [31 x i8], [31 x i8]* @.str.3, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t28, i8* %t27)
   ret i32 0
 }
 

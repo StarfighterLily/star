@@ -97,6 +97,27 @@ impl Codegen {
     /// A human-readable spelling of `ty` for reflection metadata (distinct
     /// from `llvm_ty`, which an external tool reading the `.ll` wouldn't
     /// want to parse LLVM IR syntax to understand).
+    ///
+    /// A field typed as a monomorphized *user-defined* generic struct/enum
+    /// (`struct Box<T>: value: T`, used as `Box<i32>`) or as the
+    /// compiler-builtin `Option<T>`/`Result<T,E>` generics all reach this
+    /// function as a bare `Ty::Named`/`Ty::Enum` carrying the flat mangled
+    /// symbol codegen actually uses (`Box__i32`, `Option__i32`) -- unlike
+    /// `List<T>`/`Map<K,V>`/... below, which have a dedicated `Ty` variant
+    /// that already carries its own element type(s) to recurse into.
+    /// Previously this fell straight to the catch-all `n.clone()` arm for
+    /// both, so a decorated field's emitted metadata read e.g.
+    /// `boxed:16:Box__i32:export`/`opt:32:Option__i32:export` -- an internal
+    /// mangling artifact, not a name any external tool or human reading the
+    /// metadata could make sense of (confirmed via a real `star emit llvm`
+    /// on `struct Everything: @export boxed: Box<i32> = Box(1)  @export
+    /// opt: Option<i32> = Option<i32>::None`). Fixed by consulting
+    /// `self.generic_instantiations` (threaded through from `Checker` via
+    /// `TypedModule`, see its own doc comment) first, recursing into this
+    /// same function for each type argument so a nested generic
+    /// (`Box<Option<i32>>`) renders correctly too; a `Ty::Named`/`Ty::Enum`
+    /// for an ordinary, non-generic struct/enum isn't in that map at all
+    /// and falls through to the plain `n.clone()` exactly as before.
     fn reflect_type_name(&self, ty: &Ty) -> String {
         match ty {
             Ty::Int => "i32".into(),
@@ -116,7 +137,7 @@ impl Codegen {
             Ty::Vec3 => "Vec3".into(),
             Ty::Vec4 => "Vec4".into(),
             Ty::Mat4 => "Mat4".into(),
-            Ty::Named(n) => n.clone(),
+            Ty::Named(n) => self.generic_display_name(n),
             Ty::GenRef(inner) => format!("GenRef<{}>", self.reflect_type_name(inner)),
             Ty::Handle(inner) => format!("Handle<{}>", self.reflect_type_name(inner)),
             Ty::List(inner) => format!("List<{}>", self.reflect_type_name(inner)),
@@ -126,7 +147,7 @@ impl Codegen {
             Ty::Array(elem, count) => format!("[{}; {}]", self.reflect_type_name(elem), count),
             Ty::Ring(elem, count) => format!("Ring<{}, {}>", self.reflect_type_name(elem), count),
             Ty::Table(elem) => format!("Table<{}>", self.reflect_type_name(elem)),
-            Ty::Enum(n) => n.clone(),
+            Ty::Enum(n) => self.generic_display_name(n),
             Ty::Closure(params, ret) => format!(
                 "Fn({}) -> {}",
                 params.iter().map(|p| self.reflect_type_name(p)).collect::<Vec<_>>().join(", "),
@@ -140,6 +161,26 @@ impl Codegen {
             Ty::Instant => "Instant".into(),
             Ty::Bytes => "Bytes".into(),
             Ty::Symbol => "Symbol".into(),
+        }
+    }
+
+    /// Render a flat, possibly-mangled struct/enum name (`n`, as carried by
+    /// `Ty::Named`/`Ty::Enum`) for reflection metadata: `Base<Arg1, Arg2>`
+    /// if `n` is a monomorphized generic instantiation known to
+    /// `self.generic_instantiations`, otherwise `n` verbatim (an ordinary,
+    /// non-generic struct/enum, including one that reached this compiler
+    /// already `alias__`-mangled by `crate::modules` -- there's no separate
+    /// table for that mangling, so it's simply shown as-is, matching every
+    /// other codegen-facing use of a module-qualified name). See
+    /// `reflect_type_name`'s doc comment for the concrete bug this closes.
+    fn generic_display_name(&self, n: &str) -> String {
+        match self.generic_instantiations.get(n) {
+            Some((base, args)) => format!(
+                "{}<{}>",
+                base,
+                args.iter().map(|a| self.reflect_type_name(a)).collect::<Vec<_>>().join(", ")
+            ),
+            None => n.to_string(),
         }
     }
 

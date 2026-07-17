@@ -755,13 +755,34 @@ impl Checker {
         // silently let the second declaration win, and the collision only
         // ever surfaced once both reached the LLVM parser as clang's opaque
         // "invalid redefinition of type/function", pointing at generated IR
-        // the user never wrote rather than at their own source. Doesn't cover
-        // an `extern "C" fn` colliding with an ordinary `fn`'s name -- that
-        // narrower gap is left for a future round -- extern-fn-vs-extern-fn
-        // is already caught separately by `extern_fn_names_seen`.
+        // the user never wrote rather than at their own source. An
+        // `extern "C" fn` colliding with an ordinary `fn`'s name in the same
+        // file shares this exact namespace (both land on the plain LLVM
+        // function symbol `@name`, an extern's `declare` and a plain fn's
+        // `define`), so it's folded into the same `value_names_seen` check
+        // below rather than left as a gap -- confirmed via a real `star
+        // build`: `extern "C" fn myfunc(x: i32) -> i32` plus `fn myfunc(x:
+        // i32) -> i32: ...` in one file both type-checked cleanly with no
+        // diagnostic at all, then failed at the `clang` step with "invalid
+        // redefinition of function 'myfunc'" pointing at generated IR the
+        // user never wrote. extern-fn-vs-extern-fn (the identical-signature,
+        // same-name, same-file case) is already caught separately by
+        // `extern_fn_names_seen`, which also supplies its own, more specific
+        // diagnostic -- so `RESERVED_RUNTIME_SYMBOLS`-collisions and
+        // extern-vs-extern duplicates recorded in `extern_fn_names_seen`
+        // below are *not* also double-reported through `value_names_seen`.
         let mut type_names_seen: HashSet<String> = HashSet::new();
         let mut value_names_seen: HashSet<String> = HashSet::new();
         let mut arena_names_seen: HashSet<String> = HashSet::new();
+        // Tracks `extern "C" fn` names seen so far in pass 1, purely to
+        // detect a collision with an ordinary `fn` of the same name (see the
+        // `value_names_seen` doc comment above) regardless of which one
+        // appears first in the source. Deliberately *not* used to detect an
+        // extern-vs-extern name collision -- `check_extern_fn`'s own
+        // `extern_fn_names_seen` (populated in the later per-item checking
+        // pass) already reports that case with a more specific diagnostic,
+        // and folding it in here too would double-report it.
+        let mut extern_fn_names_seen_pass1: HashSet<String> = HashSet::new();
 
         // Pre-register `Option<T>`/`Result<T,E>` as compiler builtins (see
         // docs/design.md's "Type System" §9): ordinary generic-enum
@@ -837,7 +858,14 @@ impl Checker {
                     self.arenas.insert(a.name.clone(), ty);
                 }
                 Item::Fn(f) if f.sig.type_params.is_empty() => {
-                    if !value_names_seen.insert(f.sig.name.clone()) {
+                    // The second half of this check (`extern_fn_names_seen_pass1`)
+                    // catches an ordinary `fn` colliding with an `extern "C"
+                    // fn` of the same name declared *earlier* in this file --
+                    // see the `value_names_seen` doc comment above for why
+                    // that's a real, reproduced bug (a clean diagnostic here
+                    // instead of clang's opaque "invalid redefinition of
+                    // function" at the very end of the pipeline).
+                    if !value_names_seen.insert(f.sig.name.clone()) || extern_fn_names_seen_pass1.contains(&f.sig.name) {
                         self.error(format!("the function `{}` is declared more than once", f.sig.name), f.span);
                     }
                     let param_tys: Vec<Ty> = f.sig.params.iter().map(|p| {
@@ -848,6 +876,17 @@ impl Checker {
                 }
                 Item::Fn(_) => {}
                 Item::ExternFn(e) => {
+                    // Mirror of the check above for the opposite declaration
+                    // order (an ordinary `fn` declared *before* the `extern
+                    // "C" fn` of the same name). `value_names_seen` at this
+                    // point holds every generic-or-not ordinary `fn` name
+                    // seen so far (pass 0 already ran fully, and pass 1 is a
+                    // single left-to-right loop), so this also naturally
+                    // catches a collision with a generic `fn`.
+                    if value_names_seen.contains(&e.sig.name) {
+                        self.error(format!("the function `{}` is declared more than once", e.sig.name), e.span);
+                    }
+                    extern_fn_names_seen_pass1.insert(e.sig.name.clone());
                     let param_tys: Vec<Ty> = e.sig.params.iter().map(|p| {
                         p.ty.as_ref().and_then(|t| self.resolve_type(t)).unwrap_or(Ty::Named("infer".into()))
                     }).collect();
@@ -897,7 +936,18 @@ impl Checker {
         self.check_no_recursive_structs(&typed_items);
 
         if self.errors.is_empty() {
-            Ok(TypedModule { items: typed_items })
+            // Combine both mono-instantiation tables into the one map
+            // `TypedModule` carries onward -- see its `generic_instantiations`
+            // doc comment for why `Codegen` needs this at all (it never sees
+            // `self`, only the `TypedModule` this function returns).
+            // `mono_struct_of`/`mono_enum_of` are keyed from disjoint
+            // namespaces in practice (a struct and enum can never share a
+            // name -- both draw from the same `type_names_seen` duplicate
+            // check earlier in this function), so a plain `extend` can't
+            // silently drop either table's entries.
+            let mut generic_instantiations = std::mem::take(&mut self.mono_struct_of);
+            generic_instantiations.extend(std::mem::take(&mut self.mono_enum_of));
+            Ok(TypedModule { items: typed_items, generic_instantiations })
         } else {
             Err(self.errors_to_diagnostics())
         }

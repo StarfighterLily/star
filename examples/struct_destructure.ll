@@ -94,6 +94,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @sym.data = global i8** null
 @sym.len = global i64 0
 @sym.cap = global i64 0
+@sym.lock = global i8* null
 
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
@@ -210,38 +211,40 @@ match_end_1:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t0 = alloca %Point
-  %t6 = alloca %Line
-  %t7 = alloca %Point
-  %t12 = alloca %Point
+  %t1 = alloca %Point
+  %t7 = alloca %Line
+  %t8 = alloca %Point
+  %t13 = alloca %Point
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t1 = getelementptr inbounds %Point, %Point* %t0, i32 0, i32 0
-  store i32 3, i32* %t1
-  %t2 = getelementptr inbounds %Point, %Point* %t0, i32 0, i32 1
-  store i32 4, i32* %t2
-  %t3 = load %Point, %Point* %t0
-  %t4 = call i32 @manhattan(%Point %t3)
-  %t5 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.0, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t5, i32 %t4)
-  %t8 = getelementptr inbounds %Point, %Point* %t7, i32 0, i32 0
-  store i32 0, i32* %t8
-  %t9 = getelementptr inbounds %Point, %Point* %t7, i32 0, i32 1
+  %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t0, i8** @sym.lock
+  %t2 = getelementptr inbounds %Point, %Point* %t1, i32 0, i32 0
+  store i32 3, i32* %t2
+  %t3 = getelementptr inbounds %Point, %Point* %t1, i32 0, i32 1
+  store i32 4, i32* %t3
+  %t4 = load %Point, %Point* %t1
+  %t5 = call i32 @manhattan(%Point %t4)
+  %t6 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.0, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t6, i32 %t5)
+  %t9 = getelementptr inbounds %Point, %Point* %t8, i32 0, i32 0
   store i32 0, i32* %t9
-  %t10 = load %Point, %Point* %t7
-  %t11 = getelementptr inbounds %Line, %Line* %t6, i32 0, i32 0
-  store %Point %t10, %Point* %t11
-  %t13 = getelementptr inbounds %Point, %Point* %t12, i32 0, i32 0
-  store i32 3, i32* %t13
-  %t14 = getelementptr inbounds %Point, %Point* %t12, i32 0, i32 1
-  store i32 4, i32* %t14
-  %t15 = load %Point, %Point* %t12
-  %t16 = getelementptr inbounds %Line, %Line* %t6, i32 0, i32 1
-  store %Point %t15, %Point* %t16
-  %t17 = load %Line, %Line* %t6
-  %t18 = call i32 @length_sq(%Line %t17)
-  %t19 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.1, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t19, i32 %t18)
+  %t10 = getelementptr inbounds %Point, %Point* %t8, i32 0, i32 1
+  store i32 0, i32* %t10
+  %t11 = load %Point, %Point* %t8
+  %t12 = getelementptr inbounds %Line, %Line* %t7, i32 0, i32 0
+  store %Point %t11, %Point* %t12
+  %t14 = getelementptr inbounds %Point, %Point* %t13, i32 0, i32 0
+  store i32 3, i32* %t14
+  %t15 = getelementptr inbounds %Point, %Point* %t13, i32 0, i32 1
+  store i32 4, i32* %t15
+  %t16 = load %Point, %Point* %t13
+  %t17 = getelementptr inbounds %Line, %Line* %t7, i32 0, i32 1
+  store %Point %t16, %Point* %t17
+  %t18 = load %Line, %Line* %t7
+  %t19 = call i32 @length_sq(%Line %t18)
+  %t20 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.1, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t20, i32 %t19)
   ret i32 0
 }
 

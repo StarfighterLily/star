@@ -197,6 +197,10 @@ impl Codegen {
         if is_main {
             self.line("  store i32 %.argc, i32* @star.argc");
             self.line("  store i8** %.argv, i8*** @star.argv");
+            // Must run before any user code -- see `@sym.lock`'s doc comment
+            // in `Codegen::emit_builtins` for why this can't be a lazy
+            // first-use init the way the `par`/`swarm` pool's own is.
+            self.emit_sym_lock_init();
         }
 
         for p in &f.sig.params {

@@ -171,6 +171,12 @@ pub struct Codegen {
     /// they need different argument-passing conventions for RC'd (`str`)
     /// arguments, see `emit_extern_call`'s own doc comment.
     extern_fns: std::collections::HashSet<String>,
+    /// Copied from `TypedModule::generic_instantiations` at the start of
+    /// `emit` -- see that field's own doc comment. Consulted by
+    /// `reflect_type_name` to render a monomorphized generic struct/enum's
+    /// mangled `Ty::Named`/`Ty::Enum` name (`Box__i32`) as a real generic
+    /// spelling (`Box<i32>`) in `@export`/`@tweakable` metadata.
+    generic_instantiations: std::collections::HashMap<String, (String, Vec<Ty>)>,
     /// The label of the basic block most recently opened via `open_block`
     /// (reset to `"entry"` at the start of every function/worker/thunk).
     /// A `TypedExpr::If`/`TypedExpr::Match` branch's `phi` merge needs to
@@ -227,6 +233,7 @@ impl Codegen {
             eq_fns: std::collections::HashMap::new(),
             par_pool_emitted: false,
             extern_fns: std::collections::HashSet::new(),
+            generic_instantiations: std::collections::HashMap::new(),
             current_label: "entry".to_string(),
         }
     }
@@ -236,6 +243,11 @@ impl Codegen {
         self.line("; Star compiler -- LLVM IR");
         self.line("target triple = \"x86_64-w64-windows-gnu\"");
         self.line("");
+
+        // Needed by `reflect_type_name` (via `emit_struct_decl` below), so
+        // populate before any struct/enum text is emitted -- see
+        // `generic_instantiations`'s own doc comment.
+        self.generic_instantiations = module.generic_instantiations.clone();
 
         self.emit_builtins();
 
@@ -475,8 +487,44 @@ impl Codegen {
         self.line("@sym.data = global i8** null");
         self.line("@sym.len = global i64 0");
         self.line("@sym.cap = global i64 0");
+        // Binary semaphore guarding every read/mutation of the three globals
+        // above -- unlike `List<T>`/`Map<K,V>`, whose backing buffers are
+        // per-value and therefore already disjoint across `par`/`swarm`
+        // worker threads by the checker's own disjointness proof (see
+        // `types::par_analysis`), the intern table is a single process-wide
+        // shared mutable structure that `Symbol(..)`/`symbol_name(..)` are
+        // *not* barred from calling inside a `par`/`swarm` body (neither is
+        // in `Checker::unsafe_par_fns`'s ban list, unlike `spawn`/`despawn`/
+        // `frame:`), so multiple worker threads really can call
+        // `emit_symbol_intern`/`emit_symbol_name` concurrently. Without a
+        // lock, `emit_symbol_intern`'s grow path (`malloc`/`memcpy`/`free`
+        // against `@sym.data`) races for real: confirmed via a real
+        // `STATUS_HEAP_CORRUPTION` (`0xC0000374`) crash, 5/5 runs, from a
+        // `par` body where every worker thread interns the same growing set
+        // of `Symbol` strings concurrently. `@sym.lock` is created once, up
+        // front, in `main`'s prologue (see `Codegen::emit_fn`'s `is_main`
+        // case) -- *before* user code runs and therefore before any
+        // `par`/`swarm` dispatch could possibly spin up the worker pool, so
+        // there is no first-use race in creating the lock itself (unlike
+        // `par.pool.ensure_init`, which can safely stay lazy precisely
+        // because dispatch ordering guarantees only the top-level caller
+        // ever reaches its init branch -- no such ordering guarantee exists
+        // for `Symbol`, since its first-ever call in a program could itself
+        // be inside a `par` body).
+        self.line("@sym.lock = global i8* null");
         self.line("");
         self.emit_rc_runtime();
+    }
+
+    /// One-time, single-threaded initialization of `@sym.lock` -- called
+    /// unconditionally from `main`'s prologue (see `Codegen::emit_fn`),
+    /// before any user code (and therefore before any `par`/`swarm`
+    /// dispatch) can run. See `@sym.lock`'s own declaration comment above
+    /// for why this can't safely be lazy the way `par.pool.ensure_init` is.
+    pub(super) fn emit_sym_lock_init(&mut self) {
+        let lock = self.tmp_name();
+        self.line(&format!("  {} = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)", lock));
+        self.line(&format!("  store i8* {}, i8** @sym.lock", lock));
     }
 
     /// Emit the reference-counting runtime `concat`/closure environments

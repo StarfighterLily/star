@@ -94,6 +94,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @sym.data = global i8** null
 @sym.len = global i64 0
 @sym.cap = global i64 0
+@sym.lock = global i8* null
 
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
@@ -158,146 +159,148 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t0 = alloca i8*
-  %t2 = alloca i32
-  %t3 = alloca i8*
-  %t4 = alloca [512 x i8]
-  %t15 = alloca [16 x i8]
-  %t34 = alloca i8*
-  %t36 = alloca i1
-  %t50 = alloca i8*
+  %t1 = alloca i8*
+  %t3 = alloca i32
+  %t4 = alloca i8*
+  %t5 = alloca [512 x i8]
+  %t16 = alloca [16 x i8]
+  %t35 = alloca i8*
+  %t37 = alloca i1
+  %t51 = alloca i8*
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t1 = getelementptr inbounds { i64, i8*, [10 x i8] }, { i64, i8*, [10 x i8] }* @.str.0, i64 0, i32 2, i64 0
-  store i8* %t1, i8** %t0
-  store i32 8080, i32* %t2
-  %t5 = getelementptr inbounds [512 x i8], [512 x i8]* %t4, i64 0, i64 0
-  call i32 @WSAStartup(i16 514, i8* %t5)
-  %t6 = call i8* @socket(i32 2, i32 1, i32 6)
-  %t7 = icmp eq i8* %t6, inttoptr (i64 -1 to i8*)
-  br i1 %t7, label %tcp_socket_fail_0, label %tcp_socket_ok_1
+  %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t0, i8** @sym.lock
+  %t2 = getelementptr inbounds { i64, i8*, [10 x i8] }, { i64, i8*, [10 x i8] }* @.str.0, i64 0, i32 2, i64 0
+  store i8* %t2, i8** %t1
+  store i32 8080, i32* %t3
+  %t6 = getelementptr inbounds [512 x i8], [512 x i8]* %t5, i64 0, i64 0
+  call i32 @WSAStartup(i16 514, i8* %t6)
+  %t7 = call i8* @socket(i32 2, i32 1, i32 6)
+  %t8 = icmp eq i8* %t7, inttoptr (i64 -1 to i8*)
+  br i1 %t8, label %tcp_socket_fail_0, label %tcp_socket_ok_1
 tcp_socket_fail_0:
   br label %tcp_connect_end_2
 tcp_socket_ok_1:
-  %t8 = load i8*, i8** %t0
-  %t9 = load i8*, i8** %t0
-  call void @star_rc_retain(i8* %t9)
-  %t10 = load i32, i32* %t2
-  %t11 = trunc i32 %t10 to i16
-  %t12 = call i16 @htons(i16 %t11)
-  %t13 = call i32 @inet_addr(i8* %t8)
-  call void @star_rc_release(i8* %t8)
-  %t14 = icmp eq i32 %t13, -1
-  br i1 %t14, label %tcp_addr_invalid_3, label %tcp_addr_valid_4
+  %t9 = load i8*, i8** %t1
+  %t10 = load i8*, i8** %t1
+  call void @star_rc_retain(i8* %t10)
+  %t11 = load i32, i32* %t3
+  %t12 = trunc i32 %t11 to i16
+  %t13 = call i16 @htons(i16 %t12)
+  %t14 = call i32 @inet_addr(i8* %t9)
+  call void @star_rc_release(i8* %t9)
+  %t15 = icmp eq i32 %t14, -1
+  br i1 %t15, label %tcp_addr_invalid_3, label %tcp_addr_valid_4
 tcp_addr_invalid_3:
-  call i32 @closesocket(i8* %t6)
+  call i32 @closesocket(i8* %t7)
   br label %tcp_connect_end_2
 tcp_addr_valid_4:
-  %t16 = getelementptr inbounds [16 x i8], [16 x i8]* %t15, i64 0, i64 0
-  %t17 = bitcast i8* %t16 to i16*
-  store i16 2, i16* %t17
-  %t18 = getelementptr inbounds i8, i8* %t16, i64 2
-  %t19 = bitcast i8* %t18 to i16*
-  store i16 %t12, i16* %t19
-  %t20 = getelementptr inbounds i8, i8* %t16, i64 4
-  %t21 = bitcast i8* %t20 to i32*
-  store i32 %t13, i32* %t21
-  %t22 = getelementptr inbounds i8, i8* %t16, i64 8
-  %t23 = bitcast i8* %t22 to i64*
-  store i64 0, i64* %t23
-  %t24 = call i32 @connect(i8* %t6, i8* %t16, i32 16)
-  %t25 = icmp ne i32 %t24, 0
-  br i1 %t25, label %tcp_connect_fail_5, label %tcp_connect_ok_6
+  %t17 = getelementptr inbounds [16 x i8], [16 x i8]* %t16, i64 0, i64 0
+  %t18 = bitcast i8* %t17 to i16*
+  store i16 2, i16* %t18
+  %t19 = getelementptr inbounds i8, i8* %t17, i64 2
+  %t20 = bitcast i8* %t19 to i16*
+  store i16 %t13, i16* %t20
+  %t21 = getelementptr inbounds i8, i8* %t17, i64 4
+  %t22 = bitcast i8* %t21 to i32*
+  store i32 %t14, i32* %t22
+  %t23 = getelementptr inbounds i8, i8* %t17, i64 8
+  %t24 = bitcast i8* %t23 to i64*
+  store i64 0, i64* %t24
+  %t25 = call i32 @connect(i8* %t7, i8* %t17, i32 16)
+  %t26 = icmp ne i32 %t25, 0
+  br i1 %t26, label %tcp_connect_fail_5, label %tcp_connect_ok_6
 tcp_connect_fail_5:
-  call i32 @closesocket(i8* %t6)
+  call i32 @closesocket(i8* %t7)
   br label %tcp_connect_end_2
 tcp_connect_ok_6:
   br label %tcp_connect_end_2
 tcp_connect_end_2:
-  %t26 = phi i8* [ null, %tcp_socket_fail_0 ], [ null, %tcp_addr_invalid_3 ], [ null, %tcp_connect_fail_5 ], [ %t6, %tcp_connect_ok_6 ]
-  store i8* %t26, i8** %t3
-  %t27 = load i8*, i8** %t3
-  %t28 = icmp eq i8* %t27, null
-  br i1 %t28, label %if_then_7, label %if_else_8
+  %t27 = phi i8* [ null, %tcp_socket_fail_0 ], [ null, %tcp_addr_invalid_3 ], [ null, %tcp_connect_fail_5 ], [ %t7, %tcp_connect_ok_6 ]
+  store i8* %t27, i8** %t4
+  %t28 = load i8*, i8** %t4
+  %t29 = icmp eq i8* %t28, null
+  br i1 %t29, label %if_then_7, label %if_else_8
 if_then_7:
-  %t29 = load i8*, i8** %t0
-  %t30 = load i8*, i8** %t0
-  call void @star_rc_retain(i8* %t30)
-  call void @star_rc_release(i8* %t29)
-  %t31 = load i32, i32* %t2
-  %t32 = getelementptr inbounds [49 x i8], [49 x i8]* @.str.1, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t32, i8* %t29, i32 %t31)
-  %t33 = load i8*, i8** %t0
-  call void @star_rc_release(i8* %t33)
+  %t30 = load i8*, i8** %t1
+  %t31 = load i8*, i8** %t1
+  call void @star_rc_retain(i8* %t31)
+  call void @star_rc_release(i8* %t30)
+  %t32 = load i32, i32* %t3
+  %t33 = getelementptr inbounds [49 x i8], [49 x i8]* @.str.1, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t33, i8* %t30, i32 %t32)
+  %t34 = load i8*, i8** %t1
+  call void @star_rc_release(i8* %t34)
   ret i32 0
 if_else_8:
   br label %if_end_9
 if_end_9:
-  %t35 = getelementptr inbounds { i64, i8*, [36 x i8] }, { i64, i8*, [36 x i8] }* @.str.2, i64 0, i32 2, i64 0
-  store i8* %t35, i8** %t34
-  %t37 = load i8*, i8** %t3
-  %t38 = icmp eq i8* %t37, null
-  br i1 %t38, label %tcp_null_handle_10, label %tcp_handle_ok_11
+  %t36 = getelementptr inbounds { i64, i8*, [36 x i8] }, { i64, i8*, [36 x i8] }* @.str.2, i64 0, i32 2, i64 0
+  store i8* %t36, i8** %t35
+  %t38 = load i8*, i8** %t4
+  %t39 = icmp eq i8* %t38, null
+  br i1 %t39, label %tcp_null_handle_10, label %tcp_handle_ok_11
 tcp_null_handle_10:
-  %t39 = getelementptr inbounds [74 x i8], [74 x i8]* @.str.3, i64 0, i64 0
-  call i32 @puts(i8* %t39)
+  %t40 = getelementptr inbounds [74 x i8], [74 x i8]* @.str.3, i64 0, i64 0
+  call i32 @puts(i8* %t40)
   call void @exit(i32 1)
   unreachable
 tcp_handle_ok_11:
-  %t40 = load i8*, i8** %t34
-  %t41 = load i8*, i8** %t34
-  call void @star_rc_retain(i8* %t41)
-  %t42 = call i32 @strlen(i8* %t40)
-  %t43 = call i32 @send(i8* %t37, i8* %t40, i32 %t42, i32 0)
-  call void @star_rc_release(i8* %t40)
-  %t44 = icmp eq i32 %t43, %t42
-  store i1 %t44, i1* %t36
-  %t45 = load i1, i1* %t36
-  %t46 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.4, i64 0, i64 0
-  %t47 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.5, i64 0, i64 0
-  %t48 = select i1 %t45, i8* %t46, i8* %t47
-  %t49 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.6, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t49, i8* %t48)
-  %t51 = load i8*, i8** %t3
-  %t52 = icmp eq i8* %t51, null
-  br i1 %t52, label %tcp_null_handle_12, label %tcp_handle_ok_13
+  %t41 = load i8*, i8** %t35
+  %t42 = load i8*, i8** %t35
+  call void @star_rc_retain(i8* %t42)
+  %t43 = call i32 @strlen(i8* %t41)
+  %t44 = call i32 @send(i8* %t38, i8* %t41, i32 %t43, i32 0)
+  call void @star_rc_release(i8* %t41)
+  %t45 = icmp eq i32 %t44, %t43
+  store i1 %t45, i1* %t37
+  %t46 = load i1, i1* %t37
+  %t47 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.4, i64 0, i64 0
+  %t48 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.5, i64 0, i64 0
+  %t49 = select i1 %t46, i8* %t47, i8* %t48
+  %t50 = getelementptr inbounds [17 x i8], [17 x i8]* @.str.6, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t50, i8* %t49)
+  %t52 = load i8*, i8** %t4
+  %t53 = icmp eq i8* %t52, null
+  br i1 %t53, label %tcp_null_handle_12, label %tcp_handle_ok_13
 tcp_null_handle_12:
-  %t53 = getelementptr inbounds [74 x i8], [74 x i8]* @.str.7, i64 0, i64 0
-  call i32 @puts(i8* %t53)
+  %t54 = getelementptr inbounds [74 x i8], [74 x i8]* @.str.7, i64 0, i64 0
+  call i32 @puts(i8* %t54)
   call void @exit(i32 1)
   unreachable
 tcp_handle_ok_13:
-  %t54 = call i8* @star_rc_alloc(i64 4096, i8* null)
-  %t55 = call i32 @recv(i8* %t51, i8* %t54, i32 4095, i32 0)
-  %t56 = icmp sgt i32 %t55, 0
-  %t57 = sext i32 %t55 to i64
-  %t58 = select i1 %t56, i64 %t57, i64 0
-  %t59 = getelementptr inbounds i8, i8* %t54, i64 %t58
-  store i8 0, i8* %t59
-  store i8* %t54, i8** %t50
-  %t60 = load i8*, i8** %t50
-  %t61 = load i8*, i8** %t50
-  call void @star_rc_retain(i8* %t61)
-  call void @star_rc_release(i8* %t60)
-  %t62 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.8, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t62, i8* %t60)
-  %t63 = load i8*, i8** %t3
-  %t64 = icmp eq i8* %t63, null
-  br i1 %t64, label %tcp_null_handle_14, label %tcp_handle_ok_15
+  %t55 = call i8* @star_rc_alloc(i64 4096, i8* null)
+  %t56 = call i32 @recv(i8* %t52, i8* %t55, i32 4095, i32 0)
+  %t57 = icmp sgt i32 %t56, 0
+  %t58 = sext i32 %t56 to i64
+  %t59 = select i1 %t57, i64 %t58, i64 0
+  %t60 = getelementptr inbounds i8, i8* %t55, i64 %t59
+  store i8 0, i8* %t60
+  store i8* %t55, i8** %t51
+  %t61 = load i8*, i8** %t51
+  %t62 = load i8*, i8** %t51
+  call void @star_rc_retain(i8* %t62)
+  call void @star_rc_release(i8* %t61)
+  %t63 = getelementptr inbounds [14 x i8], [14 x i8]* @.str.8, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t63, i8* %t61)
+  %t64 = load i8*, i8** %t4
+  %t65 = icmp eq i8* %t64, null
+  br i1 %t65, label %tcp_null_handle_14, label %tcp_handle_ok_15
 tcp_null_handle_14:
-  %t65 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.9, i64 0, i64 0
-  call i32 @puts(i8* %t65)
+  %t66 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.9, i64 0, i64 0
+  call i32 @puts(i8* %t66)
   call void @exit(i32 1)
   unreachable
 tcp_handle_ok_15:
-  call i32 @closesocket(i8* %t63)
-  store i8* null, i8** %t3
-  %t66 = load i8*, i8** %t50
-  call void @star_rc_release(i8* %t66)
-  %t67 = load i8*, i8** %t34
+  call i32 @closesocket(i8* %t64)
+  store i8* null, i8** %t4
+  %t67 = load i8*, i8** %t51
   call void @star_rc_release(i8* %t67)
-  %t68 = load i8*, i8** %t0
+  %t68 = load i8*, i8** %t35
   call void @star_rc_release(i8* %t68)
+  %t69 = load i8*, i8** %t1
+  call void @star_rc_release(i8* %t69)
   ret i32 0
 }
 

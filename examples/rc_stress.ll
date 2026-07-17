@@ -94,6 +94,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @sym.data = global i8** null
 @sym.len = global i64 0
 @sym.cap = global i64 0
+@sym.lock = global i8* null
 
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
@@ -225,33 +226,35 @@ entry:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t0 = alloca i32
   %t1 = alloca i32
+  %t2 = alloca i32
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  store i32 0, i32* %t0
+  %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t0, i8** @sym.lock
   store i32 0, i32* %t1
+  store i32 0, i32* %t2
   br label %while_cond_1
 while_cond_1:
-  %t2 = load i32, i32* %t0
-  %t3 = icmp slt i32 %t2, 10000000
-  br i1 %t3, label %while_body_2, label %while_else_3
+  %t3 = load i32, i32* %t1
+  %t4 = icmp slt i32 %t3, 10000000
+  br i1 %t4, label %while_body_2, label %while_else_3
 while_body_2:
-  %t4 = load i32, i32* %t0
-  %t5 = call i32 @make_stuff(i32 %t4)
-  %t6 = load i32, i32* %t1
-  %t7 = add i32 %t6, %t5
-  store i32 %t7, i32* %t1
-  %t8 = load i32, i32* %t0
-  %t9 = add i32 %t8, 1
-  store i32 %t9, i32* %t0
+  %t5 = load i32, i32* %t1
+  %t6 = call i32 @make_stuff(i32 %t5)
+  %t7 = load i32, i32* %t2
+  %t8 = add i32 %t7, %t6
+  store i32 %t8, i32* %t2
+  %t9 = load i32, i32* %t1
+  %t10 = add i32 %t9, 1
+  store i32 %t10, i32* %t1
   br label %while_cond_1
 while_else_3:
   br label %while_end_4
 while_end_4:
-  %t10 = load i32, i32* %t1
-  %t11 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.2, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t11, i32 %t10)
+  %t11 = load i32, i32* %t2
+  %t12 = getelementptr inbounds [18 x i8], [18 x i8]* @.str.2, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t12, i32 %t11)
   ret i32 0
 }
 

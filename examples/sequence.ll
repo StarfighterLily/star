@@ -94,6 +94,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @sym.data = global i8** null
 @sym.len = global i64 0
 @sym.cap = global i64 0
+@sym.lock = global i8* null
 
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
@@ -243,33 +244,35 @@ if_else_7:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t0 = alloca %Countdown
   %t1 = alloca %Countdown
-  %t6 = alloca i1
+  %t2 = alloca %Countdown
+  %t7 = alloca i1
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t2 = getelementptr inbounds %Countdown, %Countdown* %t1, i32 0, i32 0
-  store i32 3, i32* %t2
-  %t3 = getelementptr inbounds %Countdown, %Countdown* %t1, i32 0, i32 1
-  store i32 0, i32* %t3
-  %t4 = getelementptr inbounds %Countdown, %Countdown* %t1, i32 0, i32 2
+  %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t0, i8** @sym.lock
+  %t3 = getelementptr inbounds %Countdown, %Countdown* %t2, i32 0, i32 0
+  store i32 3, i32* %t3
+  %t4 = getelementptr inbounds %Countdown, %Countdown* %t2, i32 0, i32 1
   store i32 0, i32* %t4
-  %t5 = load %Countdown, %Countdown* %t1
-  store %Countdown %t5, %Countdown* %t0
-  store i1 true, i1* %t6
+  %t5 = getelementptr inbounds %Countdown, %Countdown* %t2, i32 0, i32 2
+  store i32 0, i32* %t5
+  %t6 = load %Countdown, %Countdown* %t2
+  store %Countdown %t6, %Countdown* %t1
+  store i1 true, i1* %t7
   br label %while_cond_9
 while_cond_9:
-  %t7 = load i1, i1* %t6
-  br i1 %t7, label %while_body_10, label %while_else_11
+  %t8 = load i1, i1* %t7
+  br i1 %t8, label %while_body_10, label %while_else_11
 while_body_10:
-  %t8 = call i1 @Countdown__resume(%Countdown* %t0)
-  store i1 %t8, i1* %t6
+  %t9 = call i1 @Countdown__resume(%Countdown* %t1)
+  store i1 %t9, i1* %t7
   br label %while_cond_9
 while_else_11:
   br label %while_end_12
 while_end_12:
-  %t9 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.4, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t9)
+  %t10 = getelementptr inbounds [15 x i8], [15 x i8]* @.str.4, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t10)
   ret i32 0
 }
 

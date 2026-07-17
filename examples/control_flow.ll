@@ -94,6 +94,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @sym.data = global i8** null
 @sym.len = global i64 0
 @sym.cap = global i64 0
+@sym.lock = global i8* null
 
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
@@ -331,15 +332,17 @@ define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t0 = call i32 @sum_with_skip_and_stop()
-  %t1 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.8, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t1, i32 %t0)
-  %t2 = call i32 @count_with_nested_break()
-  %t3 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.9, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t3, i32 %t2)
-  %t4 = call i32 @while_break_at_four()
-  %t5 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.10, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t5, i32 %t4)
+  %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t0, i8** @sym.lock
+  %t1 = call i32 @sum_with_skip_and_stop()
+  %t2 = getelementptr inbounds [9 x i8], [9 x i8]* @.str.8, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t2, i32 %t1)
+  %t3 = call i32 @count_with_nested_break()
+  %t4 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.9, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t4, i32 %t3)
+  %t5 = call i32 @while_break_at_four()
+  %t6 = getelementptr inbounds [11 x i8], [11 x i8]* @.str.10, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t6, i32 %t5)
   call void @print_dir(i32 0)
   call void @print_dir(i32 3)
   ret i32 0

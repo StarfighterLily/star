@@ -94,6 +94,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @sym.data = global i8** null
 @sym.len = global i64 0
 @sym.cap = global i64 0
+@sym.lock = global i8* null
 
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
 entry:
@@ -158,97 +159,99 @@ done:
 
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t0 = alloca i8
-  %t2 = alloca i8
-  %t4 = alloca i32
-  %t15 = alloca i8
-  %t17 = alloca i8
-  %t24 = alloca i32
+  %t1 = alloca i8
+  %t3 = alloca i8
+  %t5 = alloca i32
+  %t16 = alloca i8
+  %t18 = alloca i8
   %t25 = alloca i32
-  %t36 = alloca i16
-  %t38 = alloca i16
-  %t47 = alloca i8
+  %t26 = alloca i32
+  %t37 = alloca i16
+  %t39 = alloca i16
+  %t48 = alloca i8
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
-  %t1 = trunc i32 250 to i8
-  store i8 %t1, i8* %t0
-  %t3 = trunc i32 1 to i8
-  store i8 %t3, i8* %t2
-  store i32 0, i32* %t4
+  %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t0, i8** @sym.lock
+  %t2 = trunc i32 250 to i8
+  store i8 %t2, i8* %t1
+  %t4 = trunc i32 1 to i8
+  store i8 %t4, i8* %t3
+  store i32 0, i32* %t5
   br label %while_cond_0
 while_cond_0:
-  %t5 = load i32, i32* %t4
-  %t6 = icmp slt i32 %t5, 10
-  br i1 %t6, label %while_body_1, label %while_else_2
+  %t6 = load i32, i32* %t5
+  %t7 = icmp slt i32 %t6, 10
+  br i1 %t7, label %while_body_1, label %while_else_2
 while_body_1:
-  %t7 = load i8, i8* %t0
-  %t8 = load i8, i8* %t2
-  %t9 = add i8 %t7, %t8
-  store i8 %t9, i8* %t0
-  %t10 = load i32, i32* %t4
-  %t11 = add i32 %t10, 1
-  store i32 %t11, i32* %t4
+  %t8 = load i8, i8* %t1
+  %t9 = load i8, i8* %t3
+  %t10 = add i8 %t8, %t9
+  store i8 %t10, i8* %t1
+  %t11 = load i32, i32* %t5
+  %t12 = add i32 %t11, 1
+  store i32 %t12, i32* %t5
   br label %while_cond_0
 while_else_2:
   br label %while_end_3
 while_end_3:
-  %t12 = load i8, i8* %t0
-  %t13 = getelementptr inbounds [37 x i8], [37 x i8]* @.str.0, i64 0, i64 0
-  %t14 = zext i8 %t12 to i32
-  call i32 (i8*, ...) @printf(i8* %t13, i32 %t14)
-  %t16 = trunc i32 127 to i8
-  store i8 %t16, i8* %t15
-  %t18 = trunc i32 1 to i8
-  store i8 %t18, i8* %t17
-  %t19 = load i8, i8* %t15
-  %t20 = load i8, i8* %t17
-  %t21 = add i8 %t19, %t20
-  %t22 = getelementptr inbounds [25 x i8], [25 x i8]* @.str.1, i64 0, i64 0
-  %t23 = sext i8 %t21 to i32
-  call i32 (i8*, ...) @printf(i8* %t22, i32 %t23)
-  store i32 -2147483648, i32* %t24
-  store i32 -1, i32* %t25
-  %t26 = load i32, i32* %t24
+  %t13 = load i8, i8* %t1
+  %t14 = getelementptr inbounds [37 x i8], [37 x i8]* @.str.0, i64 0, i64 0
+  %t15 = zext i8 %t13 to i32
+  call i32 (i8*, ...) @printf(i8* %t14, i32 %t15)
+  %t17 = trunc i32 127 to i8
+  store i8 %t17, i8* %t16
+  %t19 = trunc i32 1 to i8
+  store i8 %t19, i8* %t18
+  %t20 = load i8, i8* %t16
+  %t21 = load i8, i8* %t18
+  %t22 = add i8 %t20, %t21
+  %t23 = getelementptr inbounds [25 x i8], [25 x i8]* @.str.1, i64 0, i64 0
+  %t24 = sext i8 %t22 to i32
+  call i32 (i8*, ...) @printf(i8* %t23, i32 %t24)
+  store i32 -2147483648, i32* %t25
+  store i32 -1, i32* %t26
   %t27 = load i32, i32* %t25
-  %t28 = icmp eq i32 %t27, 0
-  br i1 %t28, label %wrap_div_zero_fail_4, label %wrap_div_zero_ok_5
+  %t28 = load i32, i32* %t26
+  %t29 = icmp eq i32 %t28, 0
+  br i1 %t29, label %wrap_div_zero_fail_4, label %wrap_div_zero_ok_5
 wrap_div_zero_fail_4:
-  %t29 = getelementptr inbounds [41 x i8], [41 x i8]* @.str.2, i64 0, i64 0
-  call i32 @puts(i8* %t29)
+  %t30 = getelementptr inbounds [41 x i8], [41 x i8]* @.str.2, i64 0, i64 0
+  call i32 @puts(i8* %t30)
   call void @exit(i32 1)
   unreachable
 wrap_div_zero_ok_5:
-  %t30 = icmp eq i32 %t26, -2147483648
-  %t31 = icmp eq i32 %t27, -1
-  %t32 = and i1 %t30, %t31
-  br i1 %t32, label %wrap_div_overflow_6, label %wrap_div_normal_7
+  %t31 = icmp eq i32 %t27, -2147483648
+  %t32 = icmp eq i32 %t28, -1
+  %t33 = and i1 %t31, %t32
+  br i1 %t33, label %wrap_div_overflow_6, label %wrap_div_normal_7
 wrap_div_overflow_6:
   br label %wrap_div_join_8
 wrap_div_normal_7:
-  %t33 = sdiv i32 %t26, %t27
+  %t34 = sdiv i32 %t27, %t28
   br label %wrap_div_join_8
 wrap_div_join_8:
-  %t34 = phi i32 [ -2147483648, %wrap_div_overflow_6 ], [ %t33, %wrap_div_normal_7 ]
-  %t35 = getelementptr inbounds [27 x i8], [27 x i8]* @.str.3, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t35, i32 %t34)
-  %t37 = trunc i32 100 to i16
-  store i16 %t37, i16* %t36
-  %t39 = trunc i32 200 to i16
-  store i16 %t39, i16* %t38
-  %t40 = load i16, i16* %t36
-  %t41 = load i16, i16* %t38
-  %t42 = icmp ult i16 %t40, %t41
-  %t43 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.4, i64 0, i64 0
-  %t44 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.5, i64 0, i64 0
-  %t45 = select i1 %t42, i8* %t43, i8* %t44
-  %t46 = getelementptr inbounds [13 x i8], [13 x i8]* @.str.6, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t46, i8* %t45)
-  %t48 = load i8, i8* %t0
-  store i8 %t48, i8* %t47
-  %t49 = load i8, i8* %t47
-  %t50 = getelementptr inbounds [16 x i8], [16 x i8]* @.str.7, i64 0, i64 0
-  %t51 = zext i8 %t49 to i32
-  call i32 (i8*, ...) @printf(i8* %t50, i32 %t51)
+  %t35 = phi i32 [ -2147483648, %wrap_div_overflow_6 ], [ %t34, %wrap_div_normal_7 ]
+  %t36 = getelementptr inbounds [27 x i8], [27 x i8]* @.str.3, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t36, i32 %t35)
+  %t38 = trunc i32 100 to i16
+  store i16 %t38, i16* %t37
+  %t40 = trunc i32 200 to i16
+  store i16 %t40, i16* %t39
+  %t41 = load i16, i16* %t37
+  %t42 = load i16, i16* %t39
+  %t43 = icmp ult i16 %t41, %t42
+  %t44 = getelementptr inbounds [5 x i8], [5 x i8]* @.str.4, i64 0, i64 0
+  %t45 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.5, i64 0, i64 0
+  %t46 = select i1 %t43, i8* %t44, i8* %t45
+  %t47 = getelementptr inbounds [13 x i8], [13 x i8]* @.str.6, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t47, i8* %t46)
+  %t49 = load i8, i8* %t1
+  store i8 %t49, i8* %t48
+  %t50 = load i8, i8* %t48
+  %t51 = getelementptr inbounds [16 x i8], [16 x i8]* @.str.7, i64 0, i64 0
+  %t52 = zext i8 %t50 to i32
+  call i32 (i8*, ...) @printf(i8* %t51, i32 %t52)
   ret i32 0
 }
 
