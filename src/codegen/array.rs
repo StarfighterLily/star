@@ -23,6 +23,14 @@ impl Codegen {
     /// is RC-bearing). Mirrors `TupleLit`'s codegen shape (an anonymous,
     /// no-`%name` aggregate built via alloca+GEP+store, then loaded back out
     /// as a value) against `[N x T]` instead of `{ T0, T1, ... }`.
+    ///
+    /// Slots `1..count` are filled by a genuine runtime loop, not unrolled
+    /// at compile time: emitting one GEP+store(+retain) triple per element
+    /// scales the generated IR -- and clang's own compile time -- linearly
+    /// with `N`, which is a compile-time DoS for a large literal count
+    /// (`N=50,000` crashed clang itself with a stack overflow inside its own
+    /// compilation, `N=1,000,000` took 2.5 minutes to fail; see `todo.md`).
+    /// A runtime loop emits a fixed, small amount of IR regardless of `N`.
     pub(super) fn emit_array_repeat(&mut self, value: &TypedExpr, count: u64, elem_ty: &Ty) -> String {
         let elem_llvm = self.llvm_ty(elem_ty);
         let arr_ty = format!("[{} x {}]", count, elem_llvm);
@@ -30,14 +38,43 @@ impl Codegen {
         self.line(&format!("  {} = alloca {}", ptr, arr_ty));
         let val = self.emit_expr(value);
         let clean_val = self.untag(&val, elem_ty);
-        for i in 0..count {
+
+        // Slot 0: the original evaluation's own ownership moves straight in,
+        // no retain needed.
+        let gep0 = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i64 0", gep0, arr_ty, arr_ty, ptr));
+        self.line(&format!("  store {} {}, {}* {}", elem_llvm, clean_val, elem_llvm, gep0));
+
+        if count > 1 {
+            let i_ptr = self.tmp_name();
+            self.line(&format!("  {} = alloca i64", i_ptr));
+            self.line(&format!("  store i64 1, i64* {}", i_ptr));
+
+            let cond_label = self.block_label("arr_rep_cond");
+            let body_label = self.block_label("arr_rep_body");
+            let end_label = self.block_label("arr_rep_end");
+
+            self.line(&format!("  br label %{}", cond_label));
+            self.open_block(&cond_label);
+            let i_reg = self.tmp_name();
+            self.line(&format!("  {} = load i64, i64* {}", i_reg, i_ptr));
+            let in_range = self.tmp_name();
+            self.line(&format!("  {} = icmp ult i64 {}, {}", in_range, i_reg, count));
+            self.line(&format!("  br i1 {}, label %{}, label %{}", in_range, body_label, end_label));
+
+            self.open_block(&body_label);
             let gep = self.tmp_name();
-            self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i64 {}", gep, arr_ty, arr_ty, ptr, i));
+            self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i64 {}", gep, arr_ty, arr_ty, ptr, i_reg));
             self.line(&format!("  store {} {}, {}* {}", elem_llvm, clean_val, elem_llvm, gep));
-            if i > 0 {
-                self.emit_retain_at(&gep, elem_ty);
-            }
+            self.emit_retain_at(&gep, elem_ty);
+            let i_next = self.tmp_name();
+            self.line(&format!("  {} = add i64 {}, 1", i_next, i_reg));
+            self.line(&format!("  store i64 {}, i64* {}", i_next, i_ptr));
+            self.line(&format!("  br label %{}", cond_label));
+
+            self.open_block(&end_label);
         }
+
         let loaded = self.tmp_name();
         self.line(&format!("  {} = load {}, {}* {}", loaded, arr_ty, arr_ty, ptr));
         format!("{} {}", arr_ty, loaded)

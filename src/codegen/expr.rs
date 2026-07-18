@@ -1091,18 +1091,110 @@ impl Codegen {
                         TypedFStrExpr::Expr(e) => {
                             let val = self.emit_expr(e);
                             let ty = self.expr_ty(e);
+                            // `Fixed<Bits,Frac>` has no format specifier of
+                            // its own -- print it as a human-readable decimal
+                            // via the same scaled-conversion the `as float`/
+                            // `as f64` cast uses, reusing the `Ty::F64` arm
+                            // below (mirrors `emit_print_like`'s identical
+                            // handling).
+                            let (val, ty) = if let Ty::Fixed(bits, frac) = ty {
+                                let bare = self.untag(&val, &Ty::Fixed(bits, frac));
+                                (self.emit_fixed_to_float(&bare, bits, frac, true), Ty::F64)
+                            } else {
+                                (val, ty)
+                            };
                             let bare_val = self.untag(&val, &ty);
-                            match ty {
-                                Ty::Int => {
+                            // Mirrors `emit_print_like`'s format-specifier/
+                            // vararg-widening table (`builtins.rs`) -- this
+                            // general (non-`print`/`println`) f-string path
+                            // used to only special-case `Int`/`Float`/`Str`/
+                            // `Bool` and silently fall every other numeric
+                            // type (`I64` included) through the `%p`/`i8*`
+                            // catch-all below, tagging a plain integer
+                            // register as a pointer vararg -- a real
+                            // `clang`/LLVM vararg type mismatch for e.g. an
+                            // `i64` struct field interpolated into an
+                            // f-string (`f"{e.id}"`).
+                            match &ty {
+                                Ty::Int | Ty::I8 | Ty::I16 => {
                                     fmt_str.push_str("%d");
-                                    call_args.push(format!("i32 {}", bare_val));
+                                    // C's variadic calling convention promotes
+                                    // any integer type narrower than `int` up
+                                    // to `int` -- `%d` reads a full 32-bit
+                                    // slot off the varargs.
+                                    if matches!(ty, Ty::I8 | Ty::I16) {
+                                        let widened = self.tmp_name();
+                                        self.line(&format!("  {} = sext {} {} to i32", widened, self.llvm_ty(&ty), bare_val));
+                                        call_args.push(format!("i32 {}", widened));
+                                    } else {
+                                        call_args.push(format!("i32 {}", bare_val));
+                                    }
                                 }
+                                Ty::U8 | Ty::U16 | Ty::U32 => {
+                                    fmt_str.push_str("%u");
+                                    if matches!(ty, Ty::U8 | Ty::U16) {
+                                        let widened = self.tmp_name();
+                                        self.line(&format!("  {} = zext {} {} to i32", widened, self.llvm_ty(&ty), bare_val));
+                                        call_args.push(format!("i32 {}", widened));
+                                    } else {
+                                        call_args.push(format!("i32 {}", bare_val));
+                                    }
+                                }
+                                // All three lower to a bare signed `i64` --
+                                // see `Ty::Tick`'s doc comment. `Symbol` is
+                                // likewise a bare signed `i64` interned id --
+                                // see `Ty::Symbol`'s doc comment.
+                                Ty::I64 | Ty::Tick | Ty::Duration | Ty::Instant | Ty::Symbol => {
+                                    fmt_str.push_str("%lld");
+                                    call_args.push(format!("i64 {}", bare_val));
+                                }
+                                Ty::U64 => {
+                                    fmt_str.push_str("%llu");
+                                    call_args.push(format!("i64 {}", bare_val));
+                                }
+                                // Delegate to the inner integer type's own
+                                // specifier/widening -- `Wrapping<T>` is the
+                                // exact same LLVM value, just re-tagged (see
+                                // `Ty::Wrapping`'s doc comment).
+                                Ty::Wrapping(inner) => match inner.int_shape() {
+                                    Some((64, true)) => {
+                                        fmt_str.push_str("%lld");
+                                        call_args.push(format!("i64 {}", bare_val));
+                                    }
+                                    Some((64, false)) => {
+                                        fmt_str.push_str("%llu");
+                                        call_args.push(format!("i64 {}", bare_val));
+                                    }
+                                    Some((w, signed)) if w < 32 => {
+                                        fmt_str.push_str(if signed { "%d" } else { "%u" });
+                                        let widened = self.tmp_name();
+                                        let op = if signed { "sext" } else { "zext" };
+                                        self.line(&format!("  {} = {} i{} {} to i32", widened, op, w, bare_val));
+                                        call_args.push(format!("i32 {}", widened));
+                                    }
+                                    Some((_, signed)) => {
+                                        fmt_str.push_str(if signed { "%d" } else { "%u" });
+                                        call_args.push(format!("i32 {}", bare_val));
+                                    }
+                                    None => {
+                                        fmt_str.push_str("%d");
+                                        call_args.push(format!("i32 {}", bare_val));
+                                    }
+                                },
                                 Ty::Float => {
                                     fmt_str.push_str("%f");
                                     // Variadic calls always promote `float` to `double`.
                                     let widened = self.tmp_name();
                                     self.line(&format!("  {} = fpext float {} to double", widened, bare_val));
                                     call_args.push(format!("double {}", widened));
+                                }
+                                Ty::F64 => {
+                                    fmt_str.push_str("%f");
+                                    call_args.push(format!("double {}", bare_val));
+                                }
+                                Ty::Char => {
+                                    fmt_str.push_str("%c");
+                                    call_args.push(format!("i32 {}", bare_val));
                                 }
                                 Ty::Str => {
                                     fmt_str.push_str("%s");

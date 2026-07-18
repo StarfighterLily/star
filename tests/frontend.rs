@@ -6823,6 +6823,86 @@ fn accepts_array_size_at_max_inline_len_boundary() {
     Driver::check(&module).expect("exactly MAX_INLINE_LEN elements should be accepted, not rejected");
 }
 
+/// `Codegen::emit_array_repeat` previously unrolled `[value; N]` at compile
+/// time -- a Rust-side `for i in 0..count` loop emitting one
+/// `getelementptr`+`store`(+retain) instruction group per element directly
+/// into the generated IR -- a real compile-time DoS for large `N` even
+/// though `Checker::MAX_INLINE_LEN` caps `N` at 1,000,000 (a `[0;
+/// 1000000]` still built ~2M IR lines and took the compiler itself minutes;
+/// `N=50,000` crashed `clang`'s own compilation with a stack overflow). Fixed
+/// by lowering slots `1..N` to a genuine LLVM runtime loop (a counter
+/// `alloca`, a `br i1` back-edge) instead of unrolling, so the emitted IR
+/// size -- and codegen time -- no longer scales with `N`. This asserts the
+/// fix directly: codegen for a 500,000-element array-repeat must be
+/// near-instant and must emit only a small, `N`-independent number of
+/// `getelementptr`s (a handful for the loop body, not 500,000).
+#[test]
+fn codegen_array_repeat_large_n_uses_runtime_loop_not_unrolled() {
+    let src = "fn main():\n    let a: [i32; 500000] = [0; 500000]\n    println(f\"{a[0]}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let start = std::time::Instant::now();
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed.as_secs() < 5,
+        "codegen for a 500,000-element array-repeat took {:?} -- should be near-instant with a runtime loop, not scale with N",
+        elapsed
+    );
+    let fn_ir = extract_fn_body(&ir, "define i32 @main(");
+    let gep_count = fn_ir.matches("getelementptr").count();
+    assert!(
+        gep_count < 10,
+        "expected a small, N-independent number of `getelementptr`s from a runtime loop, found {} (looks unrolled): {}",
+        gep_count,
+        fn_ir
+    );
+    assert!(fn_ir.contains("br i1"), "expected a genuine conditional branch forming a runtime loop: {}", fn_ir);
+}
+
+/// Runtime correctness companion to the codegen-shape assertion above: a
+/// large array-repeat lowered through the new runtime loop must still
+/// populate every slot with the correct value, not just compile fast.
+/// Checks the first, a middle, and the last slot so an off-by-one in the
+/// loop's bound (`icmp ult i64 %i, count` starting from `i=1`, since slot 0
+/// is filled separately before the loop) would be caught.
+/// `N` here (20,000) is deliberately well short of `MAX_INLINE_LEN`
+/// (1,000,000): it's chosen to comfortably clear the old per-element-unroll
+/// concern while staying under an unrelated pre-existing ceiling this
+/// array's *storage* shape (a plain, no-heap-allocation stack `alloca`, per
+/// `array.rs`'s module doc comment) hits independent of this fix -- clang's
+/// own `-O0` instruction selection for a single-function stack frame that
+/// large crashes on this toolchain somewhere between 50,000 and 100,000
+/// `i32` elements, confirmed by bisection and unrelated to whether the
+/// slots are filled by a compile-time-unrolled or runtime loop.
+#[test]
+fn runtime_array_repeat_large_n_fills_every_slot_end_to_end() {
+    let src = "fn main():\n    let a: [i32; 20000] = [7; 20000]\n    \
+               println(f\"{a[0]} {a[9999]} {a[19999]}\")\n";
+    let output = compile_and_run("array_repeat_large_n_fills_every_slot", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "7 7 7", "{}", stdout);
+}
+
+/// Runtime-loop-lowered array-repeat of an RC-bearing element type (`str`)
+/// must still retain each of the `N-1` additional slots correctly -- the
+/// loop body's `emit_retain_at` call is only reachable at runtime now
+/// (previously each retain was a separate compile-time-emitted call per
+/// slot), so this exercises that the retain still actually executes on
+/// every iteration rather than e.g. only the loop's first pass. Mutating one
+/// slot and reading a distant, untouched slot back confirms each slot owns
+/// an independent string, not `N` aliases of the same one.
+#[test]
+fn runtime_array_repeat_large_n_rc_element_independent_slots_end_to_end() {
+    let src = "fn main():\n    let mut a: [str; 5000] = [\"x\"; 5000]\n    a[0] = \"changed\"\n    \
+               println(f\"{a[0]} {a[4999]}\")\n";
+    let output = compile_and_run("array_repeat_large_n_rc_element", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "changed x", "{}", stdout);
+}
+
 /// A structurally-valid enum variant followed by garbage instead of a line
 /// ending (`Red 123`) must produce exactly one diagnostic and recover
 /// cleanly -- `parse_enum_variant` previously discarded `expect_line_end()`'s
@@ -9013,6 +9093,70 @@ fn runtime_fstring_value_all_hole_types_end_to_end() {
     assert!(output.status.success(), "{:?}", output.status);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim_end(), "b=true f=3.500000 name=star", "{}", stdout);
+}
+
+// ===== Bug-fix round: f-string value path i64 vararg mismatch ==============
+
+/// The general f-string-as-value path (`TypedExpr::FStr` in `expr.rs`, used
+/// whenever an f-string isn't `print`/`println`'s direct sole argument) only
+/// special-cased `Ty::Int`/`Ty::Float`/`Ty::Str`/`Ty::Bool`; every other
+/// type -- `Ty::I64` included -- fell through the `%p` catch-all, which
+/// tagged the `snprintf` vararg `i8*` even though an `I64` value's own LLVM
+/// type is `i64` (see `Codegen::llvm_ty`), a real `clang`/LLVM vararg type
+/// mismatch noticed via interpolating an `i64` struct field
+/// (`f"{e.id}"`). Fixed by mirroring `emit_print_like`'s
+/// (`builtins.rs`) format-specifier/vararg-widening table. Asserts the fix
+/// at the IR level: an interpolated `i64` field must use `%lld`, and the
+/// `snprintf` call's vararg for it must be tagged `i64`, not `i8*`.
+#[test]
+fn codegen_fstring_value_interpolates_i64_field_with_correct_specifier_and_vararg_type() {
+    let src = "struct Entity:\n    id: i64\nfn t(e: Entity) -> str:\n    f\"id={e.id}\"\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    // The format string itself lives in a global constant (`Codegen::
+    // global_defs`, emitted ahead of every `define`), not inside the
+    // function body `extract_fn_body` slices out -- check the full module
+    // text for the specifier, and just the function body for the vararg's
+    // own type tag.
+    assert!(ir.contains("%lld"), "an interpolated `i64` should use `%lld`, not fall through to `%p`: {}", ir);
+    let fn_ir = extract_fn_body(&ir, "define i8* @t(");
+    assert!(
+        fn_ir.contains("@snprintf(i8* null, i64 0, i8* ") && fn_ir.contains(", i64 %"),
+        "the `snprintf` sizing call's vararg for an `i64` field must itself be tagged `i64`, not `i8*`: {}",
+        fn_ir
+    );
+}
+
+/// Runtime companion to the IR-shape assertion above: actually compiling
+/// (via `clang`) and running an f-string value that interpolates an `i64`
+/// struct field must produce the exact decimal value -- using a value
+/// outside `i32`'s range means a truncating/mistyped vararg would either
+/// fail to compile at all or print a wrong/garbage number instead of this.
+#[test]
+fn runtime_fstring_value_interpolates_i64_struct_field_end_to_end() {
+    let src = "struct Entity:\n    id: i64\nfn describe(e: Entity) -> str:\n    return f\"id={e.id}\"\n\
+               fn main():\n    let e = Entity(id = 123456789012 as i64)\n    println(describe(e))\n";
+    let output = compile_and_run("fstring_value_i64_struct_field", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "id=123456789012", "{}", stdout);
+}
+
+/// Broader width/signedness coverage for the same fixed path (`I64` was the
+/// specific reported bug, but `U8`/`I16`/`U32`/`U64`/`Char` shared the
+/// identical gap in the same `match` before this fix) -- every non-`i32`
+/// integer-ish hole type this general f-string-as-value path now supports
+/// substitutes to its correct decimal (or character) form in one pass.
+#[test]
+fn runtime_fstring_value_wide_integer_types_end_to_end() {
+    let src = "fn main():\n    let a: u8 = 200 as u8\n    let b: i16 = -1234 as i16\n    let c: u32 = 4000000000 as u32\n    \
+               let d: i64 = -9000000000 as i64\n    let e: u64 = 9111222333444555666 as u64\n    let f: char = 'Q'\n    \
+               let s = f\"a={a} b={b} c={c} d={d} e={e} f={f}\"\n    println(s)\n";
+    let output = compile_and_run("fstring_value_wide_integer_types", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "a=200 b=-1234 c=4000000000 d=-9000000000 e=9111222333444555666 f=Q", "{}", stdout);
 }
 
 /// An f-string value built from a `str` binding (a borrowing read, not a

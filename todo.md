@@ -179,6 +179,25 @@ lowering instead of full unrolling. An f-string interpolation of an `i64` struct
 vararg expects a pointer) -- noticed in passing during the concurrency audit's example
 runs, not chased down.
 
+**Both since fixed, in a follow-up pass** (not part of round 4 itself): `Codegen::
+emit_array_repeat` (`src/codegen/array.rs`) now fills slot 0 directly (the original
+evaluation's own ownership) and lowers slots `1..N` to a genuine LLVM runtime loop (a
+counter `alloca`, `br i1`/`icmp ult` back-edge, mirroring the `for`-loop/linear-scan idiom
+used elsewhere in codegen) instead of a Rust-side `for i in 0..count` that emitted the
+GEP/store/retain group N times -- emitted IR size and codegen time no longer scale with
+`N` (confirmed: codegen for a 500,000-element array-repeat is sub-second, down from
+`MAX_INLINE_LEN`'s own 1,000,000-element case previously taking minutes). The general
+f-string-as-value codegen path (`TypedExpr::FStr` in `src/codegen/expr.rs`, used whenever
+an f-string isn't `print`/`println`'s direct sole argument) only special-cased
+`Int`/`Float`/`Str`/`Bool` and silently fell every other type -- `I64` included -- through
+a `%p`/`i8*` catch-all that mistagged a plain integer vararg as a pointer; fixed by
+porting `emit_print_like`'s (`src/codegen/builtins.rs`) full format-specifier/vararg-
+widening table (`I8`/`I16`/`U8`/`U16`/`U32`/`I64`/`U64`/`F64`/`Char`/`Symbol`/`Tick`/
+`Duration`/`Instant`/`Wrapping<T>`/`Fixed<Bits,Frac>`) into the value path too. 6 new tests
+added covering both (IR-shape assertions plus real `clang`-compiled runtime round trips,
+including an out-of-`i32`-range `i64` struct field and every wide integer type
+interpolated through the value path).
+
 ---
 
 ### Previous round
