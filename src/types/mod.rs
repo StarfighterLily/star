@@ -72,6 +72,99 @@ pub enum Ty {
     Vec3,
     Vec4,
     Mat4,
+    /// A 2x2 matrix -- `docs/design.md`'s "Math and geometry" section.
+    /// Lowers to `[2 x <2 x float>]` (2 row vectors), the same
+    /// row-of-native-vectors layout `Ty::Mat4` already established, just at
+    /// a smaller fixed dimension -- see `crate::codegen::vector_math`'s
+    /// dimension-generic `emit_mat_addsub`/`emit_mat_mul`/`emit_mat_vec_mul`.
+    /// Constructed as `Mat2(row0, row1)` from two `Vec2` row arguments,
+    /// mirroring `Mat4(row0, row1, row2, row3)`.
+    Mat2,
+    /// A 3x3 matrix -- see `Ty::Mat2`'s doc comment. Lowers to
+    /// `[3 x <3 x float>]`; constructed as `Mat3(row0, row1, row2)` from
+    /// three `Vec3` row arguments.
+    Mat3,
+    /// A quaternion rotation `Quat` -- `docs/design.md`'s "Math and
+    /// geometry" section: avoids gimbal lock where a `Vec3` Euler angle
+    /// would suffer it. Reuses `Ty::Vec4`'s exact `<4 x float>` layout
+    /// (`x, y, z, w`) -- zero overhead, the same "reuse an existing native
+    /// vector layout under a second nominal wrapper" move `Ty::Handle`
+    /// already made against `Ty::GenRef` -- but is a genuinely distinct
+    /// nominal type (a function declared to take `Quat` rejects a `Vec4`
+    /// argument and vice versa). Included in `is_vec()`/`vec_arity()` (arity
+    /// 4) so it gets `.x`/`.y`/`.z`/`.w` field access, `+`/`-` (component-
+    /// wise), scalar `*`/`/`, and the `dot`/`length`/`lerp` builtins for
+    /// free -- but `Quat * Quat` is special-cased ahead of the generic
+    /// vector dispatch (`Codegen::emit_binop`) to compute the true
+    /// quaternion (Hamilton) product rather than a componentwise multiply,
+    /// since that's the operation that actually composes two rotations.
+    /// `quat_conjugate`/`quat_normalize`/`quat_rotate` (`crate::codegen::geometry`)
+    /// round out the type-safe surface a bare `Vec4` has no business
+    /// exposing.
+    Quat,
+    /// Linear HDR color -- `docs/design.md`'s "Math and geometry" section:
+    /// AAA lighting pipelines want `f32`-per-channel precision (no banding
+    /// under repeated blend operations), unlike `Ty::Color32`'s packed
+    /// 8-bit-per-channel indie/retro format. Reuses `Ty::Vec4`'s exact
+    /// `<4 x float>` layout (`r, g, b, a`) for the same reason `Ty::Quat`
+    /// does -- zero overhead, a distinct nominal type, included in
+    /// `is_vec()`/`vec_arity()` (arity 4) so `+`/`-`/scalar `*`/`/` (additive/
+    /// multiplicative blending) and `dot`/`length`/`lerp` (color mixing) all
+    /// work for free. Field access accepts both `.r/.g/.b/.a` and
+    /// `.x/.y/.z/.w` (`Codegen::swizzle_index` treats them as aliases of the
+    /// same four lanes) -- a `Color` is a `Vec4` under the hood, so there's
+    /// no reason to reject the vector spelling. `color_to_color32`/
+    /// `color32_to_color` (`crate::codegen::geometry`) convert to/from the
+    /// packed `Ty::Color32` representation.
+    Color,
+    /// Packed 8-bit-per-channel RGBA color -- `docs/design.md`'s "Math and
+    /// geometry" section: indie/retro-scale 2D/3D, where one `i32` per pixel
+    /// (rather than 16 bytes of `f32`s) is the difference between a texture
+    /// fitting in cache or not. Lowers to a bare `i32` (packed
+    /// `r | g<<8 | b<<16 | a<<24`, little-endian-byte-order-independent
+    /// since it's a pure bitwise pack/unpack, never a raw memory
+    /// reinterpret) -- zero overhead beyond the packing arithmetic itself,
+    /// the same "reuse a bare integer" move `Ty::Tick`/`Ty::Symbol` already
+    /// make. Deliberately excluded from `is_numeric()`/`int_shape()` (same
+    /// reasoning as those two) -- constructed via `Color32(r, g, b, a)` from
+    /// four int-shaped 0-255 channel values (`Codegen::emit_color32_new`),
+    /// read back via `color32_r`/`color32_g`/`color32_b`/`color32_a`
+    /// (`crate::codegen::geometry`) rather than exposing the raw pack via a
+    /// field, since there's no `Ty::Named` struct backing this type for
+    /// `.r`/`.g`/... field syntax to resolve against. Supports `==`/`!=`
+    /// (a single `i32` compare) like every other bare-integer nominal
+    /// wrapper in this compiler.
+    Color32,
+    /// An indexed-palette color index -- `docs/design.md`'s "Math and
+    /// geometry" section: faithful retro console emulation, where a pixel
+    /// stores an 8-bit index into a shared `Ty::Palette` rather than its own
+    /// color. Lowers to a bare `u8` -- zero overhead, the same "reuse the
+    /// underlying integer type" move `Ty::Wrapping`/`Ty::BitField` make --
+    /// deliberately a distinct nominal type from a bare `Ty::U8` (so a
+    /// function expecting `PaletteIndex` rejects an arbitrary byte count/
+    /// tile ID passed by mistake), constructed via `PaletteIndex(value)`
+    /// from any int-shaped value narrowed to `u8` (mirroring `Ty::Tick`'s
+    /// own "any int_shape(), no exact-match requirement" construction
+    /// rule). `PaletteIndex <-> u8` is a free bit-preserving relabel via
+    /// `as`, same as `Ty::BitField<N> <-> i{N}`.
+    PaletteIndex,
+    /// A growable table of `Color32` values -- `docs/design.md`'s "Math and
+    /// geometry" section: the shared color table a `Ty::PaletteIndex`
+    /// indexes into for faithful retro console emulation (e.g. an NES/Game
+    /// Boy-style hardware palette). Rather than invent a new heap layout,
+    /// `Palette` reuses `List<Color32>`'s exact reference-counted,
+    /// copy-on-write `{ Color32*, i64, i64 }` object-pointer layout and
+    /// every one of its generated helpers (`push`/`pop`/`len`/`[i]`/
+    /// `[i] = v`) wholesale, calling straight into `crate::codegen::list`
+    /// with `elem_ty = Ty::Color32` -- the exact same "reuse an existing
+    /// generation-checked/RC'd layout under a second nominal wrapper" move
+    /// `Ty::Bytes` already made against `List<u8>` (see its own doc
+    /// comment). `Palette()` starts empty, like `Bytes()`/`List<T>()`.
+    /// Indexing `pal[i]` requires a plain `i32` index (same as `List<T>`),
+    /// not a `PaletteIndex` directly -- an explicit `idx as i32` bridges the
+    /// two, matching this compiler's "no implicit anything" rule for every
+    /// other nominal wrapper.
+    Palette,
     Named(String),
     /// A generational reference backed by a slot-map: GenRef<T>.
     GenRef(Box<Ty>),
@@ -357,14 +450,32 @@ pub enum Ty {
 }
 
 impl Ty {
-    /// True for the builtin SIMD vector types (Vec2/Vec3/Vec4).
+    /// True for the builtin SIMD vector types (Vec2/Vec3/Vec4), plus
+    /// `Ty::Quat`/`Ty::Color` -- both reuse `Vec4`'s exact `<4 x float>`
+    /// layout under a distinct nominal wrapper (see their own doc comments),
+    /// so they ride every one of `is_vec()`'s callers (field/swizzle access,
+    /// `+`/`-`/scalar `*`/`/`, `dot`/`length`/`lerp`) for free.
     pub fn is_vec(&self) -> bool {
-        matches!(self, Ty::Vec2 | Ty::Vec3 | Ty::Vec4)
+        matches!(self, Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Quat | Ty::Color)
     }
 
-    /// True for the builtin SIMD matrix type (Mat4).
+    /// True for the builtin SIMD matrix types (Mat2/Mat3/Mat4).
     pub fn is_mat(&self) -> bool {
-        matches!(self, Ty::Mat4)
+        matches!(self, Ty::Mat2 | Ty::Mat3 | Ty::Mat4)
+    }
+
+    /// The row/column dimension of a builtin matrix type, or `None` for
+    /// anything else -- drives `crate::codegen::vector_math`'s
+    /// dimension-generic matrix codegen (`emit_mat_addsub`/`emit_mat_mul`/
+    /// `emit_mat_vec_mul`), which previously existed as three separate
+    /// `Mat4`-only functions before `Mat2`/`Mat3` generalized them.
+    pub fn mat_dim(&self) -> Option<u32> {
+        match self {
+            Ty::Mat2 => Some(2),
+            Ty::Mat3 => Some(3),
+            Ty::Mat4 => Some(4),
+            _ => None,
+        }
     }
 
     /// The component count of a builtin vector type, or `None` for anything else.
@@ -372,7 +483,7 @@ impl Ty {
         match self {
             Ty::Vec2 => Some(2),
             Ty::Vec3 => Some(3),
-            Ty::Vec4 => Some(4),
+            Ty::Vec4 | Ty::Quat | Ty::Color => Some(4),
             _ => None,
         }
     }
@@ -492,6 +603,133 @@ fn builtin_generic_enums() -> Vec<EnumDef> {
     ]
 }
 
+/// Builds a `FieldDef` with no `mut`/decorators, for `builtin_structs`'s
+/// synthesized declarations below.
+fn builtin_field(name: &str, ty: Type, default: Option<Expr>) -> FieldDef {
+    FieldDef { is_mut: false, name: name.into(), ty, default, decorators: Vec::new(), span: Span::dummy() }
+}
+
+/// A `Name(args...)` construction expression, for a builtin field's default
+/// initializer (e.g. `Vec3(0.0, 0.0, 0.0)`) -- mirrors what the parser itself
+/// produces for the same source text (see `Parser::parse_primary`'s
+/// `Expr::StructLit` case).
+fn ctor_expr(name: &str, args: Vec<Expr>) -> Expr {
+    Expr::StructLit { name: name.into(), type_args: Vec::new(), args, arg_names: vec![None; 0], span: Span::dummy() }
+        .with_matching_arg_names()
+}
+
+impl Expr {
+    /// `arg_names` must run parallel to `args` (see `Expr::StructLit`'s doc
+    /// comment) -- `ctor_expr` above builds `args` first and needs an
+    /// all-`None` list of the same length, which is easiest to fill in here
+    /// rather than threading the count through every call site.
+    fn with_matching_arg_names(self) -> Expr {
+        match self {
+            Expr::StructLit { name, type_args, args, span, .. } => {
+                let arg_names = vec![None; args.len()];
+                Expr::StructLit { name, type_args, args, arg_names, span }
+            }
+            other => other,
+        }
+    }
+}
+
+/// Synthesizes the non-generic builtin struct declarations from
+/// `docs/design.md`'s "Math and geometry" section -- `Rect`/`Aabb2`/`Aabb3`/
+/// `Transform`/`Ray`/`Plane`/`Frustum` -- as if they'd been parsed from
+/// source, exactly like `builtin_generic_enums` does for `Option`/`Result`.
+/// Each is composed entirely of types the checker/codegen already fully
+/// support (`f32`, `Vec2`, `Vec3`, `Quat`, a fixed-size `Plane` array), so
+/// registering them into `Checker::structs` (see `check`'s call site) is
+/// the *entire* implementation: field access, construction (positional or
+/// named, with defaults), layout, and RC-safety (none of these fields carry
+/// RC content) all fall out of the ordinary user-struct pipeline with no new
+/// `Ty` variant and no new codegen at all -- only their handful of
+/// characteristic operations (`rect_contains`, `aabb2_intersects`, `ray_at`,
+/// `plane_distance_to_point`, `frustum_contains_point`,
+/// `transform_apply_point`) need dedicated free functions, in
+/// `crate::codegen::geometry`.
+fn builtin_structs() -> Vec<StructDef> {
+    let vec2 = |x: f64, y: f64| ctor_expr("Vec2", vec![Expr::Float(x, Span::dummy()), Expr::Float(y, Span::dummy())]);
+    let vec3 = |x: f64, y: f64, z: f64| ctor_expr("Vec3", vec![
+        Expr::Float(x, Span::dummy()), Expr::Float(y, Span::dummy()), Expr::Float(z, Span::dummy()),
+    ]);
+    let quat = |x: f64, y: f64, z: f64, w: f64| ctor_expr("Quat", vec![
+        Expr::Float(x, Span::dummy()), Expr::Float(y, Span::dummy()), Expr::Float(z, Span::dummy()), Expr::Float(w, Span::dummy()),
+    ]);
+    let f32_zero = || Expr::Float(0.0, Span::dummy());
+
+    vec![
+        StructDef {
+            name: "Rect".into(),
+            type_params: Vec::new(),
+            fields: vec![
+                builtin_field("x", Type::Named("f32".into()), Some(f32_zero())),
+                builtin_field("y", Type::Named("f32".into()), Some(f32_zero())),
+                builtin_field("width", Type::Named("f32".into()), Some(f32_zero())),
+                builtin_field("height", Type::Named("f32".into()), Some(f32_zero())),
+            ],
+            span: Span::dummy(),
+        },
+        StructDef {
+            name: "Aabb2".into(),
+            type_params: Vec::new(),
+            fields: vec![
+                builtin_field("min", Type::Named("Vec2".into()), Some(vec2(0.0, 0.0))),
+                builtin_field("max", Type::Named("Vec2".into()), Some(vec2(0.0, 0.0))),
+            ],
+            span: Span::dummy(),
+        },
+        StructDef {
+            name: "Aabb3".into(),
+            type_params: Vec::new(),
+            fields: vec![
+                builtin_field("min", Type::Named("Vec3".into()), Some(vec3(0.0, 0.0, 0.0))),
+                builtin_field("max", Type::Named("Vec3".into()), Some(vec3(0.0, 0.0, 0.0))),
+            ],
+            span: Span::dummy(),
+        },
+        StructDef {
+            name: "Transform".into(),
+            type_params: Vec::new(),
+            fields: vec![
+                builtin_field("position", Type::Named("Vec3".into()), Some(vec3(0.0, 0.0, 0.0))),
+                builtin_field("rotation", Type::Named("Quat".into()), Some(quat(0.0, 0.0, 0.0, 1.0))),
+                builtin_field("scale", Type::Named("Vec3".into()), Some(vec3(1.0, 1.0, 1.0))),
+            ],
+            span: Span::dummy(),
+        },
+        StructDef {
+            name: "Ray".into(),
+            type_params: Vec::new(),
+            fields: vec![
+                builtin_field("origin", Type::Named("Vec3".into()), Some(vec3(0.0, 0.0, 0.0))),
+                builtin_field("direction", Type::Named("Vec3".into()), Some(vec3(0.0, 0.0, 0.0))),
+            ],
+            span: Span::dummy(),
+        },
+        StructDef {
+            name: "Plane".into(),
+            type_params: Vec::new(),
+            fields: vec![
+                builtin_field("normal", Type::Named("Vec3".into()), Some(vec3(0.0, 1.0, 0.0))),
+                builtin_field("distance", Type::Named("f32".into()), Some(f32_zero())),
+            ],
+            span: Span::dummy(),
+        },
+        StructDef {
+            name: "Frustum".into(),
+            type_params: Vec::new(),
+            // No default: a `Frustum`'s six planes have no sensible generic
+            // "zero" (unlike, say, `Plane`'s own default normal/distance
+            // above) -- construction always takes an explicit
+            // `[Plane; 6]` argument.
+            fields: vec![builtin_field("planes", Type::Array(Box::new(Type::Named("Plane".into())), 6), None)],
+            span: Span::dummy(),
+        },
+    ]
+}
+
 /// Names and return-type rules for the compiler's built-in standard library
 /// (see `crate::codegen` for their lowering). These aren't declared by any
 /// `fn` item, so the checker special-cases them instead of consulting the
@@ -583,6 +821,24 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "tcp_send" => Some(Ty::Bool),
         "tcp_recv" => Some(Ty::Str),
         "tcp_close" => Some(Ty::Named("unknown".into())),
+        // `docs/design.md`'s "Math and geometry" section -- see
+        // `crate::codegen::geometry` for each function's lowering.
+        // `quat_identity` takes no argument (the identity rotation);
+        // `quat_conjugate`/`quat_normalize` preserve `Quat`; `quat_rotate`
+        // applies a quaternion to a `Vec3` point/direction.
+        "quat_identity" | "quat_conjugate" | "quat_normalize" => Some(Ty::Quat),
+        "quat_rotate" => Some(Ty::Vec3),
+        "rect_contains" | "rect_intersects" | "aabb2_contains" | "aabb2_intersects"
+        | "aabb3_contains" | "aabb3_intersects" | "frustum_contains_point" => Some(Ty::Bool),
+        "ray_at" => Some(Ty::Vec3),
+        "plane_distance_to_point" => Some(Ty::Float),
+        "transform_apply_point" => Some(Ty::Vec3),
+        // Each packed 8-bit channel, widened to `i32` (this compiler's
+        // default integer width) rather than `u8`, mirroring `ord`'s own
+        // byte-as-`i32` convention.
+        "color32_r" | "color32_g" | "color32_b" | "color32_a" => Some(Ty::Int),
+        "color_to_color32" => Some(Ty::Color32),
+        "color32_to_color" => Some(Ty::Color),
         _ => None,
     }
 }
@@ -908,6 +1164,40 @@ impl Checker {
             self.generic_enums.insert(def.name.clone(), def);
         }
 
+        // Pre-register the non-generic builtin struct declarations from
+        // `docs/design.md`'s "Math and geometry" section (`Rect`/`Aabb2`/
+        // `Aabb3`/`Transform`/`Ray`/`Plane`/`Frustum` -- see
+        // `builtin_structs`'s own doc comment) directly into `self.structs`,
+        // the same "seed `type_names_seen` up front" move as `Option`/
+        // `Result` just above -- so a user module that also declares one of
+        // these names hits the ordinary "declared more than once"
+        // diagnostic below (pass 0), pointing at the *user's* span, rather
+        // than silently shadowing or overwriting the builtin.
+        for def in builtin_structs() {
+            type_names_seen.insert(def.name.clone());
+            self.structs.insert(def.name.clone(), def);
+        }
+        // Immediately check each one into a concrete `TypedItem::Struct`
+        // (unlike `Option`/`Result`, whose generic templates have no
+        // concrete layout until monomorphized and so are never themselves
+        // emitted) -- *right here*, before pass 0 below registers any user
+        // declaration, is the one point in this function where `self.structs`
+        // holds exactly these 7 builtins and nothing else. Deferring this to
+        // the very end of `check` (alongside `self.mono_items`, to avoid
+        // shifting every user item's position in the final typed list --
+        // see `builtin_struct_items`'s use just below) would type-check a
+        // field default like `Aabb2.min`'s `Vec2(0.0, 0.0)` *after* pass 0
+        // has already run, so a user module that also declares (and is
+        // entitled to shadow -- see `struct_named_after_vec2_shadows_it_end_to_end`)
+        // its own conflicting `struct Vec2: ...` would resolve this default
+        // against the *user's* Vec2 instead of the builtin scalar, breaking
+        // arity/field-type checking on a default the user's source never
+        // wrote at all.
+        let builtin_struct_items: Vec<TypedItem> = builtin_structs()
+            .into_iter()
+            .map(|def| TypedItem::Struct(self.check_struct(&def)))
+            .collect();
+
         // First pass (0): register every struct/enum/fn *name* -- generic
         // templates into `generic_structs`/`generic_enums`/`generic_fns`,
         // everything else into `structs`/`enums` -- before any type is
@@ -1029,6 +1319,14 @@ impl Checker {
                 None => {}
             }
         }
+        // The builtin geometry structs (`Rect`/`Aabb2`/`Aabb3`/`Transform`/
+        // `Ray`/`Plane`/`Frustum`), already checked into `builtin_struct_items`
+        // near the top of this function (see that binding's own doc comment
+        // for why it has to happen there, not here) -- appended at the end,
+        // after every ordinary item, so they never shift a real user
+        // declaration's position in the final typed list.
+        typed_items.extend(builtin_struct_items);
+
         // Monomorphized copies of generic structs/enums/fns, instantiated on
         // demand while checking the items above (e.g. the first time
         // `Box<i32>` or `identity(5)` was used). Codegen doesn't care about
@@ -1607,7 +1905,13 @@ impl Checker {
     /// must not assume that pass has already run.
     fn check_hashable_ty(&mut self, ty: &Ty, visited: &mut HashSet<String>) -> bool {
         match ty {
-            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Vec2 | Ty::Vec3 | Ty::Vec4 => true,
+            // `Quat`/`Color` reuse `Vec4`'s exact layout (see their own `Ty`
+            // doc comments), so they're structurally comparable the same way.
+            Ty::Int | Ty::Bool | Ty::Str | Ty::Float | Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Quat | Ty::Color => true,
+            // Bare scalars under the hood (see their own `Ty` doc comments)
+            // -- structurally comparable exactly like `Ty::BitField`/
+            // `Ty::Flags` below.
+            Ty::Color32 | Ty::PaletteIndex => true,
             // A bare `i64` id comparison -- see `Ty::Symbol`'s doc comment.
             // Unlike `Ty::Bytes`/`Ty::List`, there's no heap buffer to hash
             // structurally: the id itself is the comparable value.
@@ -1804,6 +2108,16 @@ impl Checker {
                 "Vec3" => Some(Ty::Vec3),
                 "Vec4" => Some(Ty::Vec4),
                 "Mat4" => Some(Ty::Mat4),
+                // `docs/design.md`'s "Math and geometry" section -- see
+                // `Ty::Mat2`/`Ty::Mat3`/`Ty::Quat`/`Ty::Color`/`Ty::Color32`/
+                // `Ty::PaletteIndex`/`Ty::Palette`'s doc comments.
+                "Mat2" => Some(Ty::Mat2),
+                "Mat3" => Some(Ty::Mat3),
+                "Quat" => Some(Ty::Quat),
+                "Color" => Some(Ty::Color),
+                "Color32" => Some(Ty::Color32),
+                "PaletteIndex" => Some(Ty::PaletteIndex),
+                "Palette" => Some(Ty::Palette),
                 "ptr" => Some(Ty::Ptr),
                 // `docs/design.md`'s "Time" section -- see `Ty::Tick`'s doc
                 // comment.
@@ -2500,6 +2814,17 @@ fn mangle_ty(ty: &Ty) -> String {
         Ty::Vec3 => "Vec3".into(),
         Ty::Vec4 => "Vec4".into(),
         Ty::Mat4 => "Mat4".into(),
+        // `docs/design.md`'s "Math and geometry" section -- see each
+        // `Ty` variant's own doc comment. None are used as a generic type
+        // argument today; these exist purely for match exhaustiveness, same
+        // reasoning as `Tick`/`Duration`/`Instant`/`Bytes`/`Symbol` above.
+        Ty::Mat2 => "Mat2".into(),
+        Ty::Mat3 => "Mat3".into(),
+        Ty::Quat => "Quat".into(),
+        Ty::Color => "Color".into(),
+        Ty::Color32 => "Color32".into(),
+        Ty::PaletteIndex => "PaletteIndex".into(),
+        Ty::Palette => "Palette".into(),
         Ty::Named(n) => n.clone(),
         Ty::Enum(n) => n.clone(),
         Ty::GenRef(inner) => format!("GenRef_{}", mangle_ty(inner)),
@@ -2604,6 +2929,14 @@ fn ty_to_type(ty: &Ty) -> Type {
         Ty::Vec3 => Type::Named("Vec3".into()),
         Ty::Vec4 => Type::Named("Vec4".into()),
         Ty::Mat4 => Type::Named("Mat4".into()),
+        // See `mangle_ty`'s matching arm above -- exists for exhaustiveness.
+        Ty::Mat2 => Type::Named("Mat2".into()),
+        Ty::Mat3 => Type::Named("Mat3".into()),
+        Ty::Quat => Type::Named("Quat".into()),
+        Ty::Color => Type::Named("Color".into()),
+        Ty::Color32 => Type::Named("Color32".into()),
+        Ty::PaletteIndex => Type::Named("PaletteIndex".into()),
+        Ty::Palette => Type::Named("Palette".into()),
         Ty::Named(n) => Type::Named(n.clone()),
         Ty::Enum(n) => Type::Named(n.clone()),
         Ty::GenRef(inner) => Type::Generic("GenRef".into(), vec![ty_to_type(inner)]),

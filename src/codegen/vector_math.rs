@@ -309,6 +309,18 @@ impl Codegen {
         if matches!((&src_ty, target), (Ty::Flags(_), Ty::I64) | (Ty::I64, Ty::Flags(_))) {
             return format!("{} {}", target_llty, bare);
         }
+        // `Color32 <-> i32`/`u32`: same free bit-preserving relabel -- see
+        // `Ty::Color32`'s doc comment. Both `i32`/`u32` share the same bare
+        // `i32` LLVM representation (see `llvm_ty`), so a single arm covers
+        // either target/source signedness.
+        if matches!((&src_ty, target), (Ty::Color32, Ty::Int | Ty::U32) | (Ty::Int | Ty::U32, Ty::Color32)) {
+            return format!("{} {}", target_llty, bare);
+        }
+        // `PaletteIndex <-> u8`: same free bit-preserving relabel -- see
+        // `Ty::PaletteIndex`'s doc comment.
+        if matches!((&src_ty, target), (Ty::PaletteIndex, Ty::U8) | (Ty::U8, Ty::PaletteIndex)) {
+            return format!("{} {}", target_llty, bare);
+        }
         // `Fixed<Bits,Frac> <-> float/f64`: a true scaled conversion, not a
         // bit reinterpret -- see `Ty::Fixed`'s doc comment.
         if let Ty::Fixed(bits, frac) = &src_ty {
@@ -472,22 +484,33 @@ impl Codegen {
         format!("{} {}", t, reg)
     }
 
-    /// Elementwise `+`/`-` between two Mat4 values (row-by-row vector op).
-    fn emit_mat4_addsub(&mut self, lhs: &str, rhs: &str, op: BinOp) -> String {
-        let l = self.untag(lhs, &Ty::Mat4);
-        let r = self.untag(rhs, &Ty::Mat4);
-        let mat_t = "[4 x <4 x float>]";
+    /// Elementwise `+`/`-` between two same-dimension matrix values
+    /// (row-by-row vector op) -- generalizes what used to be a `Mat4`-only
+    /// `emit_mat4_addsub` to any of `Mat2`/`Mat3`/`Mat4` (`dim` is 2/3/4,
+    /// from `Ty::mat_dim`), since `Mat2`/`Mat3` are the exact same
+    /// `[N x <N x float>]` row-of-native-vectors layout at a smaller fixed
+    /// size.
+    fn emit_mat_addsub(&mut self, lhs: &str, rhs: &str, dim: u32, op: BinOp) -> String {
+        let row_ty = Ty::vec_of_arity(dim as u8).expect("mat_dim is always 2, 3, or 4");
+        let row_llty = self.llvm_ty(&row_ty);
+        let mat_t = format!("[{} x {}]", dim, row_llty);
+        let l = lhs.strip_prefix(&format!("{} ", mat_t)).unwrap_or(lhs).to_string();
+        let r = rhs.strip_prefix(&format!("{} ", mat_t)).unwrap_or(rhs).to_string();
         let mut acc = "undef".to_string();
-        for i in 0..4u32 {
+        for i in 0..dim {
             let lr = self.tmp_name();
             self.line(&format!("  {} = extractvalue {} {}, {}", lr, mat_t, l, i));
             let rr = self.tmp_name();
             self.line(&format!("  {} = extractvalue {} {}, {}", rr, mat_t, r, i));
             let reg = self.tmp_name();
-            let opcode = match op { BinOp::Add => "fadd <4 x float>", BinOp::Sub => "fsub <4 x float>", _ => unreachable!() };
+            let opcode = match op {
+                BinOp::Add => format!("fadd {}", row_llty),
+                BinOp::Sub => format!("fsub {}", row_llty),
+                _ => unreachable!(),
+            };
             self.line(&format!("  {} = {} {}, {}", reg, opcode, lr, rr));
             let next = self.tmp_name();
-            self.line(&format!("  {} = insertvalue {} {}, <4 x float> {}, {}", next, mat_t, acc, reg, i));
+            self.line(&format!("  {} = insertvalue {} {}, {} {}, {}", next, mat_t, acc, row_llty, reg, i));
             acc = next;
         }
         format!("{} {}", mat_t, acc)
@@ -517,34 +540,42 @@ impl Codegen {
         sum.unwrap()
     }
 
-    /// Matrix-vector multiply: `result[i] = dot(row_i, v)`.
-    fn emit_mat4_vec4_mul(&mut self, mat_val: &str, vec_val: &str) -> String {
-        let m = self.untag(mat_val, &Ty::Mat4);
-        let v = self.untag(vec_val, &Ty::Vec4);
-        let mat_t = "[4 x <4 x float>]";
-        let mut elems = Vec::with_capacity(4);
-        for i in 0..4u32 {
+    /// Matrix-vector multiply: `result[i] = dot(row_i, v)`. Generalizes what
+    /// used to be a `Mat4`/`Vec4`-only `emit_mat4_vec4_mul` to any dimension
+    /// (2/3/4) -- see `emit_mat_addsub`'s doc comment.
+    fn emit_mat_vec_mul(&mut self, mat_val: &str, vec_val: &str, dim: u32) -> String {
+        let row_ty = Ty::vec_of_arity(dim as u8).expect("mat_dim is always 2, 3, or 4");
+        let row_llty = self.llvm_ty(&row_ty);
+        let mat_t = format!("[{} x {}]", dim, row_llty);
+        let m = mat_val.strip_prefix(&format!("{} ", mat_t)).unwrap_or(mat_val).to_string();
+        let v = self.untag(vec_val, &row_ty);
+        let mut elems = Vec::with_capacity(dim as usize);
+        for i in 0..dim {
             let row = self.tmp_name();
             self.line(&format!("  {} = extractvalue {} {}, {}", row, mat_t, m, i));
-            elems.push(self.emit_dot_vec(&row, &v, &Ty::Vec4));
+            elems.push(self.emit_dot_vec(&row, &v, &row_ty));
         }
         let mut acc = "undef".to_string();
         for (i, e) in elems.iter().enumerate() {
-            acc = self.insert_component(&acc, &Ty::Vec4, i as u32, e);
+            acc = self.insert_component(&acc, &row_ty, i as u32, e);
         }
-        format!("<4 x float> {}", acc)
+        format!("{} {}", row_llty, acc)
     }
 
-    /// Full 4x4 matrix multiply, row-major (`A`/`B` both stored as 4 row
-    /// vectors): gather `B`'s 4 columns once, then compute each output row
-    /// as 4 dot products of `A`'s row against each precomputed column.
-    fn emit_mat4_mul(&mut self, a_val: &str, b_val: &str) -> String {
-        let a = self.untag(a_val, &Ty::Mat4);
-        let b = self.untag(b_val, &Ty::Mat4);
-        let mat_t = "[4 x <4 x float>]";
-        let mut a_rows = Vec::with_capacity(4);
-        let mut b_rows = Vec::with_capacity(4);
-        for i in 0..4u32 {
+    /// Full NxN matrix multiply, row-major (`A`/`B` both stored as `N` row
+    /// vectors): gather `B`'s `N` columns once, then compute each output row
+    /// as `N` dot products of `A`'s row against each precomputed column.
+    /// Generalizes what used to be a `Mat4`-only `emit_mat4_mul` to any
+    /// dimension (2/3/4) -- see `emit_mat_addsub`'s doc comment.
+    fn emit_mat_mul(&mut self, a_val: &str, b_val: &str, dim: u32) -> String {
+        let row_ty = Ty::vec_of_arity(dim as u8).expect("mat_dim is always 2, 3, or 4");
+        let row_llty = self.llvm_ty(&row_ty);
+        let mat_t = format!("[{} x {}]", dim, row_llty);
+        let a = a_val.strip_prefix(&format!("{} ", mat_t)).unwrap_or(a_val).to_string();
+        let b = b_val.strip_prefix(&format!("{} ", mat_t)).unwrap_or(b_val).to_string();
+        let mut a_rows = Vec::with_capacity(dim as usize);
+        let mut b_rows = Vec::with_capacity(dim as usize);
+        for i in 0..dim {
             let ar = self.tmp_name();
             self.line(&format!("  {} = extractvalue {} {}, {}", ar, mat_t, a, i));
             a_rows.push(ar);
@@ -552,13 +583,13 @@ impl Codegen {
             self.line(&format!("  {} = extractvalue {} {}, {}", br, mat_t, b, i));
             b_rows.push(br);
         }
-        let mut b_cols = Vec::with_capacity(4);
-        for j in 0..4u32 {
+        let mut b_cols = Vec::with_capacity(dim as usize);
+        for j in 0..dim {
             let mut col = "undef".to_string();
             for (i, row) in b_rows.iter().enumerate() {
                 let lane = self.tmp_name();
-                self.line(&format!("  {} = extractelement <4 x float> {}, i32 {}", lane, row, j));
-                col = self.insert_component(&col, &Ty::Vec4, i as u32, &lane);
+                self.line(&format!("  {} = extractelement {} {}, i32 {}", lane, row_llty, row, j));
+                col = self.insert_component(&col, &row_ty, i as u32, &lane);
             }
             b_cols.push(col);
         }
@@ -566,14 +597,109 @@ impl Codegen {
         for (i, a_row) in a_rows.iter().enumerate() {
             let mut row_acc = "undef".to_string();
             for (j, b_col) in b_cols.iter().enumerate() {
-                let dot = self.emit_dot_vec(a_row, b_col, &Ty::Vec4);
-                row_acc = self.insert_component(&row_acc, &Ty::Vec4, j as u32, &dot);
+                let dot = self.emit_dot_vec(a_row, b_col, &row_ty);
+                row_acc = self.insert_component(&row_acc, &row_ty, j as u32, &dot);
             }
             let next_mat = self.tmp_name();
-            self.line(&format!("  {} = insertvalue {} {}, <4 x float> {}, {}", next_mat, mat_t, acc_mat, row_acc, i));
+            self.line(&format!("  {} = insertvalue {} {}, {} {}, {}", next_mat, mat_t, acc_mat, row_llty, row_acc, i));
             acc_mat = next_mat;
         }
         format!("{} {}", mat_t, acc_mat)
+    }
+
+    /// A single bare-`float` `fmul`/`fadd`/`fsub`, factored out so
+    /// `emit_quat_mul`'s Hamilton-product formula below reads as plain
+    /// arithmetic instead of repeated `tmp_name`/`line` boilerplate.
+    pub(super) fn emit_fmul(&mut self, a: &str, b: &str) -> String {
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = fmul float {}, {}", reg, a, b));
+        reg
+    }
+    pub(super) fn emit_fadd(&mut self, a: &str, b: &str) -> String {
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = fadd float {}, {}", reg, a, b));
+        reg
+    }
+    pub(super) fn emit_fsub(&mut self, a: &str, b: &str) -> String {
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = fsub float {}, {}", reg, a, b));
+        reg
+    }
+    /// Negate a bare `float` register (`0.0 - x`) -- reused by
+    /// `crate::codegen::geometry`'s `quat_conjugate`.
+    pub(super) fn emit_fneg(&mut self, a: &str) -> String {
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = fsub float {}, {}", reg, format_f32_literal(0.0), a));
+        reg
+    }
+    /// A single bare-`float` `fdiv` -- reused by `crate::codegen::geometry`'s
+    /// `quat_normalize`.
+    pub(super) fn emit_fdiv(&mut self, a: &str, b: &str) -> String {
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = fdiv float {}, {}", reg, a, b));
+        reg
+    }
+
+    /// The true quaternion (Hamilton) product `a * b` -- see `Ty::Quat`'s
+    /// doc comment for why this is special-cased ahead of the generic
+    /// vector dispatch rather than falling out of `is_vec()` like `Quat`'s
+    /// other operators do. Standard Hamilton product formula, with each
+    /// side's lanes read via `extract_component`/built via
+    /// `insert_component` exactly like every other vector op in this module.
+    pub(super) fn emit_quat_mul(&mut self, lhs: &str, rhs: &str) -> String {
+        let l = self.untag(lhs, &Ty::Quat);
+        let r = self.untag(rhs, &Ty::Quat);
+        let (ax, ay, az, aw) = (
+            self.extract_component(&l, &Ty::Quat, 0),
+            self.extract_component(&l, &Ty::Quat, 1),
+            self.extract_component(&l, &Ty::Quat, 2),
+            self.extract_component(&l, &Ty::Quat, 3),
+        );
+        let (bx, by, bz, bw) = (
+            self.extract_component(&r, &Ty::Quat, 0),
+            self.extract_component(&r, &Ty::Quat, 1),
+            self.extract_component(&r, &Ty::Quat, 2),
+            self.extract_component(&r, &Ty::Quat, 3),
+        );
+        // w = aw*bw - ax*bx - ay*by - az*bz
+        let w1 = self.emit_fmul(&aw, &bw);
+        let w2 = self.emit_fmul(&ax, &bx);
+        let w3 = self.emit_fmul(&ay, &by);
+        let w4 = self.emit_fmul(&az, &bz);
+        let w12 = self.emit_fsub(&w1, &w2);
+        let w123 = self.emit_fsub(&w12, &w3);
+        let w = self.emit_fsub(&w123, &w4);
+        // x = aw*bx + ax*bw + ay*bz - az*by
+        let x1 = self.emit_fmul(&aw, &bx);
+        let x2 = self.emit_fmul(&ax, &bw);
+        let x3 = self.emit_fmul(&ay, &bz);
+        let x4 = self.emit_fmul(&az, &by);
+        let x12 = self.emit_fadd(&x1, &x2);
+        let x123 = self.emit_fadd(&x12, &x3);
+        let x = self.emit_fsub(&x123, &x4);
+        // y = aw*by - ax*bz + ay*bw + az*bx
+        let y1 = self.emit_fmul(&aw, &by);
+        let y2 = self.emit_fmul(&ax, &bz);
+        let y3 = self.emit_fmul(&ay, &bw);
+        let y4 = self.emit_fmul(&az, &bx);
+        let y12 = self.emit_fsub(&y1, &y2);
+        let y123 = self.emit_fadd(&y12, &y3);
+        let y = self.emit_fadd(&y123, &y4);
+        // z = aw*bz + ax*by - ay*bx + az*bw
+        let z1 = self.emit_fmul(&aw, &bz);
+        let z2 = self.emit_fmul(&ax, &by);
+        let z3 = self.emit_fmul(&ay, &bx);
+        let z4 = self.emit_fmul(&az, &bw);
+        let z12 = self.emit_fadd(&z1, &z2);
+        let z123 = self.emit_fsub(&z12, &z3);
+        let z = self.emit_fadd(&z123, &z4);
+
+        let mut acc = "undef".to_string();
+        acc = self.insert_component(&acc, &Ty::Quat, 0, &x);
+        acc = self.insert_component(&acc, &Ty::Quat, 1, &y);
+        acc = self.insert_component(&acc, &Ty::Quat, 2, &z);
+        acc = self.insert_component(&acc, &Ty::Quat, 3, &w);
+        format!("<4 x float> {}", acc)
     }
 
     pub(super) fn emit_binop(&mut self, lhs: &str, lty: &Ty, rhs: &str, rty: &Ty, op: BinOp) -> String {
@@ -716,18 +842,69 @@ impl Codegen {
                 }
             };
         }
+        // `Color32 == Color32` / `!=` -- a single `i32` pack comparison --
+        // see `Ty::Color32`'s doc comment.
+        if matches!((lty, rty), (Ty::Color32, Ty::Color32)) {
+            return match op {
+                BinOp::Eq | BinOp::Ne => {
+                    let l = self.untag(lhs, &Ty::Color32);
+                    let r = self.untag(rhs, &Ty::Color32);
+                    let pred = if op == BinOp::Eq { "eq" } else { "ne" };
+                    let reg = self.tmp_name();
+                    self.line(&format!("  {} = icmp {} i32 {}, {}", reg, pred, l, r));
+                    format!("i1 {}", reg)
+                }
+                _ => {
+                    self.err("only `==`/`!=` are supported between `Color32` values", Span::dummy());
+                    "%undef".into()
+                }
+            };
+        }
+        // `PaletteIndex == PaletteIndex` / `!=` -- a single `u8` comparison
+        // -- see `Ty::PaletteIndex`'s doc comment.
+        if matches!((lty, rty), (Ty::PaletteIndex, Ty::PaletteIndex)) {
+            return match op {
+                BinOp::Eq | BinOp::Ne => {
+                    let l = self.untag(lhs, &Ty::PaletteIndex);
+                    let r = self.untag(rhs, &Ty::PaletteIndex);
+                    let pred = if op == BinOp::Eq { "eq" } else { "ne" };
+                    let reg = self.tmp_name();
+                    self.line(&format!("  {} = icmp {} i8 {}, {}", reg, pred, l, r));
+                    format!("i1 {}", reg)
+                }
+                _ => {
+                    self.err("only `==`/`!=` are supported between `PaletteIndex` values", Span::dummy());
+                    "%undef".into()
+                }
+            };
+        }
+        // `Quat * Quat`: the true quaternion (Hamilton) product -- see
+        // `Ty::Quat`'s doc comment. Checked ahead of the generic vector
+        // dispatch below (which would otherwise treat it as a componentwise
+        // multiply, same as `Vec4 * Vec4`) since `Checker::infer_binop_ty`
+        // already guarantees this is the only `(Quat, Mul, Quat)` shape that
+        // reaches codegen.
+        if matches!((lty, rty, op), (Ty::Quat, Ty::Quat, BinOp::Mul)) {
+            return self.emit_quat_mul(lhs, rhs);
+        }
         if matches!(op, BinOp::Rem | BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge) {
             self.err("`%` and comparison operators are not supported on vector/matrix types", Span::dummy());
             return "%undef".into();
         }
         match (lty, rty) {
-            (Ty::Vec2, Ty::Vec2) | (Ty::Vec3, Ty::Vec3) | (Ty::Vec4, Ty::Vec4) => self.emit_vec_binop(lhs, rhs, lty, op),
-            (Ty::Mat4, Ty::Mat4) => match op {
-                BinOp::Add | BinOp::Sub => self.emit_mat4_addsub(lhs, rhs, op),
-                BinOp::Mul => self.emit_mat4_mul(lhs, rhs),
-                _ => { self.err("unsupported Mat4 operator", Span::dummy()); "%undef".into() }
+            // `Quat`/`Color` reuse `Vec4`'s exact layout and (outside the
+            // `Quat * Quat` special case just above) its elementwise
+            // arithmetic too -- see their own `Ty` doc comments.
+            (Ty::Vec2, Ty::Vec2) | (Ty::Vec3, Ty::Vec3) | (Ty::Vec4, Ty::Vec4)
+            | (Ty::Quat, Ty::Quat) | (Ty::Color, Ty::Color) => self.emit_vec_binop(lhs, rhs, lty, op),
+            (l, r) if l.is_mat() && r.is_mat() => match op {
+                BinOp::Add | BinOp::Sub => self.emit_mat_addsub(lhs, rhs, l.mat_dim().unwrap(), op),
+                BinOp::Mul => self.emit_mat_mul(lhs, rhs, l.mat_dim().unwrap()),
+                _ => { self.err("unsupported matrix operator", Span::dummy()); "%undef".into() }
             },
-            (Ty::Mat4, Ty::Vec4) if op == BinOp::Mul => self.emit_mat4_vec4_mul(lhs, rhs),
+            (l, r) if l.is_mat() && Some(r) == l.mat_dim().and_then(|d| Ty::vec_of_arity(d as u8)).as_ref() && op == BinOp::Mul => {
+                self.emit_mat_vec_mul(lhs, rhs, l.mat_dim().unwrap())
+            }
             (l, r) if l.is_vec() && matches!(r, Ty::Int | Ty::Float) && matches!(op, BinOp::Mul | BinOp::Div) => {
                 self.emit_vec_scalar_binop(lhs, l, rhs, r, op, false)
             }

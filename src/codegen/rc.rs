@@ -72,7 +72,10 @@ impl Codegen {
             // Same reasoning as `Ty::List` -- `Bytes` reuses `List<u8>`'s
             // exact heap layout (see `Ty::Bytes`'s doc comment), so it always
             // owns a separately heap-allocated backing buffer too.
-            Ty::Str | Ty::Closure(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Table(_) | Ty::Bytes => true,
+            // Same reasoning as `Ty::Bytes` just above -- `Palette` reuses
+            // `List<Color32>`'s exact heap layout (see `Ty::Palette`'s doc
+            // comment).
+            Ty::Str | Ty::Closure(..) | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Table(_) | Ty::Bytes | Ty::Palette => true,
             Ty::Named(n) => self
                 .struct_field_types
                 .get(n)
@@ -281,7 +284,7 @@ impl Codegen {
                     self.open_block(&next_label);
                 }
             }
-            Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Table(_) | Ty::Bytes => {
+            Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Table(_) | Ty::Bytes | Ty::Palette => {
                 // Same shape as `Ty::Str`: `ptr` is a storage address
                 // holding the object pointer directly, no extra boxing.
                 // Releasing the elements/keys/values *inside* the buffer

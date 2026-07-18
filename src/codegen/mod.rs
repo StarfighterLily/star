@@ -21,6 +21,7 @@ mod expr;
 mod file_io;
 mod fixed;
 mod flags;
+mod geometry;
 mod list;
 mod map;
 mod net;
@@ -695,6 +696,23 @@ impl Codegen {
             Ty::GenRef(_) | Ty::Handle(_) => 8,
             Ty::Vec2 => 8,
             Ty::Vec3 | Ty::Vec4 | Ty::Mat4 => 16,
+            // `docs/design.md`'s "Math and geometry" section. `Mat2` is
+            // `[2 x <2 x float>]` -- same alignment as its `Vec2` row.
+            // `Mat3` is `[3 x <3 x float>]` -- same alignment as `Vec3`/
+            // `Vec4`/`Mat4` (a native vector's LLVM alignment on this target
+            // is always its next-power-of-two byte width, so `<3 x float>`
+            // aligns like `<4 x float>`, see `type_align`'s own doc comment
+            // above the `Vec3`/`Vec4`/`Mat4` arm). `Quat`/`Color` reuse
+            // `Vec4`'s exact layout (see their own `Ty` doc comments).
+            Ty::Mat2 => 8,
+            Ty::Mat3 | Ty::Quat | Ty::Color => 16,
+            // Bare `i32` -- see `Ty::Color32`'s doc comment.
+            Ty::Color32 => 4,
+            // Bare `u8` -- see `Ty::PaletteIndex`'s doc comment.
+            Ty::PaletteIndex => 1,
+            // Same RC'd `i8*` object-pointer bucket as `Ty::List`/`Ty::Bytes`
+            // -- see `Ty::Palette`'s doc comment.
+            Ty::Palette => 8,
             Ty::Named(n) => self
                 .struct_field_types
                 .get(n)
@@ -792,6 +810,19 @@ impl Codegen {
             Ty::Vec3 => 16,
             Ty::Vec4 => 16,
             Ty::Mat4 => 64,
+            // `[2 x <2 x float>]`: 2 rows of 8 bytes each (`Ty::Vec2`'s own
+            // size above). `[3 x <3 x float>]`: 3 rows of 16 bytes each
+            // (`Ty::Vec3`'s own size above, padded to its 16-byte native-
+            // vector alignment). `Quat`/`Color` reuse `Vec4`'s exact size.
+            Ty::Mat2 => 16,
+            Ty::Mat3 => 48,
+            Ty::Quat | Ty::Color => 16,
+            // Bare `i32`/`u8` -- see `Ty::Color32`/`Ty::PaletteIndex`'s doc
+            // comments.
+            Ty::Color32 => 4,
+            Ty::PaletteIndex => 1,
+            // Same RC'd `i8*` object-pointer bucket as `Ty::List`/`Ty::Bytes`.
+            Ty::Palette => 8,
             Ty::Named(n) => match self.struct_field_types.get(n) {
                 Some(fields) => self.padded_struct_size(fields),
                 None => 8,
@@ -893,6 +924,15 @@ impl Codegen {
             Ty::Vec3 => "<3 x float>".into(),
             Ty::Vec4 => "<4 x float>".into(),
             Ty::Mat4 => "[4 x <4 x float>]".into(),
+            // `docs/design.md`'s "Math and geometry" section -- see each
+            // `Ty` variant's own doc comment.
+            Ty::Mat2 => "[2 x <2 x float>]".into(),
+            Ty::Mat3 => "[3 x <3 x float>]".into(),
+            Ty::Quat | Ty::Color => "<4 x float>".into(),
+            Ty::Color32 => "i32".into(),
+            Ty::PaletteIndex => "i8".into(),
+            // Same RC'd opaque-object-pointer scheme as `Ty::Bytes`.
+            Ty::Palette => "i8*".into(),
             Ty::Named(n) => format!("%{}", n),
             // `Handle<T>` reuses the exact same `%GenRef` layout as
             // `Ty::GenRef` -- see `Ty::Handle`'s doc comment.
@@ -978,6 +1018,15 @@ impl Codegen {
             Ty::Vec3 => "vec3".into(),
             Ty::Vec4 => "vec4".into(),
             Ty::Mat4 => "mat4".into(),
+            // `docs/design.md`'s "Math and geometry" section -- see each
+            // `Ty` variant's own doc comment.
+            Ty::Mat2 => "mat2".into(),
+            Ty::Mat3 => "mat3".into(),
+            Ty::Quat => "quat".into(),
+            Ty::Color => "color".into(),
+            Ty::Color32 => "color32".into(),
+            Ty::PaletteIndex => "paletteindex".into(),
+            Ty::Palette => "palette".into(),
             Ty::Named(n) => format!("s_{}", n),
             Ty::GenRef(inner) => format!("genref_{}", self.mangle_ty(inner)),
             Ty::Handle(inner) => format!("handle_{}", self.mangle_ty(inner)),
@@ -1114,18 +1163,29 @@ impl Codegen {
             // 0, len: 0 }` -- exactly an empty ring, per `crate::codegen::ring`'s
             // invariant that every slot outside the (here, empty) live window
             // is the element type's zero value.
-            | Ty::Array(..) | Ty::Ring(..) => "zeroinitializer".into(),
+            | Ty::Array(..) | Ty::Ring(..)
+            // `docs/design.md`'s "Math and geometry" section: `Mat2`/`Mat3`
+            // are `[N x <N x float>]` aggregates, zeroed the same way `Mat4`
+            // is; `Quat`/`Color` reuse `Vec4`'s exact native-vector layout.
+            | Ty::Mat2 | Ty::Mat3 | Ty::Quat | Ty::Color => "zeroinitializer".into(),
             Ty::Wrapping(inner) => self.zero_value(inner),
             Ty::Fixed(..) => "0".into(),
             // Same "never-allocated" null object pointer as `Ty::List` --
             // see `Ty::Bytes`'s doc comment.
             Ty::Bytes => "null".into(),
+            // Same reasoning as `Ty::Bytes` above -- see `Ty::Palette`'s doc
+            // comment.
+            Ty::Palette => "null".into(),
             // Bare `i64` zero -- see `Ty::Symbol`'s doc comment.
             Ty::Symbol => "0".into(),
             // Bare `i{N}`/`i64` zero -- see `Ty::BitField`/`Ty::Flags`'s doc
             // comments (an all-clear register / an empty flag set).
             Ty::BitField(..) => "0".into(),
             Ty::Flags(_) => "0".into(),
+            // Bare `i32`/`u8` zero -- see `Ty::Color32`/`Ty::PaletteIndex`'s
+            // doc comments (fully transparent black / palette slot 0).
+            Ty::Color32 => "0".into(),
+            Ty::PaletteIndex => "0".into(),
         }
     }
 
@@ -1358,12 +1418,14 @@ impl Codegen {
     }
 
     /// Map a swizzle character to its lane/component index.
+    /// `r`/`g`/`b`/`a` are accepted as aliases of `x`/`y`/`z`/`w` -- see
+    /// `Checker::resolve_swizzle`'s matching arm (`Ty::Color`'s doc comment).
     fn swizzle_index(&mut self, c: char) -> u32 {
         match c {
-            'x' => 0,
-            'y' => 1,
-            'z' => 2,
-            'w' => 3,
+            'x' | 'r' => 0,
+            'y' | 'g' => 1,
+            'z' | 'b' => 2,
+            'w' | 'a' => 3,
             _ => { self.err(&format!("invalid swizzle component `{}`", c), Span::dummy()); 0 }
         }
     }

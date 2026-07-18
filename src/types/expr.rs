@@ -173,6 +173,11 @@ impl Checker {
                     if let Ty::Bytes = base_typed.clone().into_ty() {
                         return Ok(self.infer_list_method(base_typed, field, Ty::U8, args, vars, *span));
                     }
+                    // `Palette` reuses `List<Color32>`'s method surface
+                    // wholesale -- see `Ty::Palette`'s doc comment.
+                    if let Ty::Palette = base_typed.clone().into_ty() {
+                        return Ok(self.infer_list_method(base_typed, field, Ty::Color32, args, vars, *span));
+                    }
                     if let Ty::Map(key_ty, val_ty) = base_typed.clone().into_ty() {
                         return Ok(self.infer_map_method(base_typed, field, *key_ty, *val_ty, args, vars, *span));
                     }
@@ -699,6 +704,12 @@ impl Checker {
                     Ty::Bytes => {
                         Ok(TypedExpr::ListIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: Ty::U8, span: *span })
                     }
+                    // `palette[i]` -- reuses the exact same
+                    // `TypedExpr::ListIndex` node/codegen as `List<Color32>`
+                    // indexing -- see `Ty::Palette`'s doc comment.
+                    Ty::Palette => {
+                        Ok(TypedExpr::ListIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: Ty::Color32, span: *span })
+                    }
                     Ty::Array(inner, _) => {
                         Ok(TypedExpr::ArrayIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: *inner, span: *span })
                     }
@@ -715,7 +726,7 @@ impl Checker {
                         Ok(TypedExpr::StrIndex { base: Box::new(base_expr), index: Box::new(index_expr), ty: Ty::Int, span: *span })
                     }
                     other => {
-                        self.error(format!("`[..]` indexing requires a `GenRef<T>`, `Handle<T>`, `List<T>`, `Bytes`, `[T; N]`, `Ring<T,N>`, `Table<T>`, or `str`, found `{:?}`", other), *span);
+                        self.error(format!("`[..]` indexing requires a `GenRef<T>`, `Handle<T>`, `List<T>`, `Bytes`, `Palette`, `[T; N]`, `Ring<T,N>`, `Table<T>`, or `str`, found `{:?}`", other), *span);
                         Ok(TypedExpr::Error(Ty::Named("unknown".into())))
                     }
                 }
@@ -963,6 +974,15 @@ impl Checker {
                 // reasoning as `Symbol <-> i64` above -- see `Ty::Flags`'s
                 // doc comment.
                 let flags_ok = matches!((&inner_ty, &target), (Ty::Flags(_), Ty::I64) | (Ty::I64, Ty::Flags(_)));
+                // `Color32 <-> i32`/`u32`: a free bit-preserving relabel --
+                // see `Ty::Color32`'s doc comment.
+                let color32_ok = matches!(
+                    (&inner_ty, &target),
+                    (Ty::Color32, Ty::Int | Ty::U32) | (Ty::Int | Ty::U32, Ty::Color32)
+                );
+                // `PaletteIndex <-> u8`: a free bit-preserving relabel -- see
+                // `Ty::PaletteIndex`'s doc comment.
+                let palette_index_ok = matches!((&inner_ty, &target), (Ty::PaletteIndex, Ty::U8) | (Ty::U8, Ty::PaletteIndex));
                 let ok = (inner_ty.is_numeric() && target.is_numeric())
                     || (inner_ty.is_numeric() && target == Ty::Char)
                     || (inner_ty == Ty::Char && target.is_numeric())
@@ -972,7 +992,9 @@ impl Checker {
                     || time_ok
                     || symbol_ok
                     || bitfield_ok
-                    || flags_ok;
+                    || flags_ok
+                    || color32_ok
+                    || palette_index_ok;
                 if !ok && !Self::is_placeholder_ty(&inner_ty) && !Self::is_placeholder_ty(&target) {
                     self.error(
                         format!(
@@ -1657,6 +1679,51 @@ impl Checker {
                     self.error(format!("{}(..) expects 4 Vec4 row arguments", name), span);
                 }
             }
+            // `docs/design.md`'s "Math and geometry" section: `Mat2`/`Mat3`
+            // mirror `Mat4`'s own "N row arguments of the matching vector
+            // type" constructor shape.
+            Ty::Mat2 => {
+                if args.len() != 2 || !args.iter().all(|a| matches!(a.clone().into_ty(), Ty::Vec2)) {
+                    self.error(format!("{}(..) expects 2 Vec2 row arguments", name), span);
+                }
+            }
+            Ty::Mat3 => {
+                if args.len() != 3 || !args.iter().all(|a| matches!(a.clone().into_ty(), Ty::Vec3)) {
+                    self.error(format!("{}(..) expects 3 Vec3 row arguments", name), span);
+                }
+            }
+            // `Quat`/`Color` mirror `Vec4`'s own "4 float arguments"
+            // constructor shape -- see their own `Ty` doc comments.
+            Ty::Quat | Ty::Color => {
+                if args.len() != 4 || !args.iter().all(|a| is_numeric(&a.clone().into_ty())) {
+                    self.error(format!("{}(..) expects 4 float arguments", name), span);
+                }
+            }
+            // `Color32(r, g, b, a)`: four 0-255 channel values, any
+            // int-shaped type (mirroring `Ty::Tick`'s own "any int_shape(),
+            // no exact-match requirement" construction rule) -- range
+            // validated at codegen time (`Codegen::emit_color32_new`), not
+            // here, since a non-literal argument's value isn't known until
+            // runtime.
+            Ty::Color32 => {
+                if args.len() != 4 || !args.iter().all(|a| a.clone().into_ty().int_shape().is_some()) {
+                    self.error(format!("{}(..) expects 4 integer (0-255) channel arguments", name), span);
+                }
+            }
+            // `PaletteIndex(value)` -- mirrors `Ty::Tick`'s own single
+            // int-shaped-argument construction rule.
+            Ty::PaletteIndex => {
+                if args.len() != 1 || !args.iter().all(|a| a.clone().into_ty().int_shape().is_some()) {
+                    self.error(format!("{}(..) expects 1 integer argument", name), span);
+                }
+            }
+            // `Palette()` starts empty -- mirrors `Ty::Bytes`'s own
+            // no-argument constructor.
+            Ty::Palette => {
+                if !args.is_empty() {
+                    self.error(format!("{}() takes no arguments", name), span);
+                }
+            }
             // `docs/design.md`'s "Time" section: `Tick`/`Duration`/`Instant`
             // each construct from a single int-shaped value (any width),
             // widened/narrowed to the underlying `i64` at codegen time --
@@ -2230,6 +2297,138 @@ impl Checker {
                     }
                 }
             }
+            // `docs/design.md`'s "Math and geometry" section -- see
+            // `crate::codegen::geometry` for each function's lowering.
+            "quat_identity" => {
+                arity_ok(0, self);
+            }
+            "quat_conjugate" | "quat_normalize" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Quat) {
+                    self.error(format!("`{}` expects a `Quat` argument, found `{:?}`", name, arg_tys[0]), span);
+                }
+            }
+            "quat_rotate" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Quat) {
+                        self.error(format!("`quat_rotate` argument 1 expected `Quat`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Vec3) {
+                        self.error(format!("`quat_rotate` argument 2 expected `Vec3`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "rect_contains" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Named("Rect".into())) {
+                        self.error(format!("`rect_contains` argument 1 expected `Rect`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Vec2) {
+                        self.error(format!("`rect_contains` argument 2 expected `Vec2`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "rect_intersects" => {
+                if arity_ok(2, self) {
+                    for (i, t) in arg_tys.iter().enumerate() {
+                        if !tys_eq(t, &Ty::Named("Rect".into())) {
+                            self.error(format!("`rect_intersects` argument {} expected `Rect`, found `{:?}`", i + 1, t), span);
+                        }
+                    }
+                }
+            }
+            "aabb2_contains" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Named("Aabb2".into())) {
+                        self.error(format!("`aabb2_contains` argument 1 expected `Aabb2`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Vec2) {
+                        self.error(format!("`aabb2_contains` argument 2 expected `Vec2`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "aabb2_intersects" => {
+                if arity_ok(2, self) {
+                    for (i, t) in arg_tys.iter().enumerate() {
+                        if !tys_eq(t, &Ty::Named("Aabb2".into())) {
+                            self.error(format!("`aabb2_intersects` argument {} expected `Aabb2`, found `{:?}`", i + 1, t), span);
+                        }
+                    }
+                }
+            }
+            "aabb3_contains" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Named("Aabb3".into())) {
+                        self.error(format!("`aabb3_contains` argument 1 expected `Aabb3`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Vec3) {
+                        self.error(format!("`aabb3_contains` argument 2 expected `Vec3`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "aabb3_intersects" => {
+                if arity_ok(2, self) {
+                    for (i, t) in arg_tys.iter().enumerate() {
+                        if !tys_eq(t, &Ty::Named("Aabb3".into())) {
+                            self.error(format!("`aabb3_intersects` argument {} expected `Aabb3`, found `{:?}`", i + 1, t), span);
+                        }
+                    }
+                }
+            }
+            "ray_at" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Named("Ray".into())) {
+                        self.error(format!("`ray_at` argument 1 expected `Ray`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !is_numeric(&arg_tys[1]) {
+                        self.error(format!("`ray_at` argument 2 (`t`) expected a numeric value, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "plane_distance_to_point" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Named("Plane".into())) {
+                        self.error(format!("`plane_distance_to_point` argument 1 expected `Plane`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Vec3) {
+                        self.error(format!("`plane_distance_to_point` argument 2 expected `Vec3`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "frustum_contains_point" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Named("Frustum".into())) {
+                        self.error(format!("`frustum_contains_point` argument 1 expected `Frustum`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Vec3) {
+                        self.error(format!("`frustum_contains_point` argument 2 expected `Vec3`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "transform_apply_point" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Named("Transform".into())) {
+                        self.error(format!("`transform_apply_point` argument 1 expected `Transform`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Vec3) {
+                        self.error(format!("`transform_apply_point` argument 2 expected `Vec3`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "color32_r" | "color32_g" | "color32_b" | "color32_a" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Color32) {
+                    self.error(format!("`{}` expects a `Color32` argument, found `{:?}`", name, arg_tys[0]), span);
+                }
+            }
+            "color_to_color32" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Color) {
+                    self.error(format!("`color_to_color32` expects a `Color` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "color32_to_color" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Color32) {
+                    self.error(format!("`color32_to_color` expects a `Color32` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
             _ => {}
         }
     }
@@ -2365,6 +2564,24 @@ impl Checker {
                     }
                     return Ty::Bool;
                 }
+                // `Color32 == Color32` / `!=` -- a single `i32` pack
+                // comparison, same reasoning as `Ty::BitField` above -- see
+                // `Ty::Color32`'s doc comment.
+                if *lhs_ty == Ty::Color32 && *rhs_ty == Ty::Color32 {
+                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
+                        self.error("only `==`/`!=` are supported between `Color32` values", span);
+                    }
+                    return Ty::Bool;
+                }
+                // `PaletteIndex == PaletteIndex` / `!=` -- a single `u8`
+                // comparison, same reasoning as `Ty::BitField` above -- see
+                // `Ty::PaletteIndex`'s doc comment.
+                if *lhs_ty == Ty::PaletteIndex && *rhs_ty == Ty::PaletteIndex {
+                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
+                        self.error("only `==`/`!=` are supported between `PaletteIndex` values", span);
+                    }
+                    return Ty::Bool;
+                }
                 if lhs_ty.is_numeric() && rhs_ty.is_numeric() {
                     self.error(
                         format!(
@@ -2435,10 +2652,22 @@ impl Checker {
 
         let is_scalar = |t: &Ty| matches!(t, Ty::Int | Ty::Float);
 
+        // `Quat * Quat` computes the true quaternion (Hamilton) product, the
+        // operation that actually composes two rotations -- not a
+        // componentwise multiply, which is what falling through to the
+        // generic `is_vec() && is_vec()` branch below would give (`Ty::Quat`
+        // is included in `is_vec()`/`vec_arity()` purely so field access/
+        // `+`/`-`/scalar `*`/`/`/`dot`/`length`/`lerp` fall out for free --
+        // see `Ty::Quat`'s doc comment). Checked ahead of the generic
+        // dispatch below for exactly that reason.
+        if *op == BinOp::Mul && *lhs_ty == Ty::Quat && *rhs_ty == Ty::Quat {
+            return Ty::Quat;
+        }
+
         match op {
             BinOp::Add | BinOp::Sub => {
                 if lhs_ty.is_mat() && rhs_ty.is_mat() {
-                    if lhs_ty == rhs_ty { Ty::Mat4 } else {
+                    if lhs_ty == rhs_ty { lhs_ty.clone() } else {
                         self.error("mismatched matrix arity in `+`/`-`", span);
                         lhs_ty.clone()
                     }
@@ -2455,19 +2684,27 @@ impl Checker {
                 }
             }
             BinOp::Mul | BinOp::Div => {
+                // The matrix's own row-vector type, e.g. `Mat3` -> `Vec3` --
+                // generalizes the old `Mat4`-only `*rhs_ty == Ty::Vec4` check
+                // (`Ty::vec_of_arity`/`Ty::mat_dim` didn't exist before
+                // `Mat2`/`Mat3` landed, since `Mat4` was the only matrix type).
+                let mat_vec_ty = |t: &Ty| t.mat_dim().and_then(|d| Ty::vec_of_arity(d as u8));
                 if lhs_ty.is_mat() && rhs_ty.is_mat() {
                     if *op == BinOp::Div {
                         self.error("matrix division is not supported", span);
                     }
-                    Ty::Mat4
-                } else if lhs_ty.is_mat() && *rhs_ty == Ty::Vec4 {
+                    if lhs_ty != rhs_ty {
+                        self.error("mismatched matrix arity in `*`", span);
+                    }
+                    lhs_ty.clone()
+                } else if lhs_ty.is_mat() && mat_vec_ty(lhs_ty).as_ref() == Some(rhs_ty) {
                     if *op == BinOp::Div {
                         self.error("matrix division is not supported", span);
                     }
-                    Ty::Vec4
-                } else if *lhs_ty == Ty::Vec4 && rhs_ty.is_mat() {
+                    rhs_ty.clone()
+                } else if rhs_ty.is_mat() && mat_vec_ty(rhs_ty).as_ref() == Some(lhs_ty) {
                     self.error("vector * matrix is not supported (use matrix * vector)", span);
-                    Ty::Vec4
+                    lhs_ty.clone()
                 } else if lhs_ty.is_vec() && rhs_ty.is_vec() {
                     if lhs_ty == rhs_ty {
                         lhs_ty.clone()
@@ -2599,11 +2836,19 @@ impl Checker {
             return Ty::Named("unknown".into());
         }
         for c in field.chars() {
+            // `r`/`g`/`b`/`a` are accepted as aliases of `x`/`y`/`z`/`w` --
+            // `docs/design.md`'s "Math and geometry" section: `Ty::Color`
+            // reuses `Vec4`'s exact layout (see its own doc comment), and a
+            // color's channels are conventionally named `r`/`g`/`b`/`a`
+            // rather than `x`/`y`/`z`/`w`, even though it's a `Vec4` under
+            // the hood -- there's no reason to reject the vector spelling
+            // either, so both are always accepted regardless of the base's
+            // concrete type (`Vec2`/`Vec3`/`Vec4`/`Quat`/`Color`).
             let idx = match c {
-                'x' => 0,
-                'y' => 1,
-                'z' => 2,
-                'w' => 3,
+                'x' | 'r' => 0,
+                'y' | 'g' => 1,
+                'z' | 'b' => 2,
+                'w' | 'a' => 3,
                 _ => {
                     self.error(format!("invalid swizzle component `{}`", c), span);
                     return Ty::Named("unknown".into());

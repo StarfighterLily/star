@@ -1061,7 +1061,13 @@ fn desugars_sequence_to_struct_and_impl() {
     let src = "sequence Countdown(start: i32):\n    let mut n: i32 = start\n    yield\n    n -= 1\n";
     let module = Driver::parse(src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
-    assert_eq!(typed.items.len(), 2, "sequence should desugar to exactly struct + impl");
+    // 2 (Countdown's own struct + impl) + 7 always-present builtin geometry
+    // structs (`docs/design.md`'s "Math and geometry" section --
+    // `Rect`/`Aabb2`/`Aabb3`/`Transform`/`Ray`/`Plane`/`Frustum`), appended
+    // after every user item regardless of source -- see `Checker::check`'s
+    // `builtin_struct_items`. User items always come first, so `items[0]`/
+    // `items[1]` below are unaffected.
+    assert_eq!(typed.items.len(), 9, "sequence should desugar to exactly struct + impl, plus 7 builtin geometry structs");
 
     let TypedItem::Struct(s) = &typed.items[0] else { panic!("expected a struct") };
     assert_eq!(s.name, "Countdown");
@@ -3272,6 +3278,14 @@ fn parses_generic_enum_variant_turbofish() {
     assert_eq!(variant, "None");
 }
 
+/// The 7 non-generic builtin geometry structs `Checker::check` always
+/// appends a `TypedItem::Struct` for (`docs/design.md`'s "Math and
+/// geometry" section, `crate::types::builtin_structs`) -- tests that assert
+/// an *exact* list/count of `TypedItem::Struct`s in a checked module need to
+/// exclude these (or account for them), since they're present regardless of
+/// what the test's own source declares.
+const BUILTIN_GEOMETRY_STRUCT_NAMES: &[&str] = &["Rect", "Aabb2", "Aabb3", "Transform", "Ray", "Plane", "Frustum"];
+
 const GENERIC_BOX_SRC: &str = "struct Box<T>:\n    value: T\n\n";
 // `Option<T>` is now a compiler builtin (pre-registered by `Checker::check`,
 // see `builtin_generic_enums`), so tests exercising generic-enum
@@ -3290,7 +3304,14 @@ fn instantiates_generic_struct_with_inferred_type_arg() {
     let src = format!("{}fn t():\n    Box(value = 5)\n", GENERIC_BOX_SRC);
     let module = Driver::parse(&src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
-    let struct_names: Vec<&str> = typed.items.iter().filter_map(|i| if let TypedItem::Struct(s) = i { Some(s.name.as_str()) } else { None }).collect();
+    // Excludes the 7 always-present builtin geometry structs (`docs/design.md`'s
+    // "Math and geometry" section) every module now carries -- unrelated to
+    // this test's actual assertion (that `Box`'s own generic template is
+    // never emitted, only its `Box__i32` instantiation).
+    let struct_names: Vec<&str> = typed.items.iter()
+        .filter_map(|i| if let TypedItem::Struct(s) = i { Some(s.name.as_str()) } else { None })
+        .filter(|n| !BUILTIN_GEOMETRY_STRUCT_NAMES.contains(n))
+        .collect();
     assert_eq!(struct_names, vec!["Box__i32"], "generic template itself must not be emitted, only its instantiation");
 }
 
@@ -3301,7 +3322,12 @@ fn instantiates_generic_struct_once_per_distinct_type_arg() {
     let src = format!("{}fn t():\n    Box(value = 5)\n    Box(value = 2.5)\n    Box(value = 6)\n", GENERIC_BOX_SRC);
     let module = Driver::parse(&src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
-    let mut struct_names: Vec<&str> = typed.items.iter().filter_map(|i| if let TypedItem::Struct(s) = i { Some(s.name.as_str()) } else { None }).collect();
+    // Excludes the 7 always-present builtin geometry structs -- see the
+    // matching comment in `instantiates_generic_struct_with_inferred_type_arg`.
+    let mut struct_names: Vec<&str> = typed.items.iter()
+        .filter_map(|i| if let TypedItem::Struct(s) = i { Some(s.name.as_str()) } else { None })
+        .filter(|n| !BUILTIN_GEOMETRY_STRUCT_NAMES.contains(n))
+        .collect();
     struct_names.sort();
     assert_eq!(struct_names, vec!["Box__f32", "Box__i32"], "same (template, type arg) pair should be instantiated once: {:?}", struct_names);
 }
@@ -15864,4 +15890,560 @@ fn parses_bitfield_and_flags_type_positions() {
     let module = Driver::parse(src).expect("should parse");
     let diags = Driver::check(&module);
     assert!(diags.is_ok(), "{:?}", diags.err());
+}
+
+// === docs/design.md's "Math and geometry" section ===========================
+//
+// `Quat`/`Mat2`/`Mat3`/`Color`/`Color32`/`PaletteIndex`/`Palette` (see
+// `Ty`'s own doc comments in `src/types/mod.rs`), plus the builtin
+// `Rect`/`Aabb2`/`Aabb3`/`Ray`/`Plane`/`Frustum`/`Transform` structs
+// (`crate::types::builtin_structs`) and their free-function surface
+// (`crate::codegen::geometry`).
+
+// --- `Quat` -------------------------------------------------------------
+
+/// The identity rotation leaves a point unchanged; a real rotation moves it.
+#[test]
+fn runtime_quat_identity_and_rotate_end_to_end() {
+    let src = "fn main():\n    \
+               let id = quat_identity()\n    \
+               let p = quat_rotate(id, Vec3(1.0, 0.0, 0.0))\n    \
+               println(f\"{p.x}, {p.y}, {p.z}\")\n    \
+               let q = Quat(0.0, 0.0, 0.70710678, 0.70710678)\n    \
+               let r = quat_rotate(q, Vec3(1.0, 0.0, 0.0))\n    \
+               println(f\"{r.x}, {r.y}, {r.z}\")\n";
+    let output = compile_and_run("quat_identity_and_rotate", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines[0], "1.000000, 0.000000, 0.000000");
+    // A 90-degree rotation about +Z sends (1,0,0) to (0,1,0).
+    assert_eq!(lines[1], "0.000000, 1.000000, 0.000000");
+}
+
+/// `Quat * Quat` composes rotations (the Hamilton product) -- two 45-degree
+/// rotations about the same axis compose into one 90-degree rotation.
+#[test]
+fn runtime_quat_multiply_composes_rotations_end_to_end() {
+    let src = "fn main():\n    \
+               let half = Quat(0.0, 0.0, 0.38268343, 0.92387953)\n    \
+               let composed = half * half\n    \
+               let r = quat_rotate(composed, Vec3(1.0, 0.0, 0.0))\n    \
+               println(f\"{r.x}, {r.y}, {r.z}\")\n";
+    let output = compile_and_run("quat_multiply_composes", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "0.000000, 1.000000, 0.000000");
+}
+
+/// `quat_conjugate` inverts a unit rotation: rotating and then rotating back
+/// by the conjugate returns the original point.
+#[test]
+fn runtime_quat_conjugate_inverts_rotation_end_to_end() {
+    let src = "fn main():\n    \
+               let q = Quat(0.0, 0.0, 0.70710678, 0.70710678)\n    \
+               let rotated = quat_rotate(q, Vec3(1.0, 0.0, 0.0))\n    \
+               let undone = quat_rotate(quat_conjugate(q), rotated)\n    \
+               println(f\"{undone.x}, {undone.y}, {undone.z}\")\n";
+    let output = compile_and_run("quat_conjugate_inverts", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "1.000000, 0.000000, 0.000000");
+}
+
+/// `quat_normalize` rescales an unnormalized quaternion back to unit length.
+#[test]
+fn runtime_quat_normalize_end_to_end() {
+    let src = "fn main():\n    \
+               let n = quat_normalize(Quat(0.0, 0.0, 0.0, 2.0))\n    \
+               println(f\"{n.w}\")\n";
+    let output = compile_and_run("quat_normalize", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "1.000000");
+}
+
+/// `Quat` reuses `Vec4`'s exact layout, so field access (`.x`/`.y`/`.z`/`.w`)
+/// and componentwise `+`/scalar `*` fall out for free, distinct from the
+/// quaternion-product `*` between two `Quat`s.
+#[test]
+fn runtime_quat_field_access_and_componentwise_arithmetic_end_to_end() {
+    let src = "fn main():\n    \
+               let a = Quat(1.0, 2.0, 3.0, 4.0)\n    \
+               let b = Quat(0.0, 0.0, 0.0, 1.0)\n    \
+               let sum = a + b\n    \
+               println(f\"{sum.x}, {sum.y}, {sum.z}, {sum.w}\")\n    \
+               let scaled = a * 2.0\n    \
+               println(f\"{scaled.w}\")\n";
+    let output = compile_and_run("quat_field_access_componentwise", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["1.000000, 2.000000, 3.000000, 5.000000", "8.000000"]);
+}
+
+#[test]
+fn rejects_quat_constructor_wrong_arity() {
+    let src = "fn main():\n    let q = Quat(1.0, 2.0)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("Quat(..) with 2 args should be rejected");
+    assert!(diags.iter().any(|d| d.message.contains("expects 4 float arguments")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_quat_rotate_wrong_argument_types() {
+    let src = "fn main():\n    let v = Vec3(1.0, 0.0, 0.0)\n    let r = quat_rotate(v, v)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("quat_rotate(Vec3, Vec3) should be rejected");
+    assert!(diags.iter().any(|d| d.message.contains("argument 1 expected `Quat`")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_quat_quat_equality_comparison() {
+    let src = "fn main():\n    let a = Quat(0.0, 0.0, 0.0, 1.0)\n    let b = Quat(0.0, 0.0, 0.0, 1.0)\n    let c = a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("`==` between two Quats directly should be rejected");
+    assert!(!diags.is_empty(), "{:?}", diags);
+}
+
+// --- `Mat2`/`Mat3` --------------------------------------------------------
+
+/// `Mat2 * Vec2` and `Mat2 * Mat2` -- extends `Mat4`'s existing matrix
+/// codegen to a smaller fixed dimension.
+#[test]
+fn runtime_mat2_scale_and_matrix_multiply_end_to_end() {
+    let src = "fn main():\n    \
+               let scale2 = Mat2(Vec2(2.0, 0.0), Vec2(0.0, 3.0))\n    \
+               let scaled = scale2 * Vec2(1.0, 1.0)\n    \
+               println(f\"{scaled.x}, {scaled.y}\")\n    \
+               let identity2 = Mat2(Vec2(1.0, 0.0), Vec2(0.0, 1.0))\n    \
+               let product = scale2 * identity2\n    \
+               let via_product = product * Vec2(1.0, 1.0)\n    \
+               println(f\"{via_product.x}, {via_product.y}\")\n    \
+               let sum2 = scale2 + identity2\n    \
+               let via_sum = sum2 * Vec2(1.0, 0.0)\n    \
+               println(f\"{via_sum.x}\")\n";
+    let output = compile_and_run("mat2_scale_and_matrix_multiply", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["2.000000, 3.000000", "2.000000, 3.000000", "3.000000"]);
+}
+
+/// `Mat3 * Vec3` -- a non-identity 3x3 matrix (swapping the x/y rows)
+/// correctly permutes the multiplied vector's components.
+#[test]
+fn runtime_mat3_matrix_multiply_end_to_end() {
+    let src = "fn main():\n    \
+               let identity3 = Mat3(Vec3(1.0, 0.0, 0.0), Vec3(0.0, 1.0, 0.0), Vec3(0.0, 0.0, 1.0))\n    \
+               let v = identity3 * Vec3(5.0, 6.0, 7.0)\n    \
+               println(f\"{v.x}, {v.y}, {v.z}\")\n    \
+               let swap_xy = Mat3(Vec3(0.0, 1.0, 0.0), Vec3(1.0, 0.0, 0.0), Vec3(0.0, 0.0, 1.0))\n    \
+               let swapped = swap_xy * Vec3(1.0, 2.0, 3.0)\n    \
+               println(f\"{swapped.x}, {swapped.y}, {swapped.z}\")\n";
+    let output = compile_and_run("mat3_matrix_multiply", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["5.000000, 6.000000, 7.000000", "2.000000, 1.000000, 3.000000"]);
+}
+
+#[test]
+fn rejects_mat2_constructor_with_vec3_row() {
+    let src = "fn main():\n    let m = Mat2(Vec3(1.0, 2.0, 3.0), Vec2(0.0, 1.0))\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("Mat2(Vec3, Vec2) should be rejected");
+    assert!(diags.iter().any(|d| d.message.contains("expects 2 Vec2 row arguments")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_mat2_times_vec3() {
+    let src = "fn main():\n    let m = Mat2(Vec2(1.0, 0.0), Vec2(0.0, 1.0))\n    let v = m * Vec3(1.0, 2.0, 3.0)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("Mat2 * Vec3 should be rejected");
+    assert!(!diags.is_empty(), "{:?}", diags);
+}
+
+#[test]
+fn rejects_mat2_plus_mat3() {
+    let src = "fn main():\n    \
+               let m2 = Mat2(Vec2(1.0, 0.0), Vec2(0.0, 1.0))\n    \
+               let m3 = Mat3(Vec3(1.0, 0.0, 0.0), Vec3(0.0, 1.0, 0.0), Vec3(0.0, 0.0, 1.0))\n    \
+               let bad = m2 + m3\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("Mat2 + Mat3 should be rejected");
+    assert!(!diags.is_empty(), "{:?}", diags);
+}
+
+// --- `Color`/`Color32` ----------------------------------------------------
+
+/// `Color` reuses `Vec4`'s exact layout: `.r/.g/.b/.a` field access and
+/// componentwise `+`/scalar `*` (blending) work for free.
+#[test]
+fn runtime_color_field_access_and_blending_end_to_end() {
+    let src = "fn main():\n    \
+               let orange = Color(1.0, 0.5, 0.0, 1.0)\n    \
+               println(f\"{orange.r}, {orange.g}, {orange.b}, {orange.a}\")\n    \
+               let dimmed = orange * 0.5\n    \
+               println(f\"{dimmed.r}\")\n    \
+               let blended = orange + Color(0.0, 0.0, 1.0, 0.0)\n    \
+               println(f\"{blended.b}\")\n";
+    let output = compile_and_run("color_field_access_blending", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["1.000000, 0.500000, 0.000000, 1.000000", "0.500000", "1.000000"]);
+}
+
+/// `color_to_color32`/`color32_to_color`: a lossy but bounded round trip
+/// through the packed 8-bit-per-channel representation.
+#[test]
+fn runtime_color_color32_round_trip_end_to_end() {
+    let src = "fn main():\n    \
+               let orange = Color(1.0, 0.5, 0.0, 1.0)\n    \
+               let packed = color_to_color32(orange)\n    \
+               println(f\"{color32_r(packed)}\")\n    \
+               println(f\"{color32_g(packed)}\")\n    \
+               println(f\"{color32_b(packed)}\")\n    \
+               println(f\"{color32_a(packed)}\")\n    \
+               let restored = color32_to_color(packed)\n    \
+               println(f\"{restored.r}\")\n";
+    let output = compile_and_run("color_color32_round_trip", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["255", "127", "0", "255", "1.000000"]);
+}
+
+/// `color_to_color32` clamps an out-of-`[0,1]`-range HDR channel instead of
+/// producing undefined behavior via a raw `fptoui`.
+#[test]
+fn runtime_color_to_color32_clamps_hdr_out_of_range_channels_end_to_end() {
+    let src = "fn main():\n    \
+               let hot = Color(2.0, -1.0, 0.5, 1.0)\n    \
+               let packed = color_to_color32(hot)\n    \
+               println(f\"{color32_r(packed)}\")\n    \
+               println(f\"{color32_g(packed)}\")\n";
+    let output = compile_and_run("color_to_color32_clamps_hdr", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["255", "0"]);
+}
+
+/// `Color32(r, g, b, a)` packs four raw 0-255 channel values, unpacked by
+/// `color32_r`/`color32_g`/`color32_b`/`color32_a`.
+#[test]
+fn runtime_color32_construction_and_channels_end_to_end() {
+    let src = "fn main():\n    \
+               let raw = Color32(255, 128, 64, 10)\n    \
+               println(f\"{color32_r(raw)}\")\n    \
+               println(f\"{color32_g(raw)}\")\n    \
+               println(f\"{color32_b(raw)}\")\n    \
+               println(f\"{color32_a(raw)}\")\n";
+    let output = compile_and_run("color32_construction_channels", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["255", "128", "64", "10"]);
+}
+
+/// `==`/`!=` -- a single `i32` pack comparison, see `Ty::Color32`'s doc
+/// comment.
+#[test]
+fn runtime_color32_equality_end_to_end() {
+    let src = "fn main():\n    \
+               let a = Color32(1, 2, 3, 4)\n    \
+               let b = Color32(1, 2, 3, 4)\n    \
+               let c = Color32(1, 2, 3, 5)\n    \
+               println(f\"{a == b}\")\n    \
+               println(f\"{a != c}\")\n    \
+               println(f\"{a == c}\")\n";
+    let output = compile_and_run("color32_equality", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "true", "false"]);
+}
+
+/// `Color32` is structurally hashable -- legal as a `Map`/`Set` key, and two
+/// distinct `Color32` values must land in distinct slots (the same
+/// "`check_hashable_ty` needs a matching `emit_eq_body` arm or every key
+/// collapses into one slot" bug class `Ty::Symbol` once shipped with --
+/// see `docs/design.md`'s "Text and bytes" section history).
+#[test]
+fn runtime_color32_as_set_key_dedups_correctly_end_to_end() {
+    let src = "fn main():\n    \
+               let mut set: Set<Color32> = Set<Color32>()\n    \
+               set.insert(Color32(255, 0, 0, 255))\n    \
+               set.insert(Color32(255, 0, 0, 255))\n    \
+               set.insert(Color32(0, 255, 0, 255))\n    \
+               println(f\"{set.len()}\")\n    \
+               println(f\"{set.contains(Color32(255, 0, 0, 255))}\")\n    \
+               println(f\"{set.contains(Color32(0, 0, 255, 255))}\")\n";
+    let output = compile_and_run("color32_as_set_key_dedups", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["2", "true", "false"]);
+}
+
+/// `Color32 <-> i32`/`u32` is a free bit-preserving relabel via `as`.
+#[test]
+fn runtime_color32_cast_round_trip_end_to_end() {
+    let src = "fn main():\n    \
+               let c = Color32(1, 2, 3, 4)\n    \
+               let raw: i32 = c as i32\n    \
+               println(f\"{raw}\")\n    \
+               let back: Color32 = raw as Color32\n    \
+               println(f\"{c == back}\")\n";
+    let output = compile_and_run("color32_cast_roundtrip", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    // 1 | 2<<8 | 3<<16 | 4<<24
+    assert_eq!(lines, vec!["67305985", "true"]);
+}
+
+#[test]
+fn rejects_color32_ordering_comparison() {
+    let src = "fn main():\n    let a = Color32(1, 2, 3, 4)\n    let b = Color32(1, 2, 3, 4)\n    let c = a < b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("`<` between Color32 values should be rejected");
+    assert!(diags.iter().any(|d| d.message.contains("only `==`/`!=` are supported between `Color32` values")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_color32_constructor_wrong_arity() {
+    let src = "fn main():\n    let c = Color32(1, 2, 3)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("Color32(..) with 3 args should be rejected");
+    assert!(diags.iter().any(|d| d.message.contains("expects 4 integer")), "{:?}", diags);
+}
+
+// --- `PaletteIndex`/`Palette` ---------------------------------------------
+
+/// `Palette` reuses `List<Color32>`'s method surface wholesale
+/// (`push`/`len`/`[i]`) -- see `Ty::Palette`'s doc comment.
+#[test]
+fn runtime_palette_push_len_and_index_end_to_end() {
+    let src = "fn main():\n    \
+               let mut pal: Palette = Palette()\n    \
+               pal.push(Color32(255, 0, 0, 255))\n    \
+               pal.push(Color32(0, 255, 0, 255))\n    \
+               pal.push(Color32(0, 0, 255, 255))\n    \
+               println(f\"{pal.len()}\")\n    \
+               println(f\"{color32_g(pal[1])}\")\n    \
+               println(f\"{color32_b(pal[2])}\")\n";
+    let output = compile_and_run("palette_push_len_index", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["3", "255", "255"]);
+}
+
+/// `PaletteIndex(value)` constructs from any int-shaped value; `<-> u8` is a
+/// free bit-preserving relabel via `as`.
+#[test]
+fn runtime_palette_index_construction_and_cast_round_trip_end_to_end() {
+    let src = "fn main():\n    \
+               let idx: PaletteIndex = PaletteIndex(200)\n    \
+               let raw: u8 = idx as u8\n    \
+               println(f\"{raw}\")\n    \
+               let back: PaletteIndex = raw as PaletteIndex\n    \
+               println(f\"{idx == back}\")\n";
+    let output = compile_and_run("palette_index_construction_cast", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["200", "true"]);
+}
+
+/// `==`/`!=` between `PaletteIndex` values.
+#[test]
+fn runtime_palette_index_equality_end_to_end() {
+    let src = "fn main():\n    \
+               let a: PaletteIndex = PaletteIndex(3)\n    \
+               let b: PaletteIndex = PaletteIndex(3)\n    \
+               let c: PaletteIndex = PaletteIndex(4)\n    \
+               println(f\"{a == b}\")\n    \
+               println(f\"{a != c}\")\n";
+    let output = compile_and_run("palette_index_equality", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "true"]);
+}
+
+#[test]
+fn rejects_palette_index_direct_cast_to_i32() {
+    let src = "fn main():\n    let idx: PaletteIndex = PaletteIndex(1)\n    let raw: i32 = idx as i32\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("PaletteIndex only casts to/from u8 directly");
+    assert!(diags.iter().any(|d| d.message.contains("cannot cast")), "{:?}", diags);
+}
+
+// --- `Rect`/`Aabb2`/`Aabb3`/`Ray`/`Plane`/`Frustum`/`Transform` -----------
+
+/// `Rect`/`Aabb2`/`Aabb3`/`Ray`/`Plane`/`Frustum`/`Transform` are ordinary
+/// nominal structs (`crate::types::builtin_structs`): named-argument
+/// construction and field access already work like any user-declared
+/// struct, with no dedicated codegen of their own.
+#[test]
+fn runtime_geometry_struct_named_construction_and_field_access_end_to_end() {
+    let src = "fn main():\n    \
+               let r = Rect(x = 1.0, y = 2.0, width = 3.0, height = 4.0)\n    \
+               println(f\"{r.x}, {r.y}, {r.width}, {r.height}\")\n    \
+               let a = Aabb2(min = Vec2(0.0, 0.0), max = Vec2(1.0, 1.0))\n    \
+               println(f\"{a.min.x}, {a.max.y}\")\n";
+    let output = compile_and_run("geometry_struct_named_construction", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["1.000000, 2.000000, 3.000000, 4.000000", "0.000000, 1.000000"]);
+}
+
+#[test]
+fn runtime_rect_contains_and_intersects_end_to_end() {
+    let src = "fn main():\n    \
+               let r = Rect(x = 0.0, y = 0.0, width = 10.0, height = 10.0)\n    \
+               println(f\"{rect_contains(r, Vec2(5.0, 5.0))}\")\n    \
+               println(f\"{rect_contains(r, Vec2(50.0, 5.0))}\")\n    \
+               let overlapping = Rect(x = 5.0, y = 5.0, width = 10.0, height = 10.0)\n    \
+               let far_away = Rect(x = 100.0, y = 100.0, width = 10.0, height = 10.0)\n    \
+               println(f\"{rect_intersects(r, overlapping)}\")\n    \
+               println(f\"{rect_intersects(r, far_away)}\")\n";
+    let output = compile_and_run("rect_contains_intersects", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "false", "true", "false"]);
+}
+
+#[test]
+fn runtime_aabb2_contains_and_intersects_end_to_end() {
+    let src = "fn main():\n    \
+               let a = Aabb2(min = Vec2(0.0, 0.0), max = Vec2(10.0, 10.0))\n    \
+               println(f\"{aabb2_contains(a, Vec2(1.0, 1.0))}\")\n    \
+               println(f\"{aabb2_contains(a, Vec2(50.0, 1.0))}\")\n    \
+               let overlapping = Aabb2(min = Vec2(5.0, 5.0), max = Vec2(15.0, 15.0))\n    \
+               let far_away = Aabb2(min = Vec2(100.0, 100.0), max = Vec2(110.0, 110.0))\n    \
+               println(f\"{aabb2_intersects(a, overlapping)}\")\n    \
+               println(f\"{aabb2_intersects(a, far_away)}\")\n";
+    let output = compile_and_run("aabb2_contains_intersects", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "false", "true", "false"]);
+}
+
+#[test]
+fn runtime_aabb3_contains_and_intersects_end_to_end() {
+    let src = "fn main():\n    \
+               let a = Aabb3(min = Vec3(0.0, 0.0, 0.0), max = Vec3(10.0, 10.0, 10.0))\n    \
+               println(f\"{aabb3_contains(a, Vec3(1.0, 1.0, 1.0))}\")\n    \
+               println(f\"{aabb3_contains(a, Vec3(50.0, 1.0, 1.0))}\")\n    \
+               let overlapping = Aabb3(min = Vec3(5.0, 5.0, 5.0), max = Vec3(15.0, 15.0, 15.0))\n    \
+               let far_away = Aabb3(min = Vec3(100.0, 100.0, 100.0), max = Vec3(110.0, 110.0, 110.0))\n    \
+               println(f\"{aabb3_intersects(a, overlapping)}\")\n    \
+               println(f\"{aabb3_intersects(a, far_away)}\")\n";
+    let output = compile_and_run("aabb3_contains_intersects", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "false", "true", "false"]);
+}
+
+#[test]
+fn runtime_ray_at_end_to_end() {
+    let src = "fn main():\n    \
+               let ray = Ray(origin = Vec3(1.0, 2.0, 3.0), direction = Vec3(1.0, 0.0, 0.0))\n    \
+               let p = ray_at(ray, 5.0)\n    \
+               println(f\"{p.x}, {p.y}, {p.z}\")\n";
+    let output = compile_and_run("ray_at", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "6.000000, 2.000000, 3.000000");
+}
+
+#[test]
+fn runtime_plane_distance_to_point_end_to_end() {
+    let src = "fn main():\n    \
+               let ground = Plane(normal = Vec3(0.0, 1.0, 0.0), distance = 0.0)\n    \
+               println(f\"{plane_distance_to_point(ground, Vec3(0.0, 3.0, 0.0))}\")\n    \
+               println(f\"{plane_distance_to_point(ground, Vec3(0.0, -2.0, 0.0))}\")\n";
+    let output = compile_and_run("plane_distance_to_point", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["3.000000", "-2.000000"]);
+}
+
+#[test]
+fn runtime_frustum_contains_point_end_to_end() {
+    let src = "fn main():\n    \
+               let ground = Plane(normal = Vec3(0.0, 1.0, 0.0), distance = 0.0)\n    \
+               let planes: [Plane; 6] = [ground; 6]\n    \
+               let frustum = Frustum(planes)\n    \
+               println(f\"{frustum_contains_point(frustum, Vec3(0.0, 1.0, 0.0))}\")\n    \
+               println(f\"{frustum_contains_point(frustum, Vec3(0.0, -1.0, 0.0))}\")\n";
+    let output = compile_and_run("frustum_contains_point", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "false"]);
+}
+
+#[test]
+fn runtime_transform_apply_point_end_to_end() {
+    let src = "fn main():\n    \
+               let t = Transform(position = Vec3(1.0, 0.0, 0.0), rotation = quat_identity(), scale = Vec3(2.0, 2.0, 2.0))\n    \
+               let p = transform_apply_point(t, Vec3(1.0, 0.0, 0.0))\n    \
+               println(f\"{p.x}, {p.y}, {p.z}\")\n";
+    let output = compile_and_run("transform_apply_point", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "3.000000, 0.000000, 0.000000");
+}
+
+/// `transform_apply_point` also applies a non-identity rotation, exercising
+/// `quat_rotate` and the scale/rotate/translate composition together.
+#[test]
+fn runtime_transform_apply_point_with_rotation_end_to_end() {
+    let src = "fn main():\n    \
+               let rot90 = Quat(0.0, 0.0, 0.70710678, 0.70710678)\n    \
+               let t = Transform(position = Vec3(0.0, 0.0, 0.0), rotation = rot90, scale = Vec3(1.0, 1.0, 1.0))\n    \
+               let p = transform_apply_point(t, Vec3(1.0, 0.0, 0.0))\n    \
+               println(f\"{p.x}, {p.y}, {p.z}\")\n";
+    let output = compile_and_run("transform_apply_point_rotation", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "0.000000, 1.000000, 0.000000");
+}
+
+#[test]
+fn rejects_rect_contains_wrong_argument_type() {
+    let src = "fn main():\n    let r = Rect(x = 0.0, y = 0.0, width = 1.0, height = 1.0)\n    let b = rect_contains(r, Vec3(0.0, 0.0, 0.0))\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("rect_contains(Rect, Vec3) should be rejected");
+    assert!(diags.iter().any(|d| d.message.contains("argument 2 expected `Vec2`")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_aabb2_intersects_wrong_argument_type() {
+    let src = "fn main():\n    \
+               let a = Aabb2(min = Vec2(0.0, 0.0), max = Vec2(1.0, 1.0))\n    \
+               let b = Aabb3(min = Vec3(0.0, 0.0, 0.0), max = Vec3(1.0, 1.0, 1.0))\n    \
+               let ok = aabb2_intersects(a, b)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("aabb2_intersects(Aabb2, Aabb3) should be rejected");
+    assert!(diags.iter().any(|d| d.message.contains("argument 2 expected `Aabb2`")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_redeclaring_builtin_geometry_struct_name() {
+    let src = "struct Rect:\n    thing: i32\n\nfn main():\n    let r = Rect(thing = 1)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("re-declaring the builtin `Rect` struct should be rejected");
+    assert!(diags.iter().any(|d| d.message.contains("declared more than once")), "{:?}", diags);
 }

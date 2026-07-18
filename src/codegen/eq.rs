@@ -95,7 +95,9 @@ impl Codegen {
                 self.line(&format!("  {} = icmp eq i32 {}, 0", r, cmp));
                 r
             }
-            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 => {
+            // `Quat`/`Color` reuse `Vec4`'s exact layout -- see
+            // `Checker::check_hashable_ty`'s matching arm.
+            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Quat | Ty::Color => {
                 let n = ty.vec_arity().expect("vector Ty always has an arity");
                 let mut acc: Option<String> = None;
                 for i in 0..n as u32 {
@@ -177,6 +179,22 @@ impl Codegen {
             Ty::Flags(_) => {
                 let r = self.tmp_name();
                 self.line(&format!("  {} = icmp eq i64 {}, {}", r, a, b));
+                r
+            }
+            // A bare `i32` packed color -- see `Ty::Color32`'s doc comment.
+            // Same "needs its own explicit arm" reasoning as `Ty::BitField`
+            // above.
+            Ty::Color32 => {
+                let r = self.tmp_name();
+                self.line(&format!("  {} = icmp eq i32 {}, {}", r, a, b));
+                r
+            }
+            // A bare `u8` palette slot -- see `Ty::PaletteIndex`'s doc
+            // comment. Same "needs its own explicit arm" reasoning as
+            // `Ty::BitField` above.
+            Ty::PaletteIndex => {
+                let r = self.tmp_name();
+                self.line(&format!("  {} = icmp eq i8 {}, {}", r, a, b));
                 r
             }
             // Unreachable in practice -- `Checker::check_hashable_ty` rejects

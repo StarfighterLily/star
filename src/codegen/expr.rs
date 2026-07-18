@@ -544,6 +544,28 @@ impl Codegen {
                     Some("tcp_send") => self.emit_tcp_send(args),
                     Some("tcp_recv") => self.emit_tcp_recv(args),
                     Some("tcp_close") => { self.emit_tcp_close(args); "%undef".into() }
+                    // `docs/design.md`'s "Math and geometry" section -- see
+                    // `crate::codegen::geometry`.
+                    Some("quat_identity") => self.emit_quat_identity(),
+                    Some("quat_conjugate") => self.emit_quat_conjugate(args),
+                    Some("quat_normalize") => self.emit_quat_normalize(args),
+                    Some("quat_rotate") => self.emit_quat_rotate(args),
+                    Some("rect_contains") => self.emit_rect_contains(args),
+                    Some("rect_intersects") => self.emit_rect_intersects(args),
+                    Some("aabb2_contains") => self.emit_aabb2_contains(args),
+                    Some("aabb2_intersects") => self.emit_aabb2_intersects(args),
+                    Some("aabb3_contains") => self.emit_aabb3_contains(args),
+                    Some("aabb3_intersects") => self.emit_aabb3_intersects(args),
+                    Some("ray_at") => self.emit_ray_at(args),
+                    Some("plane_distance_to_point") => self.emit_plane_distance_to_point(args),
+                    Some("frustum_contains_point") => self.emit_frustum_contains_point(args),
+                    Some("transform_apply_point") => self.emit_transform_apply_point(args),
+                    Some("color32_r") => self.emit_color32_channel(args, 0),
+                    Some("color32_g") => self.emit_color32_channel(args, 1),
+                    Some("color32_b") => self.emit_color32_channel(args, 2),
+                    Some("color32_a") => self.emit_color32_channel(args, 3),
+                    Some("color_to_color32") => self.emit_color_to_color32(args),
+                    Some("color32_to_color") => self.emit_color32_to_color(args),
                     Some(name) if self.extern_fns.contains(name) => self.emit_extern_call(name, args, expr),
                     _ => self.emit_call_expr(callee, args, expr),
                 }
@@ -1004,28 +1026,53 @@ impl Codegen {
                         }
                         format!("{} {}", self.llvm_ty(ty), acc)
                     }
-                    Ty::Mat4 => {
-                        // Args are 4 Vec4-typed row expressions; pack each row into
-                        // the `[4 x <4 x float>]` aggregate.
-                        let mat_t = "[4 x <4 x float>]";
+                    Ty::Mat4 | Ty::Mat2 | Ty::Mat3 => {
+                        // Args are `dim` row expressions of the matching
+                        // vector type; pack each row into the
+                        // `[dim x <dim x float>]` aggregate. Generalizes what
+                        // used to be a `Mat4`-only literal case to `Mat2`/
+                        // `Mat3` too -- see `Ty::Mat2`'s doc comment.
+                        let dim = ty.mat_dim().expect("Mat2/Mat3/Mat4 all have a mat_dim");
+                        let row_ty = Ty::vec_of_arity(dim as u8).expect("mat_dim is always 2, 3, or 4");
+                        let row_llty = self.llvm_ty(&row_ty);
+                        let mat_t = format!("[{} x {}]", dim, row_llty);
                         let mut acc = "undef".to_string();
                         for (i, a) in args.iter().enumerate() {
                             let av = self.emit_expr(a);
-                            let row = self.untag(&av, &Ty::Vec4);
+                            let row = self.untag(&av, &row_ty);
                             let next = self.tmp_name();
-                            self.line(&format!("  {} = insertvalue {} {}, <4 x float> {}, {}", next, mat_t, acc, row, i));
+                            self.line(&format!("  {} = insertvalue {} {}, {} {}, {}", next, mat_t, acc, row_llty, row, i));
                             acc = next;
                         }
                         format!("{} {}", mat_t, acc)
+                    }
+                    // `Quat`/`Color` reuse `Vec4`'s exact construction --
+                    // see their own `Ty` doc comments.
+                    Ty::Quat | Ty::Color => {
+                        let mut acc = "undef".to_string();
+                        for (i, a) in args.iter().enumerate() {
+                            let av = self.emit_expr(a);
+                            let aty = self.expr_ty(a);
+                            let bare = self.promote_to_float(&av, &aty);
+                            acc = self.insert_component(&acc, ty, i as u32, &bare);
+                        }
+                        format!("{} {}", self.llvm_ty(ty), acc)
                     }
                     Ty::Tick | Ty::Duration | Ty::Instant => self.emit_time_new(&args[0]),
                     // `Bytes()` starts empty -- reuses `List<T>()`'s own
                     // "null object pointer" construction wholesale (see
                     // `Ty::Bytes`'s doc comment).
                     Ty::Bytes => self.emit_list_new(&Ty::U8),
+                    // `Palette()` starts empty -- see `Ty::Palette`'s doc
+                    // comment.
+                    Ty::Palette => self.emit_list_new(&Ty::Color32),
                     // `Symbol(s)` interns `s` -- see `Ty::Symbol`'s doc
                     // comment and `crate::codegen::symbol`.
                     Ty::Symbol => self.emit_symbol_intern(&args[0]),
+                    // `Color32(r, g, b, a)`/`PaletteIndex(value)` --
+                    // `crate::codegen::geometry`.
+                    Ty::Color32 => self.emit_color32_new(args),
+                    Ty::PaletteIndex => self.emit_palette_index_new(&args[0]),
                     _ => {
                         let ptr = self.tmp_name();
                         self.line(&format!("  {} = alloca %{}", ptr, name));
@@ -1406,6 +1453,9 @@ impl Codegen {
                     // `Bytes` reuses `List<u8>`'s method codegen wholesale --
                     // see `Ty::Bytes`'s doc comment.
                     Ty::Bytes => Ty::U8,
+                    // `Palette` reuses `List<Color32>`'s method codegen
+                    // wholesale -- see `Ty::Palette`'s doc comment.
+                    Ty::Palette => Ty::Color32,
                     other => { self.err("internal error: list method receiver is not a List<T>", Span::dummy()); other }
                 };
                 self.emit_list_method(base, *method, args, &elem_ty)
