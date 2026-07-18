@@ -335,6 +335,20 @@ pub enum TypedExpr {
     /// `Fixed<Bits, Frac>(value)`, see [`crate::ast::Expr::FixedNew`]. `ty`
     /// is always `Ty::Fixed(bits, frac)`.
     FixedNew { bits: u32, frac: u32, value: Box<TypedExpr>, span: Span },
+    /// `BitField<N>(value)`, see [`crate::ast::Expr::BitFieldNew`]. `ty` is
+    /// always `Ty::BitField(bits)`.
+    BitFieldNew { bits: u32, value: Box<TypedExpr>, span: Span },
+    /// `Flags<E>(a, b, ...)`, see `Checker::infer_flags_new`. Unlike
+    /// `Expr::BitFieldNew`, there is no dedicated raw `Expr` node -- parsing
+    /// produces an ordinary `Expr::StructLit` naming the builtin `Flags`
+    /// type (same turbofish-plus-call grammar `List<T>`/`Table<T>` already
+    /// use), so this HIR-only node is synthesized by the checker once it
+    /// knows `enum_name` and has type-checked each argument to be `E`-typed.
+    /// `args` is zero or more `E`-typed values, OR'd together bit-by-bit at
+    /// codegen time (`1i64 << variant_tag` per argument, evaluated at
+    /// runtime so a non-literal enum-typed expression works too, not just a
+    /// literal `EnumName::Variant`). `ty` is always `Ty::Flags(Ty::Enum(enum_name))`.
+    FlagsNew { enum_name: String, args: Vec<TypedExpr>, span: Span },
     Error(Ty),
 }
 
@@ -430,6 +444,8 @@ impl TypedExpr {
             }
             TypedExpr::WrappingNew { inner_ty, .. } => Ty::Wrapping(Box::new(inner_ty)),
             TypedExpr::FixedNew { bits, frac, .. } => Ty::Fixed(bits, frac),
+            TypedExpr::BitFieldNew { bits, .. } => Ty::BitField(bits),
+            TypedExpr::FlagsNew { enum_name, .. } => Ty::Flags(Box::new(Ty::Enum(enum_name))),
             TypedExpr::ListNew { elem_ty, .. } => Ty::List(Box::new(elem_ty)),
             TypedExpr::ListLit { elem_ty, .. } => Ty::List(Box::new(elem_ty)),
             TypedExpr::MapNew { key_ty, val_ty, .. } => Ty::Map(Box::new(key_ty), Box::new(val_ty)),
@@ -470,7 +486,8 @@ impl TypedExpr {
             | TypedExpr::RingMethod { span, .. } | TypedExpr::RingIndex { span, .. }
             | TypedExpr::TableNew { span, .. } | TypedExpr::TableMethod { span, .. }
             | TypedExpr::TableIndex { span, .. }
-            | TypedExpr::WrappingNew { span, .. } | TypedExpr::FixedNew { span, .. } => *span,
+            | TypedExpr::WrappingNew { span, .. } | TypedExpr::FixedNew { span, .. }
+            | TypedExpr::BitFieldNew { span, .. } | TypedExpr::FlagsNew { span, .. } => *span,
             TypedExpr::SelfExpr(_, s) => *s,
             TypedExpr::Error(_) => Span::dummy(),
         }

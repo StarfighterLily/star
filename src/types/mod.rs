@@ -298,6 +298,62 @@ pub enum Ty {
     /// reference. A legal `Map`/`Set` key (`Checker::check_hashable_ty`),
     /// unlike `Bytes`/`List<T>` -- comparison is just an integer compare.
     Symbol,
+    /// A packed bit register `BitField<N>` -- `docs/design.md`'s "Bit-level
+    /// types" section: accurate retro CPU flag-register emulation (Z80/6502
+    /// status flags) and other hand-rolled bitmasks. `N` is restricted to
+    /// `{8, 16, 32, 64}` (the widths this compiler's int codegen already
+    /// understands, validated in `Checker::resolve_type` -- same restriction
+    /// `Ty::Fixed`'s `Bits` already has). Lowers to a bare `i{N}` -- zero
+    /// overhead, like `Ty::I8` -- see `crate::codegen::bitfield`.
+    /// Construction (`BitField<N>(value)`) accepts any `int_shape()`-having
+    /// value, widened/narrowed to `i{N}`, exactly like `Ty::Tick`. Like
+    /// `Ty::Wrapping`/`Ty::Fixed`, deliberately excluded from
+    /// `is_numeric()`/`int_shape()` -- there is no `+`/`-`/`*` at all (a
+    /// packed register isn't a number to do arithmetic on), only `==`/`!=`
+    /// plus a dedicated free-function surface
+    /// (`bit_get`/`bit_set`/`bit_clear`/`bit_toggle`/`bit_and`/`bit_or`/
+    /// `bit_xor`/`bit_not`) mirroring `symbol_name`/`bytes_from_str`'s own
+    /// free-function idiom rather than inventing new bitwise operator
+    /// grammar (`&`/`|`/`^`/`~` don't exist in this language at all yet).
+    /// `BitField<N> <-> i{N}` is a free bit-preserving relabel via `as`,
+    /// same as `Ty::Wrapping<T> <-> T`.
+    BitField(u32),
+    /// A typed bitflag set `Flags<E>` -- `docs/design.md`'s "Bit-level
+    /// types" section: input state, physics collision layers, render state,
+    /// anywhere a fieldless enum's variants each need to be independently
+    /// on/off rather than mutually exclusive. `E` must resolve to a
+    /// fieldless `Ty::Enum` (validated in `Checker::resolve_type`, same
+    /// "payload enums not yet supported here" restriction
+    /// `Checker::check_hashable_ty` already applies to a fieldless-enum
+    /// `Map`/`Set` key) with 64 or fewer variants -- one bit per variant, in
+    /// declaration order, lowered to a bare `i64` bitmask (always 64 bits
+    /// regardless of `E`'s actual variant count, the same "one fixed width
+    /// regardless of the logical range" simplicity `Ty::Symbol`'s intern id
+    /// already accepts) -- zero overhead beyond the mask itself, see
+    /// `crate::codegen::flags`. Construction is `Flags<E>(a, b, ...)`. a
+    /// variadic list of zero or more `E`-typed values OR'd together (parsed
+    /// as an ordinary `Expr::StructLit` naming the builtin `Flags` type,
+    /// same turbofish-plus-call grammar `List<T>`/`Table<T>` already use --
+    /// see `Checker::infer_flags_new`), each argument's bit computed at
+    /// codegen time as `1i64 << variant_tag` so a *runtime* enum value
+    /// (not just a literal `EnumName::Variant`) works too. Like
+    /// `Ty::Wrapping`/`Ty::BitField`, deliberately excluded from
+    /// `is_numeric()`/`int_shape()` -- only `==`/`!=` plus a dedicated
+    /// free-function surface: `flags_has`/`flags_with`/`flags_without`/
+    /// `flags_is_empty` (enum-variant-typed, so misusing a bit index
+    /// directly is a type error) plus the same `bit_and`/`bit_or`/`bit_xor`
+    /// free functions `Ty::BitField` uses for union/intersect/symmetric-
+    /// difference (safe to share: both operands only ever have bits set for
+    /// real declared variants, so the result never gains an undefined bit) --
+    /// `bit_not`/`bit_get`/`bit_set`/`bit_clear`/`bit_toggle` are
+    /// deliberately *not* extended to `Flags<E>` (unlike `Ty::BitField`)
+    /// since raw bit-indexing a flag set defeats the type safety
+    /// `flags_has`/`flags_with` exist to provide, and a full 64-bit
+    /// complement would set 64-minus-variant-count undefined high bits with
+    /// no real variant to test them against. `Flags<E> <-> i64` is a free
+    /// bit-preserving relabel via `as` (for debugging -- printing the raw
+    /// mask), same as `Ty::Symbol <-> i64`.
+    Flags(Box<Ty>),
 }
 
 impl Ty {
@@ -363,6 +419,34 @@ impl Ty {
             Ty::I64 => Some((64, true)),
             Ty::U64 => Some((64, false)),
             _ => None,
+        }
+    }
+
+    /// `Some((bit_width, is_signed))` for every type `bit_get`/`bit_set`/
+    /// `bit_clear`/`bit_toggle`/`bit_not` accept: any `int_shape()`-having
+    /// type, `Ty::Wrapping<T>` (delegating to `T`'s own shape -- the wrapper
+    /// is zero-overhead over the identical LLVM integer, see `Ty::Wrapping`'s
+    /// doc comment), and `Ty::BitField(N)` itself. Deliberately excludes
+    /// `Ty::Flags` -- see `bitwise_combine_shape` and `Ty::Flags`'s own doc
+    /// comment for why.
+    pub fn bit_shape(&self) -> Option<(u32, bool)> {
+        match self {
+            Ty::BitField(n) => Some((*n, false)),
+            Ty::Wrapping(inner) => inner.int_shape(),
+            other => other.int_shape(),
+        }
+    }
+
+    /// `Some((bit_width, is_signed))` for every type `bit_and`/`bit_or`/
+    /// `bit_xor` accept -- `bit_shape`'s set plus `Ty::Flags<E>` (always a
+    /// 64-bit unsigned mask regardless of `E`'s variant count, see
+    /// `Ty::Flags`'s doc comment for why union/intersect/symmetric-difference
+    /// are safe to share with `Ty::BitField` even though `bit_not`/bit-index
+    /// ops aren't).
+    pub fn bitwise_combine_shape(&self) -> Option<(u32, bool)> {
+        match self {
+            Ty::Flags(_) => Some((64, false)),
+            other => other.bit_shape(),
         }
     }
 }
@@ -440,6 +524,14 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "bytes_from_str" => Some(Ty::Bytes),
         "str_from_bytes" => Some(Ty::Str),
         "symbol_name" => Some(Ty::Str),
+        // `docs/design.md`'s "Bit-level types" section (`Ty::BitField`/
+        // `Ty::Flags`'s doc comments): `bit_get`/`flags_has`/`flags_is_empty`
+        // are predicates; every other `bit_*`/`flags_*` builtin preserves its
+        // first argument's exact type, same "first argument wins" rule
+        // `abs`/`min`/`max` already use.
+        "bit_get" | "flags_has" | "flags_is_empty" => Some(Ty::Bool),
+        "bit_set" | "bit_clear" | "bit_toggle" | "bit_and" | "bit_or" | "bit_xor" | "bit_not"
+        | "flags_with" | "flags_without" => Some(args.first().map(|a| a.clone().into_ty()).unwrap_or(Ty::Int)),
         // Reads one line of text from stdin (trailing newline stripped, EOF
         // yielding whatever was read so far -- possibly empty). See
         // `crate::codegen::builtins::emit_read_line`.
@@ -1537,6 +1629,10 @@ impl Checker {
             // like any other sized integer.
             Ty::Wrapping(inner) => self.check_hashable_ty(inner, visited),
             Ty::Fixed(..) => true,
+            // A bare `i{N}`/`i64` scalar under the hood -- structurally
+            // comparable exactly like `Ty::Wrapping`/`Ty::Fixed` above.
+            Ty::BitField(..) => true,
+            Ty::Flags(_) => true,
             Ty::Enum(name) => {
                 let fieldless = self.enums.get(name).map(|e| e.variants.iter().all(|v| v.fields.is_empty())).unwrap_or(true);
                 if !fieldless {
@@ -1644,6 +1740,13 @@ impl Checker {
                     return None;
                 }
                 Some(Ty::Fixed(*bits, *frac))
+            }
+            Type::BitField(bits) => {
+                if !matches!(bits, 8 | 16 | 32 | 64) {
+                    self.error(format!("`BitField<{}>`'s bit width must be one of 8, 16, 32, 64", bits), Span::dummy());
+                    return None;
+                }
+                Some(Ty::BitField(*bits))
             }
             Type::Fn(params, ret) => {
                 let param_tys: Vec<Ty> = params.iter().filter_map(|p| self.resolve_type(p)).collect();
@@ -1795,6 +1898,39 @@ impl Checker {
                         return None;
                     }
                     return Some(Ty::Wrapping(Box::new(inner)));
+                }
+                // `Flags<E>` -- see `Ty::Flags`'s doc comment. `E` must be a
+                // fieldless enum (the same restriction
+                // `Checker::check_hashable_ty` already applies to a
+                // fieldless-enum `Map`/`Set` key) with 64 or fewer variants
+                // -- one bit per variant, always packed into a bare `i64`.
+                if name == "Flags" {
+                    let inner = args.first().and_then(|a| self.resolve_type(a))?;
+                    let Ty::Enum(enum_name) = &inner else {
+                        self.error(format!("`Flags<E>` requires `E` to be an enum type, found `{:?}`", inner), Span::dummy());
+                        return None;
+                    };
+                    let Some(edef) = self.enums.get(enum_name).cloned() else {
+                        return None;
+                    };
+                    if edef.variants.iter().any(|v| !v.fields.is_empty()) {
+                        self.error(
+                            format!("`Flags<{}>` requires a fieldless enum -- payload-carrying enums are not yet supported", enum_name),
+                            Span::dummy(),
+                        );
+                        return None;
+                    }
+                    if edef.variants.len() > 64 {
+                        self.error(
+                            format!(
+                                "`Flags<{}>` requires 64 or fewer variants (one bit per variant), found {}",
+                                enum_name, edef.variants.len()
+                            ),
+                            Span::dummy(),
+                        );
+                        return None;
+                    }
+                    return Some(Ty::Flags(Box::new(inner)));
                 }
                 if self.generic_structs.contains_key(name) {
                     let resolved_args: Vec<Ty> = args.iter().filter_map(|a| self.resolve_type(a)).collect();
@@ -2052,9 +2188,18 @@ impl Checker {
             // parameter to bind -- a no-op, like `Type::Named` naming a
             // non-type-parameter type above.
             Type::Fixed(..) => {}
+            // `N` is a bare integer literal, never a type parameter to bind
+            // -- a no-op, same reasoning as `Type::Fixed` above.
+            Type::BitField(..) => {}
             Type::Generic(name, args) => {
                 if name == "GenRef" {
                     if let (Some(a0), Ty::GenRef(inner)) = (args.first(), arg_ty) {
+                        self.unify_ty(a0, inner, type_params, subst, conflicts);
+                    }
+                    return;
+                }
+                if name == "Flags" {
+                    if let (Some(a0), Ty::Flags(inner)) = (args.first(), arg_ty) {
                         self.unify_ty(a0, inner, type_params, subst, conflicts);
                     }
                     return;
@@ -2417,6 +2562,8 @@ fn mangle_ty(ty: &Ty) -> String {
         // `Tick`/`Duration`/`Instant` above -- exists for match exhaustiveness.
         Ty::Bytes => "Bytes".into(),
         Ty::Symbol => "Symbol".into(),
+        Ty::BitField(n) => format!("BitField{}", n),
+        Ty::Flags(inner) => format!("Flags_{}", mangle_ty(inner)),
     }
 }
 
@@ -2477,6 +2624,8 @@ fn ty_to_type(ty: &Ty) -> Type {
         Ty::Instant => Type::Named("Instant".into()),
         Ty::Bytes => Type::Named("Bytes".into()),
         Ty::Symbol => Type::Named("Symbol".into()),
+        Ty::BitField(n) => Type::BitField(*n),
+        Ty::Flags(inner) => Type::Generic("Flags".into(), vec![ty_to_type(inner)]),
     }
 }
 
@@ -2496,6 +2645,9 @@ fn subst_type(ty: &Type, subst: &HashMap<String, Type>) -> Type {
         // No type parameters inside to substitute -- `Bits`/`Frac` are bare
         // integer literals, not `Type`s.
         Type::Fixed(bits, frac) => Type::Fixed(*bits, *frac),
+        // `N` is a bare integer literal, not a `Type` -- same reasoning as
+        // `Type::Fixed` above.
+        Type::BitField(bits) => Type::BitField(*bits),
     }
 }
 
@@ -2655,6 +2807,9 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
         },
         Expr::FixedNew { bits, frac, value, span } => {
             Expr::FixedNew { bits: *bits, frac: *frac, value: Box::new(subst_expr(value, subst)), span: *span }
+        }
+        Expr::BitFieldNew { bits, value, span } => {
+            Expr::BitFieldNew { bits: *bits, value: Box::new(subst_expr(value, subst)), span: *span }
         }
     }
 }
@@ -2919,6 +3074,7 @@ fn scan_expr_for_par_hazards(expr: &Expr, hazard: &mut bool, called: &mut HashSe
         Expr::Cast { expr, .. } => scan_expr_for_par_hazards(expr, hazard, called),
         Expr::WrappingNew { value, .. } => scan_expr_for_par_hazards(value, hazard, called),
         Expr::FixedNew { value, .. } => scan_expr_for_par_hazards(value, hazard, called),
+        Expr::BitFieldNew { value, .. } => scan_expr_for_par_hazards(value, hazard, called),
     }
 }
 

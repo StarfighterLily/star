@@ -13,12 +13,14 @@
 
 mod arena;
 mod array;
+mod bitfield;
 mod builtins;
 mod closure;
 mod eq;
 mod expr;
 mod file_io;
 mod fixed;
+mod flags;
 mod list;
 mod map;
 mod net;
@@ -723,6 +725,11 @@ impl Codegen {
             Ty::Bytes => 8,
             // Bare `i64` -- see `Ty::Symbol`'s doc comment.
             Ty::Symbol => 8,
+            // `i{N}` -- same alignment table as the sized-int arms above,
+            // and `Ty::Fixed` just above.
+            Ty::BitField(n) => n / 8,
+            // Bare `i64` -- see `Ty::Flags`'s doc comment.
+            Ty::Flags(_) => 8,
         }
     }
 
@@ -843,6 +850,11 @@ impl Codegen {
             Ty::Bytes => 8,
             // Bare `i64` -- see `Ty::Symbol`'s doc comment.
             Ty::Symbol => 8,
+            // `i{N}` -- same size table as the sized-int arms above, and
+            // `Ty::Fixed` just above.
+            Ty::BitField(n) => n / 8,
+            // Bare `i64` -- see `Ty::Flags`'s doc comment.
+            Ty::Flags(_) => 8,
         }
     }
 
@@ -935,6 +947,10 @@ impl Codegen {
             Ty::Bytes => "i8*".into(),
             // A bare `i64` id -- see `Ty::Symbol`'s doc comment.
             Ty::Symbol => "i64".into(),
+            // A bare `i{N}` -- see `Ty::BitField`'s doc comment.
+            Ty::BitField(n) => format!("i{}", n),
+            // A bare `i64` bitmask -- see `Ty::Flags`'s doc comment.
+            Ty::Flags(_) => "i64".into(),
         }
     }
 
@@ -1018,6 +1034,8 @@ impl Codegen {
             // exhaustiveness.
             Ty::Bytes => "bytes".into(),
             Ty::Symbol => "symbol".into(),
+            Ty::BitField(n) => format!("bitfield{}", n),
+            Ty::Flags(inner) => format!("flags_{}", self.mangle_ty(inner)),
         }
     }
 
@@ -1104,6 +1122,10 @@ impl Codegen {
             Ty::Bytes => "null".into(),
             // Bare `i64` zero -- see `Ty::Symbol`'s doc comment.
             Ty::Symbol => "0".into(),
+            // Bare `i{N}`/`i64` zero -- see `Ty::BitField`/`Ty::Flags`'s doc
+            // comments (an all-clear register / an empty flag set).
+            Ty::BitField(..) => "0".into(),
+            Ty::Flags(_) => "0".into(),
         }
     }
 
@@ -1477,6 +1499,8 @@ impl Codegen {
             TypedExpr::TableIndex { ty, .. } => ty.clone(),
             TypedExpr::WrappingNew { inner_ty, .. } => Ty::Wrapping(Box::new(inner_ty.clone())),
             TypedExpr::FixedNew { bits, frac, .. } => Ty::Fixed(*bits, *frac),
+            TypedExpr::BitFieldNew { bits, .. } => Ty::BitField(*bits),
+            TypedExpr::FlagsNew { enum_name, .. } => Ty::Flags(Box::new(Ty::Enum(enum_name.clone()))),
         }
     }
 

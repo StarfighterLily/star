@@ -45,6 +45,16 @@ rather than speculatively.
   column per field of the struct `T`, all growing/shrinking in lockstep --
   see `docs/design.md`'s Type System plan and `examples/table.star`). This
   closes out the "indie connective tissue" tier entirely.
+- ~~BitField<N> / Flags<E> (docs/design.md §8, "Bit-level types")~~ -- done:
+  `BitField<N>` (a packed bit register, N in `{8,16,32,64}`, lowering to a
+  bare `i{N}`) and `Flags<E>` (a typed bitflag set over a fieldless enum,
+  lowering to a bare `i64` mask) landed, closing out §8 entirely. Both expose
+  a free-function surface (`bit_get`/`bit_set`/`bit_clear`/`bit_toggle`/
+  `bit_and`/`bit_or`/`bit_xor`/`bit_not`, `flags_has`/`flags_with`/
+  `flags_without`/`flags_is_empty`) instead of new bitwise-operator grammar
+  (`&`/`|`/`^`/`~` still don't exist in this language) -- see
+  `docs/design.md`'s Type System plan and `examples/bitfield.star`/
+  `examples/flags.star`.
 - Fill out math builtins as needed (trig, log/exp, etc.).
 
 ### 7. Wire up reflection into an actual runtime feature
@@ -62,6 +72,65 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Feature round: `BitField<N>`/`Flags<E>` (docs/design.md §8, "Bit-level types"), closing out
+that section entirely -- the smallest of this doc's remaining type-system tiers, and (per
+§10's own "lowest-effort, highest-value slice" sequencing note) chosen over §5's much larger
+math/geometry tier for this round. Touched every layer (lexer needed nothing new; parser got
+one new dedicated `BitField<N>(value)` construction node mirroring `Fixed<Bits,Frac>`'s own
+single-turbofish shape, while `Flags<E>(a, b, ...)` needed zero parser/AST work at all, riding
+`List<T>`/`Table<T>`'s existing turbofish-plus-call grammar; checker got two new `Ty`
+variants plus a dedicated free-function-call-validation surface; codegen got two new modules,
+`src/codegen/bitfield.rs`/`src/codegen/flags.rs`). Deliberately built as a free-function
+surface (`bit_get`/`bit_set`/`bit_clear`/`bit_toggle`/`bit_and`/`bit_or`/`bit_xor`/`bit_not`,
+`flags_has`/`flags_with`/`flags_without`/`flags_is_empty`) rather than new bitwise-operator
+grammar, since `&`/`|`/`^`/`~`/`<<`/`>>` don't exist anywhere in this language yet and adding
+them would have been a much bigger, unrelated lift. 30 new tests added (975 total, all green,
+up from 945); every buildable example still `star build`s cleanly (same two pre-existing,
+documented exceptions as every prior round: `examples/geometry_lib.star`'s no-`main`-by-design
+case, and `examples/tcp_socket.star` needing its documented `-l ws2_32` flag) -- two new ones,
+`examples/bitfield.star`/`examples/flags.star`, added alongside them.
+
+This round found two real bugs of its own, both caught by the new tests before either shipped:
+1. **LLVM `shl`-poison on an out-of-range bit index (severe -- real undefined behavior, not
+   just a wrong answer)**: `bit_get`/`bit_set`/`bit_clear`/`bit_toggle` computed a bit's mask
+   as `1 << idx` with `idx` passed straight through, unmasked, to LLVM's `shl` -- an
+   out-of-range shift amount (`idx >= width`, e.g. `bit_get(x, 99)` on an 8-bit `x`) is a
+   *poison value* under LLVM's `shl` semantics, not a wrapped one the way x86 hardware `shl`
+   (which masks the shift count itself in the CPU) would produce. Confirmed via a real,
+   reproducible wrong-answer run before the fix (`bit_get(x, 9)` on an 8-bit register didn't
+   reliably agree with `bit_get(x, 1)`, the two indices' 8-bit-mod-reduced values). Fixed by
+   masking the shift amount mod the register's width (`idx & (width - 1)`, exact since `width`
+   is always a power of two) before it ever reaches `shl`, keeping this in line with this
+   compiler's existing "safe, not panicking" convention for other builtin edge cases like an
+   out-of-bounds `List<T>` index (`src/codegen/bitfield.rs`'s `emit_bit_mask`). Caught by
+   `runtime_bitfield_out_of_range_index_wraps_rather_than_traps_end_to_end`.
+2. **A pre-existing stack-safety margin eroded by this round's own match-arm growth (not a
+   bug this round introduced from nothing, but one it triggered for real)**: two existing
+   regression tests --  `rejects_deeply_nested_parens_does_not_overflow_stack` (500 levels of
+   nested parens, meant to fail cleanly well before that via `Parser::MAX_EXPR_DEPTH`) and
+   `runtime_moderately_long_binary_chain_end_to_end` (150 chained `+` operators, well under
+   `Parser::MAX_BINARY_CHAIN`'s 200-operator promise, meant to fully compile and run) -- both
+   started overflowing the real stack for real (`STATUS_STACK_OVERFLOW`, not the intended
+   diagnostic) once `BitField<N>`/`Flags<E>`'s new match arms grew `parse_primary`/
+   `Checker::infer_expr`/`Codegen::emit_expr`'s already-large stack frames a little further in
+   an unoptimized build -- every local a match arm declares counts against one shared frame
+   size regardless of whether that arm is ever taken, so *any* feature round's match-arm growth
+   erodes this same margin a little, not something specific to this round's own types.
+   Confirmed the regression was real, not a test-harness artifact, via a standalone `star
+   build` on a 150-operator chain crashing on the OS's own default main-thread stack too, not
+   just under `cargo test`. Rather than keep shrinking `MAX_EXPR_DEPTH`/`MAX_BINARY_CHAIN` (a
+   real, user-visible regression in how much legitimately-nested/long input compiles, and a
+   fix that would only need re-doing again next round), fixed at the root: `src/main.rs`'s
+   `main` now runs its actual work on a purpose-spawned 32MiB-stack thread (`MAIN_STACK_SIZE`,
+   the same fix real compilers with deep AST recursion, e.g. `rustc`, already use), and
+   `.cargo/config.toml` now sets `RUST_MIN_STACK` so `cargo test`'s own per-test threads get
+   the same headroom -- a fix that scales with future match-arm growth instead of needing
+   another constant retuned every round.
+
+---
+
+### Previous round
+
 Bug-hunting round 4 (security-focused red-team, not a feature round): four parallel deep
 audits, run as isolated git worktrees and merged back by hand afterward (source patches
 applied cleanly with no overlapping hunks across all four -- `src/codegen/mod.rs` was

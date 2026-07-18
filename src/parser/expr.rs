@@ -130,6 +130,14 @@ impl Parser {
     /// that observed cliff (mirrors `Checker::MAX_MONO_DEPTH`'s similarly
     /// conservative, empirically-chosen bound) while staying well above
     /// `runtime_moderately_nested_parens_end_to_end`'s 50-level sanity case.
+    /// Every later feature round nudges this cliff around (each new `Ty`/
+    /// `Expr` match arm added anywhere in `parse_primary`/`parse_postfix`'s
+    /// own recursive chain grows those functions' stack frames in an
+    /// unoptimized build, even on a code path that never takes the new
+    /// arm) -- see `main.rs`'s `MAIN_STACK_SIZE` and this crate's
+    /// `.cargo/config.toml` `RUST_MIN_STACK` for why that's handled by
+    /// giving the real recursion room to breathe instead of re-tuning this
+    /// constant every round.
     pub(super) const MAX_EXPR_DEPTH: u32 = 80;
 
     fn parse_unary(&mut self) -> Option<Expr> {
@@ -269,6 +277,18 @@ impl Parser {
                         if name == "Fixed" {
                             match self.parse_fixed_new(expr.span()) {
                                 Ok(Some(fixed_expr)) => return Some(fixed_expr),
+                                Err(()) => return None,
+                                Ok(None) => {}
+                            }
+                        }
+                        // `BitField<N>(value)` has the same single-bare-
+                        // integer-literal shape as `Fixed<Bits, Frac>` just
+                        // above (one literal instead of two), so it can't
+                        // share `parse_type_args` either -- mirrors
+                        // `parse_fixed_new`'s own dedicated probe/parse pair.
+                        if name == "BitField" {
+                            match self.parse_bitfield_new(expr.span()) {
+                                Ok(Some(bf_expr)) => return Some(bf_expr),
                                 Err(()) => return None,
                                 Ok(None) => {}
                             }
@@ -531,6 +551,57 @@ impl Parser {
         Some((bits, bits_span, frac, frac_span))
     }
 
+    /// Speculatively parse `BitField<N>(value)`'s `<N>` turbofish, mirroring
+    /// [`parse_fixed_new`]/`probe_fixed_shape` exactly but with one bare
+    /// integer literal instead of two. Assumes the cursor is at `<`,
+    /// immediately after having consumed the `BitField` identifier. Returns
+    /// `Ok(None)` on a shape mismatch (having already restored the cursor/
+    /// diagnostics), so the caller can fall through to ordinary identifier/
+    /// comparison handling; `Err(())` means a real, committed syntax error.
+    fn parse_bitfield_new(&mut self, start: Span) -> Result<Option<Expr>, ()> {
+        let checkpoint = self.pos;
+        let err_checkpoint = self.errors.len();
+
+        let shape = self.probe_bitfield_shape();
+        if shape.is_none() || !self.at(&TokenKind::LParen) {
+            self.pos = checkpoint;
+            self.errors.truncate(err_checkpoint);
+            return Ok(None);
+        }
+        let (bits, bits_span) = shape.unwrap();
+
+        if bits <= 0 {
+            self.error("`BitField<N>`'s bit width must be a positive integer", bits_span);
+            return Err(());
+        }
+        let args = self.parse_positional_call_args("BitField<N>(..)").ok_or(())?;
+        let call_span = start.to(self.prev_span());
+        if args.len() != 1 {
+            self.error(format!("`BitField<N>(..)` expects exactly one argument, found {}", args.len()), call_span);
+            return Err(());
+        }
+        let value = args.into_iter().next().unwrap();
+        let full = start.to(self.prev_span());
+        Ok(Some(Expr::BitFieldNew { bits: bits as u32, value: Box::new(value), span: full }))
+    }
+
+    /// The shape-only half of [`parse_bitfield_new`]'s speculation: `<
+    /// IntLiteral >`, with no validation of the literal's sign (left to the
+    /// caller) and no argument-list parsing. Returns `None` on any shape
+    /// mismatch; the caller restores the cursor/diagnostics in that case.
+    fn probe_bitfield_shape(&mut self) -> Option<(i64, Span)> {
+        self.advance(); // consume '<'
+        let bits_span = self.peek_span();
+        let TokenKind::Int(bits) = self.peek_kind() else {
+            return None;
+        };
+        self.advance();
+        if !self.eat(&TokenKind::Gt) {
+            return None;
+        }
+        Some((bits, bits_span))
+    }
+
     /// Parse a `(...)` argument list, capturing named-argument syntax
     /// `field = expr` alongside each expression -- the returned name list
     /// runs parallel to the expression list (`None` for a plain positional
@@ -713,7 +784,7 @@ impl Parser {
                 // excluded: their own `<...>(value)` syntax is handled
                 // entirely by `parse_postfix` below, and must see the `<`
                 // untouched.
-                let type_args = if name != "GenRef" && name != "Handle" && name != "Wrapping" && name != "Fixed"
+                let type_args = if name != "GenRef" && name != "Handle" && name != "Wrapping" && name != "Fixed" && name != "BitField"
                     && starts_uppercase(&name) && self.at(&TokenKind::Lt)
                 {
                     self.try_parse_type_args()
@@ -721,11 +792,12 @@ impl Parser {
                     Vec::new()
                 };
                 if self.at(&TokenKind::LParen) && starts_uppercase(&name) {
-                    // `GenRef`/`Handle`/`Wrapping`/`Fixed` always require an
-                    // explicit type argument; without one this would
-                    // otherwise fall through to the generic `StructLit` case
-                    // below and construct a nonexistent struct, only failing
-                    // later with a confusing, unrelated error at its first use.
+                    // `GenRef`/`Handle`/`Wrapping`/`Fixed`/`BitField` always
+                    // require an explicit type argument; without one this
+                    // would otherwise fall through to the generic `StructLit`
+                    // case below and construct a nonexistent struct, only
+                    // failing later with a confusing, unrelated error at its
+                    // first use.
                     if name == "GenRef" {
                         self.error("`GenRef` requires an explicit type argument: `GenRef<T>(value)`", span);
                         return None;
@@ -740,6 +812,10 @@ impl Parser {
                     }
                     if name == "Fixed" {
                         self.error("`Fixed` requires explicit type arguments: `Fixed<Bits, Frac>(value)`", span);
+                        return None;
+                    }
+                    if name == "BitField" {
+                        self.error("`BitField` requires an explicit type argument: `BitField<N>(value)`", span);
                         return None;
                     }
                     let (args, arg_names) = self.parse_call_args()?;

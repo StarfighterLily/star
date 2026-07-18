@@ -306,6 +306,25 @@ impl Parser {
             self.expect(&TokenKind::Gt)?;
             return Some(Type::Fixed(bits as u32, frac as u32));
         }
+        // `BitField<N>` -- `N` is a plain non-negative integer literal (no
+        // const-expression evaluator in this compiler), same reasoning/shape
+        // as `Fixed<Bits, Frac>` just above but with only one literal; full
+        // legality (`N` a supported width) is left to `Checker::resolve_type`
+        // for a clearer diagnostic, mirroring `Fixed<Bits, Frac>`'s own split.
+        if name == "BitField" && self.eat(&TokenKind::Lt) {
+            let bits_span = self.peek_span();
+            let TokenKind::Int(bits) = self.peek_kind() else {
+                self.error("expected an integer literal bit width after `<` in `BitField<N>`", bits_span);
+                return None;
+            };
+            self.advance();
+            if bits <= 0 {
+                self.error("`BitField<N>`'s bit width must be a positive integer", bits_span);
+                return None;
+            }
+            self.expect(&TokenKind::Gt)?;
+            return Some(Type::BitField(bits as u32));
+        }
         if self.eat(&TokenKind::Lt) {
             let mut args = Vec::new();
             while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {

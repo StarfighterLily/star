@@ -373,6 +373,8 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>, local_s
         // reasoning as `Cast` just above.
         | TypedExpr::WrappingNew { .. }
         | TypedExpr::FixedNew { .. }
+        | TypedExpr::BitFieldNew { .. }
+        | TypedExpr::FlagsNew { .. }
         | TypedExpr::FStr(..)
         | TypedExpr::SelfExpr(..)
         | TypedExpr::EnumVariant { .. }

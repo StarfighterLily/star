@@ -328,6 +328,8 @@ fn rename_type(ty: &Type, names: &HashMap<String, String>) -> Type {
         Type::Ring(elem, count) => Type::Ring(Box::new(rename_type(elem, names)), *count),
         // `Bits`/`Frac` are bare integer literals, no name to rename.
         Type::Fixed(bits, frac) => Type::Fixed(*bits, *frac),
+        // `N` is a bare integer literal, no name to rename.
+        Type::BitField(bits) => Type::BitField(*bits),
     }
 }
 
@@ -532,6 +534,9 @@ fn rename_expr(expr: &Expr, names: &HashMap<String, String>) -> Expr {
         },
         Expr::FixedNew { bits, frac, value, span } => {
             Expr::FixedNew { bits: *bits, frac: *frac, value: Box::new(rename_expr(value, names)), span: *span }
+        }
+        Expr::BitFieldNew { bits, value, span } => {
+            Expr::BitFieldNew { bits: *bits, value: Box::new(rename_expr(value, names)), span: *span }
         }
     }
 }

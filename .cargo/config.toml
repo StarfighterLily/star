@@ -16,3 +16,15 @@ rustflags = [
     "-C",
     "link-arg=-lunwind",
 ]
+
+# `cargo test` runs `tests/frontend.rs`'s Driver::parse/check/codegen calls
+# directly on libtest's per-test worker threads (bypassing `src/main.rs`'s
+# own large-stack-spawned-thread fix -- see `MAIN_STACK_SIZE`'s doc comment),
+# which otherwise default to a stack too small for this front end's
+# legitimately-deep-but-bounded recursion (e.g. a 150-operator `+` chain,
+# well under `Parser::MAX_BINARY_CHAIN`'s 200-operator promise). Rust's test
+# harness honors `RUST_MIN_STACK` for those per-test thread spawns, so
+# setting it here keeps `cargo test` in step with `MAIN_STACK_SIZE` without
+# every test needing its own thread-spawning boilerplate.
+[env]
+RUST_MIN_STACK = "33554432"

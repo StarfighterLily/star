@@ -346,6 +346,8 @@ impl Codegen {
             // dedicated codegen beyond evaluating `value` itself.
             TypedExpr::WrappingNew { value, .. } => self.emit_expr(value),
             TypedExpr::FixedNew { value, bits, frac, .. } => self.emit_fixed_new(value, *bits, *frac),
+            TypedExpr::BitFieldNew { value, bits, .. } => self.emit_bitfield_new(value, *bits),
+            TypedExpr::FlagsNew { enum_name, args, .. } => self.emit_flags_new(enum_name, args),
             TypedExpr::Ident { name, ty, .. } => {
                 // A plain top-level function name used as a value (never a
                 // local, so no alloca to load from) rather than called
@@ -506,6 +508,18 @@ impl Codegen {
                     Some("bytes_from_str") => self.emit_bytes_from_str(args),
                     Some("str_from_bytes") => self.emit_str_from_bytes(args),
                     Some("symbol_name") => self.emit_symbol_name(args),
+                    Some("bit_get") => self.emit_bit_get(&args[0], &args[1]),
+                    Some("bit_set") => self.emit_bit_set_clear_toggle(&args[0], &args[1], super::bitfield::BitIndexOp::Set),
+                    Some("bit_clear") => self.emit_bit_set_clear_toggle(&args[0], &args[1], super::bitfield::BitIndexOp::Clear),
+                    Some("bit_toggle") => self.emit_bit_set_clear_toggle(&args[0], &args[1], super::bitfield::BitIndexOp::Toggle),
+                    Some("bit_and") => self.emit_bit_combine(&args[0], &args[1], "and"),
+                    Some("bit_or") => self.emit_bit_combine(&args[0], &args[1], "or"),
+                    Some("bit_xor") => self.emit_bit_combine(&args[0], &args[1], "xor"),
+                    Some("bit_not") => self.emit_bit_not(&args[0]),
+                    Some("flags_has") => self.emit_flags_has(&args[0], &args[1]),
+                    Some("flags_with") => self.emit_flags_with_without(&args[0], &args[1], true),
+                    Some("flags_without") => self.emit_flags_with_without(&args[0], &args[1], false),
+                    Some("flags_is_empty") => self.emit_flags_is_empty(&args[0]),
                     Some("read_line") => self.emit_read_line(),
                     Some("dot") => self.emit_dot(args),
                     Some("length") => self.emit_length(args),
@@ -1181,6 +1195,30 @@ impl Codegen {
                                         call_args.push(format!("i32 {}", bare_val));
                                     }
                                 },
+                                // A bare unsigned `i{N}` register -- see
+                                // `Ty::BitField`'s doc comment. Same C
+                                // variadic-promotion rule as the `U8`/`U16`
+                                // arm above.
+                                Ty::BitField(n) if *n < 32 => {
+                                    fmt_str.push_str("%u");
+                                    let widened = self.tmp_name();
+                                    self.line(&format!("  {} = zext i{} {} to i32", widened, n, bare_val));
+                                    call_args.push(format!("i32 {}", widened));
+                                }
+                                Ty::BitField(32) => {
+                                    fmt_str.push_str("%u");
+                                    call_args.push(format!("i32 {}", bare_val));
+                                }
+                                Ty::BitField(_) => {
+                                    fmt_str.push_str("%llu");
+                                    call_args.push(format!("i64 {}", bare_val));
+                                }
+                                // A bare unsigned `i64` bitmask -- see
+                                // `Ty::Flags`'s doc comment.
+                                Ty::Flags(_) => {
+                                    fmt_str.push_str("%llu");
+                                    call_args.push(format!("i64 {}", bare_val));
+                                }
                                 Ty::Float => {
                                     fmt_str.push_str("%f");
                                     // Variadic calls always promote `float` to `double`.

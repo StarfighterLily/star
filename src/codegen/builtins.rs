@@ -65,6 +65,13 @@ impl Codegen {
                                 Some((_, false)) => fmt_str.push_str("%u"),
                                 _ => fmt_str.push_str("%d"),
                             },
+                            // A bare unsigned `i{N}` register -- see
+                            // `Ty::BitField`'s doc comment.
+                            Ty::BitField(64) => { fmt_str.push_str("%llu"); }
+                            Ty::BitField(_) => { fmt_str.push_str("%u"); }
+                            // A bare unsigned `i64` bitmask -- see
+                            // `Ty::Flags`'s doc comment.
+                            Ty::Flags(_) => { fmt_str.push_str("%llu"); }
                             _ => { fmt_str.push_str("%p"); }
                         }
                         // `emit_expr` may return either a bare register
@@ -157,6 +164,17 @@ impl Codegen {
                             call_args.push(format!("i32 {}", widened));
                         }
                         _ => call_args.push(format!("{} {}", self.llvm_ty(ty), val)),
+                    }
+                } else if let Ty::BitField(n) = ty {
+                    // Same C variadic-promotion rule as the `U8`/`U16` arm
+                    // above -- a register narrower than 32 bits needs
+                    // zero-extending up to the `int` slot `%u` reads.
+                    if *n < 32 {
+                        let widened = self.tmp_name();
+                        self.line(&format!("  {} = zext i{} {} to i32", widened, n, val));
+                        call_args.push(format!("i32 {}", widened));
+                    } else {
+                        call_args.push(format!("i{} {}", n, val));
                     }
                 } else {
                     call_args.push(format!("{} {}", self.llvm_ty(ty), val));

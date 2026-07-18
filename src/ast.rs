@@ -234,6 +234,16 @@ pub enum Type {
     /// `Type::Ring`'s own two-integer-literal special case). Lowers to a bare
     /// `i{Bits}` (Q format, signed) -- see `Ty::Fixed`.
     Fixed(u32, u32),
+    /// A packed bit register `BitField<N>` (e.g. `BitField<8>`): accurate
+    /// retro CPU flag-register emulation (Z80/6502 status flags) and other
+    /// hand-rolled bitmasks. `N` is a plain non-negative integer literal (no
+    /// const-expression evaluator in this compiler), restricted to `{8, 16,
+    /// 32, 64}` -- same widths `Type::Fixed`'s `Bits` already restricts to --
+    /// parsed by a dedicated special case in
+    /// `crate::parser::Parser::parse_type_inner` (mirroring `Type::Fixed`'s
+    /// own single-integer-literal special case, just with one literal
+    /// instead of two). Lowers to a bare `i{N}` -- see `Ty::BitField`.
+    BitField(u32),
 }
 
 impl Type {
@@ -243,7 +253,7 @@ impl Type {
         match self {
             Type::Named(name) => name == "GenRef" || name == "Handle",
             Type::Generic(name, _) => name == "GenRef" || name == "Handle",
-            Type::Fn(..) | Type::Tuple(..) | Type::Array(..) | Type::Ring(..) | Type::Fixed(..) => false,
+            Type::Fn(..) | Type::Tuple(..) | Type::Array(..) | Type::Ring(..) | Type::Fixed(..) | Type::BitField(..) => false,
         }
     }
 }
@@ -586,6 +596,19 @@ pub enum Expr {
         value: Box<Expr>,
         span: Span,
     },
+    /// `BitField<N>(value)` -- see `Ty::BitField`'s doc comment. Shares
+    /// `Fixed<Bits, Frac>`'s reason for existing as its own node (`N` is a
+    /// bare integer literal, not a `Type`, so it can't go through
+    /// `Expr::StructLit`'s ordinary comma-separated-`Type` turbofish) but
+    /// with a single literal instead of two; parsed by
+    /// `Parser::parse_bitfield_new`. `value` may be any int-shaped
+    /// expression, widened/narrowed to `i{N}` exactly like `Tick`/
+    /// `Duration`/`Instant`'s own int-shaped construction.
+    BitFieldNew {
+        bits: u32,
+        value: Box<Expr>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -618,6 +641,7 @@ impl Expr {
             | Expr::Cast { span: s, .. }
             | Expr::WrappingNew { span: s, .. }
             | Expr::FixedNew { span: s, .. }
+            | Expr::BitFieldNew { span: s, .. }
             | Expr::ListLit(_, s) => *s,
             Expr::TupleLit(_, s) => *s,
         }

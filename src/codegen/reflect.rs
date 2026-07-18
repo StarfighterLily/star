@@ -161,6 +161,8 @@ impl Codegen {
             Ty::Instant => "Instant".into(),
             Ty::Bytes => "Bytes".into(),
             Ty::Symbol => "Symbol".into(),
+            Ty::BitField(n) => format!("BitField<{}>", n),
+            Ty::Flags(inner) => format!("Flags<{}>", self.reflect_type_name(inner)),
         }
     }
 

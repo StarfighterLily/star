@@ -458,6 +458,9 @@ impl Checker {
                 if name == "Table" {
                     return Ok(self.infer_table_new(type_args, &arg_exprs, *span));
                 }
+                if name == "Flags" {
+                    return Ok(self.infer_flags_new(type_args, &arg_exprs, *span));
+                }
                 if self.generic_structs.contains_key(name) {
                     return Ok(self.infer_generic_struct_lit(name, type_args, arg_exprs, *span));
                 }
@@ -563,6 +566,50 @@ impl Checker {
                     );
                 }
                 Ok(TypedExpr::FixedNew { bits: *bits, frac: *frac, value: Box::new(value_typed), span: *span })
+            }
+            // `docs/design.md`'s "Bit-level types" section: constructs from
+            // a single int-shaped value (any width), widened/narrowed to the
+            // underlying `i{bits}` at codegen time -- see `Ty::BitField`'s
+            // doc comment and `Codegen::emit_bitfield_new`. Mirrors
+            // `Ty::Tick`'s own "any int_shape(), no exact-match requirement"
+            // construction rule (`check_builtin_ctor_arity`'s `Ty::Tick` arm)
+            // rather than `Wrapping<T>`'s exact-type-match rule, since a
+            // register width is a storage detail the caller shouldn't need
+            // an exact-width literal/variable to satisfy.
+            Expr::BitFieldNew { bits, value, span } => {
+                if !matches!(bits, 8 | 16 | 32 | 64) {
+                    self.error(format!("`BitField<{}>`'s bit width must be one of 8, 16, 32, 64", bits), *span);
+                }
+                // Same literal-fast-path treatment as `Expr::WrappingNew`
+                // just above -- a bare literal argument (defaulting to
+                // `Ty::Int`, i.e. `i32`) would otherwise be rejected both by
+                // a width narrower than `i32` (e.g. `BitField<8>(200)`, `200`
+                // not fitting `i8`'s signed range) and by one wider (e.g.
+                // `BitField<64>(5000000000)`, not fitting `i32` at all).
+                // Tagged with the matching-width *unsigned* type (mirroring
+                // `Ty::BitField`'s own always-unsigned `bit_shape()`), not
+                // bare `Ty::Int`, so a wide literal's codegen constant isn't
+                // truncated back down to `i32` by `Codegen::emit_bitfield_new`'s
+                // own `int_shape()`-driven widen/narrow logic.
+                if let Some(v) = Self::cast_literal_magnitude(value) {
+                    let (lo, hi) = Self::int_shape_range(*bits, false);
+                    if v >= lo && v <= hi {
+                        let lit_ty = match bits {
+                            8 => Ty::U8,
+                            16 => Ty::U16,
+                            32 => Ty::U32,
+                            _ => Ty::U64,
+                        };
+                        let lit = TypedExpr::Int(v, lit_ty, *span);
+                        return Ok(TypedExpr::BitFieldNew { bits: *bits, value: Box::new(lit), span: *span });
+                    }
+                }
+                let value_typed = self.infer_expr(value, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
+                let value_ty = value_typed.clone().into_ty();
+                if value_ty.int_shape().is_none() && !Self::is_placeholder_ty(&value_ty) {
+                    self.error(format!("`BitField<N>(..)` expects an integer value, found `{:?}`", value_ty), *span);
+                }
+                Ok(TypedExpr::BitFieldNew { bits: *bits, value: Box::new(value_typed), span: *span })
             }
             Expr::EnumVariant { enum_name, type_args, variant, args, arg_names, span } => {
                 // Same pre-inference named-argument resolution as the
@@ -900,6 +947,22 @@ impl Checker {
                 // reasoning as `Tick`/`Duration`/`Instant <-> i64` above --
                 // see `Ty::Symbol`'s doc comment.
                 let symbol_ok = matches!((&inner_ty, &target), (Ty::Symbol, Ty::I64) | (Ty::I64, Ty::Symbol));
+                // `BitField<N> <-> i{N}`/`u{N}`: a free bit-preserving
+                // relabel, same reasoning as `Wrapping<T> <-> T` above -- see
+                // `Ty::BitField`'s doc comment. `BitField<N>` has no declared
+                // signedness of its own (it's a bit count, not a stored
+                // `Ty`), so unlike `Wrapping<T> <-> T`'s exact-`Ty`-match
+                // rule, either signedness at the matching width is a legal
+                // pairing -- both lower to the identical bare `i{N}`.
+                let bitfield_ok = match (&inner_ty, &target) {
+                    (Ty::BitField(n), t) => t.int_shape().is_some_and(|(w, _)| w == *n),
+                    (t, Ty::BitField(n)) => t.int_shape().is_some_and(|(w, _)| w == *n),
+                    _ => false,
+                };
+                // `Flags<E> <-> i64`: a free bit-preserving relabel, same
+                // reasoning as `Symbol <-> i64` above -- see `Ty::Flags`'s
+                // doc comment.
+                let flags_ok = matches!((&inner_ty, &target), (Ty::Flags(_), Ty::I64) | (Ty::I64, Ty::Flags(_)));
                 let ok = (inner_ty.is_numeric() && target.is_numeric())
                     || (inner_ty.is_numeric() && target == Ty::Char)
                     || (inner_ty == Ty::Char && target.is_numeric())
@@ -907,7 +970,9 @@ impl Checker {
                     || wrapping_ok
                     || fixed_ok
                     || time_ok
-                    || symbol_ok;
+                    || symbol_ok
+                    || bitfield_ok
+                    || flags_ok;
                 if !ok && !Self::is_placeholder_ty(&inner_ty) && !Self::is_placeholder_ty(&target) {
                     self.error(
                         format!(
@@ -1157,6 +1222,39 @@ impl Checker {
             self.error(format!("`Table<T>()` requires `T` to be a struct type, found `{:?}`", elem_ty), span);
         }
         TypedExpr::TableNew { elem_ty, span }
+    }
+
+    /// `Flags<E>(a, b, ...)` -- a typed bitflag set construction, see
+    /// `Ty::Flags`'s doc comment. Unlike `infer_list_new`/`infer_table_new`
+    /// (always zero arguments), `Flags<E>` accepts zero or more `E`-typed
+    /// arguments, each OR'd together bit-by-bit at codegen time -- so
+    /// `Flags<Direction>()` (empty), `Flags<Direction>(Direction::Up)`
+    /// (single), and `Flags<Direction>(Direction::Up, Direction::Down)`
+    /// (multiple) are all legal, mirroring a plain `ListLit`'s "however many
+    /// elements" arity but through the turbofish-plus-call constructor shape
+    /// `List<T>()`/`Table<T>()` already use rather than bracket-literal
+    /// syntax (which has no way to also carry the `<E>` turbofish).
+    fn infer_flags_new(&mut self, type_args: &[Type], arg_exprs: &[TypedExpr], span: Span) -> TypedExpr {
+        let elem_ty = match type_args.first() {
+            Some(t) => self.resolve_type(t).unwrap_or(Ty::Named("unknown".into())),
+            None => {
+                self.error("`Flags<E>(..)` needs an explicit type argument, e.g. `Flags<Direction>()`", span);
+                Ty::Named("unknown".into())
+            }
+        };
+        let Ty::Enum(enum_name) = &elem_ty else {
+            if !matches!(&elem_ty, Ty::Named(n) if n == "unknown") {
+                self.error(format!("`Flags<E>` requires `E` to be an enum type, found `{:?}`", elem_ty), span);
+            }
+            return TypedExpr::Error(Ty::Named("infer_error".into()));
+        };
+        for (i, a) in arg_exprs.iter().enumerate() {
+            let a_ty = a.clone().into_ty();
+            if a_ty != elem_ty && !Self::is_placeholder_ty(&a_ty) {
+                self.error(format!("`Flags<{}>(..)` argument {} expected `{}`, found `{:?}`", enum_name, i + 1, enum_name, a_ty), span);
+            }
+        }
+        TypedExpr::FlagsNew { enum_name: enum_name.clone(), args: arg_exprs.to_vec(), span }
     }
 
     /// Type-check a `Table<T>` method call (`push`/`pop`/`len`), called from
@@ -1943,6 +2041,75 @@ impl Checker {
                     self.error(format!("`symbol_name` expects a `Symbol` argument, found `{:?}`", arg_tys[0]), span);
                 }
             }
+            // `docs/design.md`'s "Bit-level types" section: `bit_get`/
+            // `bit_set`/`bit_clear`/`bit_toggle`/`bit_not` work on any
+            // integer type (any width), `Wrapping<T>`, or `BitField<N>` --
+            // `Ty::bit_shape()`'s exact set -- but deliberately not
+            // `Flags<E>` (see `Ty::Flags`'s doc comment for why raw
+            // bit-indexing a flag set is excluded). `bit_and`/`bit_or`/
+            // `bit_xor` additionally accept `Flags<E>` (`Ty::
+            // bitwise_combine_shape()`), safe to share since union/
+            // intersect/symmetric-difference of two valid masks never gains
+            // an undefined bit.
+            "bit_get" | "bit_set" | "bit_clear" | "bit_toggle" => {
+                if arity_ok(2, self) {
+                    if arg_tys[0].bit_shape().is_none() && !is_placeholder(&arg_tys[0]) {
+                        self.error(
+                            format!("`{}` argument 1 expected an integer/`Wrapping<T>`/`BitField<N>` value, found `{:?}`", name, arg_tys[0]),
+                            span,
+                        );
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Int) {
+                        self.error(format!("`{}` argument 2 (bit index) expected `int`, found `{:?}`", name, arg_tys[1]), span);
+                    }
+                }
+            }
+            "bit_not" => {
+                if arity_ok(1, self) && arg_tys[0].bit_shape().is_none() && !is_placeholder(&arg_tys[0]) {
+                    self.error(
+                        format!("`bit_not` expects an integer/`Wrapping<T>`/`BitField<N>` value, found `{:?}`", arg_tys[0]),
+                        span,
+                    );
+                }
+            }
+            "bit_and" | "bit_or" | "bit_xor" => {
+                if arity_ok(2, self) {
+                    if arg_tys[0].bitwise_combine_shape().is_none() && !is_placeholder(&arg_tys[0]) {
+                        self.error(
+                            format!(
+                                "`{}` argument 1 expected an integer/`Wrapping<T>`/`BitField<N>`/`Flags<E>` value, found `{:?}`",
+                                name, arg_tys[0]
+                            ),
+                            span,
+                        );
+                    } else if !tys_eq(&arg_tys[0], &arg_tys[1]) {
+                        self.error(format!("`{}` arguments must be the same type, found `{:?}` and `{:?}`", name, arg_tys[0], arg_tys[1]), span);
+                    }
+                }
+            }
+            "flags_is_empty" => {
+                if arity_ok(1, self) && !matches!(&arg_tys[0], Ty::Flags(_)) && !is_placeholder(&arg_tys[0]) {
+                    self.error(format!("`flags_is_empty` expects a `Flags<E>` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "flags_has" | "flags_with" | "flags_without" => {
+                if arity_ok(2, self) {
+                    match &arg_tys[0] {
+                        Ty::Flags(inner) => {
+                            if arg_tys[1] != **inner && !is_placeholder(&arg_tys[1]) {
+                                self.error(
+                                    format!("`{}` argument 2 expected `{:?}` (`{}`'s element type), found `{:?}`", name, inner, name, arg_tys[1]),
+                                    span,
+                                );
+                            }
+                        }
+                        t if !is_placeholder(t) => {
+                            self.error(format!("`{}` argument 1 expected a `Flags<E>` value, found `{:?}`", name, t), span);
+                        }
+                        _ => {}
+                    }
+                }
+            }
             "dot" => {
                 if arity_ok(2, self) {
                     if !is_vec(&arg_tys[0]) {
@@ -2176,6 +2343,25 @@ impl Checker {
                 if *lhs_ty == Ty::Symbol && *rhs_ty == Ty::Symbol {
                     if !matches!(op, BinOp::Eq | BinOp::Ne) {
                         self.error("only `==`/`!=` are supported between `Symbol` values", span);
+                    }
+                    return Ty::Bool;
+                }
+                // `BitField<N> == BitField<N>` / `!=` -- a single `i{N}`
+                // bit-pattern comparison, no ordering (a packed register has
+                // no meaningful "less than") -- see `Ty::BitField`'s doc
+                // comment.
+                if matches!(lhs_ty, Ty::BitField(_)) && lhs_ty == rhs_ty {
+                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
+                        self.error("only `==`/`!=` are supported between `BitField<N>` values", span);
+                    }
+                    return Ty::Bool;
+                }
+                // `Flags<E> == Flags<E>` / `!=` -- a single `i64` mask
+                // comparison, same reasoning as `Ty::BitField` above -- see
+                // `Ty::Flags`'s doc comment.
+                if matches!(lhs_ty, Ty::Flags(_)) && lhs_ty == rhs_ty {
+                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
+                        self.error("only `==`/`!=` are supported between `Flags<E>` values", span);
                     }
                     return Ty::Bool;
                 }

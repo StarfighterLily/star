@@ -77,8 +77,42 @@ enum EmitKind {
     Llvm,
 }
 
+/// The OS default main-thread stack (on this compiler's Windows/MinGW
+/// target, whatever the linker's default `/STACK` reserve happens to be --
+/// smaller than the 8MiB a typical Linux/macOS main thread gets, and not
+/// something this project's `.cargo/config.toml` currently overrides) is too
+/// small for this front end's own recursive-descent parser/checker/codegen
+/// passes on legitimately deep (but explicitly bounded -- see
+/// `Parser::MAX_EXPR_DEPTH`/`MAX_BINARY_CHAIN`/`Checker::MAX_MONO_DEPTH`)
+/// input: a real, reproducible "thread 'main' has overflowed its stack"
+/// crash on e.g. 150 chained `+` operators (well under `MAX_BINARY_CHAIN`'s
+/// 200-operator promise) predates this specific change but was made worse by
+/// it -- every new `Ty`/`Expr`/`TypedExpr` variant added over this
+/// compiler's life adds one more match arm's worth of locals to these same
+/// hot recursive functions' stack frames in an unoptimized build, eroding
+/// whatever margin the *last* round's stack-safety fix established. Rather
+/// than keep shrinking the depth constants (a real, user-visible regression
+/// in how much legitimately-nested/long input compiles) every time a future
+/// feature adds one more match arm, `main`'s actual work runs on a purpose-
+/// spawned thread with a generous, explicit stack size instead -- the same
+/// fix real compilers with deep AST recursion (e.g. `rustc` itself) use, and
+/// one that scales with future growth instead of fighting it test by test.
+const MAIN_STACK_SIZE: usize = 32 * 1024 * 1024;
+
 fn main() -> ExitCode {
+    // `Cli::parse()` itself never recurses deeply (a flat `clap` argument
+    // scan), so it's fine to run on the OS-provided main thread; only the
+    // actual compile work is spawned onto the larger stack.
     let cli = Cli::parse();
+    std::thread::Builder::new()
+        .stack_size(MAIN_STACK_SIZE)
+        .spawn(move || run(cli))
+        .expect("failed to spawn main worker thread")
+        .join()
+        .expect("main worker thread panicked")
+}
+
+fn run(cli: Cli) -> ExitCode {
     match cli.command {
         Command::Check { file } => cmd_check(&file),
         Command::Build { file, output, opt_level, release, libs, lib_paths } => {

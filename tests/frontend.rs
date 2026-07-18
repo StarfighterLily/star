@@ -15498,3 +15498,370 @@ fn runtime_match_over_fresh_enum_inside_nested_par_does_not_leak_end_to_end() {
                println(\"done\")\n";
     assert_no_leak("match_fresh_enum_inside_nested_par_leak", src, 20 * 1024 * 1024);
 }
+
+// ===== `BitField<N>` / `Flags<E>` (docs/design.md §8, "Bit-level types") ===
+
+/// Construction from an int-shaped value, widened/narrowed to `i{N}` --
+/// mirrors `Ty::Tick`'s own construction rule, see `examples/bitfield.star`.
+#[test]
+fn runtime_bitfield_construction_and_print_end_to_end() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(200 as u8)\n    println(f\"{a}\")\n";
+    let output = compile_and_run("bitfield_construct", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "200");
+}
+
+/// A literal wider than `i32`'s range (so `Checker::infer_expr`'s literal-
+/// magnitude fast path is what makes this legal at all -- an ordinary bare
+/// literal token defaults to `i32`) still constructs a `BitField<64>`
+/// correctly, tagged with the matching-width type rather than truncated back
+/// down to `i32` by the fast path itself.
+#[test]
+fn runtime_bitfield_construction_from_wide_literal_end_to_end() {
+    let src = "fn main():\n    let a: BitField<64> = BitField<64>(5000000000)\n    println(f\"{a}\")\n";
+    let output = compile_and_run("bitfield_wide_literal", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "5000000000");
+}
+
+/// Construction from a value *wider* than `N` truncates (matching `as`'s own
+/// infallible truncating semantics -- there's no fallible-construction path
+/// in this compiler), same as a non-literal source would have to.
+#[test]
+fn runtime_bitfield_construction_truncates_wider_source_end_to_end() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(300)\n    println(f\"{a}\")\n";
+    let output = compile_and_run("bitfield_truncate", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "44");
+}
+
+/// `bit_set`/`bit_get`/`bit_clear`/`bit_toggle` -- the index-based free-
+/// function surface (`&`/`|`/`^`/`~` don't exist as operators in this
+/// language yet, see `Ty::BitField`'s doc comment).
+#[test]
+fn runtime_bitfield_set_get_clear_toggle_end_to_end() {
+    let src = "fn main():\n    let mut a: BitField<8> = BitField<8>(0)\n    a = bit_set(a, 0)\n    a = bit_set(a, 3)\n    \
+               println(f\"{a}\")\n    println(f\"{bit_get(a, 0)}\")\n    println(f\"{bit_get(a, 1)}\")\n    \
+               a = bit_clear(a, 3)\n    println(f\"{a}\")\n    a = bit_toggle(a, 1)\n    println(f\"{a}\")\n";
+    let output = compile_and_run("bitfield_set_get_clear_toggle", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["9", "true", "false", "1", "3"], "{}", stdout);
+}
+
+/// An out-of-range bit index (`>= N`) shifts by a truncated/wrapped amount
+/// rather than trapping -- matching this compiler's existing "safe, not
+/// panicking" convention for other builtin edge cases (e.g. an out-of-bounds
+/// `List<T>` index). `9` truncated to 3 bits (mod 8) is `1`, so `bit_get(a,
+/// 9)` reads the same bit as `bit_get(a, 1)`.
+#[test]
+fn runtime_bitfield_out_of_range_index_wraps_rather_than_traps_end_to_end() {
+    let src = "fn main():\n    println(\"before\")\n    let a: BitField<8> = BitField<8>(2 as u8)\n    \
+               println(f\"{bit_get(a, 1)}\")\n    println(f\"{bit_get(a, 9)}\")\n    println(\"after\")\n";
+    let output = compile_and_run("bitfield_oob_index", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["before", "true", "true", "after"], "{}", stdout);
+}
+
+/// `bit_and`/`bit_or`/`bit_xor`/`bit_not` combine whole registers.
+#[test]
+fn runtime_bitfield_and_or_xor_not_end_to_end() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(12 as u8)\n    let b: BitField<8> = BitField<8>(10 as u8)\n    \
+               println(f\"{bit_and(a, b)}\")\n    println(f\"{bit_or(a, b)}\")\n    println(f\"{bit_xor(a, b)}\")\n    println(f\"{bit_not(a)}\")\n";
+    let output = compile_and_run("bitfield_and_or_xor_not", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["8", "14", "6", "243"], "{}", stdout);
+}
+
+/// `==`/`!=` -- a single bit-pattern comparison, see `Ty::BitField`'s doc
+/// comment.
+#[test]
+fn runtime_bitfield_equality_end_to_end() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(5 as u8)\n    let b: BitField<8> = BitField<8>(5 as u8)\n    \
+               let c: BitField<8> = BitField<8>(6 as u8)\n    println(f\"{a == b}\")\n    println(f\"{a != c}\")\n    println(f\"{a == c}\")\n";
+    let output = compile_and_run("bitfield_equality", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "true", "false"], "{}", stdout);
+}
+
+/// `BitField<N> <-> u{N}` is a free bit-preserving relabel via `as`.
+#[test]
+fn runtime_bitfield_cast_round_trip_end_to_end() {
+    let src = "fn main():\n    let a: BitField<16> = BitField<16>(1000)\n    let raw: u16 = a as u16\n    println(f\"{raw}\")\n    \
+               let back: BitField<16> = raw as BitField<16>\n    println(f\"{a == back}\")\n";
+    let output = compile_and_run("bitfield_cast_roundtrip", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["1000", "true"], "{}", stdout);
+}
+
+/// `BitField<N>` also allows casting to/from the *signed* type at the
+/// matching width (`i16`, not just `u16`) -- it has no declared signedness
+/// of its own (a bit count, not a stored `Ty`), unlike `Wrapping<T>`'s
+/// exact-`Ty`-match cast rule.
+#[test]
+fn runtime_bitfield_cast_to_signed_type_at_same_width_end_to_end() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(200 as u8)\n    let signed: i8 = a as i8\n    println(f\"{signed}\")\n";
+    let output = compile_and_run("bitfield_cast_signed", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    // 200 as an 8-bit two's-complement pattern reinterpreted signed is -56.
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "-56");
+}
+
+/// Every supported width (`8`/`16`/`32`/`64`) lowers correctly, not just the
+/// smallest -- `bit_set` on the top bit of a wide register.
+#[test]
+fn runtime_bitfield_widths_32_and_64_end_to_end() {
+    let src = "fn main():\n    let mut a: BitField<32> = BitField<32>(0)\n    a = bit_set(a, 31)\n    println(f\"{a}\")\n    \
+               let mut b: BitField<64> = BitField<64>(0)\n    b = bit_set(b, 63)\n    println(f\"{b}\")\n";
+    let output = compile_and_run("bitfield_wide_widths", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["2147483648", "9223372036854775808"], "{}", stdout);
+}
+
+/// The `bit_*` free functions aren't restricted to `BitField<N>` itself --
+/// they also work on a plain integer type and on `Wrapping<T>` (`Ty::
+/// bit_shape`'s full set), the retro-register-emulation use case `docs/
+/// design.md`'s "Bit-level types" section motivates this section with.
+#[test]
+fn runtime_bit_ops_on_plain_int_and_wrapping_end_to_end() {
+    let src = "fn main():\n    let reg: i32 = 0\n    let reg2 = bit_set(reg, 4)\n    println(f\"{reg2}\")\n    \
+               let w: Wrapping<u8> = Wrapping<u8>(0 as u8)\n    let w2 = bit_set(w, 7)\n    println(f\"{w2}\")\n";
+    let output = compile_and_run("bit_ops_plain_int_wrapping", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["16", "128"], "{}", stdout);
+}
+
+/// `BitField<N>` is structurally hashable (a bare `i{N}` comparison, like
+/// `Symbol`) -- legal as a `Set<T>` element. Mirrors `runtime_symbol_as_
+/// set_key_dedups_end_to_end`'s regression-test shape: `crate::codegen::eq`'s
+/// generated per-key-type equality function relies on every legal `Map`/
+/// `Set` key type having its own explicit arm, silently falling back to
+/// "always equal" otherwise (the exact bug class `Ty::Symbol` once shipped
+/// with, see `docs/design.md`) -- if `Ty::BitField` were missing its own
+/// `emit_eq_body` arm, every distinct value would collapse into one slot and
+/// this would report `1`, not `3`.
+#[test]
+fn runtime_bitfield_as_set_key_dedups_correctly_end_to_end() {
+    let src = "fn main():\n    let mut s: Set<BitField<8>> = Set<BitField<8>>()\n    \
+               s.insert(BitField<8>(1 as u8))\n    s.insert(BitField<8>(2 as u8))\n    s.insert(BitField<8>(1 as u8))\n    \
+               s.insert(BitField<8>(3 as u8))\n    println(f\"{s.len()}\")\n";
+    let output = compile_and_run("bitfield_set_key_dedup", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "3");
+}
+
+#[test]
+fn rejects_bitfield_with_an_unsupported_bit_width() {
+    let src = "fn main():\n    let a: BitField<7> = BitField<7>(1)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("bit width must be one of 8, 16, 32, 64")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_bitfield_construction_with_non_integer_value() {
+    let src = "fn main():\n    let a = BitField<8>(\"nope\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("expects an integer value")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_bit_get_with_non_integer_index() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(1 as u8)\n    let b = bit_get(a, \"x\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("bit index) expected `int`")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_bit_and_between_mismatched_bitfield_widths() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(1 as u8)\n    let b: BitField<16> = BitField<16>(1)\n    let c = bit_and(a, b)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("must be the same type")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_binop_between_mismatched_bitfield_widths() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(1 as u8)\n    let b: BitField<16> = BitField<16>(1)\n    let c = a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("is not supported between")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_bit_not_on_a_flags_value() {
+    let src = "enum Dir:\n    Up\n    Down\n\nfn main():\n    let f: Flags<Dir> = Flags<Dir>()\n    let g = bit_not(f)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("expects an integer/`Wrapping<T>`/`BitField<N>` value")), "{:?}", diags);
+}
+
+/// `Flags<E>()` starts empty; `flags_with`/`flags_without`/`flags_has`/
+/// `flags_is_empty` build it up and query it -- see `examples/flags.star`.
+#[test]
+fn runtime_flags_construction_with_without_has_is_empty_end_to_end() {
+    let src = "enum Direction:\n    Up\n    Down\n    Left\n    Right\n\n\
+               fn main():\n    let mut m: Flags<Direction> = Flags<Direction>()\n    println(f\"{flags_is_empty(m)}\")\n    \
+               m = flags_with(m, Direction::Up)\n    println(f\"{flags_has(m, Direction::Up)}\")\n    \
+               println(f\"{flags_has(m, Direction::Down)}\")\n    println(f\"{flags_is_empty(m)}\")\n    \
+               m = flags_without(m, Direction::Up)\n    println(f\"{flags_has(m, Direction::Up)}\")\n    \
+               println(f\"{flags_is_empty(m)}\")\n";
+    let output = compile_and_run("flags_construct_with_without", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "true", "false", "false", "false", "true"], "{}", stdout);
+}
+
+/// `Flags<E>(a, b, ...)` -- variadic direct construction from multiple
+/// variants at once, OR'd together.
+#[test]
+fn runtime_flags_variadic_construction_end_to_end() {
+    let src = "enum Direction:\n    Up\n    Down\n    Left\n    Right\n\n\
+               fn main():\n    let diagonal: Flags<Direction> = Flags<Direction>(Direction::Up, Direction::Right)\n    \
+               println(f\"{flags_has(diagonal, Direction::Up)}\")\n    println(f\"{flags_has(diagonal, Direction::Down)}\")\n    \
+               println(f\"{flags_has(diagonal, Direction::Left)}\")\n    println(f\"{flags_has(diagonal, Direction::Right)}\")\n";
+    let output = compile_and_run("flags_variadic_construct", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "false", "false", "true"], "{}", stdout);
+}
+
+/// A *runtime* (non-literal) enum-typed expression works as a `Flags<E>`
+/// construction argument too, not just a literal `EnumName::Variant` --
+/// `Codegen::emit_flags_variant_bit` computes `1i64 << discriminant` from
+/// the already-evaluated value, with no compile-time variant-name lookup.
+#[test]
+fn runtime_flags_construction_from_runtime_enum_value_end_to_end() {
+    let src = "enum Direction:\n    Up\n    Down\n    Left\n    Right\n\n\
+               fn main():\n    let dir: Direction = Direction::Left\n    let f: Flags<Direction> = Flags<Direction>(dir)\n    \
+               println(f\"{flags_has(f, Direction::Left)}\")\n    println(f\"{flags_has(f, Direction::Up)}\")\n";
+    let output = compile_and_run("flags_from_runtime_enum", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "false"], "{}", stdout);
+}
+
+/// `bit_or`/`bit_and`/`bit_xor` on `Flags<E>` implement union/intersect/
+/// symmetric-difference -- safe to share with `Ty::BitField`'s free
+/// functions since both operands only ever have bits set for real declared
+/// variants (see `Ty::Flags`'s doc comment).
+#[test]
+fn runtime_flags_union_intersect_symmetric_difference_end_to_end() {
+    let src = "enum Direction:\n    Up\n    Down\n    Left\n    Right\n\n\
+               fn main():\n    let all_four: Flags<Direction> = Flags<Direction>(Direction::Up, Direction::Down, Direction::Left, Direction::Right)\n    \
+               let vertical: Flags<Direction> = Flags<Direction>(Direction::Up, Direction::Down)\n    \
+               let horizontal: Flags<Direction> = Flags<Direction>(Direction::Left, Direction::Right)\n    \
+               let empty: Flags<Direction> = Flags<Direction>()\n    \
+               println(f\"{bit_or(vertical, horizontal) == all_four}\")\n    \
+               println(f\"{bit_and(vertical, horizontal) == empty}\")\n    \
+               println(f\"{bit_xor(all_four, vertical) == horizontal}\")\n";
+    let output = compile_and_run("flags_union_intersect_symdiff", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "true", "true"], "{}", stdout);
+}
+
+/// `==`/`!=` and `Flags<E> as i64` (a free bit-preserving relabel, for
+/// debugging -- printing the raw mask).
+#[test]
+fn runtime_flags_equality_and_cast_to_i64_end_to_end() {
+    let src = "enum Direction:\n    Up\n    Down\n    Left\n    Right\n\n\
+               fn main():\n    let a: Flags<Direction> = Flags<Direction>(Direction::Up, Direction::Down)\n    \
+               let b: Flags<Direction> = Flags<Direction>(Direction::Up, Direction::Down)\n    \
+               let c: Flags<Direction> = Flags<Direction>(Direction::Left)\n    \
+               println(f\"{a == b}\")\n    println(f\"{a != c}\")\n    \
+               let raw: i64 = a as i64\n    println(f\"{raw}\")\n";
+    let output = compile_and_run("flags_equality_cast", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "true", "3"], "{}", stdout);
+}
+
+/// `Flags<E>` is structurally hashable -- legal as a `Map<K,V>` key. Same
+/// "needs its own explicit `emit_eq_body` arm" regression-test reasoning as
+/// `runtime_bitfield_as_set_key_dedups_correctly_end_to_end` above.
+#[test]
+fn runtime_flags_as_map_key_end_to_end() {
+    let src = "enum Direction:\n    Up\n    Down\n\n\
+               fn main():\n    let mut m: Map<Flags<Direction>, i32> = Map<Flags<Direction>, i32>()\n    \
+               m.insert(Flags<Direction>(Direction::Up), 1)\n    m.insert(Flags<Direction>(Direction::Down), 2)\n    \
+               m.insert(Flags<Direction>(Direction::Up), 3)\n    println(f\"{m.len()}\")\n    \
+               let v = m.get(Flags<Direction>(Direction::Up))\n    \
+               match v:\n        Option::Some(x) -> println(f\"{x}\")\n        Option::None -> println(\"missing\")\n";
+    let output = compile_and_run("flags_as_map_key", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["2", "3"], "{}", stdout);
+}
+
+#[test]
+fn rejects_flags_of_non_enum_type() {
+    let src = "fn main():\n    let a: Flags<i32> = Flags<i32>()\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("requires `E` to be an enum type")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_flags_of_payload_carrying_enum() {
+    let src = "enum Shape:\n    Circle(radius: f32)\n    Point\n\nfn main():\n    let a: Flags<Shape> = Flags<Shape>()\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("requires a fieldless enum")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_flags_variadic_construction_argument_of_wrong_enum_type() {
+    let src = "enum Direction:\n    Up\n    Down\n\nenum Color:\n    Red\n    Blue\n\n\
+               fn main():\n    let a: Flags<Direction> = Flags<Direction>(Color::Red)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("argument 1 expected")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_flags_has_argument_of_wrong_enum_type() {
+    let src = "enum Direction:\n    Up\n    Down\n\nenum Color:\n    Red\n    Blue\n\n\
+               fn main():\n    let f: Flags<Direction> = Flags<Direction>()\n    let b = flags_has(f, Color::Red)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("argument 2 expected")), "{:?}", diags);
+}
+
+#[test]
+fn rejects_flags_with_more_than_64_variants() {
+    let variants: String = (0..65).map(|i| format!("V{}\n", i)).collect::<Vec<_>>().join("    ");
+    let src = format!("enum Big:\n    {}\nfn main():\n    let a: Flags<Big> = Flags<Big>()\n", variants);
+    let module = Driver::parse(&src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("requires 64 or fewer variants")), "{:?}", diags);
+}
+
+#[test]
+fn parses_bitfield_and_flags_type_positions() {
+    let src = "enum Dir:\n    Up\n    Down\n\nfn main():\n    let a: BitField<16> = BitField<16>(0)\n    let b: Flags<Dir> = Flags<Dir>()\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module);
+    assert!(diags.is_ok(), "{:?}", diags.err());
+}

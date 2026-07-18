@@ -443,6 +443,7 @@ fn scan_expr_for_nested_yield(expr: &Expr, errors: &mut Vec<Diagnostic>) {
         Expr::Cast { expr, .. } => scan_expr_for_nested_yield(expr, errors),
         Expr::WrappingNew { value, .. } => scan_expr_for_nested_yield(value, errors),
         Expr::FixedNew { value, .. } => scan_expr_for_nested_yield(value, errors),
+        Expr::BitFieldNew { value, .. } => scan_expr_for_nested_yield(value, errors),
         Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Char(..) | Expr::Ident(..) | Expr::SelfExpr(..) => {}
     }
 }
@@ -666,6 +667,9 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
         Expr::FixedNew { bits, frac, value, span } => {
             Expr::FixedNew { bits: *bits, frac: *frac, value: Box::new(rewrite_expr(value, hoist)), span: *span }
         }
+        Expr::BitFieldNew { bits, value, span } => {
+            Expr::BitFieldNew { bits: *bits, value: Box::new(rewrite_expr(value, hoist)), span: *span }
+        }
     }
 }
 
@@ -752,5 +756,6 @@ fn find_forward_ref_expr(expr: &Expr, undeclared: &HashSet<String>) -> Option<(S
         Expr::Cast { expr, .. } => find_forward_ref_expr(expr, undeclared),
         Expr::WrappingNew { value, .. } => find_forward_ref_expr(value, undeclared),
         Expr::FixedNew { value, .. } => find_forward_ref_expr(value, undeclared),
+        Expr::BitFieldNew { value, .. } => find_forward_ref_expr(value, undeclared),
     }
 }

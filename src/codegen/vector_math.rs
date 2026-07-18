@@ -299,6 +299,16 @@ impl Codegen {
         if matches!((&src_ty, target), (Ty::Symbol, Ty::I64) | (Ty::I64, Ty::Symbol)) {
             return format!("{} {}", target_llty, bare);
         }
+        // `BitField<N> <-> i{N}`/`u{N}`: same free bit-preserving relabel as
+        // `Wrapping<T> <-> T` above -- see `Ty::BitField`'s doc comment.
+        if matches!((&src_ty, target), (Ty::BitField(_), _) | (_, Ty::BitField(_))) {
+            return format!("{} {}", target_llty, bare);
+        }
+        // `Flags<E> <-> i64`: same free bit-preserving relabel as `Symbol <->
+        // i64` above -- see `Ty::Flags`'s doc comment.
+        if matches!((&src_ty, target), (Ty::Flags(_), Ty::I64) | (Ty::I64, Ty::Flags(_))) {
+            return format!("{} {}", target_llty, bare);
+        }
         // `Fixed<Bits,Frac> <-> float/f64`: a true scaled conversion, not a
         // bit reinterpret -- see `Ty::Fixed`'s doc comment.
         if let Ty::Fixed(bits, frac) = &src_ty {
@@ -639,6 +649,42 @@ impl Codegen {
                 }
                 _ => {
                     self.err("only `==`/`!=` are supported between `Symbol` values", Span::dummy());
+                    "%undef".into()
+                }
+            };
+        }
+        // `BitField<N> == BitField<N>` / `!=` -- a single `i{N}` bit-pattern
+        // comparison -- see `Ty::BitField`'s doc comment.
+        if let (Ty::BitField(n), Ty::BitField(_)) = (lty, rty) {
+            return match op {
+                BinOp::Eq | BinOp::Ne => {
+                    let l = self.untag(lhs, lty);
+                    let r = self.untag(rhs, rty);
+                    let pred = if op == BinOp::Eq { "eq" } else { "ne" };
+                    let reg = self.tmp_name();
+                    self.line(&format!("  {} = icmp {} i{} {}, {}", reg, pred, n, l, r));
+                    format!("i1 {}", reg)
+                }
+                _ => {
+                    self.err("only `==`/`!=` are supported between `BitField<N>` values", Span::dummy());
+                    "%undef".into()
+                }
+            };
+        }
+        // `Flags<E> == Flags<E>` / `!=` -- a single `i64` mask comparison --
+        // see `Ty::Flags`'s doc comment.
+        if matches!((lty, rty), (Ty::Flags(_), Ty::Flags(_))) {
+            return match op {
+                BinOp::Eq | BinOp::Ne => {
+                    let l = self.untag(lhs, lty);
+                    let r = self.untag(rhs, rty);
+                    let pred = if op == BinOp::Eq { "eq" } else { "ne" };
+                    let reg = self.tmp_name();
+                    self.line(&format!("  {} = icmp {} i64 {}, {}", reg, pred, l, r));
+                    format!("i1 {}", reg)
+                }
+                _ => {
+                    self.err("only `==`/`!=` are supported between `Flags<E>` values", Span::dummy());
                     "%undef".into()
                 }
             };

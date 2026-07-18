@@ -162,6 +162,23 @@ impl Codegen {
                 self.line(&format!("  {} = icmp eq i64 {}, {}", r, a, b));
                 r
             }
+            // A bare `i{N}` register -- see `Ty::BitField`'s doc comment.
+            // Explicit arm, not the `_` fallback below -- see this match's
+            // own doc comment (and `Ty::Symbol`'s "one real bug" history in
+            // `docs/design.md`) for why a hashable `Ty` with no dedicated arm
+            // here silently collapses every distinct key into one slot.
+            Ty::BitField(n) => {
+                let r = self.tmp_name();
+                self.line(&format!("  {} = icmp eq i{} {}, {}", r, n, a, b));
+                r
+            }
+            // A bare `i64` bitmask -- see `Ty::Flags`'s doc comment. Same
+            // "needs its own explicit arm" reasoning as `Ty::BitField` above.
+            Ty::Flags(_) => {
+                let r = self.tmp_name();
+                self.line(&format!("  {} = icmp eq i64 {}, {}", r, a, b));
+                r
+            }
             // Unreachable in practice -- `Checker::check_hashable_ty` rejects
             // every other `Ty` (GenRef/List/Map/Set/Closure/Ptr/Mat4/Bytes) as
             // a Map/Set key/element type before codegen ever sees one here.
