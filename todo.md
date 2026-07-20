@@ -104,6 +104,73 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Bug-hunting round 6: four parallel deep audits, run as isolated git worktrees and merged back by
+hand afterward (three were pure test-file additions with zero source changes -- `tests/frontend.rs`
+merge conflicts were trivial same-spot-append conflicts, resolved by concatenation), each required
+to reproduce every candidate via a real compile+run before being reported, not just read from code.
+Scope was deliberately the newest, least-audited surface: `BitField<N>`, the `Color`/`Color32`/
+`PaletteIndex`/`Mat2`/`Mat3`/`Quat` geometry types, the SDL2 bindings (going deeper than round 5's
+own SDL pass), and a fourth audit specifically targeting *combinations* of all of the above with
+the existing generic/memory machinery (`List`/`Map`/`Set`/`Ring`/`Table`, generics, `arena`/
+`GenRef`/`Handle`, closures, `par`/`swarm`, reflection) that no single-type audit would think to
+try. 1 confirmed bug found and fixed, a real segfault; 47 new tests added (1096 total, all green,
+up from 1049). Full suite (`cargo +stable-x86_64-pc-windows-gnu test --release`) passes clean after
+the merge.
+
+**Enum payload alignment (1, severe -- a real, reproducible segfault)**:
+1. Any payload enum (`Option<T>`/`Result<T,E>`/a user `enum`) carrying a field of a wide-aligned
+   aggregate type (`Vec3`/`Vec4`/`Mat2`/`Mat3`/`Mat4`/`Quat`/`Color` -- every one a native
+   `<N x float>`/`[N x <N x float>]` LLVM vector/array, 16-byte-aligned on this target) crashed at
+   runtime with `STATUS_ACCESS_VIOLATION`. Root cause: the tagged-union struct (`{ i32 tag,
+   [W x i64] payload }`) is built entirely out of `i32`/`i64`, so LLVM's own struct-layout algorithm
+   computes only 8-byte alignment for it; every `alloca`/heap use of that type therefore got 8-byte
+   alignment, but constructing/reading the payload does an implicit-alignment
+   `store <4 x float> .., <4 x float>* <bitcast>`, which assumes `<4 x float>`'s natural 16-byte
+   alignment when no explicit `align N` is given -- undefined behavior that reliably faulted at
+   `-O0` (this project's own test-harness compile path) but not at `-O2` (`star build`'s CLI
+   default), making it invisible to any check only ever run through the default-optimized CLI.
+   Found via `Map<str, Quat>::get(..)`, which constructs exactly this shape internally
+   (`Codegen::emit_construct_enum_variant` in `map.rs`), confirmed with a real `clang -O0` compile
+   and run before the fix. Fixed by adding `Codegen::enum_payload_needs_wide_align`/
+   `enum_payload_elem_ty` (`src/codegen/mod.rs`): the payload buffer's array element type switches
+   from `i64` to `<2 x i64>` (still 8 bytes/lane, but itself 16-byte-aligned) whenever any variant
+   needs it, letting LLVM's own layout algorithm compute correct alignment/padding everywhere the
+   type is used with no per-call-site `align` overrides needed. `enum_payload_words`/`type_align`/
+   `type_size`'s `Ty::Enum` arms updated to match (`src/codegen/mod.rs`, `expr.rs`, `map.rs`,
+   `rc.rs`, `reflect.rs`, the last so `@export`/`@tweakable` offsets stay consistent for structs
+   containing such an enum field). 2 regression tests added: a direct `-O0` runtime repro and a
+   reflection-offset check around a wide-aligned payload enum field.
+
+**Areas audited with no bugs found** (see each audit's own report for the full list): `BitField<N>`
+across boundary widths (`8`/`16`/`32`/`64`, confirmed no other width is accepted), negative/
+out-of-range bit indices in `bit_get`/`bit_set` (masks via `idx & (width-1)`), sign/truncation
+correctness on construction and casts, cross-width rejection for `bit_and`/`bit_or`/`bit_xor`/`==`/
+ordering/arithmetic, and as a struct field/`List`/`Map`/`Ring`/`Table`/array element/generic
+parameter/closure capture/`Option` payload/`par`-mutated field, plus f-string printing across all
+widths through both codegen tables and reflection offsets; SDL2 multiple simultaneous windows (no
+hidden shared window/renderer cache -- confirmed via `SDL_GetRenderer` re-derivation per call),
+`window_create` with degenerate (negative/zero/huge) dimensions, `draw_rect` with negative/zero
+width or height, a window `ptr` handle round-tripped through a struct field/`List<ptr>`/closure/fn
+return, `key_down`/mouse polling before any `window_create` (before `SDL_Init` has run -- confirmed
+`SDL_GetKeyboardState` still returns a safe zeroed array), double `window_destroy` (correctly hits
+the null-handle abort path via the existing bare-variable-nulling convention), and confirmed
+`swarm` shares `par`'s exact disjointness-check path so round 5's ban-list fix already covers both;
+`Color32`/`PaletteIndex` boundary/truncation behavior, `Mat2`/`Mat3` non-permutation matrix-multiply
+correctness and self-composition (hand-computed expected values), `Quat` Hamilton-product rotation
+about a genuinely non-axis-aligned diagonal axis (hand-computed), `Mat3`'s real LLVM struct-field
+alignment (empirically cross-checked against a standalone `.ll` GEP/ptrtoint probe), swizzle
+read/write edge cases (out-of-order writes, duplicate-component-write rejection, reads on a
+non-lvalue expression result); and the full cross-cutting sweep -- mixed-type structs (`str` +
+`Mat3` + `BitField<16>` + `Color32` + `i32` in one struct) through `arena`/`GenRef`, `List`,
+`Map<str,Color32>`, `Ring<Quat,4>` past capacity, `Table<T>` past growth, generic `fn<T>`/`struct
+Box<T>` instantiated with the new types, closures capturing them by value (confirmed no spurious
+RC-retain/release codegen misapplied to plain-value types), `par`/`swarm` over an arena field of
+each new type under real 4-worker parallelism, `@export`/`@tweakable` reflection offsets across a
+struct mixing all seven new types (hand-verified against real LLVM padding rules), and a struct of
+three new types as a `Set<T>` key (structural-equality dedup).
+
+### Previous round
+
 Follow-up round (not a feature round, not a full audit): closed out the two findings round 5's
 `todo.md` writeup explicitly left unfixed as out-of-scope, rather than opened new ground.
 
