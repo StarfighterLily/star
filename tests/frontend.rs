@@ -17151,3 +17151,278 @@ fn runtime_print_fstring_interpolates_vec_and_mat_aggregates_end_to_end() {
         stdout
     );
 }
+
+// ===== `BitField<N>` broadened interop coverage (bug-hunting audit round
+// focused on this type -- everything below was verified against a real
+// compile+run, not just read from source; see each test's own doc comment
+// for what was specifically being checked and why) =====================
+
+/// A `BitField<N>` struct field must land at the byte offset real LLVM struct
+/// layout actually places it at, not a naive field-size sum -- same "every
+/// field needs alignment padding" class of bug `codegen_reflect_metadata_
+/// offsets_account_for_field_alignment` already covers for `bool`/`i32`/
+/// `str`/`float`, exercised here end to end (not just IR-string offsets) for
+/// a struct that mixes a 1-byte-aligned `BitField<8>` with an 8-byte-aligned
+/// `BitField<64>` followed by a 4-byte-aligned `i32`: `a` must not corrupt
+/// `b`'s bits (or vice versa) once `c` is packed in behind them.
+#[test]
+fn runtime_bitfield_as_struct_field_mixed_alignment_end_to_end() {
+    let src = "struct Reg:\n    a: BitField<8>\n    b: BitField<64>\n    c: i32\n\nfn main():\n    let r = Reg(a = BitField<8>(1 as u8), b = BitField<64>(2), c = 3)\n    println(f\"{r.a}\")\n    println(f\"{r.b}\")\n    println(f\"{r.c}\")\n";
+    let output = compile_and_run("bitfield_struct_field_mixed_alignment", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["1", "2", "3"], "{}", stdout);
+}
+
+/// `List<BitField<N>>`: push/index/len work the same as any other element
+/// type -- `BitField<N>` carries no RC header (see `Ty::BitField`'s doc
+/// comment), so this exercises `List<T>`'s plain-value (non-RC) element path.
+#[test]
+fn runtime_bitfield_as_list_element_end_to_end() {
+    let src = "fn main():\n    let mut xs: List<BitField<8>> = List<BitField<8>>()\n    xs.push(BitField<8>(1 as u8))\n    xs.push(BitField<8>(2 as u8))\n    println(f\"{xs[0]}\")\n    println(f\"{xs[1]}\")\n    println(f\"{xs.len()}\")\n";
+    let output = compile_and_run("bitfield_list_element", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["1", "2", "2"], "{}", stdout);
+}
+
+/// `Map<K, BitField<N>>` as the *value* type (companion to the existing
+/// `runtime_bitfield_as_set_key_dedups_correctly_end_to_end`, which only
+/// exercises `BitField<N>` as a *key*) -- insert/get round-trips the value
+/// unchanged.
+#[test]
+fn runtime_bitfield_as_map_value_end_to_end() {
+    let src = "fn main():\n    let mut m: Map<i32, BitField<16>> = Map<i32, BitField<16>>()\n    m.insert(1, BitField<16>(100))\n    match m.get(1):\n        Option::Some(x) -> println(f\"{x}\")\n        Option::None -> println(\"missing\")\n";
+    let output = compile_and_run("bitfield_map_value", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "100");
+}
+
+/// `Ring<BitField<N>, M>`: indexed push/read, plus `pop()` on an *empty*
+/// ring yielding `BitField<N>`'s zero value (`Codegen`'s `Ty::BitField(..) =>
+/// "0"` zero-value table) rather than garbage/a crash -- mirrors `Ring<T,N>`'s
+/// documented fails-safe convention (see `examples/ring.star`).
+#[test]
+fn runtime_bitfield_as_ring_element_end_to_end() {
+    let src = "fn main():\n    let mut r: Ring<BitField<8>, 3> = Ring<BitField<8>, 3>()\n    r.push(BitField<8>(1 as u8))\n    r.push(BitField<8>(2 as u8))\n    println(f\"{r[0]}\")\n    println(f\"{r[1]}\")\n    let mut empty: Ring<BitField<8>, 2> = Ring<BitField<8>, 2>()\n    println(f\"{empty.pop()}\")\n";
+    let output = compile_and_run("bitfield_ring_element", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["1", "2", "0"], "{}", stdout);
+}
+
+/// `Table<T>` (struct-of-arrays) with a `BitField<8>` column, alongside an
+/// ordinary `i32` column -- each column grows independently, so this checks
+/// the `BitField<8>` column isn't corrupted by the `i32` column's own growth/
+/// reassembly on `push`/indexed read.
+#[test]
+fn runtime_bitfield_as_table_column_end_to_end() {
+    let src = "struct Reg:\n    flags: BitField<8>\n    id: i32\n\nfn main():\n    let mut t: Table<Reg> = Table<Reg>()\n    t.push(Reg(flags = BitField<8>(9 as u8), id = 1))\n    t.push(Reg(flags = BitField<8>(200 as u8), id = 2))\n    println(f\"{t[0].flags}\")\n    println(f\"{t[1].flags}\")\n";
+    let output = compile_and_run("bitfield_table_column", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["9", "200"], "{}", stdout);
+}
+
+/// `[BitField<N>; M]` fixed-size array: the `[value; N]` repeat literal
+/// (the only array-literal form this compiler has) plus an indexed write
+/// mutating one slot without disturbing its neighbors.
+#[test]
+fn runtime_bitfield_as_array_element_end_to_end() {
+    let src = "fn main():\n    let mut arr: [BitField<8>; 3] = [BitField<8>(9 as u8); 3]\n    arr[1] = BitField<8>(200 as u8)\n    println(f\"{arr[0]}\")\n    println(f\"{arr[1]}\")\n    println(f\"{arr[2]}\")\n";
+    let output = compile_and_run("bitfield_array_element", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["9", "200", "9"], "{}", stdout);
+}
+
+/// `BitField<N>` flows through a generic `fn identity<T>(x: T) -> T` type
+/// parameter unchanged, same as any other monomorphized-per-call-site type.
+#[test]
+fn runtime_bitfield_as_generic_fn_param_end_to_end() {
+    let src = "fn identity<T>(x: T) -> T:\n    return x\n\nfn main():\n    let a: BitField<8> = BitField<8>(5 as u8)\n    let b = identity(a)\n    println(f\"{b}\")\n";
+    let output = compile_and_run("bitfield_generic_fn_param", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "5");
+}
+
+/// A closure capturing a `BitField<N>` local reads the captured value
+/// correctly -- `BitField<N>` has no RC header, so this exercises the
+/// plain-scalar-capture path (not the RC-retain-on-capture path `str`/
+/// `List<T>` captures need).
+#[test]
+fn runtime_bitfield_closure_capture_end_to_end() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(5 as u8)\n    let f = fn(): println(f\"{a}\")\n    f()\n";
+    let output = compile_and_run("bitfield_closure_capture", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "5");
+}
+
+/// A `BitField<8>` arena-struct field mutated inside a `par` statement (real
+/// worker threads, see `crate::codegen::par`) via `bit_set` -- every worker
+/// must see its own entity's mutation land, not race/lose an update. Two
+/// entities so a single-worker fallback couldn't accidentally hide a
+/// cross-thread bug.
+#[test]
+fn runtime_bitfield_par_mutation_end_to_end() {
+    let src = "struct Reg:\n    mut flags: BitField<8>\n\narena Regs: Reg\n\nfn main():\n    spawn Regs(BitField<8>(0))\n    spawn Regs(BitField<8>(0))\n    par r in Regs:\n        r.flags = bit_set(r.flags, 3)\n    swarm r in Regs:\n        println(f\"{r.flags}\")\n";
+    let output = compile_and_run("bitfield_par_mutation", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["8", "8"], "{}", stdout);
+}
+
+/// `Option<BitField<N>>` -- a `BitField<N>` payload flows through the builtin
+/// tagged-union `Option` enum (`{ i32 tag, [W x i64] payload }`) and back out
+/// via `match` unchanged.
+#[test]
+fn runtime_bitfield_as_option_payload_end_to_end() {
+    let src = "fn main():\n    let a: Option<BitField<8>> = Option::Some(BitField<8>(42 as u8))\n    match a:\n        Option::Some(x) -> println(f\"{x}\")\n        Option::None -> println(\"none\")\n";
+    let output = compile_and_run("bitfield_option_payload", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
+}
+
+/// Every `BitField<N>` width (`8`/`16`/`32`/`64`) printed through the
+/// *general* f-string value path (an f-string first bound to a `let`, then
+/// passed to `println` as a plain `str` -- `Codegen::emit_expr`'s
+/// `TypedExpr::FStr` arm in `expr.rs`) rather than `println`'s own direct
+/// sole-argument fast path (`emit_print_like` in `builtins.rs`, already
+/// covered by `runtime_bitfield_widths_32_and_64_end_to_end`/
+/// `runtime_bitfield_construction_and_print_end_to_end`) -- a separate
+/// format-specifier table with its own C-varargs-promotion rules per width,
+/// the exact spot round 5 found `Color32`/`PaletteIndex` missing an explicit
+/// arm in one of the two tables but not the other.
+#[test]
+fn runtime_bitfield_fstr_general_value_path_all_widths_end_to_end() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(200 as u8)\n    let b: BitField<16> = BitField<16>(50000)\n    let c: BitField<32> = BitField<32>(4000000000)\n    let d: BitField<64> = BitField<64>(10000000000)\n    let sa = f\"{a}\"\n    let sb = f\"{b}\"\n    let sc = f\"{c}\"\n    let sd = f\"{d}\"\n    println(sa)\n    println(sb)\n    println(sc)\n    println(sd)\n";
+    let output = compile_and_run("bitfield_fstr_general_value_path", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["200", "50000", "4000000000", "10000000000"], "{}", stdout);
+}
+
+/// `expr as BitField<N>` at a matching width is a bit-preserving relabel
+/// (see `Ty::BitField`'s doc comment), not a value-preserving numeric
+/// conversion -- casting a *negative* signed value reinterprets its two's-
+/// complement bit pattern as the unsigned register value (`-1i8`'s bit
+/// pattern `0xFF` prints as `255`, `-1i32`'s `0xFFFFFFFF` prints as
+/// `4294967295`), matching `as`'s existing infallible-truncating convention
+/// rather than e.g. saturating at 0.
+#[test]
+fn runtime_bitfield_cast_from_negative_signed_value_end_to_end() {
+    let src = "fn main():\n    let s: i8 = -1 as i8\n    let bf: BitField<8> = s as BitField<8>\n    println(f\"{bf}\")\n    let s2: i32 = -1\n    let bf2: BitField<32> = s2 as BitField<32>\n    println(f\"{bf2}\")\n";
+    let output = compile_and_run("bitfield_cast_from_negative_signed", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["255", "4294967295"], "{}", stdout);
+}
+
+/// A *negative* bit index behaves the same as an out-of-range positive one
+/// (`runtime_bitfield_out_of_range_index_wraps_rather_than_traps_end_to_end`
+/// above only covers `>= N`): `idx & (width - 1)` is plain two's-complement
+/// bitwise AND, so `-1` (all bits set) masks down to `width - 1` -- the top
+/// bit -- rather than trapping or reading/writing an unrelated bit. Verified
+/// against a real `2u8` register (`00000010`): its bit 7 is `0`, matching
+/// `bit_get(a, 7)` exactly; `bit_set(a, -1)` then sets that same top bit,
+/// yielding `130` (`2 | 128`).
+#[test]
+fn runtime_bitfield_negative_bit_index_masks_like_out_of_range_end_to_end() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(2 as u8)\n    println(f\"{bit_get(a, -1)}\")\n    println(f\"{bit_get(a, 7)}\")\n    let b = bit_set(a, -1)\n    println(f\"{b}\")\n";
+    let output = compile_and_run("bitfield_negative_bit_index", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["false", "false", "130"], "{}", stdout);
+}
+
+/// A packed register has no meaningful "less than" -- `<`/`>`/`<=`/`>=` must
+/// be rejected between two `BitField<N>` values with a located diagnostic
+/// (same "only `==`/`!=`" restriction `Ty::Symbol`/`Ty::Str`/`Ty::Ptr` already
+/// have), not silently accepted or a late codegen crash.
+#[test]
+fn rejects_bitfield_ordering_comparison() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(1 as u8)\n    let b: BitField<8> = BitField<8>(2 as u8)\n    let c = a < b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("only `==`/`!=` are supported between `BitField<N>` values")), "{:?}", diags);
+}
+
+/// `BitField<N>` isn't `is_numeric()` (see `Ty::BitField`'s doc comment: "a
+/// packed register isn't a number to do arithmetic on") -- `+`/`-`/`*` must
+/// be rejected between two `BitField<N>` values with a located diagnostic,
+/// not silently accepted or a late codegen crash.
+#[test]
+fn rejects_bitfield_arithmetic() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(1 as u8)\n    let b: BitField<8> = BitField<8>(2 as u8)\n    let c = a + b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("not supported")), "{:?}", diags);
+}
+
+/// `BitField<N>(value)` only accepts an `int_shape()`-having source (see
+/// `Ty::BitField`'s doc comment) -- `Wrapping<T>` is deliberately excluded
+/// from `int_shape()` too (same "not a number" reasoning), so constructing a
+/// `BitField<N>` directly from a `Wrapping<u8>` must be a clean type error,
+/// not an implicit double-unwrap.
+#[test]
+fn rejects_bitfield_construction_from_wrapping_value() {
+    let src = "fn main():\n    let w: Wrapping<u8> = Wrapping<u8>(5 as u8)\n    let a: BitField<8> = BitField<8>(w)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("`BitField<N>(..)` expects an integer value")), "{:?}", diags);
+}
+
+/// Same reasoning as `rejects_bitfield_construction_from_wrapping_value`,
+/// for a `BitField<M>` source: `BitField<N>(value)`'s construction rule only
+/// accepts `int_shape()`-having values, and `BitField` itself is deliberately
+/// excluded from `int_shape()` -- so `BitField<16>(some_BitField<8>_value)`
+/// must be rejected too (`as`, not a constructor call, is the sanctioned way
+/// to relabel between two `BitField` widths at all, and even that requires
+/// the widths to match exactly).
+#[test]
+fn rejects_bitfield_construction_from_another_bitfield_value() {
+    let src = "fn main():\n    let x: BitField<8> = BitField<8>(5 as u8)\n    let a: BitField<16> = BitField<16>(x)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("`BitField<N>(..)` expects an integer value")), "{:?}", diags);
+}
+
+/// `bit_get`/`bit_set`/`bit_clear`/`bit_toggle`'s bit-index argument must be
+/// exactly `int` (`i32`) -- a `u8` index (a plausible thing to reach for,
+/// since it's a small unsigned count) is rejected with a located diagnostic
+/// rather than silently accepted or truncated, same strictness
+/// `rejects_bit_get_with_non_integer_index` already covers for a `str` index.
+#[test]
+fn rejects_bit_get_index_of_non_int_type() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(1 as u8)\n    let idx: u8 = 3 as u8\n    let b = bit_get(a, idx)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("argument 2 (bit index) expected `int`")), "{:?}", diags);
+}
+
+/// Reflect metadata offsets for `BitField<N>` fields must account for real
+/// alignment/padding across *mixed* widths -- `a: BitField<8>` (1-byte
+/// aligned) followed by `b: BitField<64>` (8-byte aligned) needs 7 bytes of
+/// padding before `b`, same "every field needs its own arm in the alignment
+/// table" class `codegen_reflect_metadata_offsets_account_for_field_
+/// alignment` already covers for `bool`/`i32`/`str`/`float`, exercised here
+/// specifically for `Ty::BitField`'s own `type_align`/`type_size` arms
+/// (`n / 8`).
+#[test]
+fn codegen_reflect_metadata_bitfield_mixed_width_offsets() {
+    let src = "struct Reg:\n    @export a: BitField<8> = BitField<8>(0)\n    @export b: BitField<64> = BitField<64>(0)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("a:0:BitField<8>:export"), "{}", ir);
+    assert!(ir.contains("b:8:BitField<64>:export"), "BitField<64> needs 8-byte alignment after a 1-byte BitField<8>: {}", ir);
+}
