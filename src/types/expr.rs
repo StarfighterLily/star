@@ -2429,6 +2429,89 @@ impl Checker {
                     self.error(format!("`color32_to_color` expects a `Color32` argument, found `{:?}`", arg_tys[0]), span);
                 }
             }
+            // SDL2-backed graphics/input builtins (`todo.md` #4) -- see
+            // `crate::codegen::sdl`.
+            "window_create" => {
+                if arity_ok(3, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Str) {
+                        self.error(format!("`window_create` argument 1 expected `str`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Int) {
+                        self.error(format!("`window_create` argument 2 expected `int`, found `{:?}`", arg_tys[1]), span);
+                    }
+                    if !tys_eq(&arg_tys[2], &Ty::Int) {
+                        self.error(format!("`window_create` argument 3 expected `int`, found `{:?}`", arg_tys[2]), span);
+                    }
+                }
+            }
+            "window_destroy" | "present" | "window_should_close" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                    self.error(format!("`{}` expects a `ptr` argument, found `{:?}`", name, arg_tys[0]), span);
+                }
+            }
+            "clear_screen" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`clear_screen` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Color32) {
+                        self.error(format!("`clear_screen` argument 2 expected `Color32`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "draw_pixel" => {
+                if arity_ok(4, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`draw_pixel` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    for (i, t) in arg_tys[1..3].iter().enumerate() {
+                        if !tys_eq(t, &Ty::Int) {
+                            self.error(format!("`draw_pixel` argument {} expected `int`, found `{:?}`", i + 2, t), span);
+                        }
+                    }
+                    if !tys_eq(&arg_tys[3], &Ty::Color32) {
+                        self.error(format!("`draw_pixel` argument 4 expected `Color32`, found `{:?}`", arg_tys[3]), span);
+                    }
+                }
+            }
+            "draw_rect" => {
+                if arity_ok(6, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`draw_rect` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    for (i, t) in arg_tys[1..5].iter().enumerate() {
+                        if !tys_eq(t, &Ty::Int) {
+                            self.error(format!("`draw_rect` argument {} expected `int`, found `{:?}`", i + 2, t), span);
+                        }
+                    }
+                    if !tys_eq(&arg_tys[5], &Ty::Color32) {
+                        self.error(format!("`draw_rect` argument 6 expected `Color32`, found `{:?}`", arg_tys[5]), span);
+                    }
+                }
+            }
+            "draw_line" => {
+                if arity_ok(6, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`draw_line` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    for (i, t) in arg_tys[1..5].iter().enumerate() {
+                        if !tys_eq(t, &Ty::Int) {
+                            self.error(format!("`draw_line` argument {} expected `int`, found `{:?}`", i + 2, t), span);
+                        }
+                    }
+                    if !tys_eq(&arg_tys[5], &Ty::Color32) {
+                        self.error(format!("`draw_line` argument 6 expected `Color32`, found `{:?}`", arg_tys[5]), span);
+                    }
+                }
+            }
+            "key_down" | "mouse_button_down" | "delay" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Int) {
+                    self.error(format!("`{}` expects an `int` argument, found `{:?}`", name, arg_tys[0]), span);
+                }
+            }
+            "mouse_x" | "mouse_y" | "ticks" => {
+                arity_ok(0, self);
+            }
             _ => {}
         }
     }

@@ -839,6 +839,16 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "color32_r" | "color32_g" | "color32_b" | "color32_a" => Some(Ty::Int),
         "color_to_color32" => Some(Ty::Color32),
         "color32_to_color" => Some(Ty::Color),
+        // SDL2-backed graphics/input builtins (`todo.md` #4 "Graphics /
+        // audio / input bindings") -- see `crate::codegen::sdl`.
+        // `window_create` reuses `Ty::Ptr` as an opaque `SDL_Window*` handle
+        // (null on failure, same convention as `file_open`/`tcp_connect`).
+        "window_create" => Some(Ty::Ptr),
+        "window_destroy" | "clear_screen" | "draw_pixel" | "draw_rect" | "draw_line" | "present" | "delay" => {
+            Some(Ty::Named("unknown".into()))
+        }
+        "window_should_close" | "key_down" | "mouse_button_down" => Some(Ty::Bool),
+        "mouse_x" | "mouse_y" | "ticks" => Some(Ty::Int),
         _ => None,
     }
 }
@@ -884,6 +894,12 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     // Materializes a non-print f-string value (`let s = f"..."`) into an
     // owned `str` buffer -- see `Codegen::emit_expr`'s `TypedExpr::FStr` arm.
     "snprintf",
+    // `window_create`/.../`ticks` builtins -- see `crate::codegen::sdl`.
+    "SDL_Init", "SDL_CreateWindow", "SDL_CreateRenderer", "SDL_GetRenderer",
+    "SDL_DestroyRenderer", "SDL_DestroyWindow", "SDL_SetRenderDrawColor",
+    "SDL_RenderClear", "SDL_RenderDrawPoint", "SDL_RenderFillRect", "SDL_RenderDrawLine",
+    "SDL_RenderPresent", "SDL_PollEvent", "SDL_GetKeyboardState", "SDL_GetMouseState",
+    "SDL_Delay", "SDL_GetTicks",
 ];
 
 /// The error type for type checking.

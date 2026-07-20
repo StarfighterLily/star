@@ -30,6 +30,7 @@ mod par_pool;
 mod rc;
 mod reflect;
 mod ring;
+mod sdl;
 mod set;
 mod stmt;
 mod symbol;
@@ -401,6 +402,34 @@ impl Codegen {
         self.line("declare i32 @closesocket(i8*)");
         self.line("declare i16 @htons(i16)");
         self.line("declare i32 @inet_addr(i8*)");
+        // `window_create`/`window_destroy`/`window_should_close`/
+        // `clear_screen`/`draw_pixel`/`draw_rect`/`draw_line`/`present`/
+        // `key_down`/`mouse_x`/`mouse_y`/`mouse_button_down`/`delay`/`ticks`
+        // builtins (`todo.md` #4 "Graphics / audio / input bindings") -- see
+        // `crate::codegen::sdl`. SDL2 (vendored under `sdl/` at the repo
+        // root) isn't part of this target's implicitly-linked default
+        // libraries, so a Star program calling any of these needs
+        // `-L sdl/lib/x64 -l SDL2` passed explicitly at build time (mirroring
+        // `tcp_*`'s own `-l ws2_32` requirement just above), and
+        // `sdl/lib/x64/SDL2.dll` must be discoverable at run time (next to
+        // the built `.exe`, or on `PATH`).
+        self.line("declare i32 @SDL_Init(i32)");
+        self.line("declare i8* @SDL_CreateWindow(i8*, i32, i32, i32, i32, i32)");
+        self.line("declare i8* @SDL_CreateRenderer(i8*, i32, i32)");
+        self.line("declare i8* @SDL_GetRenderer(i8*)");
+        self.line("declare void @SDL_DestroyRenderer(i8*)");
+        self.line("declare void @SDL_DestroyWindow(i8*)");
+        self.line("declare i32 @SDL_SetRenderDrawColor(i8*, i8, i8, i8, i8)");
+        self.line("declare i32 @SDL_RenderClear(i8*)");
+        self.line("declare i32 @SDL_RenderDrawPoint(i8*, i32, i32)");
+        self.line("declare i32 @SDL_RenderFillRect(i8*, i8*)");
+        self.line("declare i32 @SDL_RenderDrawLine(i8*, i32, i32, i32, i32)");
+        self.line("declare void @SDL_RenderPresent(i8*)");
+        self.line("declare i32 @SDL_PollEvent(i8*)");
+        self.line("declare i8* @SDL_GetKeyboardState(i32*)");
+        self.line("declare i32 @SDL_GetMouseState(i32*, i32*)");
+        self.line("declare void @SDL_Delay(i32)");
+        self.line("declare i32 @SDL_GetTicks()");
         self.line("declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)");
         self.line("declare i32 @WaitForSingleObject(i8*, i32)");
         self.line("declare i32 @CloseHandle(i8*)");

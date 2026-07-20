@@ -566,6 +566,22 @@ impl Codegen {
                     Some("color32_a") => self.emit_color32_channel(args, 3),
                     Some("color_to_color32") => self.emit_color_to_color32(args),
                     Some("color32_to_color") => self.emit_color32_to_color(args),
+                    // SDL2-backed graphics/input builtins (`todo.md` #4) --
+                    // see `crate::codegen::sdl`.
+                    Some("window_create") => self.emit_window_create(args),
+                    Some("window_destroy") => { self.emit_window_destroy(args); "%undef".into() }
+                    Some("window_should_close") => self.emit_window_should_close(args),
+                    Some("clear_screen") => { self.emit_clear_screen(args); "%undef".into() }
+                    Some("draw_pixel") => { self.emit_draw_pixel(args); "%undef".into() }
+                    Some("draw_rect") => { self.emit_draw_rect(args); "%undef".into() }
+                    Some("draw_line") => { self.emit_draw_line(args); "%undef".into() }
+                    Some("present") => { self.emit_present(args); "%undef".into() }
+                    Some("key_down") => self.emit_key_down(args),
+                    Some("mouse_x") => self.emit_mouse_x(),
+                    Some("mouse_y") => self.emit_mouse_y(),
+                    Some("mouse_button_down") => self.emit_mouse_button_down(args),
+                    Some("delay") => { self.emit_delay(args); "%undef".into() }
+                    Some("ticks") => self.emit_ticks(),
                     Some(name) if self.extern_fns.contains(name) => self.emit_extern_call(name, args, expr),
                     _ => self.emit_call_expr(callee, args, expr),
                 }

@@ -7,13 +7,45 @@ Ordered biggest win → smallest, where "win" = how much it unblocks writing use
 programs relative to implementation effort.
 
 ### 4. Graphics / audio / input bindings
-Core to the "game language" pitch but currently 100% aspirational
-(`draw_sprite`, `flash_screen`, `wait` are documented but not implemented).
-Highest effort of the "unlock capability" items — best sequenced after FFI (#1)
-so it's a binding to SDL/similar rather than a from-scratch renderer.
-- Window creation + framebuffer/pixel-blit as the minimal viable slice.
-- Input polling (keyboard/mouse/gamepad).
-- Audio playback (defer to last — least blocking for "useful program" broadly).
+Core to the "game language" pitch.
+- ~~Window creation + framebuffer/pixel-blit as the minimal viable slice~~ --
+  done: SDL2 (vendored under `sdl/` at the repo root) is bound as a fixed set
+  of free-function builtins (`crate::codegen::sdl`), the same "hand-emit
+  calls to an existing C API" shape `file_io.rs`/`net.rs` already
+  established, rather than widening `extern "C" fn` to handle SDL's
+  struct-by-value/callback parameters (a much larger, more general FFI lift
+  the graphics need alone didn't justify). `window_create`/`window_destroy`
+  reuse `Ty::Ptr` as an opaque `SDL_Window*` handle (null on failure, same
+  convention as `file_open`/`tcp_connect`); `clear_screen`/`draw_pixel`/
+  `draw_rect`/`draw_line`/`present` are a minimal immediate-mode 2D
+  framebuffer surface using the existing `Color32` type for pixel color.
+  Every drawing builtin re-derives its `SDL_Renderer*` from the window via
+  `SDL_GetRenderer` rather than the caller juggling two handles. See
+  `examples/graphics.star`.
+- ~~Input polling (keyboard/mouse/gamepad)~~ -- keyboard/mouse done:
+  `key_down(scancode)`/`mouse_x()`/`mouse_y()`/`mouse_button_down(button)`,
+  backed by `SDL_GetKeyboardState`/`SDL_GetMouseState`. `window_should_close`
+  doubles as the required per-frame `SDL_PollEvent` pump (an unpumped SDL
+  event queue makes the OS mark the window "Not Responding" within a couple
+  of seconds) -- draining the whole queue and reporting whether a global
+  `SDL_QUIT` was seen; a per-window close button
+  (`SDL_WINDOWEVENT_CLOSE`)/gamepad input are both a deliberate floor cut,
+  left for later (the same kind of scope cut `net.rs`'s "no hostname
+  resolution" already documents for `tcp_connect`).
+- Audio playback -- still open, deferred as originally planned (least
+  blocking for "useful program" broadly).
+
+Building a program that calls any of these needs SDL2 linked explicitly --
+`star build foo.star -L sdl/lib/x64 -l SDL2` -- and `sdl/lib/x64/SDL2.dll`
+discoverable at run time (next to the built `.exe`, or on `PATH`), the same
+kind of extra-linking requirement `tcp_*`'s `-l ws2_32` already established.
+28 new tests added, all passing end-to-end against a real, headless
+`SDL_VIDEODRIVER=dummy` run (confirmed capable of a full init/create-window/
+create-renderer/draw/read-back cycle before any of this was wired into the
+compiler) rather than just IR-shape assertions -- covering the full window
+lifecycle, a full clear/pixel/rect/line/present frame, keyboard/mouse state,
+real measured `delay`/`ticks` timing, and the null-handle abort path every
+other `ptr`-handle builtin in this codegen already has.
 
 ### 5. Module system: re-exports, search paths, manifest
 Needed once any program grows past a few files. Current system only inlines one
@@ -72,6 +104,61 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Feature round: SDL2 graphics/input bindings (todo.md #4, "window creation + framebuffer/
+pixel-blit" plus "input polling (keyboard/mouse)", deferring gamepad and audio), the item this
+doc's own roadmap flagged as core to the "game language" pitch but 100% aspirational until now
+(`draw_sprite`/`flash_screen`/`wait` were documented in `docs/language_reference.md` with no
+backing implementation at all). A new `sdl/` directory vendored at the repo root (SDL2's
+headers, x64 import lib, and runtime DLL) is bound as a fixed set of free-function builtins
+(`crate::codegen::sdl`) rather than by widening `extern "C" fn` to handle SDL's struct-by-value/
+callback parameters -- the same "hand-emit calls to an existing C API" shape `file_io.rs`/
+`net.rs` already established for `fopen`/Winsock2, reusing `Ty::Ptr` as an opaque `SDL_Window*`
+handle (null on failure, same convention as `file_open`/`tcp_connect`) and the existing
+`Color32` type for pixel color, rather than adding a general struct/callback-passing FFI lift
+the graphics work alone didn't justify.
+
+14 new builtins: `window_create`/`window_destroy`/`window_should_close` (window lifecycle --
+`window_should_close` doubles as the required per-frame `SDL_PollEvent` pump, draining the
+whole queue and reporting whether a global `SDL_QUIT` was seen -- an unpumped SDL event queue
+makes the OS mark a window "Not Responding" within seconds), `clear_screen`/`draw_pixel`/
+`draw_rect`/`draw_line`/`present` (a minimal immediate-mode 2D framebuffer surface), `key_down`/
+`mouse_x`/`mouse_y`/`mouse_button_down` (input polling, backed by `SDL_GetKeyboardState`/
+`SDL_GetMouseState`), `delay`/`ticks` (frame timing, backed by `SDL_Delay`/`SDL_GetTicks`).
+Every drawing/input builtin re-derives its `SDL_Renderer*` from the window handle via
+`SDL_GetRenderer` (a real, cheap SDL2 API for exactly this "one renderer per window" case)
+rather than the caller juggling a second handle. Every null/closed window handle passed to any
+builtin but `window_create` aborts loudly with a diagnostic (`abort_if_null_window`), mirroring
+`file_io.rs`'s `abort_if_null_handle`/`net.rs`'s `abort_if_null_socket`; an out-of-range
+`key_down` scancode or `mouse_button_down` button number is clamped to a safe `false` instead of
+indexing out of bounds or hitting an LLVM `shl` poison value, the same "safe, not panicking"
+fix class `BitField<N>`'s own out-of-range bit index needed last round.
+
+Confirmed via a real empirical spike before writing any codegen: a small hand-written C program
+linked clean against `sdl/lib/x64/SDL2.lib` using this project's existing `x86_64-w64-windows-
+gnu` mingw-target clang (SDL2's MSVC-format import lib links fine under LLD despite the
+mingw target), and `SDL_VIDEODRIVER=dummy` (SDL2's own headless video driver) proved capable of
+a full init/create-window/create-renderer/draw/read-back cycle with no real OS window --
+confirmed by round-tripping a drawn pixel's color back through `SDL_RenderReadPixels` --
+*before* any of this was wired into the compiler, derisking the whole approach up front rather
+than discovering a linking or headless-testing blocker after the fact. 28 new tests added (1040
+total, up from 1012, all green), including real runtime end-to-end coverage (not just IR-shape
+assertions) run against that same `SDL_VIDEODRIVER=dummy` headless driver: the full window
+lifecycle, a full clear/pixel/rect/line/present frame, keyboard/mouse state, a real measured
+`delay(50)`/`ticks()` timing round trip (not a no-op stub), and the null-handle abort path.
+`examples/graphics.star` (a bouncing filled square, quitting on close-request or Escape) is this
+round's own "build one real, non-toy program" contribution to todo.md #8, alongside every prior
+example -- confirmed to run indefinitely under `SDL_VIDEODRIVER=dummy` with no crash via a
+timeout-bounded run. Building any program that calls these needs SDL2 linked explicitly
+(`-L sdl/lib/x64 -l SDL2`, mirroring `tcp_*`'s pre-existing `-l ws2_32` requirement) and
+`sdl/lib/x64/SDL2.dll` discoverable at run time (next to the built `.exe`, or on `PATH`).
+
+Audio playback and gamepad input remain open, deferred as originally planned; a per-window
+close button (`SDL_WINDOWEVENT_CLOSE`, as opposed to the global `SDL_QUIT` this round handles)
+is a smaller, explicitly noted floor cut for a later round, the same kind of scope cut
+`net.rs`'s "no hostname resolution" already documents for `tcp_connect`.
+
+### Previous round
+
 Feature round: `BitField<N>`/`Flags<E>` (docs/design.md §8, "Bit-level types"), closing out
 that section entirely -- the smallest of this doc's remaining type-system tiers, and (per
 §10's own "lowest-effort, highest-value slice" sequencing note) chosen over §5's much larger

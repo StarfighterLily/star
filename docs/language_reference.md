@@ -786,23 +786,63 @@ par e in Entities:
 
 # Render system - read-only (swarm also works)
 swarm e in Entities:
-    draw_sprite(e.x, e.y)
+    draw_rect(window, e.x as i32, e.y as i32, 16, 16, Color32(255, 255, 255, 255))
 ```
+
+### Windowing / Graphics / Input
+
+SDL2-backed: `window_create`/`window_destroy`/`window_should_close` for the
+window lifecycle, `clear_screen`/`draw_pixel`/`draw_rect`/`draw_line`/
+`present` for a 2D immediate-mode framebuffer, `key_down`/`mouse_x`/
+`mouse_y`/`mouse_button_down` for input polling, `delay`/`ticks` for frame
+timing. See `examples/graphics.star` for a complete bouncing-square program.
+Building a program that calls any of these needs SDL2 linked explicitly
+(SDL2 is vendored under `sdl/` at the repo root, not installed system-wide):
+
+```bash
+star build examples/graphics.star -L sdl/lib/x64 -l SDL2
+```
+
+`sdl/lib/x64/SDL2.dll` must also be next to the built `.exe` (or on `PATH`)
+to run it.
+
+```star
+fn main():
+    let w = window_create("My Game", 640, 480)
+    if is_null(w):
+        return
+    while true:
+        if window_should_close(w):
+            break
+        if key_down(41):  # SDL_SCANCODE_ESCAPE
+            break
+        clear_screen(w, Color32(20, 20, 30, 255))
+        draw_rect(w, 100, 100, 40, 40, Color32(80, 180, 255, 255))
+        present(w)
+        delay(16)
+    window_destroy(w)
+```
+
+Audio playback and gamepad input are still open (`todo.md` #4).
 
 ### Sequential Animations
 
 ```star
-sequence AnimateDamage():
-    flash_screen()
+sequence FlashDamage(w: ptr):
+    clear_screen(w, Color32(200, 30, 30, 255))
+    present(w)
+    delay(100)
     yield
-    wait(30)  # Wait 30 frames
-    yield
-    reset_screen()
+    clear_screen(w, Color32(20, 20, 30, 255))
+    present(w)
 
 fn main():
-    let anim = AnimateDamage()
-    while anim.resume():
-        pass
+    let w = window_create("flash", 320, 240)
+    let mut anim = FlashDamage(w)
+    let mut running = true
+    while running:
+        running = anim.resume()
+    window_destroy(w)
 ```
 
 ### Frame-Temporary Calculations

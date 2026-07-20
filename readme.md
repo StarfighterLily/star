@@ -8,6 +8,7 @@ A game programming language with Pythonic-Rust syntax and unique memory manageme
 - **Memory**: Three-tier model — `frame` bump allocators for ephemeral data, spatial `arena`s for level-scoped state, and generational references for cross-arena communication.
 - **Concurrency**: `swarm`/`par` for safe parallel ECS iteration; `sequence` for tick-aware coroutines.
 - **Math**: Native `vec2`/`vec3`/`vec4`/`mat4` types with GLSL-style swizzling.
+- **Graphics/input**: SDL2-backed windowing, 2D framebuffer drawing, and keyboard/mouse polling (`window_create`, `draw_pixel`/`draw_rect`/`draw_line`, `key_down`, ...) — see `examples/graphics.star`.
 - **Reflection**: `@export`/`@tweakable` decorators for hot-reloading.
 
 See [docs/design.md](docs/design.md) and [docs/features.md](docs/features.md) for the full language specification.
