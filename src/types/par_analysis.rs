@@ -14,6 +14,31 @@ use std::collections::HashSet;
 
 use super::*;
 
+/// True for every SDL builtin (`crate::codegen::sdl`) that touches the
+/// shared `SDL_Window`/`SDL_Renderer` object or SDL's process-global input-
+/// event queue -- see `walk_par_expr`'s `TypedExpr::Call` arm for the full
+/// rationale and the confirmed-crash repro. `delay`/`ticks` are
+/// deliberately excluded: `SDL_Delay`/`SDL_GetTicks` don't touch any
+/// window/renderer/event-queue state, so they're as safe as any other pure
+/// builtin here.
+fn is_banned_sdl_builtin_in_par(name: &str) -> bool {
+    matches!(
+        name,
+        "window_create"
+            | "window_destroy"
+            | "window_should_close"
+            | "clear_screen"
+            | "draw_pixel"
+            | "draw_rect"
+            | "draw_line"
+            | "present"
+            | "key_down"
+            | "mouse_x"
+            | "mouse_y"
+            | "mouse_button_down"
+    )
+}
+
 impl Checker {
     pub(super) fn check_par_disjoint(&mut self, var: &str, block: &TypedBlock) {
         let mut locals: HashSet<String> = HashSet::new();
@@ -247,6 +272,38 @@ impl Checker {
                                 "cannot call `{}` inside a par/swarm body: it spawns/despawns entities or opens a \
                                  `frame:` block (directly or through another call), which cannot be proven disjoint \
                                  across worker threads",
+                                name
+                            ),
+                            *span,
+                        );
+                    }
+                    // SDL's window/renderer object and its global input-event
+                    // queue (`crate::codegen::sdl`) are C-library-owned shared
+                    // mutable state that this proof has no visibility into --
+                    // exactly the same blind spot that let `Symbol(..)`/
+                    // `rand(..)` race `@sym.data`/`@rng.state` before those
+                    // were locked (see their own fix write-ups in `todo.md`).
+                    // Unlike those two, though, a lock isn't the right fix
+                    // here: `window_should_close` drains the *entire* event
+                    // queue and the draw/present calls mutate one shared
+                    // on-screen canvas, so even serialized-but-concurrent
+                    // access buys nothing (no independent per-thread result
+                    // the way locked `rand_range` still gives each thread its
+                    // own draw) -- there's no useful "disjoint" reading of
+                    // "draw to the same window from 4 threads at once".
+                    // Confirmed via a real crash: `window_create` + a `par`
+                    // body calling `clear_screen`/`draw_pixel`/`present` on
+                    // the same window handle across 64 entities/500 ticks hit
+                    // SDL's own internal assertion failure ("SetDrawState",
+                    // `viewport != NULL`) from concurrent renderer-state
+                    // corruption in 5/6 runs. Banned the same way
+                    // `spawn`/`despawn`/`frame:` are, rather than locked.
+                    if is_banned_sdl_builtin_in_par(name) {
+                        self.error(
+                            format!(
+                                "cannot call `{}` inside a par/swarm body: it touches SDL's shared window/renderer \
+                                 state or its global input-event queue, which cannot be proven disjoint across \
+                                 worker threads",
                                 name
                             ),
                             *span,

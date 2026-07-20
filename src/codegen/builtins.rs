@@ -72,6 +72,19 @@ impl Codegen {
                             // A bare unsigned `i64` bitmask -- see
                             // `Ty::Flags`'s doc comment.
                             Ty::Flags(_) => { fmt_str.push_str("%llu"); }
+                            // A bare unsigned `i32` packed color -- see
+                            // `Ty::Color32`'s doc comment. Without this arm
+                            // it fell through to the `%p` catch-all below,
+                            // tagging a plain `i32` register as a pointer
+                            // vararg -- the same `clang`/LLVM vararg
+                            // type-mismatch bug class round 4 fixed for
+                            // `i64`/`Wrapping`/`BitField`/`Flags`, just never
+                            // ported to this round's new bare-scalar types.
+                            Ty::Color32 => { fmt_str.push_str("%u"); }
+                            // A bare unsigned `u8` palette slot -- see
+                            // `Ty::PaletteIndex`'s doc comment. Same
+                            // reasoning as `Ty::Color32` just above.
+                            Ty::PaletteIndex => { fmt_str.push_str("%u"); }
                             _ => { fmt_str.push_str("%p"); }
                         }
                         // `emit_expr` may return either a bare register
@@ -146,7 +159,10 @@ impl Codegen {
                     let widened = self.tmp_name();
                     self.line(&format!("  {} = sext {} {} to i32", widened, self.llvm_ty(ty), val));
                     call_args.push(format!("i32 {}", widened));
-                } else if matches!(ty, Ty::U8 | Ty::U16) {
+                } else if matches!(ty, Ty::U8 | Ty::U16 | Ty::PaletteIndex) {
+                    // `PaletteIndex` lowers to a bare `u8` (see its own `Ty`
+                    // doc comment) -- same C variadic-promotion rule as
+                    // `U8`/`U16` just above.
                     let widened = self.tmp_name();
                     self.line(&format!("  {} = zext {} {} to i32", widened, self.llvm_ty(ty), val));
                     call_args.push(format!("i32 {}", widened));

@@ -1207,15 +1207,32 @@ impl Codegen {
                                         call_args.push(format!("i32 {}", bare_val));
                                     }
                                 }
-                                Ty::U8 | Ty::U16 | Ty::U32 => {
+                                // `PaletteIndex` lowers to a bare `u8` -- see
+                                // its own `Ty` doc comment -- so it needs the
+                                // exact same C variadic-promotion `U8`/`U16`
+                                // need.
+                                Ty::U8 | Ty::U16 | Ty::U32 | Ty::PaletteIndex => {
                                     fmt_str.push_str("%u");
-                                    if matches!(ty, Ty::U8 | Ty::U16) {
+                                    if matches!(ty, Ty::U8 | Ty::U16 | Ty::PaletteIndex) {
                                         let widened = self.tmp_name();
                                         self.line(&format!("  {} = zext {} {} to i32", widened, self.llvm_ty(&ty), bare_val));
                                         call_args.push(format!("i32 {}", widened));
                                     } else {
                                         call_args.push(format!("i32 {}", bare_val));
                                     }
+                                }
+                                // A bare unsigned `i32` packed color -- see
+                                // `Ty::Color32`'s doc comment. Without this
+                                // arm it fell through to the `%p` catch-all
+                                // below, tagging a plain `i32` register as a
+                                // pointer vararg -- a real `clang`/LLVM
+                                // vararg type mismatch (confirmed: `f"{c}"`
+                                // for a `Color32` local failed to compile
+                                // with "defined with type 'i32' but expected
+                                // 'ptr'" before this fix).
+                                Ty::Color32 => {
+                                    fmt_str.push_str("%u");
+                                    call_args.push(format!("i32 {}", bare_val));
                                 }
                                 // All three lower to a bare signed `i64` --
                                 // see `Ty::Tick`'s doc comment. `Symbol` is

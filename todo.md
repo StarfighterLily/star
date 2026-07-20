@@ -104,6 +104,93 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Bug-hunting round 5 (not a feature round): three parallel deep audits, run as isolated git
+worktrees and merged back by hand afterward (source patches applied cleanly; two of the three
+audits independently converged on the identical bug and both patched `src/types/
+par_analysis.rs` -- reconciled by keeping one fix and dropping the duplicate, folding both
+audits' regression tests in since they covered distinct call shapes). Scope was the two most
+recently landed, previously unaudited feature surfaces -- SDL2 graphics/input (`todo.md`'s prior
+round) and the geometry/vector-math/quaternion/matrix/palette additions ("Expanded types 8/9")
+-- plus a dedicated cross-cutting sweep. Each audit was required to reproduce every candidate via
+a real `star build`+run (or a real end-to-end `cargo test` case) before reporting it, not just
+read from code. 2 confirmed bugs fixed; 6 new tests added (1046 total, up from 1040, all green).
+Every buildable example still `star build`s cleanly (same pre-existing `examples/geometry_lib.
+star` no-`main`-by-design exception as every prior round).
+
+Two bugs fixed:
+
+1. **SDL2 builtins were fully callable from inside `par`/`swarm` bodies (severe -- real crashes,
+   not just a theoretical race)**: `Checker::unsafe_par_fns`'s ban mechanism (`compute_
+   unsafe_par_fns`) only ever scans user-declared `fn`/`impl` bodies for `spawn`/`despawn`/
+   `frame:`; a builtin free function can never land in that set at all, so nothing stopped a
+   `par` body from calling `window_create`/`draw_pixel`/`clear_screen`/`present`/`window_should_
+   close`/`key_down`/`mouse_x`/`mouse_y`/`mouse_button_down`/`window_destroy`/`draw_rect`/
+   `draw_line` with a captured window handle -- the same blind spot `Symbol(..)`/`rand(..)` had
+   before round 3/4's `@sym.lock`/`@rng.lock` fixes, just reached through a builtin instead of a
+   user function. Confirmed via two independent real repros (`SDL_VIDEODRIVER=dummy`, 64 arena
+   entities across hundreds of ticks all drawing to one shared window/renderer from a `par`
+   body): one run hit SDL's own internal assertion failure (`SetDrawState`, `viewport != NULL`,
+   `SDL_render_sw.c:644`) from concurrent renderer-state corruption; a narrower repro (`draw_
+   pixel`+`clear_screen` racing on the same window) reliably deadlocked outright instead of
+   crashing. Unlike `rand`/`Symbol`, a lock isn't the right fix here -- serializing draws to one
+   shared canvas across 4 worker threads has no useful "each thread gets its own answer" property
+   the way locked `rand_range` still does, and SDL2 itself documents this state as unsafe off the
+   initializing thread. Fixed by banning the 12 hazardous builtins outright from `par`/`swarm`
+   bodies, mirroring the existing `spawn`/`despawn`/`frame:` ban shape (`src/types/par_analysis.
+   rs`); `delay`/`ticks` (`SDL_Delay`/`SDL_GetTicks`, no window/renderer/event state) were tested
+   clean and deliberately left unbanned. 3 new tests.
+2. **`Color32`/`PaletteIndex` f-string interpolation hit an invalid-IR vararg-type mismatch**:
+   round 4's follow-up had ported `emit_print_like`'s full format-specifier/vararg-widening table
+   into the general f-string-as-value path (`TypedExpr::FStr` in `codegen/expr.rs`) for every
+   bare-scalar type, and the immediately-prior round's `BitField<N>`/`Flags<E>` did get arms --
+   but this round's own two newest bare-scalar types, `Color32` (`i32`) and `PaletteIndex`
+   (`u8`), fell through the `_ => "%p"` catch-all in both tables, an inconsistent oversight
+   specific to this round. Confirmed via a real pre-fix `star build`: `f"color: {c}"` for a
+   `Color32` local failed `clang` compilation outright (`'%tN' defined with type 'i32' but
+   expected 'ptr'`, a genuine invalid-IR error, not just a wrong runtime value); the `println(f
+   "...")` direct path compiled but printed the packed value in hex pointer notation instead of
+   decimal, and `PaletteIndex`'s narrower `u8` printed outright garbage since `%p` reads a full
+   pointer-width slot off an unwidened register. Fixed by adding both types' arms to both tables
+   (`src/codegen/builtins.rs`, `src/codegen/expr.rs`). 3 new tests (IR-shape assertion plus two
+   real `clang`-compiled runtime round trips, value path and print-direct path).
+
+**Areas audited with no bugs found** (see each audit's own report for the full list): every SDL
+builtin's null/closed/dangling-handle safety, double-`window_destroy`, `key_down`/`mouse_button_
+down` boundary clamping (exact 511/512, `i32::MIN`/`MAX` edges), `draw_rect`/`draw_line`/`draw_
+pixel`/`clear_screen` with huge/negative/zero-size coordinates, `Color32` out-of-range channel
+construction, an SDL window `ptr` field through arena despawn/respawn cycling, `@export`
+reflection on a `ptr` window-handle field, `window_should_close`'s event-pump correctness across
+both multiple-calls-per-frame and zero-calls-for-many-frames; quaternion/matrix math correctness
+against hand-computed expected values (Hamilton product, 90°-rotation composition, `Mat2`/`Mat3`
+generalization), degenerate inputs (zero-length quaternion normalize produces NaN via plain
+`fdiv`, consistent with this compiler's existing float-op convention), `Color32`/`PaletteIndex`/
+`Palette` RC correctness under 40M-iteration stress, structural equality (including NaN
+non-self-equality, consistent with pre-existing `Vec2`/`Vec3`/`Vec4`), generics (`List<Quat>`,
+`Map<str, Mat4>`), reflection byte-offset/alignment correctness across a mixed-field struct,
+dimension-mismatch rejection (`Mat2 * Mat3`, `Mat2 * Vec3`); a full `unsafe_par_fns` completeness
+audit across every builtin in the codebase (only the SDL gap above was live -- `Symbol`/`rand`'s
+existing locks and every geometry builtin's stateless codegen all verified still correct); mixed
+SDL-`ptr`+`Mat4`+`Flags<E>`+`BitField<N>` struct reflection, `List<Entity>` holding `Mat4`+`str`+
+`Quat` under 5M push/pop cycles, `Ring<Quat,4>`/`[Mat4;3]` OOB/construction, `Table<Row>` pop with
+a mixed `Mat4`+`Option<str>`+`Quat` row, 120-level-deep generic nesting (clean `MAX_EXPR_DEPTH`
+rejection), and an f-string mixing `i64`/`Vec3`/`Quat`/`ptr`/`Color32`/`BitField<64>` in one
+format string.
+
+One out-of-scope finding, explicitly left unfixed: repeated `window_create`/`window_destroy`
+cycling shows unbounded process memory growth under `SDL_VIDEODRIVER=dummy` -- isolated with a
+pure C program linked against the identical vendored `SDL2.dll` doing the same `SDL_Init`/
+`SDL_CreateWindow`/`SDL_CreateRenderer`/`SDL_DestroyRenderer`/`SDL_DestroyWindow` cycle, which
+showed the identical growth pattern, confirming the leak is inherent to the vendored SDL2
+library/dummy-driver's window-recreation path, not Star's codegen (`window_destroy` already
+correctly calls both `SDL_DestroyRenderer` and `SDL_DestroyWindow`). Also noted, also unfixed and
+also pre-existing (not introduced this round): f-string interpolation of aggregate vector/matrix
+types (`Vec2`/`Vec3`/`Vec4`/`Mat4`/`Quat`/`Color`/`Mat2`/`Mat3`) hits the same `%p` catch-all and
+fails to compile identically -- a materially larger fix (real aggregate-value formatting) than
+this round's targeted-fix mandate, and out of scope since it predates every type this round
+touched.
+
+### Previous round
+
 Feature round: SDL2 graphics/input bindings (todo.md #4, "window creation + framebuffer/
 pixel-blit" plus "input polling (keyboard/mouse)", deferring gamepad and audio), the item this
 doc's own roadmap flagged as core to the "game language" pitch but 100% aspirational until now
