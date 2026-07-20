@@ -30,6 +30,23 @@ declare i32 @recv(i8*, i8*, i32, i32)
 declare i32 @closesocket(i8*)
 declare i16 @htons(i16)
 declare i32 @inet_addr(i8*)
+declare i32 @SDL_Init(i32)
+declare i8* @SDL_CreateWindow(i8*, i32, i32, i32, i32, i32)
+declare i8* @SDL_CreateRenderer(i8*, i32, i32)
+declare i8* @SDL_GetRenderer(i8*)
+declare void @SDL_DestroyRenderer(i8*)
+declare void @SDL_DestroyWindow(i8*)
+declare i32 @SDL_SetRenderDrawColor(i8*, i8, i8, i8, i8)
+declare i32 @SDL_RenderClear(i8*)
+declare i32 @SDL_RenderDrawPoint(i8*, i32, i32)
+declare i32 @SDL_RenderFillRect(i8*, i8*)
+declare i32 @SDL_RenderDrawLine(i8*, i32, i32, i32, i32)
+declare void @SDL_RenderPresent(i8*)
+declare i32 @SDL_PollEvent(i8*)
+declare i8* @SDL_GetKeyboardState(i32*)
+declare i32 @SDL_GetMouseState(i32*, i32*)
+declare void @SDL_Delay(i32)
+declare i32 @SDL_GetTicks()
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
@@ -159,6 +176,13 @@ done:
 }
 
 %Enemy = type { i32 }
+%Rect = type { float, float, float, float }
+%Aabb2 = type { <2 x float>, <2 x float> }
+%Aabb3 = type { <3 x float>, <3 x float> }
+%Transform = type { <3 x float>, <4 x float>, <3 x float> }
+%Ray = type { <3 x float>, <3 x float> }
+%Plane = type { <3 x float>, float }
+%Frustum = type { [6 x %Plane] }
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
   %t2 = alloca %Enemy

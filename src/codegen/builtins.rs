@@ -28,6 +28,23 @@ impl Codegen {
                     TypedFStrExpr::Expr(e) => {
                         let val = self.emit_expr(e);
                         let ty = self.expr_ty(e);
+                        // A builtin vector/matrix aggregate (`Vec2`/`Vec3`/
+                        // `Vec4`/`Quat`/`Color`/`Mat2`/`Mat3`/`Mat4`) has no
+                        // single scalar format specifier -- unlike every
+                        // other arm here it expands into several `%f` holes
+                        // plus literal constructor-syntax text, so it's
+                        // handled up front and `continue`s past the
+                        // one-hole-per-value logic below entirely (see
+                        // `emit_agg_fstring_lanes`'s doc comment).
+                        if ty.is_vec() || ty.is_mat() {
+                            let bare_val = self.untag(&val, &ty);
+                            let (frag, lanes) = self.emit_agg_fstring_lanes(&ty, &bare_val);
+                            fmt_str.push_str(&frag);
+                            for lane in lanes {
+                                arg_vals.push((lane, Ty::Float));
+                            }
+                            continue;
+                        }
                         // `Fixed<Bits,Frac>` has no format specifier of its
                         // own -- print it as a human-readable decimal via the
                         // same scaled-conversion the `as float`/`as f64` cast

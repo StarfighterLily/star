@@ -1168,6 +1168,25 @@ impl Codegen {
                         TypedFStrExpr::Expr(e) => {
                             let val = self.emit_expr(e);
                             let ty = self.expr_ty(e);
+                            // A builtin vector/matrix aggregate has no single
+                            // scalar format specifier -- see
+                            // `emit_agg_fstring_lanes`'s doc comment (shared
+                            // with `emit_print_like`'s identical up-front
+                            // special case). Each lane is widened to `double`
+                            // here directly (this path builds `call_args`
+                            // inline in one pass, unlike `emit_print_like`'s
+                            // two-pass `(val, Ty)` widening).
+                            if ty.is_vec() || ty.is_mat() {
+                                let bare_val = self.untag(&val, &ty);
+                                let (frag, lanes) = self.emit_agg_fstring_lanes(&ty, &bare_val);
+                                fmt_str.push_str(&frag);
+                                for lane in lanes {
+                                    let widened = self.tmp_name();
+                                    self.line(&format!("  {} = fpext float {} to double", widened, lane));
+                                    call_args.push(format!("double {}", widened));
+                                }
+                                continue;
+                            }
                             // `Fixed<Bits,Frac>` has no format specifier of
                             // its own -- print it as a human-readable decimal
                             // via the same scaled-conversion the `as float`/

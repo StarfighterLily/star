@@ -194,6 +194,25 @@ impl Codegen {
     /// `WSACleanup`, the OS tears the whole process's SDL state down at exit
     /// anyway, and `SDL_Init`/`SDL_Quit` calls must otherwise stay balanced
     /// (SDL ref-counts subsystem init), which this floor doesn't track.
+    ///
+    /// A repeated `window_create`/`window_destroy` cycle grows process memory
+    /// under `SDL_VIDEODRIVER=dummy` (SDL2's headless video driver, used only
+    /// for this project's own headless test runs) -- confirmed (see
+    /// `todo.md`'s bug-hunting-round-5 writeup) via both a pure C program
+    /// linked against the identical vendored `SDL2.dll` and this codegen's
+    /// own compiled output. A follow-up investigation isolated this further:
+    /// sampling process working-set across 400 cycles under the *real*
+    /// `windows` video driver (what an actual built/shipped Star program
+    /// uses -- nothing sets `SDL_VIDEODRIVER` in normal operation) plateaus
+    /// and fluctuates in a ~20-36MB steady-state band with no sustained
+    /// growth, while the identical 400 cycles under `dummy` climbs
+    /// monotonically past 200MB. The growth is real but confined to the
+    /// `dummy` driver's own window-recreation path -- it does not reproduce
+    /// with a real window, so no shipped Star program is affected, and there
+    /// is no codegen change that would fix a driver-internal accounting bug
+    /// this floor has no access to anyway. Left unfixed for that reason; not
+    /// a live risk unless a *test* cycles windows hundreds of times in one
+    /// process under `dummy` (nothing in this project's own test suite does).
     pub(super) fn emit_window_destroy(&mut self, args: &[TypedExpr]) {
         let Some(arg) = args.first() else {
             self.err("window_destroy(..) expects 1 argument", Span::dummy());

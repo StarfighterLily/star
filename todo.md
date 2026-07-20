@@ -104,6 +104,56 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Follow-up round (not a feature round, not a full audit): closed out the two findings round 5's
+`todo.md` writeup explicitly left unfixed as out-of-scope, rather than opened new ground.
+
+1. **F-string interpolation of aggregate vector/matrix types
+   (`Vec2`/`Vec3`/`Vec4`/`Mat4`/`Quat`/`Color`/`Mat2`/`Mat3`), fixed**: both f-string codegen paths
+   (`emit_print_like` in `src/codegen/builtins.rs`, and the general `TypedExpr::FStr`-as-value path
+   in `src/codegen/expr.rs`) only ever special-cased bare scalar types -- every builtin aggregate
+   fell through the `%p` catch-all in both, tagging a `<N x float>`/`[N x <N x float>]` register as
+   a pointer vararg (confirmed via a real pre-fix `star build` failure, the identical invalid-IR
+   `clang` vararg-type-mismatch bug class round 5's own `Color32`/`PaletteIndex` fix addressed, just
+   for the much larger remaining set of non-scalar builtin types). Fixed with a new shared helper,
+   `Codegen::emit_agg_fstring_lanes` (`src/codegen/vector_math.rs`), called from both paths: reads
+   every lane of a vector (`extractelement`) or every row-then-lane of a matrix
+   (`extractvalue`+`extractelement`), formats the result as that type's own constructor-call syntax
+   (`Vec2(1.000000, 2.000000)`, `Mat2(Vec2(1.000000, 0.000000), Vec2(0.000000, 1.000000))`) so the
+   printed form round-trips as valid Star source, and widens each lane to `double` per C's variadic
+   promotion rule (mirroring every existing `Ty::Float` arm in both tables). 3 new tests (1049
+   total, up from 1046, all green): an IR-shape assertion (format-fragment and vararg-type
+   correctness for `Vec2`/`Mat2`), and two real `clang`-compiled runtime round trips covering all
+   eight aggregate types across both the value path and the `println(f"...")` direct path,
+   including a non-identity `Mat3` and an aggregate mixed with an ordinary scalar in one f-string.
+2. **`window_create`/`window_destroy` cycling memory growth, root-caused further (still not a
+   Star-codegen fix, but now a materially different, much narrower finding)**: round 5 confirmed
+   the growth reproduces identically in a pure C program linked against the same vendored
+   `SDL2.dll`, concluding it was "inherent to the vendored SDL2 library" without pinning down
+   whether that was true of SDL2 generally or specific to the headless driver both the C repro and
+   Star's own tests use (`SDL_VIDEODRIVER=dummy`). Isolated the variable directly: sampled real
+   process working-set (`Get-Process`'s `WorkingSet64`, polled every 300ms) across 400
+   `window_create`/`window_destroy` cycles of Star's own compiled output (not just the earlier C
+   repro), once under `SDL_VIDEODRIVER=dummy` and once with no driver override (the real `windows`
+   driver every actually-shipped Star program uses, since nothing sets `SDL_VIDEODRIVER` in normal
+   operation). Under `dummy`, working-set climbed monotonically and unboundedly from ~2MB past
+   ~207MB over the 400 cycles, matching round 5's finding exactly; under the real driver, it rose
+   during the first few cycles and then plateaued, fluctuating in a ~20-36MB steady-state band with
+   no sustained growth for the remaining ~390 cycles -- a real leak, but confined entirely to
+   `SDL_VIDEODRIVER=dummy`'s own window-recreation path. Left unfixed for the same reason as
+   before (no codegen change reaches into a vendored driver's internal accounting), but the
+   practical conclusion is now materially better than round 5 left it: no actually-shipped Star
+   program is affected, since none of them run under the dummy driver -- only a test process that
+   itself cycled windows hundreds of times in a single headless run would be at risk, and nothing
+   in this project's own test suite does that (every existing SDL test creates/destroys a small,
+   fixed number of windows). Documented at the fix's natural home,
+   `Codegen::emit_window_destroy`'s doc comment (`src/codegen/sdl.rs`), so a future round doesn't
+   re-derive this from scratch or mistake it for a live risk to real programs.
+
+All 65 buildable examples still `star build` cleanly (same pre-existing
+`examples/geometry_lib.star` no-`main`-by-design exception as every prior round).
+
+### Previous round
+
 Bug-hunting round 5 (not a feature round): three parallel deep audits, run as isolated git
 worktrees and merged back by hand afterward (source patches applied cleanly; two of the three
 audits independently converged on the identical bug and both patched `src/types/

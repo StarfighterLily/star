@@ -1169,6 +1169,85 @@ impl Codegen {
         self.line(&format!("  call i32 @ReleaseSemaphore(i8* {}, i32 1, i32* null)", lock_h));
     }
 
+    /// Shared by both f-string codegen paths (`emit_print_like` in
+    /// `builtins.rs`, and the general `TypedExpr::FStr`-as-value path in
+    /// `expr.rs`) to interpolate a builtin vector/matrix aggregate
+    /// (`Vec2`/`Vec3`/`Vec4`/`Quat`/`Color`/`Mat2`/`Mat3`/`Mat4`) -- these all
+    /// fell through both paths' `%p` catch-all before this (see this fix's
+    /// changelog entry in `todo.md`), tagging a plain `<N x float>`/`[N x <N
+    /// x float>]` aggregate register as a pointer vararg, an invalid-IR
+    /// `clang` compile failure exactly like `Color32`/`PaletteIndex`'s
+    /// earlier one-off fix (this generalizes that fix to every remaining
+    /// bare-aggregate type instead of one-off `%p` arms). Formats as its own
+    /// constructor call syntax (`Vec2(1.000000, 2.000000)`,
+    /// `Mat2(Vec2(...), Vec2(...))`) so the printed form is valid Star source
+    /// round-tripping the value, mirroring `examples/matrices.star`'s own
+    /// `Mat2(Vec2(...), Vec2(...))` construction shape.
+    ///
+    /// Returns `(literal_format_fragment, bare_f32_lane_registers)` --
+    /// `literal_format_fragment` is ordinary literal text (constructor name/
+    /// parens/commas) plus one `%f` per lane, meant to be appended directly
+    /// to the caller's running format string (no `%`-escaping needed, none of
+    /// `Vec2(`/`, `/`)` contain a literal `%`); the lane registers are bare,
+    /// unwidened `float` registers in constructor-argument order (row-major
+    /// for matrices) -- the caller widens each to `double` for the `%f`
+    /// vararg slot itself, since the two call sites do that widening through
+    /// different mechanisms (`builtins.rs`'s two-pass `(val, Ty)` widening
+    /// vs. `expr.rs`'s inline widening).
+    pub(super) fn emit_agg_fstring_lanes(&mut self, ty: &Ty, bare_val: &str) -> (String, Vec<String>) {
+        if let Some(arity) = ty.vec_arity() {
+            let name = match ty {
+                Ty::Vec2 => "Vec2",
+                Ty::Vec3 => "Vec3",
+                Ty::Vec4 => "Vec4",
+                Ty::Quat => "Quat",
+                Ty::Color => "Color",
+                _ => unreachable!("vec_arity() only returns Some for Vec2/Vec3/Vec4/Quat/Color"),
+            };
+            let t = self.llvm_ty(ty);
+            let mut lanes = Vec::with_capacity(arity as usize);
+            for i in 0..arity as u32 {
+                let lane = self.tmp_name();
+                self.line(&format!("  {} = extractelement {} {}, i32 {}", lane, t, bare_val, i));
+                lanes.push(lane);
+            }
+            let holes = vec!["%f"; arity as usize].join(", ");
+            (format!("{}({})", name, holes), lanes)
+        } else if let Some(dim) = ty.mat_dim() {
+            let name = match ty {
+                Ty::Mat2 => "Mat2",
+                Ty::Mat3 => "Mat3",
+                Ty::Mat4 => "Mat4",
+                _ => unreachable!("mat_dim() only returns Some for Mat2/Mat3/Mat4"),
+            };
+            let row_ty = Ty::vec_of_arity(dim as u8).expect("mat_dim is always 2, 3, or 4");
+            let row_name = match row_ty {
+                Ty::Vec2 => "Vec2",
+                Ty::Vec3 => "Vec3",
+                Ty::Vec4 => "Vec4",
+                _ => unreachable!("vec_of_arity(2/3/4) only returns Vec2/Vec3/Vec4"),
+            };
+            let row_llty = self.llvm_ty(&row_ty);
+            let mat_t = self.llvm_ty(ty);
+            let mut lanes = Vec::with_capacity((dim * dim) as usize);
+            let mut row_fmts = Vec::with_capacity(dim as usize);
+            for i in 0..dim {
+                let row = self.tmp_name();
+                self.line(&format!("  {} = extractvalue {} {}, {}", row, mat_t, bare_val, i));
+                for j in 0..dim {
+                    let lane = self.tmp_name();
+                    self.line(&format!("  {} = extractelement {} {}, i32 {}", lane, row_llty, row, j));
+                    lanes.push(lane);
+                }
+                let holes = vec!["%f"; dim as usize].join(", ");
+                row_fmts.push(format!("{}({})", row_name, holes));
+            }
+            (format!("{}({})", name, row_fmts.join(", ")), lanes)
+        } else {
+            unreachable!("emit_agg_fstring_lanes only called for is_vec()/is_mat() types")
+        }
+    }
+
     pub(super) fn emit_assign_binop(&mut self, lhs: &str, lty: &Ty, rhs: &str, rty: &Ty, op: AssignOp) -> String {
         let bin_op = match op {
             AssignOp::Add => BinOp::Add,
