@@ -2512,6 +2512,49 @@ impl Checker {
             "mouse_x" | "mouse_y" | "ticks" => {
                 arity_ok(0, self);
             }
+            "str_contains" | "str_starts_with" | "str_ends_with" | "str_index_of" => {
+                if arity_ok(2, self) {
+                    for (i, t) in arg_tys.iter().enumerate() {
+                        if !tys_eq(t, &Ty::Str) {
+                            self.error(format!("`{}` argument {} expected `str`, found `{:?}`", name, i + 1, t), span);
+                        }
+                    }
+                }
+            }
+            "str_trim" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Str) {
+                    self.error(format!("`str_trim` expects a `str` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "str_replace" => {
+                if arity_ok(3, self) {
+                    for (i, t) in arg_tys.iter().enumerate() {
+                        if !tys_eq(t, &Ty::Str) {
+                            self.error(format!("`str_replace` argument {} expected `str`, found `{:?}`", i + 1, t), span);
+                        }
+                    }
+                }
+            }
+            "str_split" => {
+                if arity_ok(2, self) {
+                    for (i, t) in arg_tys.iter().enumerate() {
+                        if !tys_eq(t, &Ty::Str) {
+                            self.error(format!("`str_split` argument {} expected `str`, found `{:?}`", i + 1, t), span);
+                        }
+                    }
+                }
+            }
+            "str_join" => {
+                if arity_ok(2, self) {
+                    let list_ok = matches!(&arg_tys[0], Ty::List(inner) if **inner == Ty::Str) || is_placeholder(&arg_tys[0]);
+                    if !list_ok {
+                        self.error(format!("`str_join` argument 1 expected `List<str>`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Str) {
+                        self.error(format!("`str_join` argument 2 expected `str`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
             _ => {}
         }
     }

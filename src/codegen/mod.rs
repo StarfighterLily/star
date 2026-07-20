@@ -377,6 +377,23 @@ impl Codegen {
         // `str`-keyed `Map`/`Set` structural equality -- see
         // `crate::codegen::eq`.
         self.line("declare i32 @strcmp(i8*, i8*)");
+        // `str_starts_with`/`str_ends_with`/`str_contains`/`str_index_of`/
+        // `str_replace`/`str_split` builtins -- see
+        // `crate::codegen::builtins`/`crate::codegen::list`.
+        self.line("declare i8* @strstr(i8*, i8*)");
+        self.line("declare i32 @strncmp(i8*, i8*, i64)");
+        // A shared, process-wide empty-string constant -- every new `str_*`
+        // builtin normalizes a possibly-`null` `str` argument (a struct
+        // field/local never assigned still has `Ty::Str`'s zero value, plain
+        // `null`, see `Codegen::zero_value`) to this real, non-null pointer
+        // via `Codegen::emit_str_or_empty` before handing it to `strlen`/
+        // `strstr`/`strncmp`/`strcmp`, all of which are undefined behavior on
+        // a genuine null pointer -- rather than branching around every call
+        // site individually the way `emit_str_index`/`emit_ord` do, since a
+        // `select` against one shared constant collapses that null-check into
+        // a single straight-line instruction reusable by every one of these
+        // builtins.
+        self.line("@str.empty = private unnamed_addr constant [1 x i8] c\"\\00\"");
         // `file_open`/`file_read`/`file_read_line`/`file_write`/
         // `file_close`/`file_exists` builtins -- see `crate::codegen::file_io`.
         self.line("declare i8* @fopen(i8*, i8*)");

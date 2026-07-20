@@ -678,6 +678,451 @@ impl Codegen {
         buf
     }
 
+    /// Normalizes a possibly-`null` `str` value (`Ty::Str`'s zero value, see
+    /// `Codegen::zero_value` -- a struct field/local `str` never assigned
+    /// still holds this) to a real, non-null pointer at the shared `@str.
+    /// empty` global (see its own declaration comment in `Codegen::
+    /// emit_builtins`) via a single `select`, so every `str_*` builtin below
+    /// can pass the result straight to `strlen`/`strstr`/`strncmp`/`strcmp`
+    /// without a per-call-site null branch -- all four are undefined
+    /// behavior on a genuine null pointer, the same class of bug
+    /// `emit_ptr_to_str`'s doc comment already documents for `strlen`.
+    /// `raw`'s own ownership is untouched: the caller still releases exactly
+    /// the value `emit_raw_str_ptr` handed back (releasing is a no-op on
+    /// `null`, so this is safe regardless of which operand `select` picked).
+    pub(super) fn emit_str_or_empty(&mut self, raw: &str) -> String {
+        let is_null = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i8* {}, null", is_null, raw));
+        let norm = self.tmp_name();
+        self.line(&format!(
+            "  {} = select i1 {}, i8* getelementptr inbounds ([1 x i8], [1 x i8]* @str.empty, i64 0, i64 0), i8* {}",
+            norm, is_null, raw
+        ));
+        norm
+    }
+
+    /// `true` iff `byte_reg` (an `i8`) is ASCII whitespace (space/tab/
+    /// newline/CR/vertical-tab/form-feed) -- the same six bytes C's own
+    /// `isspace` recognizes in the "C" locale, used by `emit_str_trim`.
+    fn emit_is_ascii_ws(&mut self, byte_reg: &str) -> String {
+        let mut acc: Option<String> = None;
+        for b in [32, 9, 10, 13, 11, 12] {
+            let eq = self.tmp_name();
+            self.line(&format!("  {} = icmp eq i8 {}, {}", eq, byte_reg, b));
+            acc = Some(match acc {
+                None => eq,
+                Some(prev) => {
+                    let combined = self.tmp_name();
+                    self.line(&format!("  {} = or i1 {}, {}", combined, prev, eq));
+                    combined
+                }
+            });
+        }
+        acc.expect("six literal iterations always produce a value")
+    }
+
+    /// `str_contains(s, needle) -> bool`: `true` iff `needle` occurs anywhere
+    /// in `s` (an empty `needle` always matches, mirroring `strstr`'s own C
+    /// semantics -- every string "contains" the empty string).
+    pub(super) fn emit_str_contains(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 2 {
+            self.err("str_contains(..) expects 2 arguments", Span::dummy());
+            return "i1 false".into();
+        }
+        let s_raw = self.emit_raw_str_ptr(&args[0]);
+        let n_raw = self.emit_raw_str_ptr(&args[1]);
+        let s = self.emit_str_or_empty(&s_raw);
+        let n = self.emit_str_or_empty(&n_raw);
+        let found = self.tmp_name();
+        self.line(&format!("  {} = call i8* @strstr(i8* {}, i8* {})", found, s, n));
+        let result = self.tmp_name();
+        self.line(&format!("  {} = icmp ne i8* {}, null", result, found));
+        self.line(&format!("  call void @star_rc_release(i8* {})", s_raw));
+        self.line(&format!("  call void @star_rc_release(i8* {})", n_raw));
+        format!("i1 {}", result)
+    }
+
+    /// `str_starts_with(s, prefix) -> bool`. An empty `prefix` always
+    /// matches: `strncmp` comparing zero bytes trivially returns equal.
+    pub(super) fn emit_str_starts_with(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 2 {
+            self.err("str_starts_with(..) expects 2 arguments", Span::dummy());
+            return "i1 false".into();
+        }
+        let s_raw = self.emit_raw_str_ptr(&args[0]);
+        let p_raw = self.emit_raw_str_ptr(&args[1]);
+        let s = self.emit_str_or_empty(&s_raw);
+        let p = self.emit_str_or_empty(&p_raw);
+        let plen32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", plen32, p));
+        let plen64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", plen64, plen32));
+        let cmp = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strncmp(i8* {}, i8* {}, i64 {})", cmp, s, p, plen64));
+        let result = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, 0", result, cmp));
+        self.line(&format!("  call void @star_rc_release(i8* {})", s_raw));
+        self.line(&format!("  call void @star_rc_release(i8* {})", p_raw));
+        format!("i1 {}", result)
+    }
+
+    /// `str_ends_with(s, suffix) -> bool`. A `suffix` longer than `s` never
+    /// matches (checked up front, so the tail-offset computation below never
+    /// goes negative); an empty `suffix` always matches for the same reason
+    /// `str_starts_with`'s empty `prefix` does.
+    pub(super) fn emit_str_ends_with(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 2 {
+            self.err("str_ends_with(..) expects 2 arguments", Span::dummy());
+            return "i1 false".into();
+        }
+        let s_raw = self.emit_raw_str_ptr(&args[0]);
+        let suf_raw = self.emit_raw_str_ptr(&args[1]);
+        let s = self.emit_str_or_empty(&s_raw);
+        let suf = self.emit_str_or_empty(&suf_raw);
+        let slen32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", slen32, s));
+        let suflen32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", suflen32, suf));
+        let too_long = self.tmp_name();
+        self.line(&format!("  {} = icmp ugt i32 {}, {}", too_long, suflen32, slen32));
+        let cmp_label = self.block_label("ends_with_cmp");
+        let false_label = self.block_label("ends_with_false");
+        let end_label = self.block_label("ends_with_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", too_long, false_label, cmp_label));
+
+        self.open_block(&cmp_label);
+        let offset32 = self.tmp_name();
+        self.line(&format!("  {} = sub i32 {}, {}", offset32, slen32, suflen32));
+        let offset64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", offset64, offset32));
+        let tail = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", tail, s, offset64));
+        let cmp = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strcmp(i8* {}, i8* {})", cmp, tail, suf));
+        let res_cmp = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, 0", res_cmp, cmp));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&false_label);
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
+        let result = self.tmp_name();
+        self.line(&format!("  {} = phi i1 [ {}, %{} ], [ false, %{} ]", result, res_cmp, cmp_label, false_label));
+        self.line(&format!("  call void @star_rc_release(i8* {})", s_raw));
+        self.line(&format!("  call void @star_rc_release(i8* {})", suf_raw));
+        format!("i1 {}", result)
+    }
+
+    /// `str_index_of(s, needle) -> int`: the byte offset of `needle`'s first
+    /// occurrence in `s`, or `-1` if it doesn't occur at all (an empty
+    /// `needle` always matches at offset `0`, `strstr`'s own convention).
+    pub(super) fn emit_str_index_of(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 2 {
+            self.err("str_index_of(..) expects 2 arguments", Span::dummy());
+            return "i32 -1".into();
+        }
+        let s_raw = self.emit_raw_str_ptr(&args[0]);
+        let n_raw = self.emit_raw_str_ptr(&args[1]);
+        let s = self.emit_str_or_empty(&s_raw);
+        let n = self.emit_str_or_empty(&n_raw);
+        let found = self.tmp_name();
+        self.line(&format!("  {} = call i8* @strstr(i8* {}, i8* {})", found, s, n));
+        let is_null = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i8* {}, null", is_null, found));
+        let found_label = self.block_label("index_of_found");
+        let notfound_label = self.block_label("index_of_notfound");
+        let end_label = self.block_label("index_of_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, notfound_label, found_label));
+
+        self.open_block(&found_label);
+        let found64 = self.tmp_name();
+        self.line(&format!("  {} = ptrtoint i8* {} to i64", found64, found));
+        let s64 = self.tmp_name();
+        self.line(&format!("  {} = ptrtoint i8* {} to i64", s64, s));
+        let diff64 = self.tmp_name();
+        self.line(&format!("  {} = sub i64 {}, {}", diff64, found64, s64));
+        let diff32 = self.tmp_name();
+        self.line(&format!("  {} = trunc i64 {} to i32", diff32, diff64));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&notfound_label);
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
+        let result = self.tmp_name();
+        self.line(&format!("  {} = phi i32 [ {}, %{} ], [ -1, %{} ]", result, diff32, found_label, notfound_label));
+        self.line(&format!("  call void @star_rc_release(i8* {})", s_raw));
+        self.line(&format!("  call void @star_rc_release(i8* {})", n_raw));
+        format!("i32 {}", result)
+    }
+
+    /// `str_trim(s) -> str`: a fresh, owned copy of `s` with leading/trailing
+    /// ASCII whitespace (`emit_is_ascii_ws`'s six bytes) removed. An
+    /// all-whitespace (or empty) `s` yields an empty `str`, not `null` --
+    /// same "a fresh empty allocation, not the bare zero value" convention
+    /// `Codegen::zero_value_rc` documents for `List<str>::pop()`/`s[oob]`.
+    pub(super) fn emit_str_trim(&mut self, args: &[TypedExpr]) -> String {
+        let Some(arg) = args.first() else {
+            self.err("str_trim(..) expects 1 argument", Span::dummy());
+            return "i8* null".into();
+        };
+        let raw = self.emit_raw_str_ptr(arg);
+        let s = self.emit_str_or_empty(&raw);
+        let len32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", len32, s));
+        let len64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", len64, len32));
+
+        let start_ptr = self.tmp_name();
+        self.line(&format!("  {} = alloca i64", start_ptr));
+        self.line(&format!("  store i64 0, i64* {}", start_ptr));
+
+        let start_cond = self.block_label("trim_start_cond");
+        let start_body = self.block_label("trim_start_body");
+        let start_incr = self.block_label("trim_start_incr");
+        let start_done = self.block_label("trim_start_done");
+        self.line(&format!("  br label %{}", start_cond));
+
+        self.open_block(&start_cond);
+        let st = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", st, start_ptr));
+        let in_range = self.tmp_name();
+        self.line(&format!("  {} = icmp slt i64 {}, {}", in_range, st, len64));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_range, start_body, start_done));
+
+        self.open_block(&start_body);
+        let cptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", cptr, s, st));
+        let c = self.tmp_name();
+        self.line(&format!("  {} = load i8, i8* {}", c, cptr));
+        let is_ws = self.emit_is_ascii_ws(&c);
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_ws, start_incr, start_done));
+
+        self.open_block(&start_incr);
+        let st2 = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", st2, st));
+        self.line(&format!("  store i64 {}, i64* {}", st2, start_ptr));
+        self.line(&format!("  br label %{}", start_cond));
+
+        self.open_block(&start_done);
+        let start_final = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", start_final, start_ptr));
+
+        let end_ptr = self.tmp_name();
+        self.line(&format!("  {} = alloca i64", end_ptr));
+        self.line(&format!("  store i64 {}, i64* {}", len64, end_ptr));
+
+        let end_cond = self.block_label("trim_end_cond");
+        let end_body = self.block_label("trim_end_body");
+        let end_decr = self.block_label("trim_end_decr");
+        let end_done = self.block_label("trim_end_done");
+        self.line(&format!("  br label %{}", end_cond));
+
+        self.open_block(&end_cond);
+        let en = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", en, end_ptr));
+        let above_start = self.tmp_name();
+        self.line(&format!("  {} = icmp sgt i64 {}, {}", above_start, en, start_final));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", above_start, end_body, end_done));
+
+        self.open_block(&end_body);
+        let idx = self.tmp_name();
+        self.line(&format!("  {} = sub i64 {}, 1", idx, en));
+        let cptr2 = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", cptr2, s, idx));
+        let c2 = self.tmp_name();
+        self.line(&format!("  {} = load i8, i8* {}", c2, cptr2));
+        let is_ws2 = self.emit_is_ascii_ws(&c2);
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_ws2, end_decr, end_done));
+
+        self.open_block(&end_decr);
+        self.line(&format!("  store i64 {}, i64* {}", idx, end_ptr));
+        self.line(&format!("  br label %{}", end_cond));
+
+        self.open_block(&end_done);
+        let end_final = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", end_final, end_ptr));
+
+        let seg_len = self.tmp_name();
+        self.line(&format!("  {} = sub i64 {}, {}", seg_len, end_final, start_final));
+        let total = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", total, seg_len));
+        let buf = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", buf, total));
+        let src = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", src, s, start_final));
+        self.line(&format!("  call i8* @memcpy(i8* {}, i8* {}, i64 {})", buf, src, seg_len));
+        let nul = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", nul, buf, seg_len));
+        self.line(&format!("  store i8 0, i8* {}", nul));
+        self.line(&format!("  call void @star_rc_release(i8* {})", raw));
+        format!("i8* {}", buf)
+    }
+
+    /// `str_replace(s, old, new) -> str`: every non-overlapping occurrence of
+    /// `old` in `s` replaced with `new`, scanned left to right. An empty
+    /// `old` returns an unmodified copy of `s` rather than attempting to
+    /// "replace between every character" (the behavior an unguarded
+    /// `strstr(s, "")` scan would otherwise loop on forever, since it always
+    /// matches at the current position without advancing) -- a deliberate,
+    /// documented scope cut, the same "safe, not a footgun" stance this
+    /// codebase already takes for other builtins' degenerate inputs.
+    pub(super) fn emit_str_replace(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 3 {
+            self.err("str_replace(..) expects 3 arguments", Span::dummy());
+            return "i8* null".into();
+        }
+        let s_raw = self.emit_raw_str_ptr(&args[0]);
+        let old_raw = self.emit_raw_str_ptr(&args[1]);
+        let new_raw = self.emit_raw_str_ptr(&args[2]);
+        let s = self.emit_str_or_empty(&s_raw);
+        let old = self.emit_str_or_empty(&old_raw);
+        let new = self.emit_str_or_empty(&new_raw);
+
+        let old_len32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", old_len32, old));
+        let old_len64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", old_len64, old_len32));
+        let is_old_empty = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i64 {}, 0", is_old_empty, old_len64));
+
+        let empty_old_label = self.block_label("replace_empty_old");
+        let real_label = self.block_label("replace_real");
+        let done_label = self.block_label("replace_done");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_old_empty, empty_old_label, real_label));
+
+        self.open_block(&empty_old_label);
+        let s_len32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", s_len32, s));
+        let s_len64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", s_len64, s_len32));
+        let total0 = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", total0, s_len64));
+        let buf0 = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", buf0, total0));
+        self.line(&format!("  call i8* @strcpy(i8* {}, i8* {})", buf0, s));
+        self.line(&format!("  br label %{}", done_label));
+
+        self.open_block(&real_label);
+        let new_len32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", new_len32, new));
+        let new_len64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", new_len64, new_len32));
+
+        // Pass 1: count non-overlapping matches.
+        let count_ptr = self.tmp_name();
+        self.line(&format!("  {} = alloca i64", count_ptr));
+        self.line(&format!("  store i64 0, i64* {}", count_ptr));
+        let cur_ptr = self.tmp_name();
+        self.line(&format!("  {} = alloca i8*", cur_ptr));
+        self.line(&format!("  store i8* {}, i8** {}", s, cur_ptr));
+
+        let count_cond = self.block_label("replace_count_cond");
+        let count_body = self.block_label("replace_count_body");
+        let count_done = self.block_label("replace_count_done");
+        self.line(&format!("  br label %{}", count_cond));
+
+        self.open_block(&count_cond);
+        let cur = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** {}", cur, cur_ptr));
+        let found = self.tmp_name();
+        self.line(&format!("  {} = call i8* @strstr(i8* {}, i8* {})", found, cur, old));
+        let is_null = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i8* {}, null", is_null, found));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, count_done, count_body));
+
+        self.open_block(&count_body);
+        let cnt = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", cnt, count_ptr));
+        let cnt2 = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", cnt2, cnt));
+        self.line(&format!("  store i64 {}, i64* {}", cnt2, count_ptr));
+        let newcur = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", newcur, found, old_len64));
+        self.line(&format!("  store i8* {}, i8** {}", newcur, cur_ptr));
+        self.line(&format!("  br label %{}", count_cond));
+
+        self.open_block(&count_done);
+        let final_count = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", final_count, count_ptr));
+
+        let s_len32b = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", s_len32b, s));
+        let s_len64b = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", s_len64b, s_len32b));
+        let delta = self.tmp_name();
+        self.line(&format!("  {} = sub i64 {}, {}", delta, new_len64, old_len64));
+        let extra = self.tmp_name();
+        self.line(&format!("  {} = mul i64 {}, {}", extra, final_count, delta));
+        let total_len = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, {}", total_len, s_len64b, extra));
+        let total_alloc = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", total_alloc, total_len));
+        let buf = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", buf, total_alloc));
+
+        // Pass 2: build the output, copying each pre-match segment plus
+        // `new` in place of every match, then the unmatched tail.
+        let cur2_ptr = self.tmp_name();
+        self.line(&format!("  {} = alloca i8*", cur2_ptr));
+        self.line(&format!("  store i8* {}, i8** {}", s, cur2_ptr));
+        let write_ptr = self.tmp_name();
+        self.line(&format!("  {} = alloca i8*", write_ptr));
+        self.line(&format!("  store i8* {}, i8** {}", buf, write_ptr));
+
+        let build_cond = self.block_label("replace_build_cond");
+        let build_body = self.block_label("replace_build_body");
+        let build_done = self.block_label("replace_build_done");
+        self.line(&format!("  br label %{}", build_cond));
+
+        self.open_block(&build_cond);
+        let cur2 = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** {}", cur2, cur2_ptr));
+        let found2 = self.tmp_name();
+        self.line(&format!("  {} = call i8* @strstr(i8* {}, i8* {})", found2, cur2, old));
+        let is_null2 = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i8* {}, null", is_null2, found2));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_null2, build_done, build_body));
+
+        self.open_block(&build_body);
+        let found2_64 = self.tmp_name();
+        self.line(&format!("  {} = ptrtoint i8* {} to i64", found2_64, found2));
+        let cur2_64 = self.tmp_name();
+        self.line(&format!("  {} = ptrtoint i8* {} to i64", cur2_64, cur2));
+        let seg_len = self.tmp_name();
+        self.line(&format!("  {} = sub i64 {}, {}", seg_len, found2_64, cur2_64));
+        let wptr = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** {}", wptr, write_ptr));
+        self.line(&format!("  call i8* @memcpy(i8* {}, i8* {}, i64 {})", wptr, cur2, seg_len));
+        let wptr2 = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", wptr2, wptr, seg_len));
+        self.line(&format!("  call i8* @memcpy(i8* {}, i8* {}, i64 {})", wptr2, new, new_len64));
+        let wptr3 = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", wptr3, wptr2, new_len64));
+        self.line(&format!("  store i8* {}, i8** {}", wptr3, write_ptr));
+        let newcur2 = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", newcur2, found2, old_len64));
+        self.line(&format!("  store i8* {}, i8** {}", newcur2, cur2_ptr));
+        self.line(&format!("  br label %{}", build_cond));
+
+        self.open_block(&build_done);
+        let cur2f = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** {}", cur2f, cur2_ptr));
+        let wptrf = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** {}", wptrf, write_ptr));
+        self.line(&format!("  call i8* @strcpy(i8* {}, i8* {})", wptrf, cur2f));
+        self.line(&format!("  br label %{}", done_label));
+
+        self.open_block(&done_label);
+        let result = self.tmp_name();
+        self.line(&format!("  {} = phi i8* [ {}, %{} ], [ {}, %{} ]", result, buf0, empty_old_label, buf, build_done));
+        self.line(&format!("  call void @star_rc_release(i8* {})", s_raw));
+        self.line(&format!("  call void @star_rc_release(i8* {})", old_raw));
+        self.line(&format!("  call void @star_rc_release(i8* {})", new_raw));
+        format!("i8* {}", result)
+    }
+
     /// `null_ptr() -> ptr`: the constant `i8* null`.
     pub(super) fn emit_null_ptr(&mut self) -> String {
         "i8* null".into()

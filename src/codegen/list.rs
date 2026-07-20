@@ -246,6 +246,360 @@ impl Codegen {
         format!("i8* {}", buf)
     }
 
+    /// Shared growable-buffer push for `emit_str_split`'s result list: the
+    /// exact same doubling/`malloc`/`memcpy`/`free` recipe `Symbol`'s intern
+    /// table (`crate::codegen::symbol`) and `List<T>::push` both already use,
+    /// just against three local `alloca`s (`data_slot: i8***`, `len_slot`/
+    /// `cap_slot: i64*`) instead of a struct's heap fields or standalone
+    /// globals -- `str_split`'s result length isn't known ahead of the scan,
+    /// so it can't be sized once like `emit_list_lit`/`emit_args` do.
+    /// Hardcodes an 8-byte element stride since every element pushed here is
+    /// a `str` (`i8*`, pointer-width) -- not a generic helper, unlike
+    /// `list_release_thunk_operand`'s per-element-type cache.
+    fn emit_dynamic_str_list_push(&mut self, data_slot: &str, len_slot: &str, cap_slot: &str, value: &str) {
+        let len = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", len, len_slot));
+        let cap = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", cap, cap_slot));
+        let needs_grow = self.tmp_name();
+        self.line(&format!("  {} = icmp sge i64 {}, {}", needs_grow, len, cap));
+        let grow_label = self.block_label("dynstr_grow");
+        let store_label = self.block_label("dynstr_store");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", needs_grow, grow_label, store_label));
+
+        self.open_block(&grow_label);
+        let doubled = self.tmp_name();
+        self.line(&format!("  {} = mul i64 {}, 2", doubled, cap));
+        let has_cap = self.tmp_name();
+        self.line(&format!("  {} = icmp sgt i64 {}, 0", has_cap, doubled));
+        let new_cap = self.tmp_name();
+        self.line(&format!("  {} = select i1 {}, i64 {}, i64 4", new_cap, has_cap, doubled));
+        let new_bytes = self.tmp_name();
+        self.line(&format!("  {} = mul i64 {}, 8", new_bytes, new_cap));
+        let new_raw = self.tmp_name();
+        self.line(&format!("  {} = call i8* @malloc(i64 {})", new_raw, new_bytes));
+        let new_data = self.tmp_name();
+        self.line(&format!("  {} = bitcast i8* {} to i8**", new_data, new_raw));
+        let had_data = self.tmp_name();
+        self.line(&format!("  {} = icmp sgt i64 {}, 0", had_data, cap));
+        let copy_label = self.block_label("dynstr_copy");
+        let after_copy_label = self.block_label("dynstr_after_copy");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", had_data, copy_label, after_copy_label));
+
+        self.open_block(&copy_label);
+        let old_data = self.tmp_name();
+        self.line(&format!("  {} = load i8**, i8*** {}", old_data, data_slot));
+        let old_bytes = self.tmp_name();
+        self.line(&format!("  {} = mul i64 {}, 8", old_bytes, len));
+        let old_raw = self.tmp_name();
+        self.line(&format!("  {} = bitcast i8** {} to i8*", old_raw, old_data));
+        self.line(&format!("  call i8* @memcpy(i8* {}, i8* {}, i64 {})", new_raw, old_raw, old_bytes));
+        self.line(&format!("  call void @free(i8* {})", old_raw));
+        self.line(&format!("  br label %{}", after_copy_label));
+
+        self.open_block(&after_copy_label);
+        self.line(&format!("  store i8** {}, i8*** {}", new_data, data_slot));
+        self.line(&format!("  store i64 {}, i64* {}", new_cap, cap_slot));
+        self.line(&format!("  br label %{}", store_label));
+
+        self.open_block(&store_label);
+        let data_now = self.tmp_name();
+        self.line(&format!("  {} = load i8**, i8*** {}", data_now, data_slot));
+        let slot = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8*, i8** {}, i64 {}", slot, data_now, len));
+        self.line(&format!("  store i8* {}, i8** {}", value, slot));
+        let new_len = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", new_len, len));
+        self.line(&format!("  store i64 {}, i64* {}", new_len, len_slot));
+    }
+
+    /// `str_split(s, sep) -> List<str>`: `s` cut at every non-overlapping
+    /// occurrence of `sep`, `sep` itself discarded (matching Rust/Python's
+    /// `str::split` -- an empty `sep`-adjacent segment, e.g. from a leading/
+    /// trailing/doubled `sep`, is kept as an empty `str` element rather than
+    /// filtered out). An empty `sep` can't be scanned this way (`strstr(s,
+    /// "")` always matches at the current position without advancing, an
+    /// infinite loop) -- rather than looping forever or picking an arbitrary
+    /// per-character-split convention, this returns a single-element list
+    /// holding all of `s` unchanged, the same "safe, documented scope cut"
+    /// stance `emit_str_replace` takes for an empty `old`.
+    pub(super) fn emit_str_split(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 2 {
+            self.err("str_split(..) expects 2 arguments", Span::dummy());
+            return "i8* null".into();
+        }
+        let s_raw = self.emit_raw_str_ptr(&args[0]);
+        let sep_raw = self.emit_raw_str_ptr(&args[1]);
+        let s = self.emit_str_or_empty(&s_raw);
+        let sep = self.emit_str_or_empty(&sep_raw);
+        let sep_len32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", sep_len32, sep));
+        let sep_len64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", sep_len64, sep_len32));
+
+        let data_slot = self.tmp_name();
+        self.line(&format!("  {} = alloca i8**", data_slot));
+        self.line(&format!("  store i8** null, i8*** {}", data_slot));
+        let len_slot = self.tmp_name();
+        self.line(&format!("  {} = alloca i64", len_slot));
+        self.line(&format!("  store i64 0, i64* {}", len_slot));
+        let cap_slot = self.tmp_name();
+        self.line(&format!("  {} = alloca i64", cap_slot));
+        self.line(&format!("  store i64 0, i64* {}", cap_slot));
+
+        let is_sep_empty = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i64 {}, 0", is_sep_empty, sep_len64));
+        let single_label = self.block_label("split_single");
+        let scan_label = self.block_label("split_scan_init");
+        let finish_label = self.block_label("split_finish");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_sep_empty, single_label, scan_label));
+
+        self.open_block(&single_label);
+        let s_len32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", s_len32, s));
+        let s_len64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", s_len64, s_len32));
+        let total0 = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", total0, s_len64));
+        let owned0 = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", owned0, total0));
+        self.line(&format!("  call i8* @strcpy(i8* {}, i8* {})", owned0, s));
+        self.emit_dynamic_str_list_push(&data_slot, &len_slot, &cap_slot, &owned0);
+        self.line(&format!("  br label %{}", finish_label));
+
+        self.open_block(&scan_label);
+        let cur_slot = self.tmp_name();
+        self.line(&format!("  {} = alloca i8*", cur_slot));
+        self.line(&format!("  store i8* {}, i8** {}", s, cur_slot));
+
+        let scan_cond = self.block_label("split_scan_cond");
+        let match_label = self.block_label("split_match");
+        let tail_label = self.block_label("split_tail");
+        self.line(&format!("  br label %{}", scan_cond));
+
+        self.open_block(&scan_cond);
+        let cur = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** {}", cur, cur_slot));
+        let found = self.tmp_name();
+        self.line(&format!("  {} = call i8* @strstr(i8* {}, i8* {})", found, cur, sep));
+        let is_null = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i8* {}, null", is_null, found));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, tail_label, match_label));
+
+        self.open_block(&match_label);
+        let found64 = self.tmp_name();
+        self.line(&format!("  {} = ptrtoint i8* {} to i64", found64, found));
+        let cur64 = self.tmp_name();
+        self.line(&format!("  {} = ptrtoint i8* {} to i64", cur64, cur));
+        let seg_len = self.tmp_name();
+        self.line(&format!("  {} = sub i64 {}, {}", seg_len, found64, cur64));
+        let total = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", total, seg_len));
+        let owned = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", owned, total));
+        self.line(&format!("  call i8* @memcpy(i8* {}, i8* {}, i64 {})", owned, cur, seg_len));
+        let nul = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", nul, owned, seg_len));
+        self.line(&format!("  store i8 0, i8* {}", nul));
+        self.emit_dynamic_str_list_push(&data_slot, &len_slot, &cap_slot, &owned);
+        let newcur = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", newcur, found, sep_len64));
+        self.line(&format!("  store i8* {}, i8** {}", newcur, cur_slot));
+        self.line(&format!("  br label %{}", scan_cond));
+
+        self.open_block(&tail_label);
+        let curf = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** {}", curf, cur_slot));
+        let tail_len32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", tail_len32, curf));
+        let tail_len64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", tail_len64, tail_len32));
+        let total2 = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", total2, tail_len64));
+        let owned2 = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", owned2, total2));
+        self.line(&format!("  call i8* @strcpy(i8* {}, i8* {})", owned2, curf));
+        self.emit_dynamic_str_list_push(&data_slot, &len_slot, &cap_slot, &owned2);
+        self.line(&format!("  br label %{}", finish_label));
+
+        self.open_block(&finish_label);
+        self.line(&format!("  call void @star_rc_release(i8* {})", s_raw));
+        self.line(&format!("  call void @star_rc_release(i8* {})", sep_raw));
+
+        let elem_ty = Ty::Str;
+        let payload_ty = self.list_payload_llvm_ty(&elem_ty);
+        let release_fn = self.list_release_thunk_operand(&elem_ty);
+        let obj_raw = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 24, i8* {})", obj_raw, release_fn));
+        let payload = self.tmp_name();
+        self.line(&format!("  {} = bitcast i8* {} to {}*", payload, obj_raw, payload_ty));
+        let data_field = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0", data_field, payload_ty, payload_ty, payload));
+        let data_final = self.tmp_name();
+        self.line(&format!("  {} = load i8**, i8*** {}", data_final, data_slot));
+        self.line(&format!("  store i8** {}, i8*** {}", data_final, data_field));
+        let len_field = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 1", len_field, payload_ty, payload_ty, payload));
+        let len_final = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", len_final, len_slot));
+        self.line(&format!("  store i64 {}, i64* {}", len_final, len_field));
+        let cap_field = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 2", cap_field, payload_ty, payload_ty, payload));
+        let cap_final = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", cap_final, cap_slot));
+        self.line(&format!("  store i64 {}, i64* {}", cap_final, cap_field));
+
+        format!("i8* {}", obj_raw)
+    }
+
+    /// `str_join(parts, sep) -> str`: every element of `parts` concatenated
+    /// in order, with `sep` inserted between consecutive elements (not
+    /// before the first or after the last) -- the inverse of `str_split`
+    /// with a non-empty `sep`. An empty `parts` list yields an empty `str`.
+    /// A `null` element (a `List<str>` can hold one -- e.g. `List<str>()`'s
+    /// never-pushed slots, unreachable in practice since `push` is the only
+    /// way to grow one, but not a type-level impossibility) is treated as
+    /// empty, same as every other `str_*` builtin's null-normalization.
+    pub(super) fn emit_str_join(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 2 {
+            self.err("str_join(..) expects 2 arguments", Span::dummy());
+            return "i8* null".into();
+        }
+        let (data, len) = self.list_fields(&args[0], &Ty::Str);
+        let sep_raw = self.emit_raw_str_ptr(&args[1]);
+        let sep = self.emit_str_or_empty(&sep_raw);
+        let sep_len32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", sep_len32, sep));
+        let sep_len64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", sep_len64, sep_len32));
+
+        // Pass 1: total output size.
+        let total_slot = self.tmp_name();
+        self.line(&format!("  {} = alloca i64", total_slot));
+        self.line(&format!("  store i64 0, i64* {}", total_slot));
+        let i_slot = self.tmp_name();
+        self.line(&format!("  {} = alloca i64", i_slot));
+        self.line(&format!("  store i64 0, i64* {}", i_slot));
+
+        let sum_cond = self.block_label("join_sum_cond");
+        let sum_body = self.block_label("join_sum_body");
+        let sum_done = self.block_label("join_sum_done");
+        self.line(&format!("  br label %{}", sum_cond));
+
+        self.open_block(&sum_cond);
+        let i = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", i, i_slot));
+        let has_more = self.tmp_name();
+        self.line(&format!("  {} = icmp slt i64 {}, {}", has_more, i, len));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", has_more, sum_body, sum_done));
+
+        self.open_block(&sum_body);
+        let eptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8*, i8** {}, i64 {}", eptr, data, i));
+        let elem = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** {}", elem, eptr));
+        let elem_n = self.emit_str_or_empty(&elem);
+        let elen32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", elen32, elem_n));
+        let elen64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", elen64, elen32));
+        let t = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", t, total_slot));
+        let t2 = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, {}", t2, t, elen64));
+        self.line(&format!("  store i64 {}, i64* {}", t2, total_slot));
+        let i2 = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", i2, i));
+        self.line(&format!("  store i64 {}, i64* {}", i2, i_slot));
+        self.line(&format!("  br label %{}", sum_cond));
+
+        self.open_block(&sum_done);
+        let base_total = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", base_total, total_slot));
+        let is_zero_len = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i64 {}, 0", is_zero_len, len));
+        let len_m1 = self.tmp_name();
+        self.line(&format!("  {} = sub i64 {}, 1", len_m1, len));
+        let gaps = self.tmp_name();
+        self.line(&format!("  {} = select i1 {}, i64 0, i64 {}", gaps, is_zero_len, len_m1));
+        let gap_bytes = self.tmp_name();
+        self.line(&format!("  {} = mul i64 {}, {}", gap_bytes, gaps, sep_len64));
+        let total = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, {}", total, base_total, gap_bytes));
+        let total_alloc = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", total_alloc, total));
+        let buf = self.tmp_name();
+        self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", buf, total_alloc));
+
+        // Pass 2: build the output.
+        let wptr_slot = self.tmp_name();
+        self.line(&format!("  {} = alloca i8*", wptr_slot));
+        self.line(&format!("  store i8* {}, i8** {}", buf, wptr_slot));
+        let j_slot = self.tmp_name();
+        self.line(&format!("  {} = alloca i64", j_slot));
+        self.line(&format!("  store i64 0, i64* {}", j_slot));
+
+        let build_cond = self.block_label("join_build_cond");
+        let build_body = self.block_label("join_build_body");
+        let build_done = self.block_label("join_build_done");
+        self.line(&format!("  br label %{}", build_cond));
+
+        self.open_block(&build_cond);
+        let j = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", j, j_slot));
+        let has_more2 = self.tmp_name();
+        self.line(&format!("  {} = icmp slt i64 {}, {}", has_more2, j, len));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", has_more2, build_body, build_done));
+
+        self.open_block(&build_body);
+        let eptr2 = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8*, i8** {}, i64 {}", eptr2, data, j));
+        let elem2 = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** {}", elem2, eptr2));
+        let elem2n = self.emit_str_or_empty(&elem2);
+        let elen2_32 = self.tmp_name();
+        self.line(&format!("  {} = call i32 @strlen(i8* {})", elen2_32, elem2n));
+        let elen2_64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", elen2_64, elen2_32));
+        let wp = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** {}", wp, wptr_slot));
+        self.line(&format!("  call i8* @memcpy(i8* {}, i8* {}, i64 {})", wp, elem2n, elen2_64));
+        let wp2 = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", wp2, wp, elen2_64));
+        let j_plus1 = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", j_plus1, j));
+        let has_next = self.tmp_name();
+        self.line(&format!("  {} = icmp slt i64 {}, {}", has_next, j_plus1, len));
+        let sep_label = self.block_label("join_sep");
+        let no_sep_label = self.block_label("join_no_sep");
+        let after_label = self.block_label("join_after");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", has_next, sep_label, no_sep_label));
+
+        self.open_block(&sep_label);
+        self.line(&format!("  call i8* @memcpy(i8* {}, i8* {}, i64 {})", wp2, sep, sep_len64));
+        let wp3 = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", wp3, wp2, sep_len64));
+        self.line(&format!("  br label %{}", after_label));
+
+        self.open_block(&no_sep_label);
+        self.line(&format!("  br label %{}", after_label));
+
+        self.open_block(&after_label);
+        let wfinal = self.tmp_name();
+        self.line(&format!("  {} = phi i8* [ {}, %{} ], [ {}, %{} ]", wfinal, wp3, sep_label, wp2, no_sep_label));
+        self.line(&format!("  store i8* {}, i8** {}", wfinal, wptr_slot));
+        self.line(&format!("  store i64 {}, i64* {}", j_plus1, j_slot));
+        self.line(&format!("  br label %{}", build_cond));
+
+        self.open_block(&build_done);
+        let wf = self.tmp_name();
+        self.line(&format!("  {} = load i8*, i8** {}", wf, wptr_slot));
+        self.line(&format!("  store i8 0, i8* {}", wf));
+        self.line(&format!("  call void @star_rc_release(i8* {})", sep_raw));
+
+        format!("i8* {}", buf)
+    }
+
     /// `args() -> List<str>`: the process's command-line arguments,
     /// including `argv[0]` (the program path) -- the same convention the
     /// underlying OS/CRT argv itself uses. Reads `@star.argc`/`@star.argv`

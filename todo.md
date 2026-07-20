@@ -59,7 +59,36 @@ relative-path file at a time with no transitive symbol visibility.
 The current 28 builtins cover almost no string/collection manipulation beyond
 `List<T>`. Grow incrementally as real programs (see #8) expose actual gaps
 rather than speculatively.
-- String ops: split/join/trim/replace/contains/format beyond f-strings
+- ~~String ops: split/join/trim/replace/contains/format beyond f-strings~~ --
+  done: `str_contains`/`str_starts_with`/`str_ends_with`/`str_index_of`/
+  `str_trim`/`str_replace`/`str_split`/`str_join` landed as free functions
+  (`crate::codegen::builtins`/`crate::codegen::list`), the same free-function
+  surface shape `bytes_from_str`/`symbol_name` already established rather
+  than new method-call grammar. `str_split`/`str_join` reuse `List<str>`'s
+  existing RC/copy-on-write object layout wholesale (no new type). Every
+  argument is normalized through a new `Codegen::emit_str_or_empty` (a
+  `select` against a shared `@str.empty` global constant) before reaching
+  `strlen`/`strstr`/`strncmp`/`strcmp`, all undefined behavior on a genuine
+  null pointer -- `str`'s zero value is `null` (a despawned arena slot's
+  field, for instance), and a per-call-site branch the way
+  `emit_str_index`/`emit_ord` already guard against this would have meant
+  repeating that branch in eight new builtins instead of once. An empty
+  `needle`/`prefix`/`suffix` always matches (mirroring C's `strstr`'s own
+  convention); an empty `old` in `str_replace`/empty separator in
+  `str_split` are each a documented, deliberate no-op (unmodified `s`, and a
+  single-element list holding all of `s`) rather than looping forever with
+  nothing to advance past. `str_split` builds its result list via a local
+  growable buffer (`malloc`/`memcpy`/`free`, doubling on grow) since the
+  element count isn't known ahead of the scan -- the same recipe `Symbol`'s
+  intern table already uses, just against local `alloca`s instead of
+  globals. 11 new tests added (1107 total, up from 1096, all green),
+  including a real despawned-arena-slot null-`str` safety test across all
+  eight builtins and a 200,000-iteration sustained-allocation leak check. One
+  pre-existing test (`runtime_extern_ptr_round_trip_end_to_end`) had picked
+  `strstr` as its example `extern "C" fn` precisely because it wasn't yet a
+  reserved runtime symbol; updated to use `strpbrk` instead now that
+  `str_contains`/`str_index_of`/`str_replace`/`str_split` declare `strstr`
+  unconditionally. See `examples/strings.star`.
 - ~~A `Map`/`Dict` and `Set` type to complement `List<T>`~~ -- done:
   `Map<K,V>`/`Set<T>` landed (linear-scan lookup plus a generated
   structural-equality function per key/element type, not a hash table yet --

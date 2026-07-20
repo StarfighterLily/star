@@ -754,6 +754,17 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         // `crate::codegen::builtins::emit_chr`/`emit_ord`.
         "chr" => Some(Ty::Str),
         "ord" => Some(Ty::Int),
+        // `todo.md` #6 "String ops" -- see `crate::codegen::builtins`/
+        // `crate::codegen::list`. `str_contains`/`str_starts_with`/
+        // `str_ends_with` are predicates; `str_index_of` returns `-1` on no
+        // match (no `Option<T>`-returning builtin exists yet, matching
+        // `file_open`'s null-on-failure convention); `str_trim`/`str_replace`
+        // return a fresh `str`; `str_split` returns `List<str>`; `str_join`
+        // is `str_split`'s inverse.
+        "str_contains" | "str_starts_with" | "str_ends_with" => Some(Ty::Bool),
+        "str_index_of" => Some(Ty::Int),
+        "str_trim" | "str_replace" | "str_join" => Some(Ty::Str),
+        "str_split" => Some(Ty::List(Box::new(Ty::Str))),
         // `docs/design.md`'s "Text and bytes" section: `Bytes`/`Str`
         // conversion (a real byte copy, since the two have different heap
         // representations -- see `Ty::Bytes`'s doc comment) and `Symbol`'s
@@ -883,6 +894,10 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     "fopen", "fclose", "fread", "fwrite", "fseek", "ftell", "fgetc",
     // `str`-keyed `Map`/`Set` structural equality -- see `crate::codegen::eq`.
     "strcmp",
+    // `str_contains`/`str_starts_with`/`str_ends_with`/`str_index_of`/
+    // `str_replace`/`str_split` builtins -- see `crate::codegen::builtins`/
+    // `crate::codegen::list`.
+    "strstr", "strncmp",
     "CreateThread", "WaitForSingleObject", "CloseHandle",
     "CreateSemaphoreA", "ReleaseSemaphore", "GetCurrentThreadId",
     "star_rc_alloc", "star_rc_retain", "star_rc_release",

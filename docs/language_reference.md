@@ -680,7 +680,26 @@ len(my_string)                   # Also works on variables
 concat("hello", ", world")       # String concatenation
 "abc" == other                   # Structural equality (and !=);
                                  # ordering (<, >, ...) is not defined for str
+
+str_contains("hello world", "wor")      # true -- substring search
+str_starts_with("hello", "he")          # true
+str_ends_with("hello", "lo")            # true
+str_index_of("hello world", "wor")      # 6 -- byte offset, or -1 if not found
+
+str_trim("  padded  ")                  # "padded" -- strips leading/trailing
+                                         # space/tab/newline/CR
+str_replace("a-b-c", "-", "/")          # "a/b/c" -- every non-overlapping
+                                         # occurrence, left to right
+
+let parts = str_split("a,b,,c", ",")    # List<str>: ["a", "b", "", "c"]
+str_join(parts, "|")                    # "a|b||c" -- str_split's inverse
 ```
+
+An empty `needle`/`prefix`/`suffix` always matches (mirroring C's `strstr`);
+an empty `old` in `str_replace` and an empty separator in `str_split` are
+each a documented no-op (returning `s` unchanged, and a single-element list
+holding all of `s`, respectively) rather than looping forever with nothing to
+advance past.
 
 ### Math Operations
 
