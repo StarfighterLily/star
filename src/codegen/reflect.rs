@@ -36,7 +36,8 @@ impl Codegen {
     pub(super) fn emit_enum_decl(&mut self, e: &TypedEnumDef) {
         if self.enum_is_payload(&e.name) {
             let words = self.enum_payload_words(&e.name);
-            self.line(&format!("%{} = type {{ i32, [{} x i64] }}", e.name, words));
+            let elem = self.enum_payload_elem_ty(&e.name);
+            self.line(&format!("%{} = type {{ i32, [{} x {}] }}", e.name, words, elem));
         }
     }
 

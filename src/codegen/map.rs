@@ -446,11 +446,12 @@ impl Codegen {
         self.line(&format!("  store i32 {}, i32* {}", idx, tag_gep));
         if !payload.is_empty() {
             let words = self.enum_payload_words(enum_name);
+            let elem = self.enum_payload_elem_ty(enum_name);
             let payload_gep = self.tmp_name();
             self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 1", payload_gep, enum_ty, enum_ty, ptr));
             let variant_ty = self.enum_variant_payload_llvm_ty(enum_name, idx);
             let variant_ptr = self.tmp_name();
-            self.line(&format!("  {} = bitcast [{} x i64]* {} to {}*", variant_ptr, words, payload_gep, variant_ty));
+            self.line(&format!("  {} = bitcast [{} x {}]* {} to {}*", variant_ptr, words, elem, payload_gep, variant_ty));
             for (i, (val, ty)) in payload.iter().enumerate() {
                 let ats = self.llvm_ty(ty);
                 let clean_val = self.untag(val, ty);

@@ -758,9 +758,13 @@ impl Codegen {
             // aggregate; wider only if the element type itself needs more.
             Ty::Ring(elem, _) => self.type_align(elem).max(8),
             // A fieldless enum lowers to a bare `i32` discriminant (align 4,
-            // see `llvm_ty`); only a payload enum is the `{ i32, [W x i64] }`
-            // tagged union that needs 8-byte alignment.
-            Ty::Enum(n) => if self.enum_is_payload(n) { 8 } else { 4 },
+            // see `llvm_ty`); only a payload enum is the tagged union that
+            // needs its payload buffer's own alignment (ordinarily 8 for a
+            // `[W x i64]` buffer, but 16 whenever any variant embeds a
+            // wide-aligned aggregate field like `Quat`/`Vec4`/`Mat3` -- see
+            // `enum_payload_elem_ty`'s doc comment for the real segfault this
+            // closes).
+            Ty::Enum(n) => if self.enum_is_payload(n) { if self.enum_payload_needs_wide_align(n) { 16 } else { 8 } } else { 4 },
             // Same LLVM integer type as `T` -- see `Ty::Wrapping`'s doc comment.
             Ty::Wrapping(inner) => self.type_align(inner),
             // `i{bits}` -- same alignment table as the sized-int arms above.
@@ -888,13 +892,16 @@ impl Codegen {
             // this is just the object pointer's own size.
             Ty::Table(_) => 8,
             // A fieldless enum is a bare `i32` discriminant. A payload
-            // enum is `{ i32 tag, [W x i64] payload }`; the `[W x i64]`
-            // array forces 8-byte alignment, so the tag field is padded out
-            // to 8 bytes before it (matching the LLVM struct's actual
-            // layout), giving `8 + 8*W` total.
+            // enum is `{ i32 tag, [W x elem] payload }`; ordinarily `elem`
+            // is `i64` (forcing 8-byte alignment, so the tag field is padded
+            // out to 8 bytes before it, giving `8 + 8*W` total) -- but
+            // `<2 x i64>` (16-byte alignment, `16 + 16*W` total) whenever any
+            // variant embeds a wide-aligned aggregate field -- see
+            // `enum_payload_elem_ty`'s doc comment.
             Ty::Enum(n) => {
                 let words = self.enum_payload_words(n);
-                if words > 0 { 8 + words * 8 } else { 4 }
+                let (tag_pad, elem_bytes) = if self.enum_payload_needs_wide_align(n) { (16, 16) } else { (8, 8) };
+                if words > 0 { tag_pad + words * elem_bytes } else { 4 }
             }
             // `{ i8*, i8* }`: two pointers, 8 bytes each on this compiler's
             // sole `x86_64-w64-windows-gnu` target.
@@ -1148,22 +1155,79 @@ impl Codegen {
             .unwrap_or_default()
     }
 
-    /// Number of `i64` words needed to hold the largest variant's payload
-    /// fields for `enum_name`, `0` if the enum is fieldless. Every variant
-    /// shares this one word count so the enum's tagged-union struct has a
-    /// single fixed layout regardless of which variant is active.
+    /// True if any variant of `enum_name` carries a field needing more than
+    /// 8-byte alignment (`Vec3`/`Vec4`/`Mat2`/`Mat3`/`Mat4`/`Quat`/`Color`,
+    /// every one of them a native `<N x float>`/`[N x <N x float>]` aggregate
+    /// that's 16-byte-aligned on this target -- see `type_align`'s own doc
+    /// comment). Drives `enum_payload_elem_ty`/`enum_payload_words`: see
+    /// their doc comments for the real, reproducible `-O0` segfault this
+    /// closes (`Option<Quat>`/`Result<Quat,E>`/any user enum with a wide-
+    /// aligned payload field).
+    fn enum_payload_needs_wide_align(&self, enum_name: &str) -> bool {
+        self.enum_variant_fields
+            .get(enum_name)
+            .map(|vs| vs.iter().flatten().any(|t| self.type_align(t) > 8))
+            .unwrap_or(false)
+    }
+
+    /// The element type of an enum's shared tagged-union payload buffer --
+    /// ordinarily `i64` (an 8-byte-per-word bag of bits, sufficient for every
+    /// payload field type this compiler had until `Vec3`/`Vec4`/`Mat2`/
+    /// `Mat3`/`Mat4`/`Quat`/`Color` landed), but `<2 x i64>` -- a 128-bit
+    /// SIMD-shaped word, still 8 bytes per lane, just one whose own ABI
+    /// alignment is 16 on this target, exactly like the aggregate payload
+    /// types that need it -- whenever `enum_payload_needs_wide_align` is
+    /// true. Fixes a real, reproducible `-O0` segfault
+    /// (`STATUS_ACCESS_VIOLATION`): `%Option__Quat = type { i32, [2 x i64] }`
+    /// has an LLVM-computed ABI alignment of only 8 (the widest thing it's
+    /// textually built from is `i64`), so `alloca %Option__Quat` -- with no
+    /// explicit `align N` override anywhere this compiler emits one -- got
+    /// LLVM's default 8-byte alignment; but the `store <4 x float> ..,
+    /// <4 x float>* <bitcast into that same 8-aligned buffer>` that
+    /// constructs a `Quat` payload implicitly assumes `<4 x float>`'s own
+    /// natural 16-byte alignment (`store`/`load` default to the pointee
+    /// type's ABI alignment whenever no explicit `align N` is given) --
+    /// undefined behavior that happened to fault immediately at `-O0` (no
+    /// optimizer pass had a chance to promote the alloca to SSA registers or
+    /// otherwise dodge the unaligned access) but not at `-O2`/`star build`'s
+    /// own default optimization level, making this an easy miss for any test
+    /// run only through the default-optimized CLI. Confirmed via a real
+    /// `Map<str, Quat>::get(..)` (which constructs an `Option<Quat>` on
+    /// exactly this path, `Codegen::emit_construct_enum_variant` in
+    /// `map.rs`) compiled with `clang -O0` and run for real. Switching the
+    /// payload buffer's element type to `<2 x i64>` for exactly the enums
+    /// that need it makes LLVM's own struct-layout algorithm compute the
+    /// correct 16-byte alignment (and insert the correct padding after the
+    /// `i32` tag) for every `alloca`/heap allocation/array-of-this-enum
+    /// element stride of that type automatically -- no per-call-site `align
+    /// N` overrides needed anywhere else in this codegen, since every access
+    /// (`Codegen::emit_place`-style `getelementptr` field-0/field-1 access,
+    /// the payload bitcast in `expr.rs`/`map.rs`/`rc.rs`) derives its
+    /// offsets from this one shared type declaration.
+    fn enum_payload_elem_ty(&self, enum_name: &str) -> &'static str {
+        if self.enum_payload_needs_wide_align(enum_name) { "<2 x i64>" } else { "i64" }
+    }
+
+    /// Number of payload-buffer words (`enum_payload_elem_ty`'s element type
+    /// -- 8 bytes each ordinarily, 16 bytes each when `enum_payload_needs_
+    /// wide_align`) needed to hold the largest variant's payload fields for
+    /// `enum_name`, `0` if the enum is fieldless. Every variant shares this
+    /// one word count so the enum's tagged-union struct has a single fixed
+    /// layout regardless of which variant is active.
     fn enum_payload_words(&self, enum_name: &str) -> u32 {
         let max_bytes: u64 = self
             .enum_variant_fields
             .get(enum_name)
             .map(|vs| vs.iter().map(|fields| self.padded_struct_size(fields) as u64).max().unwrap_or(0))
             .unwrap_or(0);
-        ((max_bytes + 7) / 8) as u32
+        let elem_bytes: u64 = if self.enum_payload_needs_wide_align(enum_name) { 16 } else { 8 };
+        ((max_bytes + elem_bytes - 1) / elem_bytes) as u32
     }
 
     /// The LLVM struct type text for one variant's payload fields (e.g.
     /// `{ i32, float }`), used to bitcast into/out of the enum's shared
-    /// `[W x i64]` payload buffer when constructing or matching that variant.
+    /// payload buffer (`enum_payload_elem_ty`'s element type) when
+    /// constructing or matching that variant.
     fn enum_variant_payload_llvm_ty(&self, enum_name: &str, variant_idx: u32) -> String {
         let parts: Vec<String> = self.enum_variant_field_types(enum_name, variant_idx).iter().map(|t| self.llvm_ty(t)).collect();
         format!("{{ {} }}", parts.join(", "))

@@ -253,6 +253,7 @@ impl Codegen {
                 }
                 let enum_ty = format!("%{}", n);
                 let words = self.enum_payload_words(n);
+                let elem = self.enum_payload_elem_ty(n);
                 let tag_gep = self.tmp_name();
                 self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0", tag_gep, enum_ty, enum_ty, ptr));
                 let tag = self.tmp_name();
@@ -271,7 +272,7 @@ impl Codegen {
                     self.open_block(&match_label);
                     let variant_ty = self.enum_variant_payload_llvm_ty(n, idx as u32);
                     let variant_ptr = self.tmp_name();
-                    self.line(&format!("  {} = bitcast [{} x i64]* {} to {}*", variant_ptr, words, payload_gep, variant_ty));
+                    self.line(&format!("  {} = bitcast [{} x {}]* {} to {}*", variant_ptr, words, elem, payload_gep, variant_ty));
                     for (fi, fty) in fields.iter().enumerate() {
                         if !self.contains_rc(fty) {
                             continue;
