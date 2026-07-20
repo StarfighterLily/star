@@ -16283,6 +16283,309 @@ fn rejects_palette_index_direct_cast_to_i32() {
     assert!(diags.iter().any(|d| d.message.contains("cannot cast")), "{:?}", diags);
 }
 
+// --- Bug-hunting round 6: wide-coverage additions for Color/Color32/
+// PaletteIndex/Mat2/Mat3/Quat, the least-audited types per todo.md's round 5/
+// follow-up writeups. Every hand-computed expected value below was derived
+// independently of this codegen (plain arithmetic, not a re-derivation of
+// `emit_quat_mul`/`emit_mat_mul`'s own formulas) and cross-checked before
+// being written into an assertion.
+
+/// `Quat * Quat` / `quat_rotate` against a rotation about a genuinely
+/// non-axis-aligned axis (the existing `runtime_quat_multiply_composes_
+/// rotations_end_to_end`/`examples/quat.star` coverage only ever rotates
+/// about +Z) -- a 120-degree rotation about the `(1,1,1)` diagonal, i.e.
+/// `Quat(0.5, 0.5, 0.5, 0.5)` (`sin(60deg) * (1,1,1)/sqrt(3) = (0.5,0.5,0.5)`,
+/// `cos(60deg) = 0.5`), which cyclically permutes the three axes: hand-derived
+/// via the same Hamilton-product formula `emit_quat_mul` implements, computed
+/// independently on paper, not by running this compiler.
+#[test]
+fn runtime_quat_rotate_about_diagonal_axis_end_to_end() {
+    let src = "fn main():\n    \
+               let q = Quat(0.5, 0.5, 0.5, 0.5)\n    \
+               let x_axis = quat_rotate(q, Vec3(1.0, 0.0, 0.0))\n    \
+               println(f\"{x_axis.x}, {x_axis.y}, {x_axis.z}\")\n    \
+               let y_axis = quat_rotate(q, Vec3(0.0, 1.0, 0.0))\n    \
+               println(f\"{y_axis.x}, {y_axis.y}, {y_axis.z}\")\n";
+    let output = compile_and_run("quat_rotate_diagonal_axis", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    // A 120-degree rotation about (1,1,1) cyclically permutes the axes:
+    // +X -> +Y -> +Z -> +X.
+    assert_eq!(lines, vec!["0.000000, 1.000000, 0.000000", "0.000000, 0.000000, 1.000000"]);
+}
+
+/// `Mat2 * Mat2` / `Mat2 * Vec2` against a genuinely non-diagonal,
+/// non-permutation 2x2 matrix (the existing `runtime_mat2_scale_and_matrix_
+/// multiply_end_to_end` only ever uses diagonal scale/identity matrices) --
+/// the textbook `[[1,2],[3,4]] * [[5,6],[7,8]] = [[19,22],[43,50]]` example.
+#[test]
+fn runtime_mat2_nontrivial_matrix_multiply_end_to_end() {
+    let src = "fn main():\n    \
+               let a = Mat2(Vec2(1.0, 2.0), Vec2(3.0, 4.0))\n    \
+               let b = Mat2(Vec2(5.0, 6.0), Vec2(7.0, 8.0))\n    \
+               let product = a * b\n    \
+               let col0 = product * Vec2(1.0, 0.0)\n    \
+               let col1 = product * Vec2(0.0, 1.0)\n    \
+               println(f\"{col0.x}, {col1.x}, {col0.y}, {col1.y}\")\n    \
+               let v = a * Vec2(1.0, 2.0)\n    \
+               println(f\"{v.x}, {v.y}\")\n";
+    let output = compile_and_run("mat2_nontrivial_multiply", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["19.000000, 22.000000, 43.000000, 50.000000", "5.000000, 11.000000"]);
+}
+
+/// `Mat3 * Vec3` and self-composition (`(M*M) * v` must equal `M * (M * v)`)
+/// against a genuinely non-trivial (non-identity, non-permutation, no zero
+/// row/column) 3x3 matrix -- the existing `runtime_mat3_matrix_multiply_
+/// end_to_end` only ever uses the identity and a row-swap permutation, both
+/// of which would pass even with a transposed-read or wrong-multiply-order
+/// bug (a permutation matrix's transpose is its own inverse, and its product
+/// with itself in either order is idempotent on many inputs). Expected
+/// values hand-computed independently: `A = [[1,2,3],[0,1,4],[5,6,0]]`,
+/// `A * (1,1,1) = (6,5,11)`, `(A*A) * (1,1,1) = (49,49,60)`.
+#[test]
+fn runtime_mat3_nontrivial_multiply_and_self_composition_end_to_end() {
+    let src = "fn main():\n    \
+               let a = Mat3(Vec3(1.0, 2.0, 3.0), Vec3(0.0, 1.0, 4.0), Vec3(5.0, 6.0, 0.0))\n    \
+               let v = Vec3(1.0, 1.0, 1.0)\n    \
+               let av = a * v\n    \
+               println(f\"{av.x}, {av.y}, {av.z}\")\n    \
+               let a_squared = a * a\n    \
+               let via_squared = a_squared * v\n    \
+               println(f\"{via_squared.x}, {via_squared.y}, {via_squared.z}\")\n    \
+               let via_twice = a * av\n    \
+               println(f\"{via_twice.x}, {via_twice.y}, {via_twice.z}\")\n";
+    let output = compile_and_run("mat3_nontrivial_self_composition", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["6.000000, 5.000000, 11.000000", "49.000000, 49.000000, 60.000000", "49.000000, 49.000000, 60.000000"]
+    );
+}
+
+/// A struct mixing a scalar field before and after a `Mat3` field gets
+/// `@export` reflection byte offsets matching `Mat3`'s real LLVM layout
+/// (align 16, size 48 -- `[3 x <3 x float>]`, each `<3 x float>` row padded
+/// to a 4-wide vector's 16-byte footprint on this target) -- cross-checked
+/// against a standalone `.ll` `getelementptr`+`ptrtoint` probe of
+/// `{ i8, [3 x <3 x float>], i32 }` compiled and run for real (`sizeof=80`,
+/// `mat_offset=16`, `row1_offset=32`, `tail_offset=64`), not just this
+/// compiler's own `Codegen::type_align`/`type_size` model of itself.
+#[test]
+fn codegen_reflect_metadata_offsets_correct_around_mat3_field() {
+    let src = "struct Mixed:\n    @export flag: bool = true\n    @export basis: Mat3 = Mat3(Vec3(1.0, 0.0, 0.0), Vec3(0.0, 1.0, 0.0), Vec3(0.0, 0.0, 1.0))\n    @export tail: i32 = 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("flag:0:bool:export"), "{}", ir);
+    assert!(ir.contains("basis:16:Mat3:export"), "Mat3 needs 16-byte alignment after a 1-byte bool: {}", ir);
+    assert!(ir.contains("tail:64:i32:export"), "tail should follow Mat3's 48-byte, 16-aligned footprint (16+48=64): {}", ir);
+}
+
+/// Writing through a multi-component swizzle with its destination components
+/// listed *out of source order* (`v.zx = ...`, as opposed to the existing
+/// `runtime_vecmath_end_to_end`'s in-order `.xy = Vec2(..)` coverage) must
+/// route each source component to its own named lane independently, leaving
+/// the unnamed lane (`y`) untouched.
+#[test]
+fn runtime_vec3_swizzle_write_out_of_order_end_to_end() {
+    let src = "fn main():\n    \
+               let mut v = Vec3(1.0, 2.0, 3.0)\n    \
+               v.zx = Vec2(9.0, 7.0)\n    \
+               println(f\"{v.x}, {v.y}, {v.z}\")\n";
+    let output = compile_and_run("vec3_swizzle_write_out_of_order", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // `.zx = Vec2(9.0, 7.0)`: z <- 9.0 (1st source component), x <- 7.0 (2nd
+    // source component); y is untouched.
+    assert_eq!(stdout.trim(), "7.000000, 2.000000, 9.000000");
+}
+
+/// A swizzle read on the result of an expression (not a plain variable) --
+/// `(a + b).yx` -- must evaluate the base expression once and swizzle its
+/// result, not require an addressable place.
+#[test]
+fn runtime_swizzle_read_on_expression_result_end_to_end() {
+    let src = "fn main():\n    \
+               let a = Vec2(1.0, 2.0)\n    \
+               let b = Vec2(3.0, 4.0)\n    \
+               let swapped = (a + b).yx\n    \
+               println(f\"{swapped.x}, {swapped.y}\")\n";
+    let output = compile_and_run("swizzle_read_on_expr_result", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "6.000000, 4.000000");
+}
+
+/// `Color32(r, g, b, a)` masks each channel to its low byte rather than
+/// rejecting/corrupting neighboring channels on an out-of-`[0,255]` argument
+/// -- confirmed against every boundary/wraparound shape: `300 & 0xFF = 44`,
+/// a negative `-1 & 0xFF = 255`, an exact `256 & 0xFF = 0`, and `1000 & 0xFF
+/// = 232`.
+#[test]
+fn runtime_color32_out_of_range_channel_arguments_mask_to_low_byte_end_to_end() {
+    let src = "fn main():\n    \
+               let c = Color32(300, -1, 256, 1000)\n    \
+               println(f\"{color32_r(c)}, {color32_g(c)}, {color32_b(c)}, {color32_a(c)}\")\n";
+    let output = compile_and_run("color32_out_of_range_channels", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "44, 255, 0, 232");
+}
+
+/// `PaletteIndex(value)` narrows any int-shaped value to `u8` by plain
+/// truncation (mirrors `Ty::Tick`'s widen/narrow rule) -- confirmed at both
+/// wraparound boundaries: `300 -> 44` (`300 mod 256`), `-1 -> 255` (two's
+/// complement truncation).
+#[test]
+fn runtime_palette_index_out_of_range_construction_truncates_end_to_end() {
+    let src = "fn main():\n    \
+               let a: PaletteIndex = PaletteIndex(300)\n    \
+               let b: PaletteIndex = PaletteIndex(-1)\n    \
+               println(f\"{a}, {b}\")\n";
+    let output = compile_and_run("palette_index_out_of_range_construction", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "44, 255");
+}
+
+/// `List<Mat3>`/`Map<str, Quat>` -- both odd-shaped aggregate builtin types
+/// (`Mat3`'s 3x3=9-float non-power-of-2 shape, `Quat`'s 4-float layout with a
+/// non-vector-arithmetic `*`) instantiate cleanly as a generic type argument,
+/// round-tripping every component through the heap-backed, RC'd, copy-on-write
+/// storage `List<T>`/`Map<K,V>` share with every other element type.
+#[test]
+fn runtime_list_of_mat3_and_map_of_quat_generic_instantiation_end_to_end() {
+    let src = "fn main():\n    \
+               let mut mats: List<Mat3> = List<Mat3>()\n    \
+               mats.push(Mat3(Vec3(1.0, 2.0, 3.0), Vec3(4.0, 5.0, 6.0), Vec3(7.0, 8.0, 9.0)))\n    \
+               mats.push(Mat3(Vec3(1.0, 0.0, 0.0), Vec3(0.0, 1.0, 0.0), Vec3(0.0, 0.0, 1.0)))\n    \
+               let m0 = mats[0]\n    \
+               let diag0 = m0 * Vec3(1.0, 0.0, 0.0)\n    \
+               let diag1 = m0 * Vec3(0.0, 1.0, 0.0)\n    \
+               let diag2 = m0 * Vec3(0.0, 0.0, 1.0)\n    \
+               println(f\"{diag0.x}, {diag1.y}, {diag2.z}\")\n    \
+               let mut rotations: Map<str, Quat> = Map<str, Quat>()\n    \
+               rotations.insert(\"spin\", Quat(0.0, 0.0, 0.70710678, 0.70710678))\n    \
+               let looked_up = rotations.get(\"spin\")\n    \
+               match looked_up:\n        \
+                   Option::Some(q) ->\n            \
+                       println(f\"{q.z}, {q.w}\")\n        \
+                   Option::None ->\n            \
+                       println(\"missing\")\n";
+    let output = compile_and_run("list_mat3_map_quat_generics", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["1.000000, 5.000000, 9.000000", "0.707107, 0.707107"]);
+}
+
+/// A payload enum carrying a wide-aligned aggregate field (`Vec3`/`Vec4`/
+/// `Mat2`/`Mat3`/`Mat4`/`Quat`/`Color`, all 16-byte-aligned native vectors on
+/// this target -- see `Codegen::type_align`) previously segfaulted at
+/// runtime (`STATUS_ACCESS_VIOLATION`) as soon as it was actually
+/// constructed and read back, confirmed via a real `clang -O0`-compiled run
+/// of exactly this shape *before* the fix: `%Option__Quat` lowered to
+/// `{ i32, [2 x i64] }`, an LLVM struct whose own ABI alignment is only 8
+/// (built entirely out of `i32`/`i64`), so every `alloca %Option__Quat` this
+/// compiler emits (with no explicit `align` override anywhere) defaulted to
+/// 8-byte alignment -- but storing the `Quat` payload is a `store <4 x
+/// float> .., <4 x float>* <bitcast into that buffer>`, which implicitly
+/// assumes `<4 x float>`'s own natural 16-byte alignment whenever no
+/// explicit `align N` is given. An unaligned SSE store into 8-aligned memory
+/// is undefined behavior that happened to fault immediately at `-O0` (this
+/// harness's own compile path) but not at `-O2`/`star build`'s default
+/// optimization level, making it an easy miss for any check that only
+/// builds through the default-optimized CLI. Fixed by widening the payload
+/// buffer's element type from `i64` to `<2 x i64>` (still 8 bytes per lane,
+/// but itself 16-byte-aligned on this target, like the aggregate types that
+/// need it) whenever any variant needs it (`Codegen::enum_payload_elem_ty`,
+/// `src/codegen/mod.rs`) -- letting LLVM's own struct-layout algorithm
+/// compute the correct alignment/padding everywhere this type is used
+/// (`alloca`, heap allocation, array-of-this-enum element stride) with no
+/// per-call-site `align N` overrides needed. Deliberately as minimal a
+/// repro as possible (no `List`/`Map` involved) to isolate the payload-enum
+/// codegen itself as the root cause, distinct from the wider `Map<str,
+/// Quat>::get(..)` repro this was originally found through (`runtime_list_
+/// of_mat3_and_map_of_quat_generic_instantiation_end_to_end`, whose own
+/// `Map::get` construct-an-`Option<Quat>` call reuses this exact codegen
+/// path in `src/codegen/map.rs`'s `emit_construct_enum_variant`).
+#[test]
+fn runtime_payload_enum_holding_quat_does_not_segfault_at_o0_end_to_end() {
+    let src = "enum MaybeRotation:\n    \
+               None\n    \
+               Some(q: Quat)\n\n\
+               fn main():\n    \
+               let a = MaybeRotation::Some(Quat(1.0, 2.0, 3.0, 4.0))\n    \
+               match a:\n        \
+                   MaybeRotation::Some(q) ->\n            \
+                       println(f\"{q.x}, {q.y}, {q.z}, {q.w}\")\n        \
+                   MaybeRotation::None ->\n            \
+                       println(\"none\")\n";
+    let output = compile_and_run("payload_enum_holding_quat_o0", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "1.000000, 2.000000, 3.000000, 4.000000");
+}
+
+/// `Codegen::type_align`/`Codegen::type_size`'s `Ty::Enum` arm must report
+/// the *real* payload alignment (16, not the pre-fix flat 8) once a payload
+/// enum embeds a wide-aligned field -- otherwise a struct field or `@export`
+/// reflection offset computed from the old flat-8 assumption would disagree
+/// with the real, now-`<2 x i64>`-backed LLVM layout `enum_payload_elem_ty`
+/// produces (`emit_reflect_metadata`, `src/codegen/reflect.rs`, walks fields
+/// via exactly this model). Mirrors `codegen_reflect_metadata_offsets_
+/// correct_around_mat3_field`'s own "cross-check the Rust-side layout model
+/// against a real struct" shape, just for a payload-enum field instead of a
+/// bare `Mat3` field.
+#[test]
+fn codegen_reflect_metadata_offsets_correct_around_wide_aligned_payload_enum_field() {
+    let src = "enum MaybeRotation:\n    None\n    Some(q: Quat)\n\nstruct Holder:\n    @export flag: bool = true\n    @export rot: MaybeRotation = MaybeRotation::None\n    @export tail: i32 = 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("flag:0:bool:export"), "{}", ir);
+    assert!(ir.contains("rot:16:MaybeRotation:export"), "a payload enum holding a Quat needs 16-byte alignment after a 1-byte bool: {}", ir);
+    // `{ i32 tag, [1 x <2 x i64>] }`: tag padded to 16, plus one 16-byte
+    // word for the `Quat` payload = 32 bytes total, so `tail` follows at
+    // `16 + 32 = 48`.
+    assert!(ir.contains("tail:48:i32:export"), "{}", ir);
+}
+
+/// f-string interpolation of an aggregate carrying negative/large-magnitude
+/// float lanes, and of two distinct aggregate/bare-scalar builtin types
+/// mixed with a plain `i32` in one format string -- beyond the already-fixed
+/// general aggregate case (`todo.md`'s follow-up round), specifically
+/// exercising negative numbers (a literal `-` byte inside the
+/// constructor-call-syntax rendering), a large magnitude that needs more
+/// than one digit of exponent-free `%f` output, and `Color32` (a bare `%u`
+/// hole, not the aggregate path -- see round 5's fix) alongside `Quat` (the
+/// aggregate path) in the same format string.
+#[test]
+fn runtime_fstring_aggregate_with_negative_and_large_values_and_mixed_types_end_to_end() {
+    let src = "fn main():\n    \
+               let v = Vec2(-1.5, 123456.0)\n    \
+               println(f\"v={v}\")\n    \
+               let c = Color32(10, 20, 30, 40)\n    \
+               let q = Quat(0.0, 0.0, 0.0, 1.0)\n    \
+               let n = 7\n    \
+               println(f\"n={n} c={c} q={q}\")\n";
+    let output = compile_and_run("fstring_aggregate_negative_large_mixed", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines[0], "v=Vec2(-1.500000, 123456.000000)");
+    // `Color32(10, 20, 30, 40)` packs to `10 | 20<<8 | 30<<16 | 40<<24 =
+    // 673059850`, printed as its raw packed `%u` value (not constructor
+    // syntax -- `Color32` is a bare scalar, not an aggregate).
+    assert_eq!(lines[1], "n=7 c=673059850 q=Quat(0.000000, 0.000000, 0.000000, 1.000000)");
+}
+
 // --- `Rect`/`Aabb2`/`Aabb3`/`Ray`/`Plane`/`Frustum`/`Transform` -----------
 
 /// `Rect`/`Aabb2`/`Aabb3`/`Ray`/`Plane`/`Frustum`/`Transform` are ordinary
