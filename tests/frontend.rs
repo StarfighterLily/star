@@ -3023,6 +3023,18 @@ fn parses_qualified_struct_pattern() {
     assert!(matches!(&arms[0].pattern, Pattern::Struct(name, bindings) if name == "geo__Point" && bindings == &vec!["x".to_string(), "y".to_string()]));
 }
 
+/// A qualified *type* path reaching through a re-exported nested import
+/// (`b::c::Point`, three segments) mangles by chaining, exactly like the
+/// expression/pattern forms above -- `parser::mod::parse_type_inner`'s own
+/// qualified-path loop, not `parse_primary`'s.
+#[test]
+fn parses_transitive_qualified_type_as_chained_mangled_name() {
+    let src = "import \"lib.star\" as b\nfn t(p: b::c::Point) -> i32:\n    return 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    assert_eq!(f.sig.params[0].ty, Some(Type::Named("b__c__Point".into())));
+}
+
 /// A qualified enum-variant pattern `alias::Enum::Variant(bindings...)`.
 #[test]
 fn parses_qualified_enum_variant_pattern() {
@@ -14003,49 +14015,54 @@ fn runtime_generic_enum_variant_ctor_concrete_fields_keep_correct_width_end_to_e
 }
 
 /// A qualified path through an import alias with a *second* `::` segment
-/// (`b::c::make_vec2`) previously always parsed as `EnumVariant { enum_name:
-/// mangle_name("b", "c") = "b__c", variant: "make_vec2" }` regardless of
-/// whether `c` actually names an enum -- `crate::modules`'s own doc comment
-/// says imports are resolved by inlining one file at a time with no
-/// transitive re-export, so this is never valid, but the old parser
-/// silently misparsed it anyway and let the checker report a fabricated,
-/// internals-exposing "undefined enum `b__c`" with no hint about the real
-/// (unsupported-transitive-import) cause. Fixed in the parser: a lowercase
-/// second segment can't be `EnumName::Variant` (enum names are always
-/// capitalized -- the same convention already used just below to tell a
-/// struct literal from a function call), so it's now rejected immediately
-/// with a located, accurate diagnostic instead of being silently
-/// reinterpreted.
+/// (`b::c::make_vec2`, reaching through `b`'s own re-exported import of `c`)
+/// now parses by chaining `mangle_name` once per segment
+/// (`mangle_name(mangle_name("b","c"), "make_vec2") == "b__c__make_vec2"`),
+/// exactly the name `crate::modules::resolve` gives that function once `a`
+/// imports `b` (`c`'s items are already genuine top-level items of `b`'s own
+/// flattened module by the time `b` itself gets `b__`-prefixed -- see
+/// `crate::modules`'s module-level doc comment). This is a pure parser-level
+/// check (no on-disk files, no real `b.star`/`c.star`), confirming the
+/// mangled name shape independent of whether the referenced symbol actually
+/// exists -- `runtime_transitive_reexport_two_hops_end_to_end` below covers
+/// the full pipeline with real files.
 #[test]
-fn rejects_transitive_module_path_through_an_alias_with_a_clear_diagnostic() {
+fn parses_transitive_module_path_through_an_alias_as_chained_mangled_name() {
     let src = "import \"other.star\" as b\nfn main():\n    let v = b::c::make_vec2(3, 4)\n";
-    let diags = Driver::parse(src).expect_err("a qualified path reaching through a second alias segment should be a parse error");
+    let module = Driver::parse(src).expect("a transitive qualified path should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected let") };
     assert!(
-        diags.iter().any(|d| d.message.contains("cannot reach `c` through `b`") && d.message.contains("not transitively re-exported")),
-        "{:?}", diags
+        matches!(value, Expr::Call { callee, .. } if matches!(&**callee, Expr::Ident(n, _) if n == "b__c__make_vec2")),
+        "{:?}", value
     );
 }
 
-/// Same fix, exercised through the mirrored qualified-*pattern* parser path
-/// (`match v: b::c::Foo(x) -> ...`) rather than the qualified-expression
-/// path above.
+/// Same shape, exercised through the mirrored qualified-*pattern* parser
+/// path (`match v: b::c::Foo(x) -> ...`) rather than the qualified-expression
+/// path above -- `b::c::Foo(x)` chains to `Pattern::Struct("b__c__Foo", ..)`.
 #[test]
-fn rejects_transitive_module_path_in_a_match_pattern_with_a_clear_diagnostic() {
+fn parses_transitive_module_path_in_a_match_pattern_as_chained_mangled_name() {
     let src = "import \"other.star\" as b\nfn main():\n    match 1:\n        b::c::Foo(x) -> println(f\"{x}\")\n        _ -> println(\"no\")\n";
-    let diags = Driver::parse(src).expect_err("a qualified pattern reaching through a second alias segment should be a parse error");
+    let module = Driver::parse(src).expect("a transitive qualified pattern should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Expr(Expr::Match { arms, .. }) = &f.body.stmts[0] else { panic!("expected match stmt") };
     assert!(
-        diags.iter().any(|d| d.message.contains("cannot reach `c` through `b`") && d.message.contains("not transitively re-exported")),
-        "{:?}", diags
+        matches!(&arms[0].pattern, Pattern::Struct(name, bindings) if name == "b__c__Foo" && bindings == &vec!["x".to_string()]),
+        "{:?}", arms[0].pattern
     );
 }
 
 /// End-to-end confirmation with real files on disk (mirroring
 /// `diagnostic_inside_imported_file_renders_against_that_files_own_source`'s
-/// pattern): `a` imports `b`, `b` imports `c`, and `a` tries to reach `c`
-/// through `b`. Guards the full pipeline, not just the parser in isolation.
+/// pattern): `a` imports `b`, `b` imports `c`, and `a` reaches `c`'s struct
+/// and free function *through* `b` with a two-hop qualified path
+/// (`b::c::make_vec2`, `b::c::Vec2`). Guards the full pipeline (parse,
+/// resolve/inline, type-check, codegen, real `clang`-compiled run), not just
+/// the parser in isolation.
 #[test]
-fn transitive_module_import_chain_reports_a_clear_diagnostic_end_to_end() {
-    let dir = test_scratch_dir("transitive_module_import_chain_reports_a_clear_diagnostic_end_to_end");
+fn runtime_transitive_reexport_two_hops_end_to_end() {
+    let dir = test_scratch_dir("runtime_transitive_reexport_two_hops_end_to_end");
     write_test_file(
         &dir, "c.star",
         "struct Vec2:\n    x: i32\n    y: i32\n\nfn make_vec2(x: i32, y: i32) -> Vec2:\n    Vec2(x, y)\n",
@@ -14056,13 +14073,135 @@ fn transitive_module_import_chain_reports_a_clear_diagnostic_end_to_end() {
     );
     let main_path = write_test_file(
         &dir, "a.star",
-        "import \"b.star\" as b\n\nfn main():\n    let v = b::c::make_vec2(3, 4)\n    println(f\"sum = {v.x}\")\n",
+        "import \"b.star\" as b\n\nfn main():\n    let v: b::c::Vec2 = b::c::make_vec2(3, 4)\n    println(f\"sum = {v.x + v.y}\")\n",
     );
 
-    let compilation = Driver::new(main_path).compile().expect("file read should succeed");
-    assert!(!compilation.is_ok(), "reaching through a transitively-imported module should fail");
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_transitive_reexport_two_hops.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "sum = 7");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same two-hop shape, but reaching a *payload enum variant* declared in
+/// the innermost file (`c::Shape::Circle(r)`) through `b`, matched inside
+/// `a` -- guards that `EnumVariant`'s own chained-mangling branch (the
+/// `starts_uppercase` terminal case in the qualified-path loop) is correct,
+/// not just the plain-function/struct chaining case above.
+#[test]
+fn runtime_transitive_reexport_enum_variant_two_hops_end_to_end() {
+    let dir = test_scratch_dir("runtime_transitive_reexport_enum_variant_two_hops_end_to_end");
+    write_test_file(
+        &dir, "c.star",
+        "enum Shape:\n    Circle(r: i32)\n    Square(side: i32)\n",
+    );
+    write_test_file(
+        &dir, "b.star",
+        "import \"c.star\" as c\n\nfn make_circle(r: i32) -> c::Shape:\n    c::Shape::Circle(r)\n",
+    );
+    let main_path = write_test_file(
+        &dir, "a.star",
+        concat!(
+            "import \"b.star\" as b\n\n",
+            "fn main():\n",
+            "    let s = b::make_circle(5)\n",
+            "    match s:\n",
+            "        b::c::Shape::Circle(r) -> println(f\"circle {r}\")\n",
+            "        b::c::Shape::Square(side) -> println(f\"square {side}\")\n",
+        ),
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_transitive_reexport_enum_two_hops.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "circle 5");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Three hops deep (`a` imports `b` imports `c` imports `d`), reaching `d`'s
+/// function through the full `b::c::d::make` chain -- guards that the
+/// qualified-path loop really generalizes past the two-hop case above rather
+/// than special-casing exactly one extra `::` segment.
+#[test]
+fn runtime_transitive_reexport_three_hops_end_to_end() {
+    let dir = test_scratch_dir("runtime_transitive_reexport_three_hops_end_to_end");
+    write_test_file(&dir, "d.star", "fn make() -> i32:\n    return 99\n");
+    write_test_file(&dir, "c.star", "import \"d.star\" as d\nfn via_c() -> i32:\n    return d::make()\n");
+    write_test_file(&dir, "b.star", "import \"c.star\" as c\nfn via_b() -> i32:\n    return c::via_c()\n");
+    let main_path = write_test_file(
+        &dir, "a.star",
+        "import \"b.star\" as b\n\nfn main():\n    println(f\"{b::c::d::make()}\")\n",
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_transitive_reexport_three_hops.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "99");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A transitive path through a real alias chain, but naming a function that
+/// doesn't actually exist anywhere in the chain (`b::c::bogus_fn`) -- must
+/// still be a clean, located type-check error (the mangled name the checker
+/// reports, `b__c__bogus_fn`, is unresolvable), not a crash or a silent
+/// miscompile, mirroring how a typo in an ordinary single-level qualified
+/// path already behaves.
+#[test]
+fn runtime_transitive_reexport_of_nonexistent_symbol_reports_clean_diagnostic_end_to_end() {
+    let dir = test_scratch_dir("runtime_transitive_reexport_of_nonexistent_symbol_reports_clean_diagnostic_end_to_end");
+    write_test_file(&dir, "c.star", "fn real_fn() -> i32:\n    return 1\n");
+    write_test_file(&dir, "b.star", "import \"c.star\" as c\nfn via_b() -> i32:\n    return c::real_fn()\n");
+    let main_path = write_test_file(
+        &dir, "a.star",
+        "import \"b.star\" as b\n\nfn main():\n    println(f\"{b::c::bogus_fn()}\")\n",
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(!compilation.is_ok(), "a transitive reference to a nonexistent symbol should fail to type-check");
     let rendered = compilation.render_diagnostics();
-    assert!(rendered.contains("not transitively re-exported"), "{}", rendered);
+    assert!(rendered.to_lowercase().contains("undefined") || rendered.to_lowercase().contains("unknown"), "{}", rendered);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

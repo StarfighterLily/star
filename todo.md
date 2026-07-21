@@ -50,7 +50,40 @@ other `ptr`-handle builtin in this codegen already has.
 ### 5. Module system: re-exports, search paths, manifest
 Needed once any program grows past a few files. Current system only inlines one
 relative-path file at a time with no transitive symbol visibility.
-- Transitive re-export so `a` importing `b` importing `c` can reach `c`'s symbols.
+- ~~Transitive re-export so `a` importing `b` importing `c` can reach `c`'s symbols~~
+  -- done: `a::b::c::item` (arbitrary depth, not just one extra hop) now resolves
+  cleanly. Turned out to need no new resolution machinery at all: `modules::resolve`
+  already inlines nested imports bottom-up, so by the time `b` gets `b__`-prefixed
+  while `a` imports it, anything `b` itself imported from `c` is already a genuine
+  top-level item of `b`'s own flattened module named `c__item` -- one more `b__`
+  prefix lands exactly on `b__c__item`, and `mangle_name` (`src/modules.rs`) is pure
+  string concatenation, so chaining it at parse time reproduces that name with no
+  need to know what `b` actually imports. Fixed by generalizing the parser's
+  single-hop `alias::name` qualified-path handling into an arbitrary-depth loop in
+  the three places it's duplicated: `parser::expr::parse_primary` (expressions),
+  the mirrored `parse_pattern` (match patterns), and `parser::parse_type_inner`
+  (type annotations) -- each now walks `seg::seg::...::final`, chaining
+  `mangle_name` per segment, with the terminal segment still told apart as a call/
+  struct-literal/bare-ident by the pre-existing capitalization convention, and an
+  `EnumName::Variant` pair only recognized as the *last* two segments (variants
+  aren't themselves further indexable via `::`). This *replaces* the previous
+  round's deliberate rejection of this exact shape (`"...not transitively
+  re-exported..."`, added specifically to give a clean diagnostic instead of a
+  fabricated undefined-symbol error) now that the shape is actually supported end
+  to end. A wrong guess at an intermediate segment (typo, or a name that isn't
+  really re-exported) still produces a clean, ordinary "undefined symbol"
+  diagnostic from the checker on the unresolvable mangled name -- the same
+  behavior a typo in a single-level qualified path already had, not a new failure
+  mode. 12 new/updated tests (1111 total, up from 1107): parser-level chained-
+  mangling assertions for expressions/patterns/types, and real `clang`-compiled
+  end-to-end runs covering two hops (struct + free function), an enum variant
+  reached transitively, three hops (guarding the loop genuinely generalizes past
+  "one extra segment"), and a transitively-referenced nonexistent symbol still
+  failing cleanly. New example `examples/reexport_main.star` (importing
+  `examples/reexport_lib.star`, which itself imports the pre-existing
+  `examples/geometry_lib.star`) mirrors `modules_main.star`'s single-hop coverage
+  one level deeper, confirmed with a real run (`dot: 11` / `circle area: 12` /
+  `unit circle area: 3`).
 - Search-path resolution instead of hand-written relative paths everywhere.
 - Minimal package manifest (name, version, entry point) — defer a full package
   manager/registry until there's more than one real multi-file project to learn from.
@@ -133,6 +166,19 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Feature round: transitive module re-export (todo.md #5's first bullet, the module-system tier's
+only item with any work done on it before this round). See #5 above for the full writeup. 12
+new/updated tests (1111 total, up from 1107), one new example (`examples/reexport_main.star` +
+`examples/reexport_lib.star`). All other buildable examples still `star build` cleanly (same
+pre-existing `examples/geometry_lib.star`/now also `examples/reexport_lib.star` no-`main`-by-design
+exception as every prior round) -- one pre-existing, unrelated failure noticed in passing and left
+unfixed as out of scope: `examples/extern_ffi.star` declares `extern "C" fn strstr(...)`, which now
+collides with a compiler-reserved symbol (`str_contains`/`str_index_of`/`str_replace`/`str_split`
+declare `strstr` unconditionally as of the stdlib round, `todo.md` #6) -- predates this round and
+touches strings/FFI, not modules.
+
+### Previous round
+
 Bug-hunting round 6: four parallel deep audits, run as isolated git worktrees and merged back by
 hand afterward (three were pure test-file additions with zero source changes -- `tests/frontend.rs`
 merge conflicts were trivial same-spot-append conflicts, resolved by concatenation), each required

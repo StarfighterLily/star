@@ -15,13 +15,17 @@
 //! stage needs to know modules exist.
 //!
 //! Imports are resolved recursively (an imported file may itself import
-//! other files), with a cycle guard over canonicalized paths. Note this only
-//! supports *direct* imports: if module `a` imports `b`, which imports `c`,
-//! `a` cannot reach `c`'s items through `b` (there is no re-export syntax) --
-//! `b`'s own `c::foo` references are mangled to `c__foo` as part of
-//! resolving `b` in isolation, and then *that* identifier gets swept up in
-//! `b`'s own `alias__` prefixing when `a` imports `b`, landing on
-//! `b__c__foo` rather than anything `a` could address directly.
+//! other files), with a cycle guard over canonicalized paths. Nested imports
+//! are transitively reachable: if module `a` imports `b`, which imports `c`,
+//! `b`'s own `c::foo` references are mangled to `c__foo` while resolving `b`
+//! in isolation, and that identifier is then a genuine top-level item of
+//! `b`'s own (already-flattened) module -- so it gets swept up in `b`'s own
+//! `alias__` prefixing when `a` imports `b`, landing on `b__c__foo`, which is
+//! exactly the name the parser produces for `a`'s own `b::c::foo` (see
+//! `parser::expr::parse_primary`'s qualified-path loop): chained
+//! `mangle_name` calls are pure string concatenation, so `a` can address it
+//! directly with no re-export syntax needed and no risk of the two sides'
+//! mangling disagreeing.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

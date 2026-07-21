@@ -245,12 +245,21 @@ impl Parser {
             return Some(Type::Fn(params, Box::new(ret)));
         }
         let mut name = self.expect_ident()?;
-        // A type from an imported module, e.g. `mymod::Point`; reproduce the
-        // same mangled name `crate::modules::resolve` gave that struct/enum.
+        // A type from an imported module, e.g. `mymod::Point`, of arbitrary
+        // depth (`a::b::Point`, reaching through a re-exported nested
+        // import); reproduce the same mangled name `crate::modules::resolve`
+        // gives that struct/enum, one level per `::` -- see the qualified
+        // expression path's comment in `parser::expr::parse_primary` for why
+        // chaining `mangle_name` calls here needs no knowledge of what an
+        // intermediate segment actually names.
         if self.import_aliases.contains(&name) && self.at(&TokenKind::ColonColon) {
             self.advance();
-            let item = self.expect_ident()?;
+            let mut item = self.expect_ident()?;
             name = crate::modules::mangle_name(&name, &item);
+            while self.eat(&TokenKind::ColonColon) {
+                item = self.expect_ident()?;
+                name = crate::modules::mangle_name(&name, &item);
+            }
         }
         // `Ring<T, N>` -- `N` is a plain non-negative integer literal (no
         // const-expression evaluator in this compiler), matching

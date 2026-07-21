@@ -822,64 +822,75 @@ impl Parser {
                     let full = span.to(self.prev_span());
                     return Some(Expr::StructLit { name, type_args, args, arg_names, span: full });
                 }
-                // A path into an imported module's namespace: either
-                // `module::Enum::Variant[(args)]` or `module::item[(args)]`
-                // (a function call or struct literal, told apart by the same
-                // capitalization convention as the unqualified forms above).
+                // A path into an imported module's namespace, of arbitrary
+                // depth: `module::Enum::Variant[(args)]`, `module::item[(args)]`,
+                // or a chain reaching *through* a re-exported nested import
+                // (`a::b::c::item`, where `b`'s own file imports `c`). A
+                // function call/struct literal is told apart from a bare
+                // reference by the same capitalization convention as the
+                // unqualified forms above; an `EnumName::Variant` pair is
+                // only ever the *last* two segments of the chain (enum
+                // variants aren't themselves further indexable via `::`).
+                //
                 // Reproduces the `alias__name` mangling that
-                // `crate::modules::resolve` applied to the imported file's
-                // own top-level declarations.
+                // `crate::modules::resolve` applies to an imported file's own
+                // top-level declarations, one level per `::` -- transitively
+                // so, since `resolve` mangles a nested import's items to
+                // `inner__item` while flattening the inner file in isolation,
+                // then re-mangles that already-mangled name to
+                // `outer__inner__item` while flattening the outer file that
+                // imported it. Chained `mangle_name` calls reproduce this
+                // exactly regardless of how the chain is grouped, since
+                // `mangle_name` is pure string concatenation
+                // (`mangle_name(mangle_name("a","b"), "c") ==
+                // mangle_name("a", mangle_name("b","c"))`) -- so this parser
+                // doesn't need to know (and can't easily know, since it only
+                // ever sees the *current* file's own `import` aliases)
+                // whether an intermediate segment really is a re-exported
+                // alias inside the module it's reaching through; a wrong
+                // guess just produces an unresolvable mangled name the
+                // checker reports as an ordinary undefined-symbol error, the
+                // same as a typo in a single-level qualified path already
+                // does.
                 if self.import_aliases.contains(&name) && self.at(&TokenKind::ColonColon) {
                     self.advance();
-                    let first = self.expect_ident()?;
-                    if self.eat(&TokenKind::ColonColon) {
-                        // `alias::first::...` where `first` is lowercase can't
-                        // be `EnumName::Variant` (enum names are always
-                        // capitalized -- the same convention `starts_uppercase`
-                        // already applies just below to tell a struct literal
-                        // from a function call) -- it's an attempt to reach
-                        // through `first` as if it were itself a re-exported
-                        // nested module, which `crate::modules`'s doc comment
-                        // explicitly says isn't supported (imports are
-                        // resolved by inlining one file at a time, with no
-                        // transitive re-export). Catching it here with a
-                        // located, accurate diagnostic avoids silently
-                        // misparsing this as `EnumVariant { enum_name:
-                        // "alias__first" }` and letting the checker report a
-                        // fabricated "undefined enum `alias__first`" that
-                        // exposes internal mangling and gives no hint about
-                        // the real (unsupported-transitive-import) cause.
-                        if !starts_uppercase(&first) {
-                            self.error(
-                                format!(
-                                    "cannot reach `{}` through `{}` -- imports are not transitively re-exported; import `{}` directly if you need its items",
-                                    first, name, first
-                                ),
-                                span.to(self.prev_span()),
-                            );
-                            return None;
+                    let mut mangled_prefix = name.clone();
+                    loop {
+                        let seg = self.expect_ident()?;
+                        if self.eat(&TokenKind::ColonColon) {
+                            if starts_uppercase(&seg) {
+                                let variant = self.expect_ident()?;
+                                let (args, arg_names) = if self.at(&TokenKind::LParen) {
+                                    self.parse_call_args()?
+                                } else {
+                                    (Vec::new(), Vec::new())
+                                };
+                                let full = span.to(self.prev_span());
+                                let enum_name = crate::modules::mangle_name(&mangled_prefix, &seg);
+                                return Some(Expr::EnumVariant {
+                                    enum_name,
+                                    type_args: Vec::new(),
+                                    variant,
+                                    args,
+                                    arg_names,
+                                    span: full,
+                                });
+                            }
+                            mangled_prefix = crate::modules::mangle_name(&mangled_prefix, &seg);
+                            continue;
                         }
-                        let variant = self.expect_ident()?;
-                        let (args, arg_names) = if self.at(&TokenKind::LParen) {
-                            self.parse_call_args()?
-                        } else {
-                            (Vec::new(), Vec::new())
-                        };
-                        let full = span.to(self.prev_span());
-                        let enum_name = crate::modules::mangle_name(&name, &first);
-                        return Some(Expr::EnumVariant { enum_name, type_args: Vec::new(), variant, args, arg_names, span: full });
-                    }
-                    let mangled = crate::modules::mangle_name(&name, &first);
-                    if self.at(&TokenKind::LParen) {
-                        let (args, arg_names) = self.parse_call_args()?;
-                        let full = span.to(self.prev_span());
-                        if starts_uppercase(&first) {
-                            return Some(Expr::StructLit { name: mangled, type_args: Vec::new(), args, arg_names, span: full });
+                        let mangled = crate::modules::mangle_name(&mangled_prefix, &seg);
+                        if self.at(&TokenKind::LParen) {
+                            let (args, arg_names) = self.parse_call_args()?;
+                            let full = span.to(self.prev_span());
+                            if starts_uppercase(&seg) {
+                                return Some(Expr::StructLit { name: mangled, type_args: Vec::new(), args, arg_names, span: full });
+                            }
+                            return Some(Expr::Call { callee: Box::new(Expr::Ident(mangled, span)), args, arg_names, span: full });
                         }
-                        return Some(Expr::Call { callee: Box::new(Expr::Ident(mangled, span)), args, arg_names, span: full });
+                        let full = span.to(self.prev_span());
+                        return Some(Expr::Ident(mangled, full));
                     }
-                    let full = span.to(self.prev_span());
-                    return Some(Expr::Ident(mangled, full));
                 }
                 // Enum variant literal: `EnumName::Variant` or, for a
                 // payload variant, `EnumName::Variant(args...)`.
@@ -1176,55 +1187,52 @@ impl Parser {
             }
             TokenKind::Ident(name) => {
                 self.advance();
-                // A qualified pattern into an imported module: either
-                // `module::Enum::Variant(bindings...)` or
-                // `module::StructName(bindings...)`, mirroring the qualified
-                // expression forms in `parse_primary`.
+                // A qualified pattern into an imported module, of arbitrary
+                // depth: `module::Enum::Variant(bindings...)`,
+                // `module::StructName(bindings...)`, or a chain reaching
+                // through a re-exported nested import -- mirroring
+                // `parse_primary`'s qualified-path loop (see its comment for
+                // why chained `mangle_name` calls are correct with no
+                // knowledge of what an intermediate segment actually names).
                 if self.import_aliases.contains(&name) && self.at(&TokenKind::ColonColon) {
                     self.advance();
-                    let first = self.expect_ident()?;
-                    if self.eat(&TokenKind::ColonColon) {
-                        // See the mirrored check in `parse_primary`'s
-                        // qualified-path branch for why a lowercase `first`
-                        // here can't be `EnumName::Variant`.
-                        if !starts_uppercase(&first) {
-                            self.error(
-                                format!(
-                                    "cannot reach `{}` through `{}` -- imports are not transitively re-exported; import `{}` directly if you need its items",
-                                    first, name, first
-                                ),
-                                self.prev_span(),
-                            );
-                            return None;
-                        }
-                        let variant = self.expect_ident()?;
-                        let bindings = if self.eat(&TokenKind::LParen) {
-                            let mut names = Vec::new();
-                            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
-                                names.push(self.expect_ident()?);
-                                if !self.eat(&TokenKind::Comma) {
-                                    break;
-                                }
+                    let mut mangled_prefix = name.clone();
+                    loop {
+                        let seg = self.expect_ident()?;
+                        if self.eat(&TokenKind::ColonColon) {
+                            if starts_uppercase(&seg) {
+                                let variant = self.expect_ident()?;
+                                let bindings = if self.eat(&TokenKind::LParen) {
+                                    let mut names = Vec::new();
+                                    while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                                        names.push(self.expect_ident()?);
+                                        if !self.eat(&TokenKind::Comma) {
+                                            break;
+                                        }
+                                    }
+                                    self.expect(&TokenKind::RParen)?;
+                                    names
+                                } else {
+                                    Vec::new()
+                                };
+                                let enum_name = crate::modules::mangle_name(&mangled_prefix, &seg);
+                                return Some(Pattern::EnumVariant(enum_name, variant, bindings));
                             }
-                            self.expect(&TokenKind::RParen)?;
-                            names
-                        } else {
-                            Vec::new()
-                        };
-                        let enum_name = crate::modules::mangle_name(&name, &first);
-                        return Some(Pattern::EnumVariant(enum_name, variant, bindings));
-                    }
-                    self.expect(&TokenKind::LParen)?;
-                    let mut names = Vec::new();
-                    while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
-                        names.push(self.expect_ident()?);
-                        if !self.eat(&TokenKind::Comma) {
-                            break;
+                            mangled_prefix = crate::modules::mangle_name(&mangled_prefix, &seg);
+                            continue;
                         }
+                        self.expect(&TokenKind::LParen)?;
+                        let mut names = Vec::new();
+                        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                            names.push(self.expect_ident()?);
+                            if !self.eat(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                        self.expect(&TokenKind::RParen)?;
+                        let struct_name = crate::modules::mangle_name(&mangled_prefix, &seg);
+                        return Some(Pattern::Struct(struct_name, names));
                     }
-                    self.expect(&TokenKind::RParen)?;
-                    let struct_name = crate::modules::mangle_name(&name, &first);
-                    return Some(Pattern::Struct(struct_name, names));
                 }
                 // Enum variant pattern: `EnumName::Variant` or, for a
                 // payload variant, `EnumName::Variant(binding, ...)`.
