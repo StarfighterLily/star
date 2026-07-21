@@ -712,6 +712,22 @@ floor(3.75)    # Floor
 ceil(3.25)     # Ceiling
 min(a, b)      # Minimum
 max(a, b)      # Maximum
+
+# Trig, exponential, logarithm -- all take/return `float` (an `int`
+# argument is promoted), lowered to LLVM's target-independent float
+# intrinsics (no extra linker flags needed, same as the functions above)
+sin(angle)     # Sine
+cos(angle)     # Cosine
+tan(angle)     # Tangent
+asin(x)        # Arcsine
+acos(x)        # Arccosine
+atan(x)        # Arctangent
+atan2(y, x)    # Arctangent of y/x, using the sign of both to pick the quadrant
+exp(x)         # e^x
+exp2(x)        # 2^x
+log(x)         # Natural logarithm
+log2(x)        # Base-2 logarithm
+log10(x)       # Base-10 logarithm
 ```
 
 ---

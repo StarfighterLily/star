@@ -465,6 +465,26 @@ impl Codegen {
         self.line("declare float @llvm.ceil.f32(float)");
         self.line("declare float @llvm.minnum.f32(float, float)");
         self.line("declare float @llvm.maxnum.f32(float, float)");
+        // Trig/exponential/logarithm builtins (`todo.md` #6 "Fill out math
+        // builtins as needed") -- same target-independent-intrinsic
+        // approach as `sqrt`/`pow`/`floor`/`ceil` just above, confirmed
+        // these all lower and link cleanly with no extra `-l` flag on this
+        // LLVM/clang version (unlike `tan`/`asin`/`acos`/`atan`/`atan2`,
+        // which historically weren't real LLVM intrinsics on older
+        // toolchains and would have needed libm's `tanf`/`asinf`/etc.
+        // instead).
+        self.line("declare float @llvm.sin.f32(float)");
+        self.line("declare float @llvm.cos.f32(float)");
+        self.line("declare float @llvm.tan.f32(float)");
+        self.line("declare float @llvm.asin.f32(float)");
+        self.line("declare float @llvm.acos.f32(float)");
+        self.line("declare float @llvm.atan.f32(float)");
+        self.line("declare float @llvm.atan2.f32(float, float)");
+        self.line("declare float @llvm.exp.f32(float)");
+        self.line("declare float @llvm.exp2.f32(float)");
+        self.line("declare float @llvm.log.f32(float)");
+        self.line("declare float @llvm.log2.f32(float)");
+        self.line("declare float @llvm.log10.f32(float)");
         // Saturating float->int casts backing `expr as <int type>`
         // (`Codegen::emit_cast`'s float->int arm): plain `fptosi`/`fptoui`
         // are undefined behavior (poison) whenever the source value

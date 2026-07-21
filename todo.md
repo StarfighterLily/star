@@ -149,7 +149,31 @@ rather than speculatively.
   (`&`/`|`/`^`/`~` still don't exist in this language) -- see
   `docs/design.md`'s Type System plan and `examples/bitfield.star`/
   `examples/flags.star`.
-- Fill out math builtins as needed (trig, log/exp, etc.).
+- ~~Fill out math builtins as needed (trig, log/exp, etc.)~~ -- done:
+  `sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`/`exp`/`exp2`/`log`/`log2`/
+  `log10` landed alongside the pre-existing `sqrt`/`pow`/`floor`/`ceil`, same
+  shape: dispatched by name ahead of the ordinary function table, always
+  `Float`-typed (an `int` argument is promoted, mirroring `sqrt`'s own
+  `promote_to_float`), lowered to LLVM's target-independent float intrinsics
+  (`llvm.sin.f32`/etc., `Codegen::emit_math_unary`/`emit_math_binary_f32` --
+  already generic over any unary/binary float intrinsic, so no new codegen
+  helper was needed) rather than libm symbols, so no extra `-l` linker flag
+  is needed to resolve them, same as `sqrt`/`pow` already established.
+  Confirmed live on this project's actual LLVM/clang version (22) that every
+  one of these names -- including `tan`/`asin`/`acos`/`atan`/`atan2`, which
+  weren't real LLVM intrinsics on older toolchains and would otherwise have
+  needed libm's `tanf`/`asinf`/etc. instead -- assembles and links cleanly
+  with no extra flag, before writing any lowering code against them. 8 new
+  tests added (1119 total, up from 1111): arity/type-check validation for
+  all 12 names (mirroring the pre-existing `sqrt`/`pow` checks),
+  `is_builtin_name` collision coverage (an `extern "C" fn sin` is rejected,
+  same as the pre-existing `abs` case), and five real `clang`-compiled
+  end-to-end runs -- known trig/inverse-trig values including all four
+  `atan2` quadrants plus the `(0, 0)` origin case, `exp`/`exp2`/`log`/`log2`/
+  `log10` at exact powers of their respective base, out-of-domain inputs
+  (`log` of a non-positive number, `asin`/`acos` past `[-1, 1]`) confirmed to
+  produce IEEE-754 `-inf`/NaN rather than crashing or trapping, and `int`-
+  argument promotion. New example `examples/trig_log.star`.
 
 ### 7. Wire up reflection into an actual runtime feature
 `@export`/`@tweakable` currently only emit descriptive metadata strings — there
@@ -166,6 +190,16 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Feature round: math builtins (todo.md #6's last remaining bullet, closing out the "Expand core
+standard library" tier entirely -- every other bullet in that section was already done). See #6
+above for the full writeup. 8 new tests (1119 total, up from 1111), one new example
+(`examples/trig_log.star`). All other buildable examples still `star build` cleanly (same
+pre-existing `examples/geometry_lib.star`/`examples/reexport_lib.star` no-`main`-by-design exception
+as every prior round, and the same pre-existing, still-unfixed `examples/extern_ffi.star` /
+`strstr` collision noted last round -- unrelated to this one, touches strings/FFI not math).
+
+### Previous round
+
 Feature round: transitive module re-export (todo.md #5's first bullet, the module-system tier's
 only item with any work done on it before this round). See #5 above for the full writeup. 12
 new/updated tests (1111 total, up from 1107), one new example (`examples/reexport_main.star` +

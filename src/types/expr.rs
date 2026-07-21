@@ -2041,12 +2041,13 @@ impl Checker {
         };
 
         match name {
-            "sqrt" | "floor" | "ceil" | "abs" => {
+            "sqrt" | "floor" | "ceil" | "abs" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "exp" | "exp2"
+            | "log" | "log2" | "log10" => {
                 if arity_ok(1, self) && !is_numeric(&arg_tys[0]) {
                     self.error(format!("`{}` expects a numeric (`int`/`float`) argument, found `{:?}`", name, arg_tys[0]), span);
                 }
             }
-            "pow" | "min" | "max" => {
+            "pow" | "min" | "max" | "atan2" => {
                 if arity_ok(2, self) {
                     for (i, t) in arg_tys.iter().enumerate() {
                         if !is_numeric(t) {

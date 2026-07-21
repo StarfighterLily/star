@@ -743,6 +743,13 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         // `crate::codegen::Codegen::emit_expr`'s `TypedExpr::Call` arm).
         "print" | "println" => Some(Ty::Named("unknown".into())),
         "sqrt" | "pow" | "floor" | "ceil" => Some(Ty::Float),
+        // `todo.md` #6 "Fill out math builtins as needed": trig, exponential,
+        // and logarithm functions. Always `Float`, like `sqrt`/`pow`/`floor`/
+        // `ceil` above -- unlike `abs`/`min`/`max`, none of these preserve an
+        // integer argument's type (there's no meaningful integer `sin`).
+        "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2" | "exp" | "exp2" | "log" | "log2" | "log10" => {
+            Some(Ty::Float)
+        }
         // `abs`/`min`/`max` preserve the numeric type (Int or Float) of
         // their first argument rather than always widening to Float.
         "abs" | "min" | "max" => Some(args.first().map(|a| a.clone().into_ty()).unwrap_or(Ty::Float)),
