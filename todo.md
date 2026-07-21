@@ -190,6 +190,78 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Bug-hunting round 7 (not a feature round): targeted the three newest, least-audited feature
+surfaces landed since round 6 -- the string builtins (`str_contains`/`str_starts_with`/
+`str_ends_with`/`str_index_of`/`str_trim`/`str_replace`/`str_split`/`str_join`), transitive
+module re-export (`a::b::c::item` arbitrary-depth chains), and the trig/log math builtins
+(`sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`/`exp`/`exp2`/`log`/`log2`/`log10`) -- plus a
+cross-cutting pass combining all three with each other and with existing memory/generics
+machinery. Four parallel audits were attempted as isolated git worktrees (this round's usual
+shape), but all four were killed mid-run by a session API usage cap before committing any
+work; rather than retry the same background-agent approach against the same cap, the round
+continued as a single direct, sequential audit instead. 1 confirmed bug found and fixed; 3 new
+tests added (1122 total, up from 1119, all green). Full suite
+(`cargo +stable-x86_64-pc-windows-gnu test --release`) passes clean.
+
+**Qualified-path generic turbofish silently misparsed as a comparison (1, real -- a silent
+miscompile into a cascade of unrelated errors, not just a missing feature)**:
+1. A generic struct or enum constructed through a qualified module path with an explicit
+   turbofish (`lib::Box<i32>(5)`, `lib::Option<i32>::Some(5)`, and the same shape at any
+   transitive chain depth) was silently misparsed as a chained comparison expression instead
+   of a qualified generic construction. Root cause: `parse_primary`'s qualified-path loop
+   (`src/parser/expr.rs`, the same loop round 6-era's "Modules expansion" round generalized to
+   arbitrary depth) only ever checked for `(` or `::` immediately after each segment -- unlike
+   the *unqualified* `name<T>(...)` case a few lines above it, which already probes for a
+   turbofish via `try_parse_type_args()` (a speculative parse that only commits when the `<...>`
+   is immediately followed by `(` or `::`, backing off cleanly to let `<` fall through to
+   ordinary comparison parsing otherwise -- necessary since Star doesn't reserve capitalized
+   identifiers, so `Foo < Bar` is exactly as legitimate as `Foo<Bar>(...)`). The qualified-path
+   loop never got the equivalent probe, so `<i32>(5)` was left completely unconsumed and fell
+   through to the caller's ordinary binary-operator parsing, turning `lib::Box<i32>(5)` into
+   `(lib__Box < i32) > (5)`. Confirmed via a real pre-fix `star check`: this produced a cascade
+   of unrelated diagnostics ("undefined name `i32`", "`<` is not supported between
+   `Named(\"unknown\")` and `Named(\"unknown\")`", "no field `value` on type `Bool`") instead of
+   either constructing the value or reporting one clean, on-topic error -- exactly the kind of
+   silent-miscompile-into-noise failure mode this round's methodology is looking for, not a
+   crash. Fixed by adding the identical speculative `try_parse_type_args()` probe right after
+   each segment in the qualified-path loop (mirroring the unqualified case exactly), threading
+   the parsed type args into both `Expr::StructLit` and `Expr::EnumVariant` (previously
+   hardcoded to `Vec::new()` in this loop) so both the plain-struct and generic-enum-variant
+   qualified shapes work, at any chain depth. `parse_pattern`'s mirrored qualified-path loop was
+   checked and needs no equivalent fix: `<` is reserved for comparison *patterns* at the top of
+   `parse_pattern` (`TokenKind::Lt => self.compare_pattern(...)`), so explicit turbofish syntax
+   was never grammatically reachable in pattern position to begin with (a match arm's scrutinee
+   type is already known, so it doesn't need one) -- confirmed by reading, not just assumed. 3
+   new tests: a single-hop generic struct construction with turbofish (both positional and named
+   args), a two-hop transitive generic enum variant construction with turbofish (guarding the
+   fix composes with the chain-depth generalization, not just a single hop), and a same-shape
+   construction *without* an explicit turbofish (guarding the new probe doesn't disturb the
+   pre-existing, already-working inferred-type-argument path).
+
+**Areas audited with no bugs found**: the eight string builtins' RC/allocation correctness
+under aliasing (`str_replace(x, x, x)`), shrinking/growing replacements, overlapping-match
+non-overlapping-replace semantics, a null `str` (a despawned arena slot's zero-valued field)
+passed as the *non-`s`* argument (`old`/`new`/`sep`/needle) to all eight builtins (the existing
+null-safety test only covered the `s` position), `str_split`'s growable-buffer growth path
+under heavy fan-out plus subsequent user `.push()` onto the returned `List<str>`, and
+`str_split`/`str_join`/`str_replace` composed in a 200K-iteration loop (pre-existing leak test,
+re-confirmed); confirmed none of the eight touch any shared global state (unlike `Symbol`/
+`rand`'s process-wide tables), so no `par`/`swarm` ban-list gap exists for them. All 12 trig/log
+builtins' `extern "C" fn` name-collision rejection (previously only `sin` had a test; the other
+11 confirmed individually), `Wrapping<T>` argument rejection with a clean diagnostic, NaN
+propagation through a chained call (`sin(sqrt(-1.0))`), `log`/`log2`/`log10` of exactly `1.0`
+(exactly `0.0`, no floating-point drift), `exp(log(1.0))` round-tripping to `1.0`, and a 5-deep
+chained call (`sin(cos(tan(atan(atan2(...)))))`) for both correctness and stack safety; confirmed
+by reading `emit_math_unary`/`emit_math_binary_f32` that none of the 12 touch shared state
+either, so likewise no `par`/`swarm` gap. Cross-cutting: a 2-hop transitively-re-exported
+generic struct (`Sample<T>`) constructed with an explicit turbofish through the chain, whose
+constructing function's own body calls both a string builtin (`str_trim`) and a trig builtin
+(`sin`) internally -- full composition confirmed correct end to end (mangling, monomorphization,
+and both builtin call classes all compose cleanly with each other and with the transitive-import
+machinery).
+
+### Previous round
+
 Feature round: math builtins (todo.md #6's last remaining bullet, closing out the "Expand core
 standard library" tier entirely -- every other bullet in that section was already done). See #6
 above for the full writeup. 8 new tests (1119 total, up from 1111), one new example

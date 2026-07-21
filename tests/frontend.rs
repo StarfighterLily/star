@@ -14232,6 +14232,135 @@ fn single_level_qualified_call_through_import_alias_still_works_end_to_end() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Bug-hunting round 7: a generic struct constructed through a qualified
+/// module path with an explicit turbofish (`lib::Box<i32>(5)`) used to be
+/// silently misparsed as a chained comparison (`(lib__Box < i32) > (5)`)
+/// instead of a qualified generic construction -- the qualified-path loop in
+/// `parse_primary` (`src/parser/expr.rs`) only ever checked for `(` or `::`
+/// immediately after a segment, with no turbofish probe the way the
+/// unqualified `name<T>(...)` case already has via `try_parse_type_args`.
+/// Confirmed via a real pre-fix `star check`: `lib::Box<i32>(5)` produced a
+/// cascade of unrelated diagnostics ("undefined name `i32`", "`<` is not
+/// supported between ...") instead of either constructing the box or
+/// reporting one clean error. Fixed by probing for a turbofish right after
+/// each segment the same speculative way the top-level case does, only
+/// committing when immediately followed by `(` or `::`.
+#[test]
+fn runtime_qualified_generic_struct_construction_with_turbofish_end_to_end() {
+    let dir = test_scratch_dir("runtime_qualified_generic_struct_construction_with_turbofish_end_to_end");
+    write_test_file(&dir, "lib.star", "struct Box<T>:\n    value: T\n");
+    let main_path = write_test_file(
+        &dir, "main.star",
+        "import \"lib.star\" as lib\n\nfn main():\n    let b: lib::Box<i32> = lib::Box<i32>(5)\n    let c = lib::Box<i32>(value = 9)\n    println(f\"{b.value},{c.value}\")\n",
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_qualified_generic_struct_turbofish.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "5,9");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same turbofish-through-a-qualified-path shape, but for a generic
+/// *enum* variant reached two hops deep (`a` imports `b` imports `em`,
+/// constructing `b::em::Maybe<i32>::Just(7)` from `a`) -- guards that the
+/// fix threads `seg_type_args` into `Expr::EnumVariant` (not just
+/// `Expr::StructLit`) and composes with the transitive chain, not just a
+/// single hop.
+#[test]
+fn runtime_qualified_generic_enum_variant_construction_with_turbofish_two_hops_end_to_end() {
+    let dir = test_scratch_dir("runtime_qualified_generic_enum_variant_construction_with_turbofish_two_hops_end_to_end");
+    write_test_file(&dir, "em.star", "enum Maybe<T>:\n    Just(value: T)\n    Nothing\n");
+    write_test_file(&dir, "b.star", "import \"em.star\" as em\nfn identity(x: em::Maybe<i32>) -> em::Maybe<i32>:\n    return x\n");
+    let main_path = write_test_file(
+        &dir, "a.star",
+        concat!(
+            "import \"b.star\" as b\n\n",
+            "fn main():\n",
+            "    let a = b::identity(b::em::Maybe<i32>::Just(7))\n",
+            "    let n = b::identity(b::em::Maybe<i32>::Nothing)\n",
+            "    match a:\n",
+            "        b::em::Maybe::Just(v) -> println(f\"just {v}\")\n",
+            "        b::em::Maybe::Nothing -> println(\"nothing\")\n",
+            "    match n:\n",
+            "        b::em::Maybe::Just(v) -> println(f\"just {v}\")\n",
+            "        b::em::Maybe::Nothing -> println(\"nothing\")\n",
+        ),
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_qualified_generic_enum_turbofish_two_hops.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["just 7", "nothing"], "{}", stdout);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A generic struct reached through a qualified path but *without* an
+/// explicit turbofish (`lib::Box(5)`, relying on argument-type inference the
+/// same way the unqualified `Box(5)` shape already does) must keep
+/// constructing correctly -- guards the turbofish probe (only attempted when
+/// a `<` immediately follows the segment) doesn't fire or otherwise disturb
+/// this pre-existing, already-working shape.
+#[test]
+fn runtime_qualified_generic_struct_construction_without_turbofish_still_works_end_to_end() {
+    let dir = test_scratch_dir("runtime_qualified_generic_struct_construction_without_turbofish_still_works_end_to_end");
+    write_test_file(&dir, "lib.star", "struct Box<T>:\n    value: T\n");
+    let main_path = write_test_file(
+        &dir, "main.star",
+        "import \"lib.star\" as lib\n\nfn main():\n    let b = lib::Box(5)\n    println(f\"{b.value}\")\n",
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_qualified_generic_struct_no_turbofish.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "5");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Regression test for the RC leak fixed in `Codegen::emit_place`'s generic
 /// fallback arm: indexing directly into a bare `Call` expression that
 /// returns a `List<T>` (`make_list()[0]`, with no intervening `let`) routes

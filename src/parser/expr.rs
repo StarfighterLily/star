@@ -857,6 +857,30 @@ impl Parser {
                     let mut mangled_prefix = name.clone();
                     loop {
                         let seg = self.expect_ident()?;
+                        // A generic struct/enum reached through the qualified
+                        // path (`alias::Box<i32>(...)`, `alias::Option<i32>::
+                        // Some(...)`) -- mirrors the unqualified turbofish
+                        // probe above (`try_parse_type_args`, used for a bare
+                        // `name` at the top of `parse_primary`): a capitalized
+                        // segment followed by `<` is exactly as ambiguous with
+                        // a comparison here as it is at the top level (`a::Foo
+                        // < Bar` vs. `a::Foo<Bar>(...)`), so this must probe
+                        // and back off the same speculative way rather than
+                        // assume `<` always starts a turbofish. Without this,
+                        // the `<...>` was left completely unconsumed here and
+                        // fell through to `peek_binop`'s ordinary comparison
+                        // handling, silently misparsing `alias::Box<i32>(5)`
+                        // as the chained comparison `(alias__Box < i32) >
+                        // (5)` instead of a qualified generic construction --
+                        // confirmed via a real pre-fix `star check` run
+                        // cascading into unrelated "undefined name `i32`"/
+                        // "`<` not supported between ..." diagnostics instead
+                        // of either working or reporting one clean error.
+                        let seg_type_args = if starts_uppercase(&seg) && self.at(&TokenKind::Lt) {
+                            self.try_parse_type_args()
+                        } else {
+                            Vec::new()
+                        };
                         if self.eat(&TokenKind::ColonColon) {
                             if starts_uppercase(&seg) {
                                 let variant = self.expect_ident()?;
@@ -869,7 +893,7 @@ impl Parser {
                                 let enum_name = crate::modules::mangle_name(&mangled_prefix, &seg);
                                 return Some(Expr::EnumVariant {
                                     enum_name,
-                                    type_args: Vec::new(),
+                                    type_args: seg_type_args,
                                     variant,
                                     args,
                                     arg_names,
@@ -884,7 +908,7 @@ impl Parser {
                             let (args, arg_names) = self.parse_call_args()?;
                             let full = span.to(self.prev_span());
                             if starts_uppercase(&seg) {
-                                return Some(Expr::StructLit { name: mangled, type_args: Vec::new(), args, arg_names, span: full });
+                                return Some(Expr::StructLit { name: mangled, type_args: seg_type_args, args, arg_names, span: full });
                             }
                             return Some(Expr::Call { callee: Box::new(Expr::Ident(mangled, span)), args, arg_names, span: full });
                         }
