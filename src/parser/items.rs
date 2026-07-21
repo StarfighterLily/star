@@ -79,15 +79,42 @@ impl Parser {
         Some(ExternFnDecl { abi, sig, span })
     }
 
+    /// `arena Name: Type` optionally followed by `= <capacity>` -- an
+    /// integer-literal override for the default 1024-element backing array
+    /// (see `ArenaDecl::capacity`'s doc comment). Mirrors `parse_field`'s
+    /// `= <default>` grammar for a struct field, but the capacity must be a
+    /// bare integer literal (not an arbitrary expression): it sizes LLVM's
+    /// backing/generation/free-list arrays at codegen time, so it has to be
+    /// known without evaluating anything.
     fn parse_arena(&mut self) -> Option<ArenaDecl> {
         let start = self.peek_span();
         self.expect(&TokenKind::Arena)?;
         let name = self.expect_ident()?;
         self.expect(&TokenKind::Colon)?;
         let ty = self.parse_type()?;
+        let capacity = if self.eat(&TokenKind::Assign) {
+            let cap_span = self.peek_span();
+            match self.peek_kind() {
+                TokenKind::Int(n) => {
+                    self.advance();
+                    if n <= 0 {
+                        self.error(format!("arena capacity must be a positive integer literal, found `{}`", n), cap_span);
+                        None
+                    } else {
+                        Some(n as u64)
+                    }
+                }
+                other => {
+                    self.error(format!("expected an integer literal arena capacity, found {}", other.describe()), cap_span);
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
         self.expect_line_end()?;
         let span = start.to(self.prev_span());
-        Some(ArenaDecl { name, ty, span })
+        Some(ArenaDecl { name, ty, capacity, span })
     }
 
     fn parse_sequence(&mut self) -> Option<SequenceDef> {

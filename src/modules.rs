@@ -391,9 +391,12 @@ fn rename_item(item: &Item, names: &HashMap<String, String>) -> Item {
             span: blk.span,
         }),
         Item::Fn(f) => Item::Fn(rename_fn(f, names, true)),
-        Item::Arena(a) => {
-            Item::Arena(ArenaDecl { name: mangled(&a.name, names), ty: rename_type(&a.ty, names), span: a.span })
-        }
+        Item::Arena(a) => Item::Arena(ArenaDecl {
+            name: mangled(&a.name, names),
+            ty: rename_type(&a.ty, names),
+            capacity: a.capacity,
+            span: a.span,
+        }),
         Item::Sequence(s) => Item::Sequence(SequenceDef {
             name: mangled(&s.name, names),
             params: s.params.iter().map(|p| rename_param(p, names)).collect(),
@@ -530,9 +533,13 @@ fn rename_stmt(stmt: &Stmt, names: &HashMap<String, String>) -> Stmt {
         Stmt::Par { var, arena, body, span } => {
             Stmt::Par { var: var.clone(), arena: mangled(arena, names), body: rename_block(body, names), span: *span }
         }
-        Stmt::Each { var, arena, body, span } => {
-            Stmt::Each { var: var.clone(), arena: mangled(arena, names), body: rename_block(body, names), span: *span }
-        }
+        Stmt::Each { var, index_var, arena, body, span } => Stmt::Each {
+            var: var.clone(),
+            index_var: index_var.clone(),
+            arena: mangled(arena, names),
+            body: rename_block(body, names),
+            span: *span,
+        },
         Stmt::Yield { span } => Stmt::Yield { span: *span },
         Stmt::Spawn { arena, args, arg_names, span } => Stmt::Spawn {
             arena: mangled(arena, names),

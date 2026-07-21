@@ -73,21 +73,32 @@ a search path, every import in every file is a relative-path landmine that break
 you reorganize directories — which is exactly the kind of refactor a growing game project does
 constantly.
 
-## 4. Arena capacity is a hardcoded, silent constant — not something you can size for your game
+## 4. ~~Arena capacity is a hardcoded, silent constant~~ — fixed: now per-arena, configurable
 
-`Codegen::ARENA_CAPACITY` (`src/codegen/mod.rs:206`) is a compile-time constant **1024**,
-applied to *every* arena in *every* program, with no per-arena override anywhere in the
-grammar. Spawning past capacity doesn't error — it "silently drops the entity but warns at
-runtime" (`docs/language_reference.md:907-908`), confirmed in `src/codegen/arena.rs:316-326`
-("Past-capacity spawns are still silently dropped").
+**Fixed.** `arena Name: Type = N` now overrides the default 1024-element capacity on a
+per-arena basis (`ArenaDecl::capacity` / `TypedArenaDecl::capacity`, resolved by the checker
+and looked up per-arena-name in `Codegen::arena_capacity` — see `src/codegen/arena.rs`). Every
+arena's backing/generation/free-list array is sized for what its own declaration asked for,
+bounded by `crate::types::MAX_ARENA_CAPACITY` (1,000,000 — chosen so `GenRef`'s fixed `i32`
+slot-index field stays well inside range, and so an unreasonable literal can't `malloc` an
+absurd backing array the moment the arena's first entity is spawned). See
+`examples/arena_capacity_configurable.star`.
 
-**Why it matters**: 1024 is a reasonable default for enemies-on-screen but is exactly the kind
-of number a real game blows past — a bullet-hell's projectile pool, a large open-world's active
-props, a particle system. Today the only workaround is spreading state across multiple arenas
-by hand, and the failure mode (silent drop) is the worst possible one for a shipped game: no
-compile error, no crash, just missing entities in production. This deserves either a
-per-arena capacity parameter or at minimum a much louder failure mode (a trap, not a warning)
-until it's configurable.
+Originally: `Codegen::ARENA_CAPACITY` was a compile-time constant **1024**, applied to *every*
+arena in *every* program, with no per-arena override anywhere in the grammar. Spawning past
+capacity didn't error — it "silently drops the entity but warns at runtime"
+(`docs/language_reference.md:907-908`), confirmed in `src/codegen/arena.rs:316-326` ("Past-
+capacity spawns are still silently dropped"). 1024 was a reasonable default for
+enemies-on-screen but exactly the kind of number a real game blows past — a bullet-hell's
+projectile pool, a large open-world's active props, a particle system — and the only
+workaround was spreading state across multiple arenas by hand.
+
+The failure mode itself is also better now, in both directions: the overflow warning names
+the arena's *actual* configured capacity (not one shared hardcoded number), and it now
+latches after printing once per arena instead of flooding the console every single tick a
+spawner keeps retrying against an already-full pool (`@arena.{name}.warned` in
+`src/codegen/arena.rs`) — a real concern once `projects/snake/NOTES.md` section 2.1's arena
+slot reclamation gap is also fixed and a game is actively spawning/despawning every frame.
 
 ## 5. No hot-reload runtime — `@export`/`@tweakable` are metadata-only
 

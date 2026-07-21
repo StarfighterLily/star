@@ -509,6 +509,7 @@ Arenas are first-class citizens for long-lived state:
 ```star
 arena Enemies: Enemy
 arena Projectiles: Projectile
+arena Bullets: Bullet = 4096  # override the default 1024-element capacity
 
 fn spawn_enemy(hp: i32):
     spawn Enemies(hp)  # Create new entity in arena
@@ -521,7 +522,9 @@ par e in Enemies:
 **Features:**
 - O(1) mass deallocation when unloading levels
 - Internal free-list for dynamic creation/destruction during gameplay
-- Capacity of 1024 elements (runtime warning on overflow)
+- Capacity of 1024 elements by default, overridable per arena with
+  `arena Name: Type = N` (runtime warning, printed once per arena, on
+  overflow — see "Arena Limitations" below)
 
 #### 3. Generational References (GenRef)
 
@@ -604,6 +607,25 @@ fn main():
 - Supports `break`/`continue` like any other loop
 - Cannot be nested inside a `par`/`swarm` body (it would then run its whole
   sequential scan concurrently on every worker thread)
+
+#### Conditional reclamation during a scan
+
+`each item, idx in ArenaName:` optionally binds a second name to the
+current element's raw slot index (`i32`), so the body can `despawn
+ArenaName[idx]` — the standard "scan every entity, despawn the ones
+matching a runtime condition" pattern (expired particles, dead enemies,
+finished timers). `despawn` is banned inside `par`/`swarm` (concurrent
+generation bumps aren't disjoint across worker threads), but `each` runs
+sequentially on the calling thread, so there's nothing unsafe about it:
+
+```star
+arena Particles: Particle
+
+fn reclaim_dead_particles():
+    each p, i in Particles:
+        if p.life <= 0.0:
+            despawn Particles[i]
+```
 
 ---
 
@@ -939,8 +961,12 @@ fn astar(start: Point, goal: Point) -> List<Point>:
 
 ### Arena Limitations
 
-- Maximum capacity of 1024 elements per arena
-- Spawning beyond capacity silently drops the entity but warns at runtime
+- Default capacity of 1024 elements per arena, overridable per arena with
+  `arena Name: Type = N` (an integer literal), up to a hard ceiling of
+  1,000,000 elements
+- Spawning beyond capacity still drops the entity, but now warns at
+  runtime only once per arena (naming that arena's actual configured
+  capacity) rather than repeating the warning on every further overflow
 
 ---
 
@@ -953,6 +979,8 @@ The `examples/` directory contains working demonstrations:
 | `player.star` | Basic structs, traits, match, f-strings |
 | `spawn.star` | Arena population and iteration |
 | `swarm.star` | Parallel iteration |
+| `each_index_despawn.star` | Conditionally reclaiming arena slots during a scan (`each item, idx in ...`) |
+| `arena_capacity_configurable.star` | Overriding an arena's default capacity (`arena Name: Type = N`) |
 | `sequence.star` | Coroutines |
 | `vecmath.star` | Vector math and swizzling |
 | `math_builtins.star` | Built-in math functions |

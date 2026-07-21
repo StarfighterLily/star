@@ -84,11 +84,27 @@ impl ParticlePool:
 # `ParticlePool` above, ticked by `par` every frame, and dumped to the
 # console via `swarm` (println isn't in the SDL/rand/Symbol ban list, so
 # this one's legal) when the debug overlay is toggled on.
-arena Particles: Particle
+#
+# NOTES.md section 2.1 used to flag this arena as unable to ever reclaim a
+# dead slot: `despawn` needs a slot index, `par`/`swarm` are the only
+# iteration primitives that existed, and `despawn` is (still, necessarily)
+# banned inside both -- concurrent generation bumps aren't disjoint across
+# worker threads. That gap is now closed at the language level: `each item,
+# idx in ArenaName:` binds the current slot's index, and `despawn` was never
+# actually banned inside `each` (only inside `par`/`swarm`) -- there was
+# just no way to name the slot before. `reclaim_dead_particles` below is
+# exactly the "scan every entity, despawn the ones matching a runtime
+# condition" pattern 2.1 said this game couldn't express.
+arena Particles: Particle = 256
 
 fn tick_particle_arena(dt: f32):
     par p in Particles:
         p.life -= dt
+
+fn reclaim_dead_particles():
+    each p, i in Particles:
+        if p.life <= 0.0:
+            despawn Particles[i]
 
 fn dump_particle_arena():
     println("[arena] live particles (life > 0):")
@@ -340,6 +356,7 @@ fn main():
         pool.update(0.016)
         pool.draw(w)
         tick_particle_arena(0.016)
+        reclaim_dead_particles()
 
         if flags_has(flags, GameFlag::Debug):
             println(f"[debug] score={stats.score} high={stats.high_score} len={snake.length()} paused={flags_has(flags, GameFlag::Paused)} dir={food::sb::grid::dir_name(snake.dir)} boost={boosting}")

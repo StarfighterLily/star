@@ -104,6 +104,15 @@ pub struct Codegen {
     /// proven exactly one exists). Populated while arena decls are emitted,
     /// which happens before any function body -- see `emit()`.
     arena_by_elem: Vec<(Ty, String)>,
+    /// Maps an arena's name -> its resolved element capacity
+    /// (`TypedArenaDecl::capacity`, defaulted/validated by the checker --
+    /// see `crate::types::DEFAULT_ARENA_CAPACITY`/`MAX_ARENA_CAPACITY`).
+    /// Populated alongside `arena_by_elem` in `emit_arena_decl`; every other
+    /// arena-touching emitter (`spawn`/`despawn`/`each`/`par`/`GenRef`) looks
+    /// its arena's capacity up here instead of assuming one fixed constant,
+    /// so each arena's backing/generation/free-list array is sized for what
+    /// its own declaration asked for.
+    arena_capacity: std::collections::HashMap<String, u64>,
     /// Variant name lists per enum, in declaration order, so an
     /// `EnumName::Variant` literal or match pattern can be lowered to its
     /// dense `i32` discriminant.
@@ -218,13 +227,20 @@ pub struct Codegen {
 }
 
 impl Codegen {
-    /// Fixed capacity (element count) of every arena's backing array and its
-    /// parallel generation array. See `emit_spawn_stmt`/`emit_arena_decl`.
-    const ARENA_CAPACITY: u64 = 1024;
-
     /// Fixed byte capacity of the `frame:` bump allocator's backing buffer
     /// (`@frame.buf`). See `emit_frame_alloc_bytes`.
     const FRAME_BUF_SIZE: u64 = 4096;
+
+    /// Resolved element capacity of arena `name`'s backing array and its
+    /// parallel generation/free-list arrays (`TypedArenaDecl::capacity`, set
+    /// per-arena in `emit_arena_decl`). Every arena is registered before any
+    /// function body is emitted (see `emit()`), so this is only ever missing
+    /// for a name the checker didn't resolve to a real arena -- defensive
+    /// fallback only, matching this codebase's existing convention (e.g.
+    /// `arena_for_elem_ty`).
+    pub(super) fn arena_capacity(&self, name: &str) -> u64 {
+        self.arena_capacity.get(name).copied().unwrap_or(crate::types::DEFAULT_ARENA_CAPACITY)
+    }
 
     pub fn new() -> Self {
         Self {
@@ -242,6 +258,7 @@ impl Codegen {
             in_main: false,
             pending_top: Vec::new(),
             arena_by_elem: Vec::new(),
+            arena_capacity: std::collections::HashMap::new(),
             enum_variants: std::collections::HashMap::new(),
             enum_variant_fields: std::collections::HashMap::new(),
             loop_stack: Vec::new(),
@@ -542,8 +559,9 @@ impl Codegen {
             self.line(&format!("declare {{ i32, i1 }} @llvm.u{op}.with.overflow.i32(i32, i32)", op = op));
         }
         self.line("");
-        // Field 1 (the slot index) stays `i32` -- bounded by `ARENA_CAPACITY`
-        // (1024), nowhere near that width's range. Field 2 (the generation
+        // Field 1 (the slot index) stays `i32` -- every arena's capacity is
+        // bounded by `crate::types::MAX_ARENA_CAPACITY` (1,000,000), nowhere
+        // near that width's range. Field 2 (the generation
         // counter) is `i64`, not `i32`: a narrower counter is reachable in
         // practice. Confirmed via a real, reproducible ABA bypass -- with a
         // 32-bit counter, ~2^31 despawn/spawn cycles on one arena slot (a

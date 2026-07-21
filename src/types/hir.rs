@@ -9,11 +9,15 @@ use crate::diagnostics::Span;
 
 use super::Ty;
 
-/// A typed arena declaration.
+/// A typed arena declaration. `capacity` is always resolved to a concrete
+/// value here (defaulted from `crate::types::DEFAULT_ARENA_CAPACITY` when
+/// the source didn't specify one) -- see `Checker::check_item`'s
+/// `Item::Arena` arm.
 #[derive(Clone, Debug)]
 pub struct TypedArenaDecl {
     pub name: String,
     pub ty: Ty,
+    pub capacity: u64,
     pub span: Span,
 }
 
@@ -183,8 +187,12 @@ pub enum TypedStmt {
         span: Span,
     },
     /// `each item in ArenaName: <body>` - see [`crate::ast::Stmt::Each`].
+    /// `index_var` is `Some(name)` when the source bound a second `idx`
+    /// name (`each item, idx in ArenaName:`), giving the body the current
+    /// element's raw slot index for `despawn ArenaName[idx]`.
     Each {
         var: String,
+        index_var: Option<String>,
         elem_ty: Ty,
         arena: String,
         body: TypedBlock,

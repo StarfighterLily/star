@@ -190,14 +190,14 @@ done:
   ret void
 }
 
-%Enemy = type { i32 }
-%Enemies = type { %Enemy*, i64 }
-@arena.Enemies.data = global %Enemy* null
-@arena.Enemies.count = global i64 0
-@arena.Enemies.gen = global [1024 x i64] zeroinitializer
-@arena.Enemies.free = global [1024 x i64] zeroinitializer
-@arena.Enemies.free_top = global i64 0
-@arena.Enemies.warned = global i1 0
+%Bullet = type { i32 }
+%Bullets = type { %Bullet*, i64 }
+@arena.Bullets.data = global %Bullet* null
+@arena.Bullets.count = global i64 0
+@arena.Bullets.gen = global [8 x i64] zeroinitializer
+@arena.Bullets.free = global [8 x i64] zeroinitializer
+@arena.Bullets.free_top = global i64 0
+@arena.Bullets.warned = global i1 0
 
 %Rect = type { float, float, float, float }
 %Aabb2 = type { <2 x float>, <2 x float> }
@@ -209,7 +209,7 @@ done:
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
   %t2 = alloca i32
-  %t24 = alloca %Enemy
+  %t24 = alloca %Bullet
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
@@ -220,56 +220,56 @@ entry:
   br label %for_cond_0
 for_cond_0:
   %t3 = load i32, i32* %t2
-  %t4 = icmp slt i32 %t3, 1030
+  %t4 = icmp slt i32 %t3, 12
   br i1 %t4, label %for_body_1, label %for_end_3
 for_body_1:
-  %t5 = load %Enemy*, %Enemy** @arena.Enemies.data
-  %t6 = icmp eq %Enemy* %t5, null
+  %t5 = load %Bullet*, %Bullet** @arena.Bullets.data
+  %t6 = icmp eq %Bullet* %t5, null
   br i1 %t6, label %spawn_init_4, label %spawn_ready_5
 spawn_init_4:
-  %t7 = getelementptr %Enemy, %Enemy* null, i32 1
-  %t8 = ptrtoint %Enemy* %t7 to i64
-  %t9 = mul i64 %t8, 1024
+  %t7 = getelementptr %Bullet, %Bullet* null, i32 1
+  %t8 = ptrtoint %Bullet* %t7 to i64
+  %t9 = mul i64 %t8, 8
   %t10 = call i8* @malloc(i64 %t9)
-  %t11 = bitcast i8* %t10 to %Enemy*
-  store %Enemy* %t11, %Enemy** @arena.Enemies.data
+  %t11 = bitcast i8* %t10 to %Bullet*
+  store %Bullet* %t11, %Bullet** @arena.Bullets.data
   br label %spawn_ready_5
 spawn_ready_5:
-  %t12 = load %Enemy*, %Enemy** @arena.Enemies.data
-  %t13 = load i64, i64* @arena.Enemies.free_top
+  %t12 = load %Bullet*, %Bullet** @arena.Bullets.data
+  %t13 = load i64, i64* @arena.Bullets.free_top
   %t14 = icmp sgt i64 %t13, 0
   br i1 %t14, label %spawn_reuse_6, label %spawn_grow_7
 spawn_reuse_6:
   %t15 = sub i64 %t13, 1
-  store i64 %t15, i64* @arena.Enemies.free_top
-  %t16 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.Enemies.free, i64 0, i64 %t15
+  store i64 %t15, i64* @arena.Bullets.free_top
+  %t16 = getelementptr inbounds [8 x i64], [8 x i64]* @arena.Bullets.free, i64 0, i64 %t15
   %t17 = load i64, i64* %t16
   br label %spawn_store_8
 spawn_grow_7:
-  %t18 = load i64, i64* @arena.Enemies.count
-  %t19 = icmp slt i64 %t18, 1024
+  %t18 = load i64, i64* @arena.Bullets.count
+  %t19 = icmp slt i64 %t18, 8
   br i1 %t19, label %spawn_grow_ok_10, label %spawn_capacity_warn_11
 spawn_capacity_warn_11:
-  %t20 = load i1, i1* @arena.Enemies.warned
+  %t20 = load i1, i1* @arena.Bullets.warned
   br i1 %t20, label %spawn_end_9, label %spawn_warn_print_12
 spawn_warn_print_12:
-  store i1 1, i1* @arena.Enemies.warned
-  %t21 = getelementptr inbounds [140 x i8], [140 x i8]* @.str.0, i64 0, i64 0
+  store i1 1, i1* @arena.Bullets.warned
+  %t21 = getelementptr inbounds [137 x i8], [137 x i8]* @.str.0, i64 0, i64 0
   call i32 @puts(i8* %t21)
   br label %spawn_end_9
 spawn_grow_ok_10:
   %t22 = add i64 %t18, 1
-  store i64 %t22, i64* @arena.Enemies.count
+  store i64 %t22, i64* @arena.Bullets.count
   br label %spawn_store_8
 spawn_store_8:
   %t23 = phi i64 [ %t17, %spawn_reuse_6 ], [ %t18, %spawn_grow_ok_10 ]
   %t25 = load i32, i32* %t2
-  %t26 = getelementptr inbounds %Enemy, %Enemy* %t24, i32 0, i32 0
+  %t26 = getelementptr inbounds %Bullet, %Bullet* %t24, i32 0, i32 0
   store i32 %t25, i32* %t26
-  %t27 = load %Enemy, %Enemy* %t24
-  %t28 = getelementptr inbounds %Enemy, %Enemy* %t12, i64 %t23
-  store %Enemy %t27, %Enemy* %t28
-  %t29 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.Enemies.gen, i64 0, i64 %t23
+  %t27 = load %Bullet, %Bullet* %t24
+  %t28 = getelementptr inbounds %Bullet, %Bullet* %t12, i64 %t23
+  store %Bullet %t27, %Bullet* %t28
+  %t29 = getelementptr inbounds [8 x i64], [8 x i64]* @arena.Bullets.gen, i64 0, i64 %t23
   %t30 = load i64, i64* %t29
   %t31 = add i64 %t30, 1
   store i64 %t31, i64* %t29
@@ -290,5 +290,5 @@ for_end_3:
 
 
 ; Global Constants
-@.str.0 = private unnamed_addr constant [140 x i8] c"star runtime warning: arena `Enemies` is full (1024 live elements) -- spawn dropped (further overflows on this arena will not be reported)\0A\00"
+@.str.0 = private unnamed_addr constant [137 x i8] c"star runtime warning: arena `Bullets` is full (8 live elements) -- spawn dropped (further overflows on this arena will not be reported)\0A\00"
 @.str.1 = private unnamed_addr constant { i64, i8*, [14 x i8] } { i64 -1, i8* null, [14 x i8] c"done spawning\00" }

@@ -257,17 +257,52 @@ ship this way.
 
 Combining 1.6's finding with `despawn`'s own restrictions: `despawn` is
 also banned inside `par`/`swarm` bodies (the same ban list `spawn`/
-`frame:` already had), and `despawn ArenaName[idx]` only ever accepts a
-literal/known index, never one discovered by inspecting live entities.
-Since `par`/`swarm` are the *only* ways to iterate an arena's contents at
-all, there is no way to write "scan every entity, despawn the ones matching
-some runtime condition" — the single most common object-pool/cleanup
-pattern in any real game (expired particles, dead enemies, finished
-timers). This game's `Particles` arena (see 1.6) demonstrates the
-consequence directly: dead particles just sit in their slots forever,
-uncollectable, until the fixed 1024-element arena cap is exhausted and new
-spawns start silently dropping (`docs/language_reference.md`'s own
-documented, if alarming, overflow behavior).
+`frame:` already had). Since `par`/`swarm` were, at the time this was
+written, the *only* way to iterate an arena's contents at all, there was no
+way to write "scan every entity, despawn the ones matching some runtime
+condition" — the single most common object-pool/cleanup pattern in any real
+game (expired particles, dead enemies, finished timers). This game's
+`Particles` arena (see 1.6) demonstrated the consequence directly: dead
+particles just sat in their slots forever, uncollectable, until the fixed
+1024-element arena cap was exhausted and new spawns started silently
+dropping (`docs/language_reference.md`'s own documented, if alarming,
+overflow behavior).
+
+**Fixed** (follow-up compiler pass, after this write-up): `each item, idx
+in ArenaName:` now optionally binds a second name to the current element's
+raw slot index (`i32`), alongside the existing single-binding `each item in
+ArenaName:` form. Digging into `check_despawn_stmt` while fixing this
+turned up that the original framing above was slightly off: `despawn
+ArenaName[idx]` never actually required a literal — `Checker::infer_expr`
+accepts any `i32`-typed expression there, and `Checker::check_par_disjoint`
+only ever bans `despawn` inside `par`/`swarm` bodies, never inside `each`
+(sequential, single-threaded, no disjointness to prove — see `each`'s own
+doc comment). The real blocker was narrower than "despawn is restricted":
+`each`'s only bound name was the element itself, so there was simply no
+expression in scope that *named* the slot to reclaim. Binding the index
+closes that gap without touching `despawn`, `par`, or `swarm` at all —
+`despawn Particles[idx]` from inside `each` is exactly as safe as any other
+statement in that sequential loop body, because it always was.
+
+This game's `Particles` arena (`main.star`) now has a `reclaim_dead_particles()`
+pass (`each p, i in Particles: if p.life <= 0.0: despawn Particles[i]`)
+run once per tick alongside `tick_particle_arena`, so dead particles are
+actually returned to the free-list instead of accumulating forever. See
+`examples/each_index_despawn.star` for a standalone repro of the pattern.
+
+Two related gaps closed in the same pass (`gamedev_gaps.md` #4): arena
+capacity is no longer one hardcoded constant shared by every arena in every
+program — `arena Name: Type = N` overrides the default 1024-element
+capacity per arena (`Particles` above now declares `= 256`; see
+`examples/arena_capacity_configurable.star`), bounded by a generous
+1,000,000-element ceiling (`crate::types::MAX_ARENA_CAPACITY`, chosen so a
+`GenRef`'s fixed `i32` slot-index field and the eager `malloc` of the whole
+backing array on first spawn both stay sane). The overflow warning is also
+louder in the specific way that matters — it now names the arena's *actual*
+configured capacity rather than a stale shared number — while additionally
+being quieter in the way that matters for a real running game: it latches
+after printing once per arena, instead of flooding the console every single
+tick a spawner keeps trying to populate an already-full pool.
 
 ### 2.2 `spawn` is fire-and-forget — no handle to what you just spawned
 
@@ -364,14 +399,15 @@ pitch, which only works on a struct field, not a bare value).
   `gamedev_gaps.md` #1 (audio/gamepad) is the documented half of "game
   language I/O still missing"; this is the other, undocumented half.
   Confirmed absent by reading every builtin `src/codegen/sdl.rs` declares.
-- Arena capacity (1024, hardcoded, silent-drop on overflow — already
-  flagged in `gamedev_gaps.md` #4) combines badly with 2.1 above: once
-  something like this game's particle arena can never reclaim slots, the
-  fixed cap isn't just a large-scale concern, it's reachable by an ordinary
-  play session.
-- A per-arena selective-despawn/sweep primitive (2.1) and a way to get a
-  handle to a just-spawned entity (2.2) would close most of the friction
-  found here — more urgent, in this game's own experience, than the module
-  search-path gap `gamedev_gaps.md` #3 already flags (real, but this
+- ~~Arena capacity (1024, hardcoded, silent-drop on overflow — already
+  flagged in `gamedev_gaps.md` #4) combines badly with 2.1 above~~ — fixed
+  alongside 2.1: capacity is now per-arena (`arena Name: Type = N`), and the
+  overflow warning names the arena's real capacity and prints only once per
+  arena instead of flooding the console every tick a full spawner keeps
+  retrying.
+- ~~A per-arena selective-despawn/sweep primitive (2.1)~~ — fixed, see 2.1
+  above. A way to get a handle to a just-spawned entity (2.2) is still
+  open, and remains more urgent, in this game's own experience, than the
+  module search-path gap `gamedev_gaps.md` #3 already flags (real, but this
   project's diamond-dependency finding, 1.1, is the sharper edge of that
   same gap).

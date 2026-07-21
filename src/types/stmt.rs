@@ -256,7 +256,7 @@ impl Checker {
                 self.check_par_disjoint(var, &body_typed);
                 TypedStmt::Par { var: var.clone(), elem_ty, arena: arena.clone(), body: body_typed, span: *span }
             }
-            Stmt::Each { var, arena, body, span } => {
+            Stmt::Each { var, index_var, arena, body, span } => {
                 let elem_ty = match self.arenas.get(arena) {
                     Some(t) => t.clone(),
                     None => {
@@ -264,8 +264,22 @@ impl Checker {
                         Ty::Named("unknown".into())
                     }
                 };
+                if let Some(idx) = index_var {
+                    if idx == var {
+                        self.error(
+                            format!("`each {} , {} in {}`: the index binding must have a different name from the element binding", var, idx, arena),
+                            *span,
+                        );
+                    }
+                }
                 let mut inner_vars = vars.clone();
                 inner_vars.insert(var.clone(), elem_ty.clone());
+                if let Some(idx) = index_var {
+                    // The raw slot index, `i32` to match `despawn`'s own
+                    // index operand type (`check_despawn_stmt` below) -- so
+                    // `despawn ArenaName[idx]` type-checks with no cast.
+                    inner_vars.insert(idx.clone(), Ty::Int);
+                }
                 // Sequential (single-threaded) iteration, unlike `par`/
                 // `swarm` -- there's no concurrency to prove disjoint, so
                 // `var` is implicitly mutable (mirrors `Stmt::Par`'s own
@@ -280,7 +294,14 @@ impl Checker {
                 let body_typed = self.check_block_inner(body, &mut inner_vars);
                 self.loop_depth -= 1;
                 self.mut_vars = saved_mut_vars;
-                TypedStmt::Each { var: var.clone(), elem_ty, arena: arena.clone(), body: body_typed, span: *span }
+                TypedStmt::Each {
+                    var: var.clone(),
+                    index_var: index_var.clone(),
+                    elem_ty,
+                    arena: arena.clone(),
+                    body: body_typed,
+                    span: *span,
+                }
             }
             // Every `yield` inside a `sequence` body is consumed by the
             // desugaring pass in `check()` before this point; one reaching

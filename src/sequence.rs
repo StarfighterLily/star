@@ -510,9 +510,19 @@ fn rewrite_stmt(stmt: &Stmt, hoist: &HashSet<String>) -> Stmt {
         Stmt::Par { var, arena, body, span } => {
             Stmt::Par { var: var.clone(), arena: arena.clone(), body: rewrite_block(body, hoist), span: *span }
         }
-        Stmt::Each { var, arena, body, span } => {
-            let inner_hoist = without(hoist, std::slice::from_ref(var));
-            Stmt::Each { var: var.clone(), arena: arena.clone(), body: rewrite_block(body, &inner_hoist), span: *span }
+        Stmt::Each { var, index_var, arena, body, span } => {
+            // Both `var` and `index_var` (if bound) are fresh per-iteration
+            // locals shadowing anything hoisted from the outer sequence
+            // scope -- same reasoning as `Stmt::For`'s `inner_hoist` above.
+            let shadowed: Vec<String> = std::iter::once(var.clone()).chain(index_var.clone()).collect();
+            let inner_hoist = without(hoist, &shadowed);
+            Stmt::Each {
+                var: var.clone(),
+                index_var: index_var.clone(),
+                arena: arena.clone(),
+                body: rewrite_block(body, &inner_hoist),
+                span: *span,
+            }
         }
         Stmt::Yield { span } => Stmt::Yield { span: *span },
         Stmt::Spawn { arena, args, arg_names, span } => Stmt::Spawn {
@@ -707,8 +717,9 @@ fn find_forward_ref_stmt(stmt: &Stmt, undeclared: &HashSet<String>) -> Option<(S
         Stmt::Break { .. } | Stmt::Continue { .. } | Stmt::Yield { .. } => None,
         Stmt::Frame { body, .. } => find_forward_ref_block(body, undeclared),
         Stmt::Par { body, .. } => find_forward_ref_block(body, undeclared),
-        Stmt::Each { var, body, .. } => {
-            let inner_undeclared = without(undeclared, std::slice::from_ref(var));
+        Stmt::Each { var, index_var, body, .. } => {
+            let shadowed: Vec<String> = std::iter::once(var.clone()).chain(index_var.clone()).collect();
+            let inner_undeclared = without(undeclared, &shadowed);
             find_forward_ref_block(body, &inner_undeclared)
         }
         Stmt::Spawn { args, .. } => args.iter().find_map(|a| find_forward_ref_expr(a, undeclared)),

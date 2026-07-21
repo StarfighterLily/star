@@ -23,6 +23,22 @@ use crate::ast::*;
 use crate::diagnostics::{suggest, Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
 
+/// Default element capacity for an `arena` declaration that doesn't specify
+/// one (`arena Name: Type`, no trailing `= N`) -- matches the fixed value
+/// every arena used before per-arena capacities existed.
+pub const DEFAULT_ARENA_CAPACITY: u64 = 1024;
+
+/// Upper bound on an explicit `arena Name: Type = N` capacity. Two reasons
+/// this isn't unbounded: `Codegen` stores a `GenRef`'s slot index in a
+/// fixed `i32` field (`%GenRef = type { i32, i64 }`), so any capacity has to
+/// stay well inside that range; and `emit_spawn_stmt` eagerly `malloc`s the
+/// entire backing array up front the first time anything is spawned into an
+/// arena, so an unreasonably large capacity would be an easy way to exhaust
+/// process memory from a single arena declaration. 1,000,000 is far beyond
+/// any real game's live-entity count in one arena while staying nowhere
+/// near the `i32` ceiling.
+pub const MAX_ARENA_CAPACITY: u64 = 1_000_000;
+
 /// A resolved type.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ty {
@@ -1432,9 +1448,30 @@ impl Checker {
                     }
                     _ => ty.clone(),
                 };
+                // The parser already rejected a non-positive literal (see
+                // `Parser::parse_arena`); only the upper bound needs
+                // checking here. An out-of-range capacity still resolves to
+                // a valid (clamped) value rather than `unknown`-typing the
+                // whole arena, so the rest of this program's diagnostics
+                // stay meaningful instead of cascading from one bad literal.
+                let capacity = match a.capacity {
+                    Some(n) if n > MAX_ARENA_CAPACITY => {
+                        self.error(
+                            format!(
+                                "arena `{}` capacity {} exceeds the maximum of {} elements",
+                                a.name, n, MAX_ARENA_CAPACITY
+                            ),
+                            a.span,
+                        );
+                        MAX_ARENA_CAPACITY
+                    }
+                    Some(n) => n,
+                    None => DEFAULT_ARENA_CAPACITY,
+                };
                 Some(TypedItem::Arena(TypedArenaDecl {
                     name: a.name.clone(),
                     ty: element_ty,
+                    capacity,
                     span: a.span,
                 }))
             }
@@ -3122,9 +3159,13 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
         Stmt::Par { var, arena, body, span } => {
             Stmt::Par { var: var.clone(), arena: arena.clone(), body: subst_block(body, subst), span: *span }
         }
-        Stmt::Each { var, arena, body, span } => {
-            Stmt::Each { var: var.clone(), arena: arena.clone(), body: subst_block(body, subst), span: *span }
-        }
+        Stmt::Each { var, index_var, arena, body, span } => Stmt::Each {
+            var: var.clone(),
+            index_var: index_var.clone(),
+            arena: arena.clone(),
+            body: subst_block(body, subst),
+            span: *span,
+        },
         Stmt::Yield { span } => Stmt::Yield { span: *span },
         Stmt::Spawn { arena, args, arg_names, span } => Stmt::Spawn {
             arena: arena.clone(),

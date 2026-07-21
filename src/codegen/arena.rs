@@ -32,13 +32,28 @@ impl Codegen {
         // occupant's data instead of being caught as stale). `i64` needs
         // ~2^63 cycles for the same attack -- not reachable in any
         // realistic program's lifetime.
-        self.line(&format!("@arena.{}.gen = global [{} x i64] zeroinitializer", a.name, Self::ARENA_CAPACITY));
+        //
+        // `a.capacity` is this arena's own resolved element count (defaults
+        // to `crate::types::DEFAULT_ARENA_CAPACITY` when the source didn't
+        // override it via `arena Name: Type = N`) -- every array below is
+        // sized per-arena rather than against one shared constant, and
+        // `self.arena_capacity` records it so every other emitter touching
+        // this arena by name (`spawn`/`despawn`/`each`/`par`/`GenRef`) can
+        // look the same number back up.
+        self.arena_capacity.insert(a.name.clone(), a.capacity);
+        self.line(&format!("@arena.{}.gen = global [{} x i64] zeroinitializer", a.name, a.capacity));
         // Free-list stack of despawned slot indices, so `spawn` can reclaim a
         // slot's memory instead of only ever growing `count` -- this is the
         // "internal free-list to manage fragmentation" design.md promises.
         // See `emit_despawn_stmt` (push) and `emit_spawn_stmt` (pop).
-        self.line(&format!("@arena.{}.free = global [{} x i64] zeroinitializer", a.name, Self::ARENA_CAPACITY));
+        self.line(&format!("@arena.{}.free = global [{} x i64] zeroinitializer", a.name, a.capacity));
         self.line(&format!("@arena.{}.free_top = global i64 0", a.name));
+        // Once-only overflow-warning latch (see `emit_spawn_stmt`'s
+        // `capacity_warn_label`): without this, a body that keeps trying to
+        // `spawn` into a full arena every tick (an enemy spawner that never
+        // notices the pool is full, say) would print the same warning once
+        // per attempt for the rest of the program's run.
+        self.line(&format!("@arena.{}.warned = global i1 0", a.name));
         self.line("");
         self.arena_by_elem.push((a.ty.clone(), a.name.clone()));
     }
@@ -72,6 +87,7 @@ impl Codegen {
     /// captured pointers is guaranteed to outlive the workers that
     /// reference it.
     pub(super) fn emit_par_stmt(&mut self, var: &str, elem_ty: &Ty, arena: &str, body: &TypedBlock) {
+        let cap = self.arena_capacity(arena);
         let id = self.block_id;
         self.block_id += 1;
         let worker_name = format!("par_worker_{}", id);
@@ -174,7 +190,7 @@ impl Codegen {
         let gen_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
-            gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, i_reg
+            gen_ptr, cap, cap, arena, i_reg
         ));
         let gen_val = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", gen_val, gen_ptr));
@@ -224,14 +240,15 @@ impl Codegen {
         self.emit_par_dispatch(&worker_name, &args_ty, &captured, arena);
     }
 
-    /// Emit `each item in ArenaName: <body>`: an ordinary sequential loop
-    /// over `[0, count)` of the arena's backing array, inline in the
-    /// caller's own function -- no worker-pool dispatch, no argument-struct
-    /// capture, no per-iteration scratch function (contrast `emit_par_stmt`
-    /// just above). Since the body runs on the calling thread alone, there's
-    /// nothing to prove disjoint: it may freely read/write anything already
-    /// in scope and call any function, including SDL drawing builtins that
-    /// `par`/`swarm` ban outright (`Checker::check_par_disjoint`'s
+    /// Emit `each item in ArenaName: <body>` (or `each item, idx in
+    /// ArenaName:`): an ordinary sequential loop over `[0, count)` of the
+    /// arena's backing array, inline in the caller's own function -- no
+    /// worker-pool dispatch, no argument-struct capture, no per-iteration
+    /// scratch function (contrast `emit_par_stmt` just above). Since the
+    /// body runs on the calling thread alone, there's nothing to prove
+    /// disjoint: it may freely read/write anything already in scope and
+    /// call any function, including SDL drawing builtins that `par`/`swarm`
+    /// ban outright (`Checker::check_par_disjoint`'s
     /// `is_banned_sdl_builtin_in_par` never runs against an `each` body --
     /// see `Stmt::Each`'s own doc comment and `projects/snake/NOTES.md`
     /// section 1.6). `count` is snapshotted once up front (mirrors
@@ -240,7 +257,18 @@ impl Codegen {
     /// won't be visited by this same scan, matching `par`/`swarm`'s existing
     /// "walks a fixed range" semantics rather than risking an unbounded loop
     /// from a body that spawns into the very arena it's scanning.
-    pub(super) fn emit_each_stmt(&mut self, var: &str, elem_ty: &Ty, arena: &str, body: &TypedBlock) {
+    ///
+    /// `index_var`, when bound, gives the body the current slot's raw index
+    /// as a plain `i32` local -- the missing piece that made `NOTES.md`
+    /// section 2.1's "no way to conditionally reclaim arena slots during a
+    /// scan" true: `despawn` was never actually banned inside `each` (only
+    /// inside `par`/`swarm`), but without a bound index there was no
+    /// expression to hand it. `despawn ArenaName[idx]` is an ordinary,
+    /// sequential mutation of `@arena.{arena}.gen`/`.free`/`.free_top`, no
+    /// different from any other statement in this loop body, so allowing it
+    /// here needed no new disjointness proof -- just a name for the index.
+    pub(super) fn emit_each_stmt(&mut self, var: &str, index_var: &Option<String>, elem_ty: &Ty, arena: &str, body: &TypedBlock) {
+        let cap = self.arena_capacity(arena);
         let elem_llvm_ty = self.llvm_ty(elem_ty);
         let data_reg = self.tmp_name();
         self.line(&format!("  {} = load {}*, {}** @arena.{}.data", data_reg, elem_llvm_ty, elem_llvm_ty, arena));
@@ -284,7 +312,7 @@ impl Codegen {
         let gen_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
-            gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, i_reg
+            gen_ptr, cap, cap, arena, i_reg
         ));
         let gen_val = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", gen_val, gen_ptr));
@@ -301,6 +329,20 @@ impl Codegen {
             elem_ptr, elem_llvm_ty, elem_llvm_ty, data_reg, i_reg
         ));
         self.symbols.push((var.to_string(), elem_ptr, elem_ty.clone()));
+        // `idx`: a plain `i32` local holding this iteration's raw slot index
+        // -- truncated from the loop counter's `i64` (bounded by `cap`,
+        // itself always well under `i32::MAX`, so no value is lost) and
+        // stored into its own alloca like any other `let`-bound scalar, so
+        // it reads/passes to `despawn ArenaName[idx]` exactly like a normal
+        // local rather than needing special-cased codegen of its own.
+        if let Some(idx_name) = index_var {
+            let idx32 = self.tmp_name();
+            self.line(&format!("  {} = trunc i64 {} to i32", idx32, i_reg));
+            let idx_ptr = self.tmp_name();
+            self.line(&format!("  {} = alloca i32", idx_ptr));
+            self.line(&format!("  store i32 {}, i32* {}", idx32, idx_ptr));
+            self.symbols.push((idx_name.clone(), idx_ptr, Ty::Int));
+        }
         let depth_at_entry = self.owned_stack.len();
         self.push_scope();
         self.loop_stack.push((step_label.clone(), end_label.clone(), depth_at_entry, loop_frame_off.clone()));
@@ -308,6 +350,9 @@ impl Codegen {
             self.emit_stmt(stmt);
         }
         self.loop_stack.pop();
+        if index_var.is_some() {
+            self.symbols.pop();
+        }
         self.symbols.pop();
         let body_terminates = Self::body_terminates(&body.stmts);
         self.pop_scope(!body_terminates);
@@ -338,11 +383,14 @@ impl Codegen {
     /// any other struct literal) directly into the claimed slot, and that
     /// slot's generation is bumped by one either way (never reset to a fixed
     /// value -- see `emit_arena_decl` on why that matters for reused slots).
-    /// A spawn past `ARENA_CAPACITY` live elements is silently dropped rather
-    /// than writing out of bounds -- a fixed backing store never
-    /// reallocs/moves, which matters because `par`/`swarm` workers may be
-    /// reading it concurrently from other threads.
+    /// A spawn past this arena's own resolved capacity (see
+    /// `TypedArenaDecl::capacity`, default `crate::types::DEFAULT_ARENA_CAPACITY`)
+    /// live elements is silently dropped rather than writing out of bounds
+    /// -- a fixed backing store never reallocs/moves, which matters because
+    /// `par`/`swarm` workers may be reading it concurrently from other
+    /// threads.
     pub(super) fn emit_spawn_stmt(&mut self, arena: &str, elem: &TypedExpr) {
+        let cap = self.arena_capacity(arena);
         let elem_ty = self.expr_ty(elem);
         let elem_llvm_ty = self.llvm_ty(&elem_ty);
 
@@ -366,7 +414,7 @@ impl Codegen {
         // elements are spawned.
         let elem_size = self.emit_sizeof_llvm_ty(&elem_llvm_ty);
         let bytes = self.tmp_name();
-        self.line(&format!("  {} = mul i64 {}, {}", bytes, elem_size, Self::ARENA_CAPACITY));
+        self.line(&format!("  {} = mul i64 {}, {}", bytes, elem_size, cap));
         let raw = self.tmp_name();
         self.line(&format!("  {} = call i8* @malloc(i64 {})", raw, bytes));
         let casted = self.tmp_name();
@@ -395,7 +443,7 @@ impl Codegen {
         let free_slot_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.free, i64 0, i64 {}",
-            free_slot_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, new_free_top
+            free_slot_ptr, cap, cap, arena, new_free_top
         ));
         let reused_idx = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", reused_idx, free_slot_ptr));
@@ -414,7 +462,7 @@ impl Codegen {
         let count_reg = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @arena.{}.count", count_reg, arena));
         let in_bounds = self.tmp_name();
-        self.line(&format!("  {} = icmp slt i64 {}, {}", in_bounds, count_reg, Self::ARENA_CAPACITY));
+        self.line(&format!("  {} = icmp slt i64 {}, {}", in_bounds, count_reg, cap));
         let grow_ok_label = self.block_label("spawn_grow_ok");
         let capacity_warn_label = self.block_label("spawn_capacity_warn");
         self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, grow_ok_label, capacity_warn_label));
@@ -423,11 +471,23 @@ impl Codegen {
         // store never reallocs/moves, which matters since `par`/`swarm`
         // workers may be reading it concurrently from other threads -- see
         // this function's own doc comment) but that silent data loss is now
-        // at least loud: a warning identifying the offending arena is
-        // printed every time it happens, rather than the caller having no
-        // signal at all that a `spawn` it believes succeeded never happened.
+        // at least loud: a warning identifying the offending arena (and its
+        // actual, possibly-configured capacity, not one shared hardcoded
+        // number) is printed the *first* time it happens. Only the first:
+        // `@arena.{arena}.warned` latches after one print so a body that
+        // keeps calling `spawn` into an already-full arena every tick (an
+        // enemy spawner that never checks back, a burst effect outliving
+        // its pool) doesn't flood the console with the same line forever --
+        // the caller already got the signal it was missing before.
         self.open_block(&capacity_warn_label);
-        let msg = format!("star runtime warning: arena `{}` is full ({} live elements) -- spawn dropped\n", arena, Self::ARENA_CAPACITY);
+        let already_warned = self.tmp_name();
+        self.line(&format!("  {} = load i1, i1* @arena.{}.warned", already_warned, arena));
+        let warn_label = self.block_label("spawn_warn_print");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", already_warned, end_label, warn_label));
+
+        self.open_block(&warn_label);
+        self.line(&format!("  store i1 1, i1* @arena.{}.warned", arena));
+        let msg = format!("star runtime warning: arena `{}` is full ({} live elements) -- spawn dropped (further overflows on this arena will not be reported)\n", arena, cap);
         let g = self.global_name();
         let escaped = msg.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
         self.global_defs.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", g, msg.len() + 1, escaped));
@@ -464,7 +524,7 @@ impl Codegen {
         let gen_slot_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
-            gen_slot_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, slot_idx
+            gen_slot_ptr, cap, cap, arena, slot_idx
         ));
         let cur_gen = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", cur_gen, gen_slot_ptr));
@@ -486,6 +546,7 @@ impl Codegen {
     /// double-despawn pushing the same slot onto the free-list twice, which
     /// would otherwise let two later spawns alias the same memory.
     pub(super) fn emit_despawn_stmt(&mut self, arena: &str, index: &TypedExpr) {
+        let cap = self.arena_capacity(arena);
         let idx_val = self.emit_expr(index);
         let idx_bare = self.untag(&idx_val, &Ty::Int);
         let idx64 = self.tmp_name();
@@ -494,7 +555,7 @@ impl Codegen {
         // unsigned value, so it safely fails this bounds check too instead
         // of aliasing a valid slot.
         let in_bounds = self.tmp_name();
-        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, Self::ARENA_CAPACITY));
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, cap));
         let do_label = self.block_label("despawn_do");
         let end_label = self.block_label("despawn_end");
         self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, do_label, end_label));
@@ -503,7 +564,7 @@ impl Codegen {
         let gen_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
-            gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
+            gen_ptr, cap, cap, arena, idx64
         ));
         let gen_val = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", gen_val, gen_ptr));
@@ -541,7 +602,7 @@ impl Codegen {
         let free_slot_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.free, i64 0, i64 {}",
-            free_slot_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, free_top_reg
+            free_slot_ptr, cap, cap, arena, free_top_reg
         ));
         self.line(&format!("  store i64 {}, i64* {}", idx64, free_slot_ptr));
         let next_free_top = self.tmp_name();
@@ -562,6 +623,7 @@ impl Codegen {
     /// despawn guarantee this implements; closing it is future work.
     pub(super) fn emit_genref_create(&mut self, inner_ty: &Ty, value: &TypedExpr, span: Span) -> String {
         let arena = self.arena_for_elem_ty(inner_ty, span);
+        let cap = self.arena_capacity(&arena);
         let val = self.emit_expr(value);
         let idx_i32 = self.untag(&val, &Ty::Int);
         let idx64 = self.tmp_name();
@@ -572,7 +634,7 @@ impl Codegen {
         // not an internally-generated counter, so it can't be
         // trusted the way `spawn`'s `count` can.
         let in_bounds = self.tmp_name();
-        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, Self::ARENA_CAPACITY));
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, cap));
         let ok_label = self.block_label("genref_create_ok");
         let oob_label = self.block_label("genref_create_oob");
         let end_label = self.block_label("genref_create_end");
@@ -582,7 +644,7 @@ impl Codegen {
         let gen_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
-            gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
+            gen_ptr, cap, cap, arena, idx64
         ));
         let gen_ok = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", gen_ok, gen_ptr));
@@ -622,6 +684,7 @@ impl Codegen {
         let elem_ty = ty.clone();
         let elem_llvm_ty = self.llvm_ty(&elem_ty);
         let arena = self.arena_for_elem_ty(&elem_ty, span);
+        let cap = self.arena_capacity(&arena);
 
         let base_ptr = self.emit_place(base);
         let idx_field_ptr = self.tmp_name();
@@ -636,7 +699,7 @@ impl Codegen {
         self.line(&format!("  {} = sext i32 {} to i64", idx64, stored_idx));
 
         let in_bounds = self.tmp_name();
-        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, Self::ARENA_CAPACITY));
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, cap));
         let check_label = self.block_label("genref_check");
         let ok_label = self.block_label("genref_ok");
         let stale_label = self.block_label("genref_stale");
@@ -647,7 +710,7 @@ impl Codegen {
         let gen_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
-            gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
+            gen_ptr, cap, cap, arena, idx64
         ));
         let live_gen = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", live_gen, gen_ptr));
@@ -723,6 +786,7 @@ impl Codegen {
         let elem_ty = ty.clone();
         let elem_llvm_ty = self.llvm_ty(&elem_ty);
         let arena = self.arena_for_elem_ty(&elem_ty, span);
+        let cap = self.arena_capacity(&arena);
 
         let base_ptr = self.emit_place(base);
         let idx_field_ptr = self.tmp_name();
@@ -737,7 +801,7 @@ impl Codegen {
         self.line(&format!("  {} = sext i32 {} to i64", idx64, stored_idx));
 
         let in_bounds = self.tmp_name();
-        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, Self::ARENA_CAPACITY));
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, cap));
         let check_label = self.block_label("genref_place_check");
         let ok_label = self.block_label("genref_place_ok");
         let stale_label = self.block_label("genref_place_stale");
@@ -748,7 +812,7 @@ impl Codegen {
         let gen_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
-            gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
+            gen_ptr, cap, cap, arena, idx64
         ));
         let live_gen = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", live_gen, gen_ptr));
@@ -809,6 +873,7 @@ impl Codegen {
     ) -> (String, String, String, String) {
         let elem_llvm_ty = self.llvm_ty(elem_ty);
         let arena = self.arena_for_elem_ty(elem_ty, span);
+        let cap = self.arena_capacity(&arena);
 
         let base_ptr = self.emit_place(base);
         let idx_field_ptr = self.tmp_name();
@@ -823,7 +888,7 @@ impl Codegen {
         self.line(&format!("  {} = sext i32 {} to i64", idx64, stored_idx));
 
         let in_bounds = self.tmp_name();
-        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, Self::ARENA_CAPACITY));
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, cap));
         let check_label = self.block_label("genref_wcheck");
         let ok_label = self.block_label("genref_wok");
         let stale_label = self.block_label("genref_wstale");
@@ -834,7 +899,7 @@ impl Codegen {
         let gen_ptr = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
-            gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, idx64
+            gen_ptr, cap, cap, arena, idx64
         ));
         let live_gen = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", live_gen, gen_ptr));

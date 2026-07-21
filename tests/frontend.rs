@@ -1722,6 +1722,154 @@ fn runtime_par_skips_despawned_slot_end_to_end() {
     assert_eq!(stdout.trim_end(), "hp0=-99 hp1=-98", "both still-live entities should still be visited and mutated: {}", stdout);
 }
 
+// --- gap 2.1: `each item, idx in Arena:` binds the slot index, so a scan --
+// --- can now conditionally `despawn` -------------------------------------
+
+/// `each item, idx in ArenaName:` binds a second, plain `i32` local holding
+/// the current element's raw slot index -- the missing piece that made
+/// "scan every entity, despawn the ones matching a runtime condition"
+/// (`projects/snake/NOTES.md` section 2.1) impossible: `despawn` was never
+/// actually banned inside `each` (only inside `par`/`swarm`), but there was
+/// no expression naming the slot to reclaim. Confirms the whole pattern end
+/// to end: two of four spawned entities are marked dead, a second `each`
+/// scan conditionally despawns them by their bound index, a third scan
+/// shows only the two survivors remain, and a follow-up `spawn` reuses one
+/// of the freed slots via the ordinary free-list (`emit_spawn_stmt`).
+#[test]
+fn runtime_each_index_conditional_despawn_end_to_end() {
+    let src = concat!(
+        "struct Particle:\n",
+        "    mut hp: i32\n",
+        "    mut dead: bool\n",
+        "arena Particles: Particle\n",
+        "fn main():\n",
+        "    spawn Particles(1, false)\n",
+        "    spawn Particles(2, false)\n",
+        "    spawn Particles(3, false)\n",
+        "    spawn Particles(4, false)\n",
+        "    each p, i in Particles:\n",
+        "        if p.hp == 2 or p.hp == 4:\n",
+        "            p.dead = true\n",
+        "    each p, i in Particles:\n",
+        "        if p.dead:\n",
+        "            despawn Particles[i]\n",
+        "    each p, i in Particles:\n",
+        "        println(f\"slot {i}: hp={p.hp}\")\n",
+        "    spawn Particles(99, false)\n",
+        "    each p, i in Particles:\n",
+        "        println(f\"slot {i}: hp={p.hp}\")\n",
+    );
+    let output = compile_and_run("each_index_despawn", src);
+    assert!(
+        output.status.success(),
+        "conditionally despawning during an `each` scan must not crash: {:?}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Windows text-mode stdout translates each `\n` to `\r\n` (see
+    // `runtime_sequence_end_to_end`'s identical note), so normalize before
+    // comparing rather than embedding literal `\r\n` in the expected string.
+    assert_eq!(
+        stdout.replace("\r\n", "\n").trim_end(),
+        "slot 0: hp=1\nslot 2: hp=3\nslot 0: hp=1\nslot 2: hp=3\nslot 3: hp=99",
+        "hp=2/hp=4 slots should be gone after the conditional despawn, and the respawn should reuse a freed slot off the free-list: {}",
+        stdout
+    );
+}
+
+/// `each item, idx in Arena:` rejects binding the same name to both the
+/// element and the index -- otherwise one of the two bindings would
+/// silently shadow the other inside the body with no diagnostic at all.
+#[test]
+fn checks_each_rejects_same_name_element_and_index_binding() {
+    let src = "struct P:\n    hp: i32\narena Foo: P\nfn main():\n    each p, p in Foo:\n        print(\"x\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "`each p, p in Foo:` must be rejected: the index binding needs a distinct name");
+}
+
+// --- arena capacity is now configurable, not one shared hardcoded constant -
+
+/// `arena Name: Type = N` overrides the default 1024-element capacity.
+/// Spawning past the *configured* capacity (not the old fixed default)
+/// still warns instead of silently dropping -- and the warning names the
+/// arena's own real capacity, not a stale constant.
+#[test]
+fn runtime_configurable_arena_capacity_overflow_warns_with_actual_capacity_end_to_end() {
+    let src = concat!(
+        "struct Bullet:\n",
+        "    hp: i32\n",
+        "arena Bullets: Bullet = 4\n",
+        "fn main():\n",
+        "    for i in 0..6:\n",
+        "        spawn Bullets(i)\n",
+        "    println(\"done\")\n",
+    );
+    let output = compile_and_run("small_arena_capacity", src);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("arena `Bullets` is full (4 live elements)"), "warning should report this arena's own configured capacity, not the old fixed 1024: {}", stdout);
+    assert!(stdout.contains("done"), "the program should still run to completion: {}", stdout);
+}
+
+/// The overflow warning latches after the first print per arena, so a body
+/// that keeps `spawn`-ing into an already-full arena (an enemy spawner that
+/// never checks back, say) doesn't flood the console with the same line
+/// forever -- confirmed by triggering the overflow path many times over and
+/// counting exactly one occurrence of the warning in the output.
+#[test]
+fn runtime_arena_overflow_warning_prints_only_once_end_to_end() {
+    let src = concat!(
+        "struct Bullet:\n",
+        "    hp: i32\n",
+        "arena Bullets: Bullet = 2\n",
+        "fn main():\n",
+        "    for i in 0..40:\n",
+        "        spawn Bullets(i)\n",
+        "    println(\"done\")\n",
+    );
+    let output = compile_and_run("dedup_arena_capacity_warning", src);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let occurrences = stdout.matches("is full").count();
+    assert_eq!(occurrences, 1, "the overflow warning should print exactly once no matter how many further spawns overflow the same arena: {}", stdout);
+}
+
+/// `arena Name: Type = N` rejects a capacity above
+/// `crate::types::MAX_ARENA_CAPACITY` -- an unreasonably large per-arena
+/// capacity would `malloc` a correspondingly huge backing array the moment
+/// anything is first spawned into it (see `emit_spawn_stmt`).
+#[test]
+fn checks_arena_capacity_above_max_is_rejected() {
+    let src = "struct P:\n    hp: i32\narena Big: P = 5000000\nfn main():\n    spawn Big(1)\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "an arena capacity above MAX_ARENA_CAPACITY must be rejected");
+}
+
+/// `arena Name: Type = N` rejects a non-positive capacity literal outright
+/// at parse time (there's no such thing as a zero- or negative-element
+/// arena).
+#[test]
+fn parses_arena_rejects_non_positive_capacity() {
+    let src = "struct P:\n    hp: i32\narena Bad: P = 0\nfn main():\n    spawn Bad(1)\n";
+    assert!(Driver::parse(src).is_err(), "`arena Bad: P = 0` must be rejected at parse time");
+}
+
+/// `each item, idx in ArenaName:` parses to a dedicated `Stmt::Each` with
+/// `index_var` set, distinct from the single-binding `each item in
+/// ArenaName:` form (`index_var: None`) that already existed (see
+/// `parses_each_stmt`).
+#[test]
+fn parses_each_with_index_binding() {
+    let src = "fn t():\n    each item, idx in Foo:\n        print(\"x\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Each { var, index_var, arena, .. } = &f.body.stmts[0] else { panic!("expected Each") };
+    assert_eq!(var, "item");
+    assert_eq!(index_var.as_deref(), Some("idx"));
+    assert_eq!(arena, "Foo");
+}
+
 // ===== M8 Reflection ========================================================
 
 /// Decorators must be parsed on the same line as the field they annotate,

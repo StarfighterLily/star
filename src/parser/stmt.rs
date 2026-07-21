@@ -120,19 +120,27 @@ impl Parser {
         Some(Stmt::Par { var, arena, body, span })
     }
 
-    /// Parse `each item in ArenaName:` followed by an ordinary sequential
-    /// loop body over the arena's live elements (see `Stmt::Each`'s doc
-    /// comment for how this differs from `par`/`swarm`).
+    /// Parse `each item in ArenaName:` (optionally `each item, idx in
+    /// ArenaName:`) followed by an ordinary sequential loop body over the
+    /// arena's live elements (see `Stmt::Each`'s doc comment for how this
+    /// differs from `par`/`swarm`, and for what the optional `idx` binding
+    /// is for -- passing it to `despawn ArenaName[idx]` to conditionally
+    /// reclaim slots during the scan).
     fn parse_each_stmt(&mut self) -> Option<Stmt> {
         let start = self.peek_span();
         self.expect(&TokenKind::Each)?;
         let var = self.expect_ident()?;
+        let index_var = if self.eat(&TokenKind::Comma) {
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
         self.expect(&TokenKind::In)?;
         let arena = self.expect_ident()?;
         self.expect(&TokenKind::Colon)?;
         let body = self.parse_block()?;
         let span = start.to(self.prev_span());
-        Some(Stmt::Each { var, arena, body, span })
+        Some(Stmt::Each { var, index_var, arena, body, span })
     }
 
     /// Parse `spawn ArenaName(args...)`: constructs a new element of the

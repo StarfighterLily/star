@@ -13,10 +13,15 @@ pub struct Module {
 }
 
 /// An arena declaration: `arena MyArena: Player` creates a named allocation space.
+/// `arena MyArena: Player = 4096` overrides the default 1024-element capacity
+/// -- see [`crate::types::DEFAULT_ARENA_CAPACITY`]/[`crate::types::MAX_ARENA_CAPACITY`].
 #[derive(Clone, Debug)]
 pub struct ArenaDecl {
     pub name: String,
     pub ty: Type,
+    /// `None` means the default capacity applies; resolved to a concrete
+    /// value in [`crate::types::hir::TypedArenaDecl::capacity`] either way.
+    pub capacity: Option<u64>,
     pub span: Span,
 }
 
@@ -331,17 +336,23 @@ pub enum Stmt {
         body: Block,
         span: Span,
     },
-    /// `each item in ArenaName: <body>` - ordinary sequential (single-
-    /// threaded) iteration over an arena's live elements, running inline on
-    /// the calling thread rather than dispatched across `par`/`swarm`'s
-    /// worker pool. Because there's no concurrency to prove disjoint, the
-    /// body has none of `par`/`swarm`'s restrictions: it may freely mutate
-    /// captured outer state, call arbitrary functions (including SDL
-    /// drawing builtins, which `par`/`swarm` ban outright -- see
-    /// `projects/snake/NOTES.md` section 1.6), and use `break`/`continue`
-    /// like any other loop.
+    /// `each item in ArenaName: <body>` (or `each item, idx in ArenaName:`)
+    /// - ordinary sequential (single-threaded) iteration over an arena's
+    /// live elements, running inline on the calling thread rather than
+    /// dispatched across `par`/`swarm`'s worker pool. Because there's no
+    /// concurrency to prove disjoint, the body has none of `par`/`swarm`'s
+    /// restrictions: it may freely mutate captured outer state, call
+    /// arbitrary functions (including SDL drawing builtins, which
+    /// `par`/`swarm` ban outright -- see `projects/snake/NOTES.md` section
+    /// 1.6), and use `break`/`continue` like any other loop. The optional
+    /// second binding gives the body the current element's raw slot index
+    /// (an `i32`), so it can `despawn ArenaName[idx]` -- the only way to
+    /// conditionally reclaim a slot while scanning (`NOTES.md` section 2.1):
+    /// `despawn` is banned inside `par`/`swarm`, and without an index there
+    /// was no way to name the slot to reclaim from inside `each` either.
     Each {
         var: String,
+        index_var: Option<String>,
         arena: String,
         body: Block,
         span: Span,

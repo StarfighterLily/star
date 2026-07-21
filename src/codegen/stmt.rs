@@ -642,8 +642,8 @@ impl Codegen {
             TypedStmt::Par { var, elem_ty, arena, body, .. } => {
                 self.emit_par_stmt(var, elem_ty, arena, body);
             }
-            TypedStmt::Each { var, elem_ty, arena, body, .. } => {
-                self.emit_each_stmt(var, elem_ty, arena, body);
+            TypedStmt::Each { var, index_var, elem_ty, arena, body, .. } => {
+                self.emit_each_stmt(var, index_var, elem_ty, arena, body);
             }
             TypedStmt::Spawn { arena, elem, .. } => {
                 self.emit_spawn_stmt(arena, elem);
