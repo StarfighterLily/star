@@ -224,6 +224,109 @@ impl Codegen {
         self.emit_par_dispatch(&worker_name, &args_ty, &captured, arena);
     }
 
+    /// Emit `each item in ArenaName: <body>`: an ordinary sequential loop
+    /// over `[0, count)` of the arena's backing array, inline in the
+    /// caller's own function -- no worker-pool dispatch, no argument-struct
+    /// capture, no per-iteration scratch function (contrast `emit_par_stmt`
+    /// just above). Since the body runs on the calling thread alone, there's
+    /// nothing to prove disjoint: it may freely read/write anything already
+    /// in scope and call any function, including SDL drawing builtins that
+    /// `par`/`swarm` ban outright (`Checker::check_par_disjoint`'s
+    /// `is_banned_sdl_builtin_in_par` never runs against an `each` body --
+    /// see `Stmt::Each`'s own doc comment and `projects/snake/NOTES.md`
+    /// section 1.6). `count` is snapshotted once up front (mirrors
+    /// `emit_par_stmt`'s own `[start, end)` chunk, computed once before any
+    /// worker starts): a `spawn` from inside the body grows `count` but
+    /// won't be visited by this same scan, matching `par`/`swarm`'s existing
+    /// "walks a fixed range" semantics rather than risking an unbounded loop
+    /// from a body that spawns into the very arena it's scanning.
+    pub(super) fn emit_each_stmt(&mut self, var: &str, elem_ty: &Ty, arena: &str, body: &TypedBlock) {
+        let elem_llvm_ty = self.llvm_ty(elem_ty);
+        let data_reg = self.tmp_name();
+        self.line(&format!("  {} = load {}*, {}** @arena.{}.data", data_reg, elem_llvm_ty, elem_llvm_ty, arena));
+        let count_reg = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* @arena.{}.count", count_reg, arena));
+
+        let i_ptr = self.tmp_name();
+        self.line(&format!("  {} = alloca i64", i_ptr));
+        self.line(&format!("  store i64 0, i64* {}", i_ptr));
+
+        // Same per-iteration frame-reclaim snapshot as `emit_for_stmt`/
+        // `TypedStmt::While` (`NOTES.md` section 1.2) -- a `frame:` block
+        // wrapping an `each` loop must reclaim each iteration's bump
+        // allocations, not just the whole loop's at once.
+        let loop_frame_off = if self.in_frame {
+            let saved = self.tmp_name();
+            self.line(&format!("  {} = load i64, i64* @frame.off", saved));
+            Some(saved)
+        } else {
+            None
+        };
+
+        let cond_label = self.block_label("each_cond");
+        let body_label = self.block_label("each_body");
+        let live_label = self.block_label("each_live");
+        let step_label = self.block_label("each_step");
+        let end_label = self.block_label("each_end");
+
+        self.line(&format!("  br label %{}", cond_label));
+        self.open_block(&cond_label);
+        let i_reg = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", i_reg, i_ptr));
+        let cmp = self.tmp_name();
+        self.line(&format!("  {} = icmp slt i64 {}, {}", cmp, i_reg, count_reg));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, body_label, end_label));
+
+        self.open_block(&body_label);
+        // Skip despawned/never-spawned slots -- same generation-parity check
+        // as `emit_par_stmt`'s worker body (see its own comment on why
+        // `count` alone isn't a live count).
+        let gen_ptr = self.tmp_name();
+        self.line(&format!(
+            "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @arena.{}.gen, i64 0, i64 {}",
+            gen_ptr, Self::ARENA_CAPACITY, Self::ARENA_CAPACITY, arena, i_reg
+        ));
+        let gen_val = self.tmp_name();
+        self.line(&format!("  {} = load i64, i64* {}", gen_val, gen_ptr));
+        let parity = self.tmp_name();
+        self.line(&format!("  {} = and i64 {}, 1", parity, gen_val));
+        let is_live = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i64 {}, 1", is_live, parity));
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_live, live_label, step_label));
+
+        self.open_block(&live_label);
+        let elem_ptr = self.tmp_name();
+        self.line(&format!(
+            "  {} = getelementptr inbounds {}, {}* {}, i64 {}",
+            elem_ptr, elem_llvm_ty, elem_llvm_ty, data_reg, i_reg
+        ));
+        self.symbols.push((var.to_string(), elem_ptr, elem_ty.clone()));
+        let depth_at_entry = self.owned_stack.len();
+        self.push_scope();
+        self.loop_stack.push((step_label.clone(), end_label.clone(), depth_at_entry, loop_frame_off.clone()));
+        for stmt in &body.stmts {
+            self.emit_stmt(stmt);
+        }
+        self.loop_stack.pop();
+        self.symbols.pop();
+        let body_terminates = Self::body_terminates(&body.stmts);
+        self.pop_scope(!body_terminates);
+        if !body_terminates {
+            self.line(&format!("  br label %{}", step_label));
+        }
+
+        self.open_block(&step_label);
+        if let Some(saved) = &loop_frame_off {
+            self.line(&format!("  store i64 {}, i64* @frame.off", saved));
+        }
+        let i_next = self.tmp_name();
+        self.line(&format!("  {} = add i64 {}, 1", i_next, i_reg));
+        self.line(&format!("  store i64 {}, i64* {}", i_next, i_ptr));
+        self.line(&format!("  br label %{}", cond_label));
+
+        self.open_block(&end_label);
+    }
+
     /// Emit `spawn ArenaName(args...)`. Arenas start out empty (`data` is
     /// `null`, `count` is `0` -- see `emit_arena_decl`), so the first spawn
     /// into a given arena lazily `malloc`s a fixed-capacity backing array;

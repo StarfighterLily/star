@@ -182,6 +182,14 @@ pub enum TypedStmt {
         body: TypedBlock,
         span: Span,
     },
+    /// `each item in ArenaName: <body>` - see [`crate::ast::Stmt::Each`].
+    Each {
+        var: String,
+        elem_ty: Ty,
+        arena: String,
+        body: TypedBlock,
+        span: Span,
+    },
     /// `spawn ArenaName(args...)` - see [`crate::ast::Stmt::Spawn`]. `elem`
     /// is the constructed element (a `StructLit`); codegen only has to
     /// append it to the arena's backing array and bump `count`.

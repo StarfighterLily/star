@@ -256,6 +256,32 @@ impl Checker {
                 self.check_par_disjoint(var, &body_typed);
                 TypedStmt::Par { var: var.clone(), elem_ty, arena: arena.clone(), body: body_typed, span: *span }
             }
+            Stmt::Each { var, arena, body, span } => {
+                let elem_ty = match self.arenas.get(arena) {
+                    Some(t) => t.clone(),
+                    None => {
+                        self.error(format!("undefined arena `{}`", arena), *span);
+                        Ty::Named("unknown".into())
+                    }
+                };
+                let mut inner_vars = vars.clone();
+                inner_vars.insert(var.clone(), elem_ty.clone());
+                // Sequential (single-threaded) iteration, unlike `par`/
+                // `swarm` -- there's no concurrency to prove disjoint, so
+                // `var` is implicitly mutable (mirrors `Stmt::Par`'s own
+                // "no `mut` keyword in the syntax" reasoning) but the body is
+                // otherwise checked exactly like any ordinary loop body: no
+                // `check_par_disjoint` call, and `break`/`continue` are valid
+                // and target *this* loop (`loop_depth` is incremented, not
+                // hidden, unlike `Stmt::Par` above).
+                let saved_mut_vars = self.mut_vars.clone();
+                self.mut_vars.insert(var.clone());
+                self.loop_depth += 1;
+                let body_typed = self.check_block_inner(body, &mut inner_vars);
+                self.loop_depth -= 1;
+                self.mut_vars = saved_mut_vars;
+                TypedStmt::Each { var: var.clone(), elem_ty, arena: arena.clone(), body: body_typed, span: *span }
+            }
             // Every `yield` inside a `sequence` body is consumed by the
             // desugaring pass in `check()` before this point; one reaching
             // here means it was written outside a `sequence`.

@@ -182,6 +182,11 @@ impl Checker {
                 let mut ls = local_structs.clone();
                 self.walk_frame_stmts(&body.stmts, &mut l, &mut ls, in_frame, false);
             }
+            TypedStmt::Each { body, .. } => {
+                let mut l = frame_locals.clone();
+                let mut ls = local_structs.clone();
+                self.walk_frame_stmts(&body.stmts, &mut l, &mut ls, in_frame, false);
+            }
             TypedStmt::Spawn { elem, span, .. } => {
                 if let Some(name) = frame_escape_source(elem, frame_locals, local_structs) {
                     self.error(

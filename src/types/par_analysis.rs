@@ -138,6 +138,21 @@ impl Checker {
                 l.insert(var.clone());
                 self.walk_par_stmts(&body.stmts, &mut l);
             }
+            TypedStmt::Each { span, .. } => {
+                // `each` runs its body once per live element on the calling
+                // thread -- perfectly safe on its own, but a `par`/`swarm`
+                // body runs on *every* worker thread at once, so nesting an
+                // `each` inside one would run that full sequential scan (and
+                // whatever SDL calls or captured-state mutation its body
+                // performs -- both only safe because `each` itself never
+                // dispatches across threads) concurrently on each worker,
+                // same hazard class as `frame`/`spawn`/`despawn` above.
+                self.error(
+                    "`each` cannot be used inside a par/swarm body (it would run its full sequential scan \
+                     concurrently on every worker thread)",
+                    *span,
+                );
+            }
             TypedStmt::Spawn { span, .. } => {
                 // Every worker thread would race on the same arena's
                 // `count`/`data` globals, so population can't happen from
@@ -269,9 +284,9 @@ impl Checker {
                     if self.unsafe_par_fns.contains(hazard_name) {
                         self.error(
                             format!(
-                                "cannot call `{}` inside a par/swarm body: it spawns/despawns entities or opens a \
-                                 `frame:` block (directly or through another call), which cannot be proven disjoint \
-                                 across worker threads",
+                                "cannot call `{}` inside a par/swarm body: it spawns/despawns entities, opens a \
+                                 `frame:` block, or scans an arena with `each` (directly or through another call), \
+                                 which cannot be proven disjoint across worker threads",
                                 name
                             ),
                             *span,

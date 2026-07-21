@@ -63,6 +63,10 @@ pub enum TokenKind {
     Arena,
     Swarm,
     Par,
+    /// `each item in ArenaName: <body>` - ordinary sequential (single-
+    /// threaded) iteration over an arena's live elements, unlike `par`/
+    /// `swarm` (dispatched across worker threads). See [`crate::ast::Stmt::Each`].
+    Each,
     Sequence,
     Yield,
     Spawn,
@@ -155,6 +159,7 @@ impl TokenKind {
             TokenKind::Arena => "'arena'".into(),
             TokenKind::Swarm => "'swarm'".into(),
             TokenKind::Par => "'par'".into(),
+            TokenKind::Each => "'each'".into(),
             TokenKind::Sequence => "'sequence'".into(),
             TokenKind::Yield => "'yield'".into(),
             TokenKind::Spawn => "'spawn'".into(),
@@ -877,6 +882,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "arena" => TokenKind::Arena,
         "swarm" => TokenKind::Swarm,
         "par" => TokenKind::Par,
+        "each" => TokenKind::Each,
         "sequence" => TokenKind::Sequence,
         "yield" => TokenKind::Yield,
         "spawn" => TokenKind::Spawn,

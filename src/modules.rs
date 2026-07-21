@@ -530,6 +530,9 @@ fn rename_stmt(stmt: &Stmt, names: &HashMap<String, String>) -> Stmt {
         Stmt::Par { var, arena, body, span } => {
             Stmt::Par { var: var.clone(), arena: mangled(arena, names), body: rename_block(body, names), span: *span }
         }
+        Stmt::Each { var, arena, body, span } => {
+            Stmt::Each { var: var.clone(), arena: mangled(arena, names), body: rename_block(body, names), span: *span }
+        }
         Stmt::Yield { span } => Stmt::Yield { span: *span },
         Stmt::Spawn { arena, args, arg_names, span } => Stmt::Spawn {
             arena: mangled(arena, names),

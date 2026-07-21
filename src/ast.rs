@@ -331,6 +331,21 @@ pub enum Stmt {
         body: Block,
         span: Span,
     },
+    /// `each item in ArenaName: <body>` - ordinary sequential (single-
+    /// threaded) iteration over an arena's live elements, running inline on
+    /// the calling thread rather than dispatched across `par`/`swarm`'s
+    /// worker pool. Because there's no concurrency to prove disjoint, the
+    /// body has none of `par`/`swarm`'s restrictions: it may freely mutate
+    /// captured outer state, call arbitrary functions (including SDL
+    /// drawing builtins, which `par`/`swarm` ban outright -- see
+    /// `projects/snake/NOTES.md` section 1.6), and use `break`/`continue`
+    /// like any other loop.
+    Each {
+        var: String,
+        arena: String,
+        body: Block,
+        span: Span,
+    },
     /// `yield` - suspends a `sequence` coroutine until the next `resume()`
     /// tick. Only valid at the top level of a `sequence` body (see
     /// [`crate::sequence`]); rejected elsewhere by the desugaring pass.

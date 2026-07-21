@@ -571,6 +571,40 @@ fn main():
 - Workers only mutate their loop variable's fields
 - Uses a persistent 4-worker thread pool for efficiency
 
+Because a `par`/`swarm` body genuinely runs across worker threads, it may
+never call anything that touches SDL's shared window/renderer state or its
+global input-event queue (`window_create`, `clear_screen`, `draw_pixel`,
+`draw_rect`, `draw_line`, `present`, `key_down`, `mouse_x`, `mouse_y`,
+`mouse_button_down`, ...) — concurrent calls into those crash SDL itself, not
+just Star-level state. Use `each` (below) for a loop that needs to draw.
+
+### Sequential Arena Iteration (`each`)
+
+`each` iterates an arena's live elements one at a time on the calling
+thread — no worker-pool dispatch, so none of `par`/`swarm`'s restrictions
+apply:
+
+```star
+arena Enemies: Enemy
+
+fn main():
+    spawn Enemies(10)
+    spawn Enemies(20)
+
+    # Sequential, single-threaded - free to call SDL drawing builtins and
+    # to read/mutate anything else already in scope.
+    each e in Enemies:
+        draw_rect(window, e.x as i32, e.y as i32, 16, 16, Color32(255, 255, 255, 255))
+```
+
+**Characteristics:**
+- Runs in loop-variable order, once per live element, on the current thread
+- No disjointness restrictions: may call any function (SDL builtins
+  included) and freely mutate captured outer state
+- Supports `break`/`continue` like any other loop
+- Cannot be nested inside a `par`/`swarm` body (it would then run its whole
+  sequential scan concurrently on every worker thread)
+
 ---
 
 ### Tick-Aware Coroutines (`sequence`)
@@ -819,8 +853,9 @@ par e in Entities:
     e.x += 1.0
     e.y += 1.0
 
-# Render system - read-only (swarm also works)
-swarm e in Entities:
+# Render system - sequential, since it draws to the shared window (`par`/
+# `swarm` ban SDL calls outright; see "Sequential Arena Iteration" above)
+each e in Entities:
     draw_rect(window, e.x as i32, e.y as i32, 16, 16, Color32(255, 255, 255, 255))
 ```
 

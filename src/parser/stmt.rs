@@ -69,6 +69,7 @@ impl Parser {
             TokenKind::Frame => self.parse_frame_stmt(),
             TokenKind::Yield => self.parse_yield_stmt(),
             TokenKind::Par | TokenKind::Swarm => self.parse_par_stmt(),
+            TokenKind::Each => self.parse_each_stmt(),
             TokenKind::Spawn => self.parse_spawn_stmt(),
             TokenKind::Despawn => self.parse_despawn_stmt(),
             _ => {
@@ -117,6 +118,21 @@ impl Parser {
         let body = self.parse_block()?;
         let span = start.to(self.prev_span());
         Some(Stmt::Par { var, arena, body, span })
+    }
+
+    /// Parse `each item in ArenaName:` followed by an ordinary sequential
+    /// loop body over the arena's live elements (see `Stmt::Each`'s doc
+    /// comment for how this differs from `par`/`swarm`).
+    fn parse_each_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Each)?;
+        let var = self.expect_ident()?;
+        self.expect(&TokenKind::In)?;
+        let arena = self.expect_ident()?;
+        self.expect(&TokenKind::Colon)?;
+        let body = self.parse_block()?;
+        let span = start.to(self.prev_span());
+        Some(Stmt::Each { var, arena, body, span })
     }
 
     /// Parse `spawn ArenaName(args...)`: constructs a new element of the

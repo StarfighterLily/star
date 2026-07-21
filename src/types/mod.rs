@@ -3122,6 +3122,9 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
         Stmt::Par { var, arena, body, span } => {
             Stmt::Par { var: var.clone(), arena: arena.clone(), body: subst_block(body, subst), span: *span }
         }
+        Stmt::Each { var, arena, body, span } => {
+            Stmt::Each { var: var.clone(), arena: arena.clone(), body: subst_block(body, subst), span: *span }
+        }
         Stmt::Yield { span } => Stmt::Yield { span: *span },
         Stmt::Spawn { arena, args, arg_names, span } => Stmt::Spawn {
             arena: arena.clone(),
@@ -3390,6 +3393,21 @@ fn scan_stmt_for_par_hazards(stmt: &Stmt, hazard: &mut bool, called: &mut HashSe
             scan_block_for_par_hazards(body, hazard, called);
         }
         Stmt::Par { body, .. } => scan_block_for_par_hazards(body, hazard, called),
+        // `each` runs a full sequential scan of an arena inline -- exactly
+        // as much a hazard as opening a `frame:` block when reached
+        // transitively from inside a `par`/`swarm` body (see `Stmt::Frame`'s
+        // arm just above): calling a helper that (perhaps several calls
+        // deep) contains an `each` from inside a `par`/`swarm` body would
+        // otherwise run that full sequential scan -- including whatever
+        // SDL calls or captured-state mutation its body performs, both of
+        // which are safe only because `each` itself never dispatches across
+        // worker threads -- concurrently on every worker, which is exactly
+        // the unsynchronized-access hazard `is_banned_sdl_builtin_in_par`
+        // exists to prevent for a direct call.
+        Stmt::Each { body, .. } => {
+            *hazard = true;
+            scan_block_for_par_hazards(body, hazard, called);
+        }
         Stmt::Spawn { args, .. } => {
             *hazard = true;
             for a in args {
