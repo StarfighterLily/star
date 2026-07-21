@@ -189,13 +189,36 @@ impl Parser {
 
     /// Parse `if <cond>:` followed by a block and an optional `else:` block,
     /// producing a statement form of `if`.
+    ///
+    /// Each arm accepts either a full indented block or a single compact
+    /// inline trailing expression on the same line as the `:` -- reuses
+    /// `Parser::parse_if_expr_arm` (the *expression* form's arm grammar) so
+    /// this statement form supports exactly the same two shapes. Previously
+    /// this always called `parse_block()` directly, which only ever accepts
+    /// the full-indented-block shape: `if cond: a else: b` (or a bare
+    /// trailing `if`/`else` at the end of a function body, meant as an
+    /// implicit return value with no `let`) failed to parse outright
+    /// ("expected end of line, found identifier `a`"), even though the
+    /// exact same compact syntax already works fine on a `let`'s RHS (`let x
+    /// = if cond: a else: b`), which goes through `parse_if_expr` instead
+    /// (`projects/snake/NOTES.md` section 1.4).
     fn parse_if_stmt(&mut self) -> Option<Stmt> {
         let start = self.peek_span();
         self.expect(&TokenKind::If)?;
         let cond = self.parse_expr()?;
         self.expect(&TokenKind::Colon)?;
-        let then_block = self.parse_block()?;
-        let else_block = self.parse_opt_else();
+        let then_block = self.parse_if_expr_arm()?;
+        let else_block = if self.eat(&TokenKind::Else) {
+            self.expect(&TokenKind::Colon)?;
+            Some(self.parse_if_expr_arm()?)
+        } else {
+            None
+        };
+        // A full-indented-block arm already consumed through its own
+        // `Dedent` (`block_just_closed` is set, so this is a no-op); a
+        // compact inline arm left its own trailing `Newline` unconsumed --
+        // `expect_line_end` handles both.
+        self.expect_line_end()?;
         let span = start.to(self.prev_span());
         Some(Stmt::If { cond, then_block, else_block, span })
     }

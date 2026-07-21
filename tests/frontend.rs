@@ -654,6 +654,41 @@ fn accepts_non_frame_struct_returned_from_inside_frame_block() {
     assert!(Driver::check(&module).is_ok(), "returning a struct declared outside the frame block should be allowed");
 }
 
+// ===== `frame:` block ending in `return` (`projects/snake/NOTES.md` 1.3) ===
+
+/// A `frame:` block whose only statement is an explicit `return` used to
+/// emit invalid LLVM IR: `emit_frame_body` unconditionally appended the
+/// frame-offset-restore `store` *after* the body's own `ret` terminator,
+/// which LLVM rejects ("expected instruction opcode" -- no instruction,
+/// especially not another terminator, may follow a block's first
+/// terminator). Confirmed live in `projects/snake` (`NOTES.md` section 1.3)
+/// while trying a trailing `return` as a fix for a different frame-capacity
+/// bug. `emit_frame_body` now skips the restore entirely when the body
+/// already terminates, since a terminated body never falls through to where
+/// the restore would run anyway.
+#[test]
+fn runtime_frame_block_ending_in_return_compiles_and_runs_end_to_end() {
+    let src = "fn pick() -> i32:\n    frame:\n        return 5\n\nfn main():\n    println(f\"{pick()}\")\n";
+    let output = compile_and_run("frame_block_ending_in_return", src);
+    assert!(output.status.success(), "{:?}", output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "5");
+}
+
+/// Same bug, but with the `return` reached through both arms of an `if`
+/// inside the `frame:` block -- the exact shape `projects/snake`'s
+/// `spawn_food` hit (two branches, each ending in `return`, no trailing
+/// value expression). Guards `body_terminates`'s `TypedStmt::If` arm, not
+/// just a bare top-level `return`.
+#[test]
+fn runtime_frame_block_ending_in_if_else_both_returning_compiles_and_runs_end_to_end() {
+    let src = "fn classify(x: i32) -> i32:\n    frame:\n        let y = x + 1\n        if y > 0:\n            return y\n        else:\n            return 0 - y\n\nfn main():\n    println(f\"{classify(4)}\")\n    println(f\"{classify(-10)}\")\n";
+    let output = compile_and_run("frame_block_ending_in_if_else_both_returning", src);
+    assert!(output.status.success(), "{:?}", output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["5", "9"]);
+}
+
 // ===== M6 SIMD Math Type Tests ============================================
 
 /// Type-check a single-function source and return the trailing expression's
@@ -4065,6 +4100,143 @@ fn runtime_match_value_enum_variant_arm_with_logical_and_end_to_end() {
     assert_eq!(lines, vec!["true", "false", "false"], "{}", stdout);
 }
 
+// ===== fieldless enum interpolated into an f-string (`NOTES.md` 1.5) ======
+
+/// A fieldless enum interpolated directly into a `println(f"...")` argument
+/// (the `emit_print_like` fast path) must print the variant's *name*, not a
+/// garbage-looking hex "address". Previously neither `emit_print_like`'s
+/// format-specifier table nor its arg-value/release logic had a `Ty::Enum`
+/// arm, so the bare `i32` discriminant fell through to the `%p`
+/// pointer catch-all -- no crash, no compile error, just a plausible-
+/// looking but wrong `0000000000000001`-style value (confirmed live in
+/// `projects/snake`, `NOTES.md` section 1.5).
+#[test]
+fn runtime_println_fieldless_enum_prints_variant_name_end_to_end() {
+    let src = "enum Direction:\n    Up\n    Down\n    Left\n    Right\n\nfn main():\n    let d = Direction::Down\n    println(f\"dir: {d}\")\n    println(f\"dir: {Direction::Right}\")\n";
+    let output = compile_and_run("println_fieldless_enum_prints_variant_name", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["dir: Down", "dir: Right"], "{}", stdout);
+}
+
+/// Same bug, the *general* f-string-as-value path (`codegen/expr.rs`'s
+/// `TypedExpr::FStr` arm): an f-string interpolating a fieldless enum,
+/// assigned to a `let` and printed separately rather than passed straight
+/// to `println`, exercises the second of the two call sites `NOTES.md`
+/// section 1.5 calls out as both missing a `Ty::Enum` arm.
+#[test]
+fn runtime_fstring_value_with_fieldless_enum_prints_variant_name_end_to_end() {
+    let src = "enum Direction:\n    Up\n    Down\n    Left\n    Right\n\nfn describe(d: Direction) -> str:\n    f\"you're heading {d}\"\n\nfn main():\n    let s = describe(Direction::Left)\n    println(s)\n";
+    let output = compile_and_run("fstring_value_with_fieldless_enum_prints_variant_name", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "you're heading Left");
+}
+
+// ===== bare trailing `if`/`else` as a value (`NOTES.md` 1.4) ==============
+
+/// The compact single-line `if cond: a else: b` form only worked on a
+/// `let`'s RHS before (routed through `parse_if_expr`); at *statement*
+/// position it always went through `parse_if_stmt`, which only ever
+/// accepted a full indented block per arm -- `if cond: a else: b` as a bare
+/// statement failed to parse outright ("expected end of line, found
+/// identifier `a`"). `parse_if_stmt` now reuses the same arm grammar
+/// (`parse_if_expr_arm`) as the expression form.
+#[test]
+fn parses_compact_inline_if_else_at_statement_position() {
+    let src = "fn t(cond: bool):\n    if cond: println(\"a\") else: println(\"b\")\n    println(\"done\")\n";
+    Driver::parse(src).expect("a compact single-line if/else at statement position should parse");
+}
+
+/// A function body ending in a bare trailing `if`/`else` -- no `let`, no
+/// explicit `return` -- is now a valid implicit return, exactly like the
+/// equivalent `match` already was (`match`, unlike `if`, always parses to
+/// `TypedStmt::Expr(TypedExpr::Match{..})`, never a dedicated statement
+/// variant, so it never needed this fix). Compact single-line arm form.
+#[test]
+fn runtime_bare_trailing_compact_if_else_as_implicit_return_end_to_end() {
+    let src = "fn classify(x: i32) -> str:\n    if x > 0: \"pos\" else: \"neg\"\n\nfn main():\n    println(classify(5))\n    println(classify(-5))\n";
+    let output = compile_and_run("bare_trailing_compact_if_else_implicit_return", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["pos", "neg"], "{}", stdout);
+}
+
+/// Same fix, full-indented-block arm form -- the shape `NOTES.md` 1.4's
+/// second confirmation used (a `frame:` block's own trailing statement
+/// being a bare `if`/`else`, previously rejected by
+/// `Checker::trailing_value_ty` even though `match` already worked there).
+#[test]
+fn runtime_frame_block_ending_in_bare_if_else_as_trailing_value_end_to_end() {
+    let src = "fn classify(x: i32) -> i32:\n    frame:\n        let y = x + 1\n        if y > 0:\n            y * 2\n        else:\n            0 - y\n\nfn main():\n    println(f\"{classify(4)}\")\n    println(f\"{classify(-10)}\")\n";
+    let output = compile_and_run("frame_block_ending_in_bare_if_else_trailing_value", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["10", "9"], "{}", stdout);
+}
+
+/// Nested case: a function's implicit return is a trailing `if`/`else`
+/// whose own `then` arm is *itself* a nested trailing `if`/`else` -- guards
+/// that `Checker::trailing_value_ty`/`Codegen::emit_stmts_value`'s new
+/// `TypedStmt::If` arms recurse correctly rather than only handling one
+/// level.
+#[test]
+fn runtime_nested_trailing_if_else_as_implicit_return_end_to_end() {
+    let src = "fn classify(x: i32) -> str:\n    if x > 100:\n        \"big\"\n    else:\n        if x > 0:\n            \"small\"\n        else:\n            \"non-positive\"\n\nfn main():\n    println(classify(500))\n    println(classify(5))\n    println(classify(-5))\n";
+    let output = compile_and_run("nested_trailing_if_else_implicit_return", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["big", "small", "non-positive"], "{}", stdout);
+}
+
+/// A trailing `if`/`else` whose arms produce *mismatched* types must still
+/// be rejected (not silently accepted as `Ty::Named("unknown")` via
+/// `types_compatible`'s placeholder wildcard) -- guards that the new
+/// `TypedStmt::If` arm in `trailing_value_ty` didn't loosen this into
+/// accepting genuinely unsound code.
+#[test]
+fn rejects_trailing_if_else_implicit_return_with_mismatched_arm_types() {
+    let src = "fn t(cond: bool) -> i32:\n    if cond:\n        1\n    else:\n        \"nope\"\n";
+    let module = Driver::parse(src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("mismatched trailing if/else arms should not type-check as an implicit return");
+    assert!(errs.iter().any(|d| d.message.contains("does not end in a value-producing expression")), "{:?}", errs);
+}
+
+/// A trailing `if`/`else` whose arms are both void calls (`println(..)`,
+/// typed `unknown`) must be rejected as an implicit return too, not
+/// silently accepted as "both sides produce a matching value" -- the
+/// `unknown` placeholder that makes `types_compatible` treat two void arms
+/// as "compatible" must not let this shape through
+/// `Checker::trailing_value_ty`'s new `TypedStmt::If` arm.
+#[test]
+fn rejects_trailing_if_else_implicit_return_with_both_arms_void() {
+    let src = "fn t(cond: bool) -> i32:\n    if cond:\n        println(\"a\")\n    else:\n        println(\"b\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("a trailing if/else with void arms should not type-check as an implicit return");
+    assert!(errs.iter().any(|d| d.message.contains("does not end in a value-producing expression")), "{:?}", errs);
+}
+
+/// An ordinary imperative `if`/`else` whose arms are both void calls,
+/// used purely for side effects (not as any function's implicit return --
+/// `main` here has no declared return type) must keep compiling and running
+/// exactly as before: `Codegen::emit_stmts_value`'s new `TypedStmt::If` arm
+/// must not misfire on this shape just because it's structurally similar to
+/// the value-producing case (this is `runtime_mixed_scalar_comparison_
+/// still_works_end_to_end`'s exact original failure mode while developing
+/// the 1.4 fix -- `println`'s codegen-level `"%undef"` placeholder has no
+/// space to split a type off of, so treating it as a real value crashed
+/// `clang` on a missing `if_else`/`if_end` block).
+#[test]
+fn runtime_trailing_if_else_with_void_arms_used_as_plain_statement_end_to_end() {
+    let src = "fn main():\n    let a = 1\n    let b = 2\n    if a < b:\n        println(\"less\")\n    else:\n        println(\"not less\")\n";
+    let output = compile_and_run("trailing_if_else_void_arms_plain_statement", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "less");
+}
+
 /// `Checker::check_frame_escapes`'s lookahead (`frame_escape_source_block`)
 /// previously only recognized a bare trailing expression as a branch's
 /// value, so a `frame:` block nested inside an `if`-expression's branch and
@@ -5185,6 +5357,62 @@ fn codegen_frame_alloc_includes_capacity_check() {
     let ir = Driver::codegen(&typed).expect("should codegen");
     assert!(ir.contains("icmp ugt i64"), "should compare the new offset against the buffer capacity: {}", ir);
     assert!(ir.contains("call void @exit(i32 1)"), "should abort on overflow: {}", ir);
+}
+
+// ===== per-iteration `frame:` reclaim inside a loop (`NOTES.md` 1.2) ======
+
+/// The exact shape `projects/snake/NOTES.md` section 1.2 confirmed live: a
+/// `for` loop inside a `frame:` block, `let`-binding a small struct on every
+/// pass, run for more iterations than `FRAME_BUF_SIZE` (4096 bytes) could
+/// possibly hold if nothing were reclaimed until the whole `frame:` block
+/// exits (700 iterations x 8 bytes = 5600 > 4096; the real game's own
+/// repro was 768 iterations over the same 8-byte `Cell` shape). Previously
+/// this reliably hit "a `frame:` block exceeded its 4096-byte capacity";
+/// now each iteration's allocation is reclaimed before the next one starts,
+/// so the loop runs to completion regardless of iteration count. Sums the
+/// allocated structs' fields (not just "didn't crash") to prove the loop
+/// still ran every iteration correctly, not just silently short-circuited.
+#[test]
+fn runtime_for_loop_inside_frame_block_reclaims_space_per_iteration_end_to_end() {
+    let src = "struct Cell:\n    x: i32\n    y: i32\n\nfn main():\n    let mut total = 0\n    frame:\n        for i in 0..700:\n            let c = Cell(i, i)\n            total = total + c.x\n    println(f\"{total}\")\n";
+    let output = compile_and_run("for_loop_inside_frame_block_reclaims_per_iteration", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    // sum(0..699) = 699*700/2 = 244650
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "244650");
+}
+
+/// Same fix, `while`-loop side, with a `continue` partway through each
+/// iteration (before reaching the loop's normal fallthrough) -- guards that
+/// `continue`'s target block (`while_cond`, which `TypedStmt::Continue`
+/// jumps to directly) is where the per-iteration restore actually lives, so
+/// `continue` reclaims exactly like normal fallthrough does, not just the
+/// non-`continue` path.
+#[test]
+fn runtime_while_loop_inside_frame_block_with_continue_reclaims_space_per_iteration_end_to_end() {
+    let src = "struct Cell:\n    x: i32\n    y: i32\n\nfn main():\n    let mut total = 0\n    let mut i = 0\n    frame:\n        while i < 700:\n            let c = Cell(i, i)\n            i = i + 1\n            if c.x % 2 == 0:\n                continue\n            total = total + c.x\n    println(f\"{total}\")\n";
+    let output = compile_and_run("while_loop_inside_frame_block_continue_reclaims_per_iteration", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    // sum of odd i in 0..699 = 1+3+...+699 = 350^2 = 122500
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "122500");
+}
+
+/// `break` bypasses the loop's own continue-target block (where the
+/// per-iteration restore normally lives) entirely, jumping straight to the
+/// loop's `end_label` -- so it needs its own copy of that same restore
+/// (`TypedStmt::Break`'s own `frame_off` check). Proven indirectly via a
+/// tight byte budget rather than a loop-iteration count: 400 passes each
+/// allocate one 8-byte `Cell` before the last one `break`s; if `break`
+/// leaves that final iteration's 8 bytes unreclaimed, the *next* allocation
+/// in the same `frame:` block (a 4092-byte array, comfortably under 4096
+/// bytes on its own but not with 8 leaked bytes already ahead of it) tips
+/// over the 4096-byte cap and aborts. If `break` restores correctly, the
+/// array allocation starts from a clean offset and fits.
+#[test]
+fn runtime_break_inside_frame_loop_reclaims_space_before_exiting_end_to_end() {
+    let src = "struct Cell:\n    x: i32\n    y: i32\n\nfn main():\n    frame:\n        let mut i = 0\n        while i < 400:\n            let c = Cell(i, i)\n            i = i + 1\n            if i == 400:\n                break\n        let big: [i32; 1023] = [0; 1023]\n    println(\"ok\")\n";
+    let output = compile_and_run("break_inside_frame_loop_reclaims_before_exiting", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "ok");
 }
 
 // --- §3.1: closure capturing a frame-local `self` by pointer ---------------
@@ -14180,6 +14408,146 @@ fn runtime_transitive_reexport_three_hops_end_to_end() {
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "99");
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ===== diamond-dependency imports (`projects/snake/NOTES.md` 1.1) ==========
+//
+// `main` importing both `A` and `B`, each of which independently imports a
+// shared `grid.star`, used to produce two distinct, mutually-incompatible
+// mangled `Cell` types (`a__grid__Cell` vs `b__grid__Cell`) for grid.star's
+// one and only `Cell` struct -- confirmed live while building
+// `projects/snake`, and worked around there by flattening the module graph
+// into a strict linear chain instead. `crate::modules::dedupe_by_origin`
+// fixes the root cause: every top-level item is tagged with the canonical
+// source file (and original name) it truly came from, and items sharing
+// that provenance are collapsed to one canonical declaration, however many
+// alias chains reach it.
+
+/// The resolve-level check: after flattening `main` (imports `a` and `b`,
+/// each of which imports `grid.star` directly), there must be exactly one
+/// `Cell` struct definition left, not two.
+#[test]
+fn resolve_collapses_diamond_dependency_to_one_struct_definition() {
+    let dir = test_scratch_dir("resolve_collapses_diamond_dependency_to_one_struct_definition");
+    write_test_file(&dir, "grid.star", "struct Cell:\n    x: i32\n    y: i32\n");
+    write_test_file(
+        &dir,
+        "a.star",
+        "import \"grid.star\" as grid\nfn make_a(x: i32, y: i32) -> grid::Cell:\n    return grid::Cell(x = x, y = y)\n",
+    );
+    write_test_file(
+        &dir,
+        "b.star",
+        "import \"grid.star\" as grid\nfn use_b(c: grid::Cell) -> i32:\n    return c.x + c.y\n",
+    );
+    let main_path = write_test_file(
+        &dir,
+        "main.star",
+        "import \"a.star\" as a\nimport \"b.star\" as b\nfn main():\n    let c = a::make_a(3, 4)\n    println(f\"{b::use_b(c)}\")\n",
+    );
+    let module = Driver::parse(&std::fs::read_to_string(&main_path).unwrap()).expect("should parse");
+    let (resolved, _files) = star::modules::resolve(module, &main_path).expect("should resolve imports");
+
+    let cell_structs: Vec<_> = resolved
+        .items
+        .iter()
+        .filter(|i| matches!(i, Item::Struct(s) if s.name.ends_with("Cell")))
+        .collect();
+    assert_eq!(cell_structs.len(), 1, "diamond-imported Cell should collapse to one struct definition, found {:?}", cell_structs);
+
+    // And the merged module must type-check and codegen cleanly -- this is
+    // exactly what used to fail with "expects type ... found ..." across
+    // three differently-mangled but structurally identical `Cell` types.
+    let typed = Driver::check(&resolved).expect("diamond-imported module should type-check");
+    Driver::codegen(&typed).expect("diamond-imported module should codegen");
+}
+
+/// End-to-end version of the same scenario, compiled and actually run: a
+/// value built through `a::make_a` (using `a`'s own `grid::Cell` alias path)
+/// must be directly usable where `b::use_b` (using `b`'s independent
+/// `grid::Cell` alias path) expects its own `grid::Cell` -- only possible if
+/// the two alias paths were unified into the exact same underlying type.
+#[test]
+fn runtime_diamond_dependency_import_unifies_shared_struct_type_end_to_end() {
+    let dir = test_scratch_dir("runtime_diamond_dependency_import_unifies_shared_struct_type_end_to_end");
+    write_test_file(&dir, "grid.star", "struct Cell:\n    x: i32\n    y: i32\n");
+    write_test_file(
+        &dir,
+        "a.star",
+        "import \"grid.star\" as grid\nfn make_a(x: i32, y: i32) -> grid::Cell:\n    return grid::Cell(x = x, y = y)\n",
+    );
+    write_test_file(
+        &dir,
+        "b.star",
+        "import \"grid.star\" as grid\nfn use_b(c: grid::Cell) -> i32:\n    return c.x + c.y\n",
+    );
+    let main_path = write_test_file(
+        &dir,
+        "main.star",
+        "import \"a.star\" as a\nimport \"b.star\" as b\nfn main():\n    let c = a::make_a(3, 4)\n    println(f\"{b::use_b(c)}\")\n",
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_diamond_dependency.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "7");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Same diamond shape, but three-deep: `main` imports `a` and `b`, `a`
+/// imports `grid.star` directly while `b` imports it *transitively* through
+/// an intermediate `mid.star` -- makes sure dedup follows provenance through
+/// more than one level of re-export, not just a single hop.
+#[test]
+fn resolve_collapses_diamond_dependency_through_transitive_reexport() {
+    let dir = test_scratch_dir("resolve_collapses_diamond_dependency_through_transitive_reexport");
+    write_test_file(&dir, "grid.star", "struct Cell:\n    x: i32\n    y: i32\n");
+    write_test_file(
+        &dir,
+        "mid.star",
+        "import \"grid.star\" as grid\nfn mid_make(x: i32, y: i32) -> grid::Cell:\n    return grid::Cell(x = x, y = y)\n",
+    );
+    write_test_file(
+        &dir,
+        "a.star",
+        "import \"grid.star\" as grid\nfn make_a(x: i32, y: i32) -> grid::Cell:\n    return grid::Cell(x = x, y = y)\n",
+    );
+    write_test_file(
+        &dir,
+        "b.star",
+        "import \"mid.star\" as mid\nfn use_b(c: mid::grid::Cell) -> i32:\n    return c.x + c.y\n",
+    );
+    let main_path = write_test_file(
+        &dir,
+        "main.star",
+        "import \"a.star\" as a\nimport \"b.star\" as b\nfn main():\n    let c = a::make_a(5, 6)\n    println(f\"{b::use_b(c)}\")\n",
+    );
+    let module = Driver::parse(&std::fs::read_to_string(&main_path).unwrap()).expect("should parse");
+    let (resolved, _files) = star::modules::resolve(module, &main_path).expect("should resolve imports");
+
+    let cell_structs: Vec<_> = resolved
+        .items
+        .iter()
+        .filter(|i| matches!(i, Item::Struct(s) if s.name.ends_with("Cell")))
+        .collect();
+    assert_eq!(cell_structs.len(), 1, "diamond-imported Cell should collapse to one struct definition even through a transitive re-export, found {:?}", cell_structs);
+
+    let typed = Driver::check(&resolved).expect("diamond-imported module should type-check");
+    Driver::codegen(&typed).expect("diamond-imported module should codegen");
 }
 
 /// A transitive path through a real alias chain, but naming a function that

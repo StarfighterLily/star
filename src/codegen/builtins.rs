@@ -102,6 +102,21 @@ impl Codegen {
                             // `Ty::PaletteIndex`'s doc comment. Same
                             // reasoning as `Ty::Color32` just above.
                             Ty::PaletteIndex => { fmt_str.push_str("%u"); }
+                            // A fieldless enum's `i32` discriminant has no
+                            // format specifier of its own, printed as its
+                            // variant's *name* instead (`Direction::Down`
+                            // prints as `Down`) -- same `%s` treatment as
+                            // `Bool` just below. Previously missing from
+                            // this table entirely, so the discriminant fell
+                            // through to the `%p` catch-all: a plausible-
+                            // looking but nonsensical zero-padded 16-hex-
+                            // digit "address" instead of a crash or type
+                            // error (`projects/snake/NOTES.md` section 1.5;
+                            // the same bug class bug-hunting rounds 5/6 fixed
+                            // for `Color32`/`PaletteIndex`/every aggregate
+                            // vector/matrix type just above, never ported to
+                            // plain user `enum`s).
+                            Ty::Enum(_) => { fmt_str.push_str("%s"); }
                             _ => { fmt_str.push_str("%p"); }
                         }
                         // `emit_expr` may return either a bare register
@@ -129,6 +144,8 @@ impl Codegen {
                             bare_val
                         } else if matches!(ty, Ty::Bool) {
                             self.emit_bool_str(&bare_val)
+                        } else if let Ty::Enum(enum_name) = &ty {
+                            self.emit_enum_variant_name(enum_name, &bare_val)
                         } else {
                             // Same reasoning as the `Str` arm above,
                             // generalized to any other RC-bearing type
@@ -166,6 +183,12 @@ impl Codegen {
                     // `emit_bool_str` already turned this into an `i8*`
                     // (a "true"/"false" string pointer), not the bare
                     // `i1` `llvm_ty(Ty::Bool)` would tag it as.
+                    call_args.push(format!("i8* {}", val));
+                } else if matches!(ty, Ty::Enum(_)) {
+                    // `emit_enum_variant_name` already turned this into an
+                    // `i8*` (a variant-name string pointer), not the bare
+                    // `i32` `llvm_ty(Ty::Enum(_))` would tag it as -- same
+                    // reasoning as the `Bool` arm just above.
                     call_args.push(format!("i8* {}", val));
                 } else if matches!(ty, Ty::I8 | Ty::I16) {
                     // C's variadic calling convention promotes any integer
@@ -253,6 +276,52 @@ impl Codegen {
         self.line(&format!("  {} = getelementptr inbounds [6 x i8], [6 x i8]* {}, i64 0, i64 0", false_ptr, false_g));
         let sel = self.tmp_name();
         self.line(&format!("  {} = select i1 {}, i8* {}, i8* {}", sel, bare_bool, true_ptr, false_ptr));
+        sel
+    }
+
+    /// Select between a fieldless enum's variant-name string constants
+    /// based on a bare `i32` discriminant register, returning an `i8*`
+    /// suitable for a `%s` format hole -- `emit_bool_str` above, generalized
+    /// from a fixed 2-way `true`/`false` choice to an N-way one over
+    /// `enum_variants[enum_name]` (the same variant-index table
+    /// `enum_variant_index`/`EnumVariant` literal codegen already builds
+    /// off of, so this always agrees with how a variant's own tag was
+    /// assigned). A `select` chain rather than a `switch`+block+`phi` since
+    /// `printf`'s varargs already need every hole's value pre-computed as a
+    /// single register in a straight line, and real fieldless enums have few
+    /// enough variants that an N-way `select` chain is in no danger of
+    /// being a real performance concern. The final (highest-index) variant
+    /// is the chain's base case: assumes the discriminant is always one of
+    /// the enum's own valid tags, which the type system guarantees for
+    /// anything actually typed `Ty::Enum(enum_name)`.
+    pub(super) fn emit_enum_variant_name(&mut self, enum_name: &str, discriminant: &str) -> String {
+        let variants = self.enum_variants.get(enum_name).cloned().unwrap_or_default();
+        let Some((last, rest)) = variants.split_last() else {
+            // No known variant table -- shouldn't happen for a well-typed
+            // fieldless enum, but emit a harmless placeholder rather than a
+            // malformed `select` chain over zero arms.
+            let g = self.global_name();
+            self.global_defs.push(format!("{} = private unnamed_addr constant [2 x i8] c\"?\\00\"", g));
+            let ptr = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds [2 x i8], [2 x i8]* {}, i64 0, i64 0", ptr, g));
+            return ptr;
+        };
+        let variant_ptr = |cg: &mut Self, name: &str| -> String {
+            let g = cg.global_name();
+            cg.global_defs.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", g, name.len() + 1, name));
+            let ptr = cg.tmp_name();
+            cg.line(&format!("  {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0", ptr, name.len() + 1, name.len() + 1, g, ));
+            ptr
+        };
+        let mut sel = variant_ptr(self, last);
+        for (idx, name) in rest.iter().enumerate().rev() {
+            let ptr = variant_ptr(self, name);
+            let cmp = self.tmp_name();
+            self.line(&format!("  {} = icmp eq i32 {}, {}", cmp, discriminant, idx));
+            let next = self.tmp_name();
+            self.line(&format!("  {} = select i1 {}, i8* {}, i8* {}", next, cmp, ptr, sel));
+            sel = next;
+        }
         sel
     }
 

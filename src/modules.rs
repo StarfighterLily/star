@@ -66,6 +66,21 @@ pub fn mangle_name(alias: &str, name: &str) -> String {
 /// below an empirically observed cliff" calibration.
 const MAX_IMPORT_DEPTH: u32 = 200;
 
+/// A top-level item's provenance: which canonical source file, and which
+/// original (unmangled) name, it was actually declared under. Tracked
+/// *positionally*, one entry per item in the module currently being built --
+/// never keyed by the item's current (possibly mangled, possibly colliding)
+/// name string. Keying by name was tried first and is wrong: two genuinely
+/// different declarations (different files, different meanings) can and do
+/// collide onto the identical mangled name today (see
+/// `rejects_duplicate_top_level_name_from_two_imports_sharing_one_alias`,
+/// which imports two different files' `helper` under the same alias) --
+/// name-keyed provenance would clobber one entry with the other and cause
+/// [`dedupe_by_origin`] to treat a real collision as a diamond-dependency
+/// re-export and silently drop one of the two, hiding a genuine "declared
+/// more than once" diagnostic. Positional tracking never conflates the two.
+type ItemProvenance = Vec<Option<(PathBuf, String)>>;
+
 /// Resolve every `import` in `module` (whose own source lives at
 /// `root_path`), recursively inlining each imported file's items under a
 /// mangled name. Returns the flattened module (no `Item::Import` entries
@@ -86,7 +101,10 @@ const MAX_IMPORT_DEPTH: u32 = 200;
 /// failures (a missing file, a parse error, a cycle) are unaffected -- they
 /// already re-anchor on the *importing* file's own `decl.span`, a real,
 /// meaningful location in a file this function's caller definitely has the
-/// source text for.
+/// source text for. Also runs a final deduplication pass ([`dedupe_by_origin`])
+/// so the same file reached via more than one alias chain (a diamond
+/// dependency) collapses to one set of top-level declarations instead of
+/// producing mutually-incompatible duplicates.
 pub fn resolve(module: Module, root_path: &Path) -> Result<(Module, Vec<(String, String)>), Vec<Diagnostic>> {
     let mut loading = HashSet::new();
     // Best-effort: if the root file exists on disk, seed the cycle guard
@@ -95,23 +113,37 @@ pub fn resolve(module: Module, root_path: &Path) -> Result<(Module, Vec<(String,
     // modules parsed from an in-memory string with no backing file (as in
     // most unit tests) simply skip this -- they can still import real files,
     // they just can't be re-imported by them.
-    if let Ok(canon) = root_path.canonicalize() {
-        loading.insert(canon);
+    let root_canonical = root_path.canonicalize().ok();
+    if let Some(canon) = &root_canonical {
+        loading.insert(canon.clone());
     }
     let base_dir = root_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
     let mut files = Vec::new();
-    let resolved = resolve_inner(module, &base_dir, &mut loading, &mut files, 0)?;
-    Ok((resolved, files))
+    let (resolved, provenance) =
+        resolve_inner(module, &base_dir, root_canonical.as_deref(), &mut loading, &mut files, 0)?;
+    Ok((dedupe_by_origin(resolved, &provenance), files))
 }
 
+/// Resolve every `import` in `module`, returning the flattened module
+/// alongside its [`ItemProvenance`] (aligned 1:1, by position, with the
+/// returned module's `items`). A name introduced by an `import` inherits
+/// its child item's provenance unchanged (renaming never changes what file
+/// something came from -- `rename_module` preserves item count and order);
+/// an item declared directly in this module is tagged with `own_path` (this
+/// file's own canonical path, if known -- always known for a real imported
+/// file, only possibly unknown for an in-memory root module with no backing
+/// path, in which case it's tagged `None`, meaning "never deduplicate this
+/// item").
 fn resolve_inner(
     module: Module,
     base_dir: &Path,
+    own_path: Option<&Path>,
     loading: &mut HashSet<PathBuf>,
     files: &mut Vec<(String, String)>,
     depth: u32,
-) -> Result<Module, Vec<Diagnostic>> {
+) -> Result<(Module, ItemProvenance), Vec<Diagnostic>> {
     let mut items = Vec::new();
+    let mut provenance: ItemProvenance = Vec::new();
     for item in module.items {
         match item {
             Item::Import(decl) => {
@@ -172,28 +204,123 @@ fn resolve_inner(
                 // (see the module-level doc comment on the reach limit this
                 // implies).
                 let child_base = canonical.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-                let resolved_child = match resolve_inner(imported, &child_base, loading, files, depth + 1) {
-                    Ok(m) => m,
-                    Err(diags) => {
-                        // Re-anchor on this level's own (meaningful) span
-                        // rather than propagating a span from the nested
-                        // file's own source, which would be nonsensical
-                        // rendered against this file's text.
-                        let msg = diags.first().map(|d| d.message.clone()).unwrap_or_else(|| "error".into());
-                        return Err(vec![Diagnostic::error(
-                            format!("error in import `{}`: {}", decl.path, msg),
-                            decl.span,
-                        )]);
-                    }
-                };
+                let (resolved_child, child_provenance) =
+                    match resolve_inner(imported, &child_base, Some(&canonical), loading, files, depth + 1) {
+                        Ok(m) => m,
+                        Err(diags) => {
+                            // Re-anchor on this level's own (meaningful) span
+                            // rather than propagating a span from the nested
+                            // file's own source, which would be nonsensical
+                            // rendered against this file's text.
+                            let msg = diags.first().map(|d| d.message.clone()).unwrap_or_else(|| "error".into());
+                            return Err(vec![Diagnostic::error(
+                                format!("error in import `{}`: {}", decl.path, msg),
+                                decl.span,
+                            )]);
+                        }
+                    };
                 loading.remove(&canonical);
-                let renamed = rename_module(&resolved_child, &decl.alias);
+                let names = collect_names(&resolved_child, &decl.alias);
+                let renamed = rename_module(&resolved_child, &names);
+                // `rename_module`/`rename_item` map each input item to
+                // exactly one output item, in order -- so `child_provenance`
+                // (aligned with `resolved_child.items`) is still aligned
+                // with `renamed.items` and can be carried through unchanged.
+                debug_assert_eq!(renamed.items.len(), child_provenance.len());
                 items.extend(renamed.items);
+                provenance.extend(child_provenance);
             }
-            other => items.push(other),
+            other => {
+                let prov = match (item_top_level_name(&other), own_path) {
+                    (Some(name), Some(path)) => Some((path.to_path_buf(), name.to_string())),
+                    _ => None,
+                };
+                provenance.push(prov);
+                items.push(other);
+            }
         }
     }
-    Ok(Module { items })
+    Ok((Module { items }, provenance))
+}
+
+/// The name a top-level [`Item`] declares (if any) -- mirrors
+/// [`collect_names`]'s match arms; kept as a standalone helper since both
+/// `collect_names` and the provenance/dedup machinery need exactly this set.
+fn item_top_level_name(item: &Item) -> Option<&str> {
+    match item {
+        Item::Struct(s) => Some(&s.name),
+        Item::Trait(t) => Some(&t.name),
+        Item::Fn(f) => Some(&f.sig.name),
+        Item::Arena(a) => Some(&a.name),
+        Item::Sequence(s) => Some(&s.name),
+        Item::Enum(e) => Some(&e.name),
+        Item::Impl(_) | Item::Import(_) | Item::ExternFn(_) => None,
+    }
+}
+
+/// Collapse top-level items that ultimately originated from the very same
+/// declaration in the very same source file, but were independently
+/// resolved (and thus differently mangled) because more than one alias
+/// chain reached that file -- the diamond-dependency case
+/// `projects/snake/NOTES.md` section 1.1 documents: `main` importing both
+/// `A` and `B`, each of which independently imports `grid.star`, previously
+/// produced two distinct, mutually-incompatible mangled `Cell` types
+/// (`a__grid__Cell`, `b__grid__Cell`) for grid.star's one and only `Cell`.
+///
+/// For every group of items sharing the same `(canonical path, original
+/// name)` provenance (see [`ItemProvenance`] for why this is tracked
+/// positionally, not by name), the first-declared item (in the flattened
+/// module's own item order, which mirrors first-encountered import order)
+/// is kept as canonical; every other item in the group is dropped and every
+/// remaining reference to its name rewritten to the canonical item's name --
+/// reusing the exact same substitution machinery (`rename_item` et al.)
+/// that alias-mangling itself uses, just with a name->name substitution
+/// instead of a name->`alias__name` one. `impl` blocks (which declare no
+/// name of their own -- see [`item_top_level_name`]) are deduplicated too:
+/// once two `impl` blocks' `type_name`s substitute to the same canonical
+/// type, they are, by construction, independent re-resolutions of the very
+/// same source `impl` block, so only the first is kept (the checker/LLVM
+/// would otherwise see the same method defined twice for one type).
+fn dedupe_by_origin(module: Module, provenance: &ItemProvenance) -> Module {
+    debug_assert_eq!(module.items.len(), provenance.len());
+    let mut groups: HashMap<&(PathBuf, String), Vec<usize>> = HashMap::new();
+    for (idx, prov) in provenance.iter().enumerate() {
+        if let Some(key) = prov {
+            groups.entry(key).or_default().push(idx);
+        }
+    }
+
+    let mut subst: HashMap<String, String> = HashMap::new();
+    let mut drop: HashSet<usize> = HashSet::new();
+    for indices in groups.values() {
+        if indices.len() > 1 {
+            let canonical_name = item_top_level_name(&module.items[indices[0]]).map(|s| s.to_string());
+            for &dup_idx in &indices[1..] {
+                if let (Some(canonical_name), Some(dup_name)) = (&canonical_name, item_top_level_name(&module.items[dup_idx])) {
+                    subst.insert(dup_name.to_string(), canonical_name.clone());
+                }
+                drop.insert(dup_idx);
+            }
+        }
+    }
+
+    if drop.is_empty() {
+        return module;
+    }
+
+    let mut seen_impls: HashSet<(Option<String>, String)> = HashSet::new();
+    let items = module
+        .items
+        .into_iter()
+        .enumerate()
+        .filter(|(idx, _)| !drop.contains(idx))
+        .map(|(_, item)| rename_item(&item, &subst))
+        .filter(|item| match item {
+            Item::Impl(blk) => seen_impls.insert((blk.trait_name.clone(), blk.type_name.clone())),
+            _ => true,
+        })
+        .collect();
+    Module { items }
 }
 
 // --- renaming: prefix every top-level declaration with `alias__` ----------
@@ -207,23 +334,14 @@ fn resolve_inner(
 fn collect_names(module: &Module, alias: &str) -> HashMap<String, String> {
     let mut names = HashMap::new();
     for item in &module.items {
-        let name = match item {
-            Item::Struct(s) => &s.name,
-            Item::Trait(t) => &t.name,
-            Item::Fn(f) => &f.sig.name,
-            Item::Arena(a) => &a.name,
-            Item::Sequence(s) => &s.name,
-            Item::Enum(e) => &e.name,
-            // An `extern "C" fn` names a real, global C symbol -- it must
-            // never be mangled the way ordinary top-level declarations are,
-            // or the emitted `declare`/`call` would no longer match the
-            // actual foreign symbol. `Item::Impl`/`Item::Import` are
-            // excluded for a different reason (see their own comments
-            // elsewhere in this file: an impl introduces no fresh top-level
-            // name, and imports are already stripped by this point).
-            Item::Impl(_) | Item::Import(_) | Item::ExternFn(_) => continue,
-        };
-        names.insert(name.clone(), mangle_name(alias, name));
+        // An `extern "C" fn` names a real, global C symbol -- it must never
+        // be mangled the way ordinary top-level declarations are, or the
+        // emitted `declare`/`call` would no longer match the actual foreign
+        // symbol. `Item::Impl`/`Item::Import` are excluded for a different
+        // reason (see `item_top_level_name`: an impl introduces no fresh
+        // top-level name, and imports are already stripped by this point).
+        let Some(name) = item_top_level_name(item) else { continue };
+        names.insert(name.to_string(), mangle_name(alias, name));
     }
     names
 }
@@ -233,7 +351,10 @@ fn mangled(name: &str, names: &HashMap<String, String>) -> String {
 }
 
 /// Rename every top-level declaration in `module` (and every reference to
-/// one within it) to its `alias__name` mangled form.
+/// one within it) according to `names` (a map from each declaration's
+/// current name to its new one, e.g. from [`collect_names`]'s `alias__name`
+/// mangling, or from [`dedupe_by_origin`]'s duplicate->canonical
+/// substitution).
 ///
 /// Known limitation shared with `crate::sequence`'s hoisting rewrite: this
 /// matches purely on identifier text, so a local variable that happens to
@@ -241,9 +362,8 @@ fn mangled(name: &str, names: &HashMap<String, String>) -> String {
 /// also get rewritten. Not a concern in practice since Star's naming
 /// convention already separates PascalCase types from snake_case values/fns,
 /// but a real name-resolution pass would need to track scopes properly.
-fn rename_module(module: &Module, alias: &str) -> Module {
-    let names = collect_names(module, alias);
-    let items = module.items.iter().map(|item| rename_item(item, &names)).collect();
+fn rename_module(module: &Module, names: &HashMap<String, String>) -> Module {
+    let items = module.items.iter().map(|item| rename_item(item, names)).collect();
     Module { items }
 }
 

@@ -1372,6 +1372,19 @@ impl Codegen {
                                     let bool_str = self.emit_bool_str(&bare_val);
                                     call_args.push(format!("i8* {}", bool_str));
                                 }
+                                // A fieldless enum's `i32` discriminant has
+                                // no format specifier of its own -- printed
+                                // as its variant's *name* instead, same as
+                                // `emit_print_like`'s identical `Ty::Enum`
+                                // handling (`projects/snake/NOTES.md`
+                                // section 1.5; this path previously fell
+                                // through to the `%p` catch-all below, same
+                                // bug, different f-string call site).
+                                Ty::Enum(enum_name) => {
+                                    fmt_str.push_str("%s");
+                                    let variant_str = self.emit_enum_variant_name(enum_name, &bare_val);
+                                    call_args.push(format!("i8* {}", variant_str));
+                                }
                                 _ => {
                                     fmt_str.push_str("%p");
                                     // Same reasoning as the `Str` arm above:

@@ -2783,14 +2783,64 @@ impl Checker {
 
     /// The type of `stmts`' implicit trailing value, if any -- mirrors
     /// `crate::codegen::Codegen::emit_stmts_value`'s notion of which
-    /// statement shapes contribute a value (a trailing bare expression, or a
-    /// `frame:` scope whose own trailing statement does) versus which don't
-    /// (every other statement kind, including a statement-form `if`/`match`
-    /// used only for side effects).
+    /// statement shapes contribute a value (a trailing bare expression, a
+    /// `frame:` scope whose own trailing statement does, or a trailing
+    /// `if`/`else` -- both with an `else` and *both* arms recursively
+    /// producing a matching-typed value) versus which don't (every other
+    /// statement kind, including a statement-form `if` with no `else`, or an
+    /// `if` whose arms don't both produce a value -- either shape is
+    /// side-effect-only and contributes nothing).
+    ///
+    /// A statement-form `if`/`else` used to be unconditionally excluded
+    /// here (only `TypedStmt::Frame`/`TypedStmt::Expr` were recognized),
+    /// even though the exact same shape already worked as a `match` (which
+    /// always parses to `TypedStmt::Expr(TypedExpr::Match{..})`, not a
+    /// dedicated statement variant -- see `Parser::parse_match_stmt`) and
+    /// already worked as an `if`-*expression* on a `let`'s RHS (`let x = if
+    /// cond: a else: b`, via `TypedExpr::If`). A bare trailing `if`/`else`
+    /// with no `let` and no explicit `return` -- exactly `match`'s already-
+    /// supported shape -- was rejected with "does not end in a
+    /// value-producing expression or explicit return"
+    /// (`projects/snake/NOTES.md` section 1.4). Requiring *both* arms to
+    /// independently pass this same check (not just `then`, unlike
+    /// `TypedExpr::If`'s own looser inference at `Checker::infer_expr`'s
+    /// `Expr::If` arm, which only ever looks at `then`) is deliberate: this
+    /// function's result is trusted as "a real implicit return value on
+    /// every path", so a mismatched or one-sided arm must fall through to
+    /// `None` here rather than claim a value the `else` path might not
+    /// actually produce -- `Codegen::emit_stmts_value`'s mirroring
+    /// `TypedStmt::If` arm relies on that same all-arms guarantee.
     fn trailing_value_ty(stmts: &[TypedStmt]) -> Option<Ty> {
         match stmts.last() {
             Some(TypedStmt::Expr(e)) => Some(e.clone().into_ty()),
             Some(TypedStmt::Frame { body, .. }) => Self::trailing_value_ty(&body.stmts),
+            Some(TypedStmt::If { then_block, else_block: Some(else_block), .. }) => {
+                let then_ty = Self::trailing_value_ty(&then_block.stmts)?;
+                let else_ty = Self::trailing_value_ty(&else_block.stmts)?;
+                // `unknown` is the established placeholder a *void* call
+                // (`println(..)`, or any function/method with no declared
+                // return type -- see `builtin_return_ty`'s doc comment and
+                // the `Expr::Call` arm above) is typed as -- itself a
+                // legitimate `Some(..)` result of the two recursive calls
+                // just above (a trailing `println(..)` is still a bare
+                // `TypedStmt::Expr`), but not a *real* value: codegen has no
+                // actual LLVM-typed register for it (`emit_call_expr` emits
+                // a bare `"%undef"` placeholder with no type tag at all for
+                // this case specifically), so treating it as this `if`'s
+                // value would have `Codegen::emit_trailing_if_value` try to
+                // `phi`-merge a value that was never really produced. Must
+                // reject here, not just leave it to `types_compatible`
+                // below: `types_compatible` treats `unknown` as a wildcard
+                // placeholder that's "compatible" with anything, so two
+                // void arms (`if c: println(a) else: println(b)`, `main`'s
+                // own trailing statement in
+                // `runtime_mixed_scalar_comparison_still_works_end_to_end`)
+                // would otherwise sail through as "both produce a matching
+                // value" when neither produces any value at all.
+                let is_unknown = |t: &Ty| matches!(t, Ty::Named(n) if n == "unknown");
+                (!is_unknown(&then_ty) && !is_unknown(&else_ty) && Self::types_compatible(&then_ty, &else_ty))
+                    .then_some(then_ty)
+            }
             _ => None,
         }
     }

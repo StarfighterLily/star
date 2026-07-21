@@ -971,7 +971,7 @@ impl Parser {
     /// followed by a line end, otherwise a single inline expression wrapped
     /// in a one-statement `Block` (the same shape `parse_lambda` uses for
     /// its own inline body).
-    fn parse_if_expr_arm(&mut self) -> Option<Block> {
+    pub(super) fn parse_if_expr_arm(&mut self) -> Option<Block> {
         if self.at(&TokenKind::Newline) {
             return self.parse_block();
         }

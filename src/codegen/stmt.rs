@@ -19,7 +19,12 @@ impl Codegen {
     /// Shared implementation behind `emit_block_value` and function bodies:
     /// emit every statement but the last normally, then special-case the last
     /// statement so a trailing expression's value (possibly nested inside a
-    /// `frame:` scope) propagates out instead of being silently discarded.
+    /// `frame:` scope, or a trailing `if`/`else` whose arms both produce a
+    /// matching-typed value -- see `emit_trailing_if_value`) propagates out
+    /// instead of being silently discarded. Must recognize exactly the same
+    /// statement shapes as `Checker::trailing_value_ty`, kept in sync with it
+    /// so a program that type-checks under a given trailing shape actually
+    /// gets that value out of codegen too, not `undef`.
     pub(super) fn emit_stmts_value(&mut self, stmts: &[TypedStmt]) -> Option<String> {
         let (init, last) = match stmts.split_last() {
             Some((last, init)) => (init, last),
@@ -31,11 +36,110 @@ impl Codegen {
         match last {
             TypedStmt::Expr(e) => Some(self.emit_expr(e)),
             TypedStmt::Frame { body, .. } => self.emit_frame_body(body),
+            // Only take the value-producing (phi-join) path when *both*
+            // arms actually bottom out in a trailing value -- exactly
+            // `Checker::trailing_value_ty`'s own condition for recognizing
+            // this shape at all. An `if`/`else` whose arms terminate via
+            // `return`/`break`/`continue` instead (by far the more common
+            // shape -- see `body_terminates`) also matches this pattern
+            // (`else_block: Some(..)`) but must keep going through the
+            // plain control-flow `emit_stmt` path below: `then_block`/
+            // `else_block`'s own last statement wouldn't be one of
+            // `emit_stmts_value`'s value-producing arms either, so
+            // `emit_trailing_if_value` would `?`-short-circuit after
+            // already emitting a `ret` and opening the `then`/`else`
+            // blocks, leaving stray unmatched `push_scope`s and never
+            // reaching the `else` branch or the join block at all.
+            TypedStmt::If { cond, then_block, else_block: Some(else_block), .. }
+                if Self::stmt_has_trailing_value(&then_block.stmts) && Self::stmt_has_trailing_value(&else_block.stmts) =>
+            {
+                self.emit_trailing_if_value(cond, then_block, else_block)
+            }
             other => {
                 self.emit_stmt(other);
                 None
             }
         }
+    }
+
+    /// True if `stmts` bottoms out in a trailing value under the exact same
+    /// recursive rule `Checker::trailing_value_ty` uses to compute *what*
+    /// that value's type is -- this is the type-independent half of that
+    /// same check, used to decide *whether* to take `emit_stmts_value`'s
+    /// value-producing `TypedStmt::If` path at all (see its call site's
+    /// doc comment for why an unconditional dispatch on shape alone is
+    /// wrong).
+    ///
+    /// A bare trailing expression is excluded when its own type is the
+    /// `unknown` placeholder (a void call, e.g. `println(..)` or any
+    /// function/method with no declared return type -- see
+    /// `builtin_return_ty`'s doc comment): `emit_call_expr` emits such a
+    /// call as a bare `"%undef"` string with no LLVM type tag at all, so
+    /// treating it as "has a trailing value" would send `emit_trailing_if_value`
+    /// looking for a space to split a type off of a string that has none --
+    /// exactly `Checker::trailing_value_ty`'s matching `is_unknown` guard,
+    /// kept in sync for the same reason every other pair of checks in this
+    /// function/that one are.
+    fn stmt_has_trailing_value(stmts: &[TypedStmt]) -> bool {
+        match stmts.last() {
+            Some(TypedStmt::Expr(e)) => !matches!(e.clone().into_ty(), Ty::Named(n) if n == "unknown"),
+            Some(TypedStmt::Frame { body, .. }) => Self::stmt_has_trailing_value(&body.stmts),
+            Some(TypedStmt::If { then_block, else_block: Some(else_block), .. }) => {
+                Self::stmt_has_trailing_value(&then_block.stmts) && Self::stmt_has_trailing_value(&else_block.stmts)
+            }
+            _ => false,
+        }
+    }
+
+    /// Emit a trailing `if`/`else` (`TypedStmt::If`, both arms present) as a
+    /// value: branch on `cond`, evaluate each arm's own trailing value via
+    /// `emit_stmts_value` (so it may itself end in a nested `frame:`/`if`),
+    /// then `phi`-merge them at a shared join block -- the same
+    /// evaluate-both-arms-then-`phi` shape `emit_expr`'s value-producing
+    /// `TypedExpr::If` case already uses (down to tracking each arm's
+    /// *actual* final predecessor block via `current_label`, not the block
+    /// it started in, for the same "PHI node entries do not match
+    /// predecessors" reason documented there), except the merged LLVM type
+    /// is read off whichever arm's own tagged value comes back rather than
+    /// from a pre-computed `ty` field (`TypedStmt::If`, unlike
+    /// `TypedExpr::If`, carries none).
+    ///
+    /// Only ever reached from `emit_stmts_value` when `stmts.last()` is this
+    /// shape, which only ever type-checks (see
+    /// `Checker::trailing_value_ty`'s matching `TypedStmt::If` arm) when
+    /// *both* arms are independently guaranteed to reach this same
+    /// recursive "produces a value" case -- so the two `emit_stmts_value`
+    /// calls below are guaranteed to return `Some`, never silently `None`
+    /// (`projects/snake/NOTES.md` section 1.4).
+    fn emit_trailing_if_value(&mut self, cond: &TypedExpr, then_block: &TypedBlock, else_block: &TypedBlock) -> Option<String> {
+        let cond_val = self.emit_expr(cond);
+        let cond_reg = self.reg_of(&cond_val);
+        let then_label = self.block_label("if_then");
+        let else_label = self.block_label("if_else");
+        let end_label = self.block_label("if_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, then_label, else_label));
+
+        self.open_block(&then_label);
+        self.push_scope();
+        let then_val = self.emit_stmts_value(&then_block.stmts)?;
+        self.pop_scope(!Self::body_terminates(&then_block.stmts));
+        let ty_str = then_val.split_once(' ').map(|(t, _)| t.to_string())?;
+        let then_reg = self.reg_of(&then_val);
+        let then_pred = self.current_label.clone();
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&else_label);
+        self.push_scope();
+        let else_val = self.emit_stmts_value(&else_block.stmts)?;
+        self.pop_scope(!Self::body_terminates(&else_block.stmts));
+        let else_reg = self.reg_of(&else_val);
+        let else_pred = self.current_label.clone();
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
+        let phi = self.tmp_name();
+        self.line(&format!("  {} = phi {} [ {}, %{} ], [ {}, %{} ]", phi, ty_str, then_reg, then_pred, else_reg, else_pred));
+        Some(format!("{} {}", ty_str, phi))
     }
 
     /// Bump-allocate `size` bytes from the `frame:` scope's backing buffer
@@ -80,6 +184,19 @@ impl Codegen {
     /// (allocations inside use the frame buffer instead of the stack), then
     /// restore the saved offset so the scope's allocations are reclaimed in
     /// O(1) when it ends. Returns the body's trailing value, if any.
+    ///
+    /// If the body's last statement already terminates the block (an
+    /// unconditional `return`/`break`/`continue`, or an `if`/`match` whose
+    /// every arm does), the offset-restore `store` is skipped entirely --
+    /// emitting it unconditionally used to append a `store` *after* the
+    /// block's own terminator (e.g. a `ret`), which LLVM rejects outright
+    /// ("expected instruction opcode": no instruction, especially not
+    /// another terminator, may follow a block's first terminator). A
+    /// terminated body never falls through to here anyway, so there is
+    /// nothing for the restore to protect -- the frame offset a `return`
+    /// leaves behind is irrelevant once control has left the function (and,
+    /// for `break`/`continue`, the enclosing loop's own frame scope, if any,
+    /// still restores its own offset on its own exit path).
     fn emit_frame_body(&mut self, body: &TypedBlock) -> Option<String> {
         let was_in_frame = self.in_frame;
         self.in_frame = true;
@@ -87,8 +204,11 @@ impl Codegen {
         self.line(&format!("  {} = load i64, i64* @frame.off", saved_off));
         self.push_scope();
         let val = self.emit_stmts_value(&body.stmts);
-        self.pop_scope(!Self::body_terminates(&body.stmts));
-        self.line(&format!("  store i64 {}, i64* @frame.off", saved_off));
+        let terminates = Self::body_terminates(&body.stmts);
+        self.pop_scope(!terminates);
+        if !terminates {
+            self.line(&format!("  store i64 {}, i64* @frame.off", saved_off));
+        }
         self.in_frame = was_in_frame;
         val
     }
@@ -401,6 +521,21 @@ impl Codegen {
             }
             TypedStmt::Frame { body, .. } => { self.emit_frame_body(body); }
             TypedStmt::While { cond, then_block, else_block, .. } => {
+                // If this loop is lexically inside a `frame:` block, snapshot
+                // `@frame.off` *before* the loop's first iteration -- every
+                // path out of an iteration (normal fallthrough, `continue`,
+                // or `break`) restores it back to this exact value, reclaiming
+                // that iteration's frame allocations so a many-iteration loop
+                // doesn't exhaust the frame buffer just because nothing
+                // reclaims space until the whole `frame:` block exits (see
+                // `loop_stack`'s doc comment; `NOTES.md` section 1.2).
+                let loop_frame_off = if self.in_frame {
+                    let saved = self.tmp_name();
+                    self.line(&format!("  {} = load i64, i64* @frame.off", saved));
+                    Some(saved)
+                } else {
+                    None
+                };
                 let cond_label = self.block_label("while_cond");
                 let body_label = self.block_label("while_body");
                 let else_label = self.block_label("while_else");
@@ -408,6 +543,17 @@ impl Codegen {
                 // Loop header: evaluate the condition and branch.
                 self.line(&format!("  br label %{}", cond_label));
                 self.open_block(&cond_label);
+                // `cond_label` is every iteration's shared exit choke point
+                // (normal fallthrough branches here, and `continue` jumps
+                // here directly), so restoring at its very top -- before
+                // even evaluating `cond` -- reclaims the just-finished
+                // iteration's frame allocations on both paths without
+                // needing to touch `TypedStmt::Continue`'s own codegen at
+                // all. A no-op store on the very first pass, before any
+                // iteration has run yet.
+                if let Some(saved) = &loop_frame_off {
+                    self.line(&format!("  store i64 {}, i64* @frame.off", saved));
+                }
                 let cond_val = self.emit_expr(cond);
                 let cond_reg = self.reg_of(&cond_val);
                 // The condition's false branch must go to `else_label`, not
@@ -426,7 +572,7 @@ impl Codegen {
                 self.open_block(&body_label);
                 let depth_at_entry = self.owned_stack.len();
                 self.push_scope();
-                self.loop_stack.push((cond_label.clone(), end_label.clone(), depth_at_entry));
+                self.loop_stack.push((cond_label.clone(), end_label.clone(), depth_at_entry, loop_frame_off.clone()));
                 for stmt in &then_block.stmts {
                     self.emit_stmt(stmt);
                 }
@@ -462,22 +608,33 @@ impl Codegen {
             }
             TypedStmt::Break { .. } => {
                 let target = self.loop_stack.last().cloned();
-                let break_label = target.as_ref().map(|(_, b, _)| b.clone()).unwrap_or_else(|| {
+                let break_label = target.as_ref().map(|(_, b, _, _)| b.clone()).unwrap_or_else(|| {
                     self.err("`break` outside of a loop", Span::dummy());
                     "undef".into()
                 });
-                if let Some((_, _, depth)) = target {
-                    self.emit_releases_since(depth);
+                if let Some((_, _, depth, frame_off)) = &target {
+                    self.emit_releases_since(*depth);
+                    // Unlike normal fallthrough/`continue` (which both
+                    // funnel through the loop's own continue-target block,
+                    // where the restore already lives -- see
+                    // `TypedStmt::While`/`emit_for_stmt`), `break` jumps
+                    // straight to `end_label`, bypassing that block
+                    // entirely, so it needs its own copy of the same
+                    // restore to reclaim the just-abandoned iteration's
+                    // frame allocations before leaving the loop for good.
+                    if let Some(saved) = frame_off {
+                        self.line(&format!("  store i64 {}, i64* @frame.off", saved));
+                    }
                 }
                 self.line(&format!("  br label %{}", break_label));
             }
             TypedStmt::Continue { .. } => {
                 let target = self.loop_stack.last().cloned();
-                let continue_label = target.as_ref().map(|(c, _, _)| c.clone()).unwrap_or_else(|| {
+                let continue_label = target.as_ref().map(|(c, _, _, _)| c.clone()).unwrap_or_else(|| {
                     self.err("`continue` outside of a loop", Span::dummy());
                     "undef".into()
                 });
-                if let Some((_, _, depth)) = target {
+                if let Some((_, _, depth, _)) = target {
                     self.emit_releases_since(depth);
                 }
                 self.line(&format!("  br label %{}", continue_label));
@@ -507,6 +664,18 @@ impl Codegen {
         self.line(&format!("  {} = alloca i32", i_ptr));
         self.line(&format!("  store i32 {}, i32* {}", start_bare, i_ptr));
 
+        // See `TypedStmt::While`'s identical snapshot -- this is `for`'s
+        // equivalent per-iteration frame-reclaim checkpoint (`NOTES.md`
+        // section 1.2's own confirmed repro: 768 iterations over a `Cell`
+        // struct via exactly this `for`-loop shape).
+        let loop_frame_off = if self.in_frame {
+            let saved = self.tmp_name();
+            self.line(&format!("  {} = load i64, i64* @frame.off", saved));
+            Some(saved)
+        } else {
+            None
+        };
+
         let cond_label = self.block_label("for_cond");
         let body_label = self.block_label("for_body");
         let step_label = self.block_label("for_step");
@@ -524,7 +693,7 @@ impl Codegen {
         self.symbols.push((var.to_string(), i_ptr.clone(), Ty::Int));
         let depth_at_entry = self.owned_stack.len();
         self.push_scope();
-        self.loop_stack.push((step_label.clone(), end_label.clone(), depth_at_entry));
+        self.loop_stack.push((step_label.clone(), end_label.clone(), depth_at_entry, loop_frame_off.clone()));
         for stmt in &body.stmts {
             self.emit_stmt(stmt);
         }
@@ -537,6 +706,15 @@ impl Codegen {
         }
 
         self.open_block(&step_label);
+        // `step_label` is every iteration's shared exit choke point (normal
+        // fallthrough branches here, and `continue` jumps here directly --
+        // see `emit_for_stmt`'s own doc comment) -- restoring at its very
+        // top, before the increment, reclaims the just-finished iteration's
+        // frame allocations on both paths. A no-op store on the very first
+        // pass, before any iteration has run yet.
+        if let Some(saved) = &loop_frame_off {
+            self.line(&format!("  store i64 {}, i64* @frame.off", saved));
+        }
         let i_reg2 = self.tmp_name();
         self.line(&format!("  {} = load i32, i32* {}", i_reg2, i_ptr));
         let i_next = self.tmp_name();

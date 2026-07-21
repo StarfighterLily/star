@@ -115,11 +115,28 @@ pub struct Codegen {
     /// `emit_enum_decl`).
     enum_variant_fields: std::collections::HashMap<String, Vec<Vec<Ty>>>,
     /// Stack of `(continue_label, break_label, owned_stack depth at loop
-    /// entry)` for the innermost enclosing loops, so `break`/`continue`
-    /// codegen can jump to the right block (without threading loop context
-    /// through every statement emitter) and release exactly the RC-owning
-    /// locals declared since the loop was entered -- see `rc.rs`.
-    loop_stack: Vec<(String, String, usize)>,
+    /// entry, frame-offset checkpoint)` for the innermost enclosing loops,
+    /// so `break`/`continue` codegen can jump to the right block (without
+    /// threading loop context through every statement emitter), release
+    /// exactly the RC-owning locals declared since the loop was entered
+    /// (see `rc.rs`), and -- when the loop is lexically inside a `frame:`
+    /// block -- restore `@frame.off` back to its value from just before the
+    /// loop's current iteration began on every path out of that iteration
+    /// (normal fallthrough, `continue`, or `break`). The last field is
+    /// `Some(reg)` (a register holding `@frame.off`'s value at loop entry)
+    /// only when `Codegen::in_frame` was true when the loop was entered,
+    /// `None` otherwise (a loop outside any `frame:` block has nothing to
+    /// reclaim here).
+    ///
+    /// Without this, a `frame:` block's bump allocator only reclaims space
+    /// once, when the *whole* `frame:` block exits -- not once per loop
+    /// iteration -- so any loop inside a `frame:` block that `let`-binds a
+    /// struct-typed local exhausts the fixed 4096-byte buffer after only a
+    /// few hundred iterations, even though every one of those structs is
+    /// long dead by the time the next iteration starts (confirmed live in
+    /// `projects/snake`, `NOTES.md` section 1.2: a 768-iteration loop over
+    /// an 8-byte `Cell` blew the cap at iteration ~170).
+    loop_stack: Vec<(String, String, usize, Option<String>)>,
     /// Stack of scope frames, one per currently-open lexical block (function
     /// body, closure body, `if`/`while`/`for`/`frame` body, `match` arm
     /// body), each holding the `(sym_ptr, Ty)` of every RC-owning local
