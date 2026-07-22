@@ -154,6 +154,12 @@ pub struct ImplBlock {
     pub trait_name: Option<String>,
     /// The type the impl is attached to.
     pub type_name: String,
+    /// `<T, U, ...>` following `type_name`, for an impl attached to a
+    /// generic struct (empty for an impl on a non-generic type). Mirrors
+    /// `StructDef::type_params`; see `crate::types::Checker`'s
+    /// `generic_impls`/`instantiate_impl_methods` for how these are bound to
+    /// concrete types alongside the struct's own monomorphization.
+    pub type_params: Vec<String>,
     pub methods: Vec<FnDef>,
     pub span: Span,
 }

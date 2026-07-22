@@ -286,6 +286,13 @@ impl Parser {
         } else {
             (None, first)
         };
+        // Optional `<T, U, ...>` on the type being impl'd -- `impl Box<T>:`
+        // or `impl Trait for Box<T>:` -- mirrors `parse_struct`'s own
+        // `parse_opt_type_params()` call for `struct Box<T>:`. Must be
+        // parsed after `type_name` is known (not `first`), since a trait
+        // impl's `<...>` always belongs to the type after `for`, never the
+        // trait itself (traits have no type parameters of their own here).
+        let type_params = self.parse_opt_type_params()?;
         self.expect(&TokenKind::Colon)?;
         self.expect(&TokenKind::Newline)?;
         self.expect(&TokenKind::Indent)?;
@@ -301,7 +308,7 @@ impl Parser {
         }
         self.expect(&TokenKind::Dedent)?;
         let span = start.to(self.prev_span());
-        Some(ImplBlock { trait_name, type_name, methods, span })
+        Some(ImplBlock { trait_name, type_name, type_params, methods, span })
     }
 
     fn parse_fn_sig(&mut self) -> Option<FnSig> {

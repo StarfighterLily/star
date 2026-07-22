@@ -383,6 +383,7 @@ fn rename_item(item: &Item, names: &HashMap<String, String>) -> Item {
         Item::Impl(blk) => Item::Impl(ImplBlock {
             trait_name: blk.trait_name.as_ref().map(|n| mangled(n, names)),
             type_name: mangled(&blk.type_name, names),
+            type_params: blk.type_params.clone(),
             // Method names are reached via `.method(...)` field syntax, not
             // as bare identifiers, so they're never mangled -- only their
             // bodies/signatures need renaming for references to *other*

@@ -357,6 +357,71 @@ non-generic helpers as a result — a generic `Stack<T>`/`History<T>` wrapper
 (originally planned for an "undo last move" feature) was dropped once this
 was confirmed, since it's simply not expressible.
 
+**Fixed** (follow-up compiler pass, after this write-up): `impl Box<T>:`
+(and `impl Trait for Box<T>:`) now parses — `parse_impl` parses an optional
+`<T, U, ...>` after the type name, exactly like `parse_struct`/`parse_enum`
+already did for the type itself. The checker treats a generic impl block the
+same way it already treats a generic struct/enum/fn: stashed as a template
+(`Checker::generic_impls`, keyed by the struct's name) instead of checked
+eagerly, then monomorphized on demand — `Checker::instantiate_impl_methods`,
+called from `instantiate_struct_inner` right after a concrete instantiation
+(`Box__i32`) is registered, substitutes that instantiation's own type
+arguments through every stashed impl block's methods and checks/emits them
+alongside the struct, memoized the same way (one `Box__i32__get` regardless
+of how many `Box<i32>` values call `.get()`). Three misuse cases are now
+clean, single diagnostics rather than either silently doing the wrong thing
+or falling through to a less specific error: `impl Box:` missing its own
+`<T>` against a struct that *is* generic, `impl Plain<T>:` naming type
+parameters against a struct that *isn't*, and a type-parameter arity
+mismatch between the two (`impl Box<T, U>:` against `struct Box<T>:`).
+`examples/generic_impl_methods.star` demonstrates the fix end to end: plain
+`get`/`set` methods, `self` returned by value from a `mut self` method, one
+method calling a sibling method in the same impl block, a two-type-parameter
+struct's impl (`Pair<A, B>`), a trait impl on a generic struct, and —
+finally — the `Stack<T>`/`History<T>` wrapper this section originally said
+wasn't expressible, backed by a `List<T>` field with `push`/`pop`/`len`
+methods, used as an undo-history stack exactly as first planned. (The
+game's own `pick_color`/`ParticlePool` weren't retrofitted onto this —
+they're small enough as ordinary non-generic helpers that doing so would be
+churn for its own sake, not because anything still blocks it.)
+
+Chasing this down turned up a genuine, independent codegen bug along the
+way: `self` used as a plain *value* (not immediately field-accessed —
+`return self`, `let x = self`, passing `self` to something expecting the
+struct by value) produced a bare pointer instead of the struct's value.
+Confirmed on a plain **non-generic** struct too — nothing to do with
+generics specifically, just never exercised until a `Box<T>` method wanted
+to return `self` by value (a natural fluent-builder shape once methods on a
+generic struct were possible at all):
+```star
+struct Box:
+    mut value: i32
+
+impl Box:
+    fn set(mut self, v: i32) -> Box:
+        self.value = v
+        return self
+```
+type-checks cleanly (both a pointer and a struct value are "some SSA
+register" to the checker) and fails only at the `clang` step:
+```
+error: '%t5' defined with type 'ptr' but expected '%Box = type { i32 }'
+  ret %Box %t5
+```
+Root cause: `Codegen::emit_expr`'s `TypedExpr::SelfExpr` arm (`src/codegen/expr.rs`)
+was a byte-for-byte copy of `Codegen::emit_place`'s own `SelfExpr` arm —
+correct for `emit_place`'s job (yield a *pointer* to `self`'s storage, to
+`getelementptr` into for `self.field`), one load short of correct for
+`emit_expr`'s job (yield `self` as an ordinary *value*). **Fixed**: the
+value-producing arm now calls `emit_place` to get the pointer, then loads
+through it to get the actual struct value (plus a retain, mirroring
+`Ident`'s own retain-on-read, so the returned copy doesn't alias the
+original's owned fields without its own reference). Covered by
+`codegen_self_returned_by_value_loads_struct_not_pointer` (the minimal
+non-generic repro above, asserted directly against the emitted IR) and
+exercised again end-to-end by `generic_impl_methods.star`'s `replaced`
+method.
+
 ### 2.4 Fieldless enums (and structs) don't support `==`/`!=` as an operator
 
 Despite being legal `Map`/`Set` keys (which use their own, separately

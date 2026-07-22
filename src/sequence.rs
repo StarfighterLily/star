@@ -227,8 +227,13 @@ fn desugar_sequence(seq: &SequenceDef) -> Result<(StructDef, ImplBlock), Vec<Dia
         body: resume_body,
         span: seq.span,
     };
-    let impl_block =
-        ImplBlock { trait_name: None, type_name: seq.name.clone(), methods: vec![resume_fn], span: seq.span };
+    let impl_block = ImplBlock {
+        trait_name: None,
+        type_name: seq.name.clone(),
+        type_params: Vec::new(),
+        methods: vec![resume_fn],
+        span: seq.span,
+    };
 
     Ok((struct_def, impl_block))
 }

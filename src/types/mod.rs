@@ -984,6 +984,16 @@ pub struct Checker {
     generic_structs: HashMap<String, StructDef>,
     generic_enums: HashMap<String, EnumDef>,
     generic_fns: HashMap<String, FnDef>,
+    /// `impl Box<T>:` blocks attached to a generic struct (keyed by the
+    /// struct's template name, e.g. `"Box"`) -- kept separate from
+    /// `methods` since, like `generic_structs` itself, they have no
+    /// concrete signature until a specific instantiation (`Box<i32>`)
+    /// exists. Monomorphized alongside the struct that owns them, once per
+    /// distinct set of type arguments, by `instantiate_impl_methods` (called
+    /// from `instantiate_struct_inner`). A struct may collect more than one
+    /// entry here (an inherent `impl` plus one or more trait impls), so this
+    /// maps to a `Vec`, not a single block.
+    generic_impls: HashMap<String, Vec<ImplBlock>>,
     /// Reverse map from a monomorphized struct/enum's mangled name back to
     /// the generic template it was instantiated from and the concrete type
     /// arguments used, so a match pattern written against the generic
@@ -1092,6 +1102,7 @@ impl Checker {
             functions: HashMap::new(),
             methods: HashMap::new(),
             generic_structs: HashMap::new(),
+            generic_impls: HashMap::new(),
             generic_enums: HashMap::new(),
             generic_fns: HashMap::new(),
             mono_struct_of: HashMap::new(),
@@ -1347,7 +1358,72 @@ impl Checker {
                     let ret_ty = e.sig.ret.as_ref().and_then(|t| self.resolve_type(t));
                     self.functions.insert(e.sig.name.clone(), (param_tys, ret_ty));
                 }
+                // `impl Box<T>:` (or `impl Trait for Box<T>:`): the impl
+                // itself has no concrete signature until some later use
+                // instantiates `Box<...>` with real type arguments -- same
+                // reasoning as pass 0 routing a generic struct/enum/fn into
+                // its own `generic_*` table instead of `structs`/`enums`/
+                // `functions`. Stashed here (rather than checked eagerly)
+                // and monomorphized on demand by `instantiate_impl_methods`,
+                // called from `instantiate_struct_inner` right after the
+                // struct itself is instantiated, so every method is ready by
+                // the time any call site can possibly name the mangled
+                // receiver type. Validated against the struct it's attached
+                // to now, while `blk.span` is still available and once per
+                // `impl` block rather than once per instantiation.
+                Item::Impl(blk) if !blk.type_params.is_empty() => {
+                    match self.generic_structs.get(&blk.type_name) {
+                        Some(template) if template.type_params.len() != blk.type_params.len() => {
+                            self.error(
+                                format!(
+                                    "`impl {}<{}>` declares {} type parameter(s), but `struct {}<{}>` declares {}",
+                                    blk.type_name,
+                                    blk.type_params.join(", "),
+                                    blk.type_params.len(),
+                                    blk.type_name,
+                                    template.type_params.join(", "),
+                                    template.type_params.len(),
+                                ),
+                                blk.span,
+                            );
+                        }
+                        Some(_) => {}
+                        None if self.structs.contains_key(&blk.type_name) => {
+                            self.error(
+                                format!(
+                                    "`impl {}<{}>` names type parameters, but `{}` is not a generic struct -- write `impl {}:` instead",
+                                    blk.type_name, blk.type_params.join(", "), blk.type_name, blk.type_name
+                                ),
+                                blk.span,
+                            );
+                        }
+                        None => {
+                            self.error(format!("undefined type `{}`", blk.type_name), blk.span);
+                        }
+                    }
+                    self.generic_impls.entry(blk.type_name.clone()).or_default().push(blk.clone());
+                }
                 Item::Impl(blk) => {
+                    // An impl on a generic struct with no `<...>` of its own
+                    // (`impl Box:` where `struct Box<T>: ...` is declared)
+                    // would otherwise silently register methods keyed by the
+                    // bare template name -- never reachable from any real
+                    // call site, since every value of that struct always has
+                    // a *mangled* type (`Box__i32`), never the bare
+                    // template name. Caught here instead of failing silent.
+                    if self.generic_structs.contains_key(&blk.type_name) {
+                        self.error(
+                            format!(
+                                "`impl {}:` is missing type parameters -- `{}` is a generic struct, write `impl {}<{}>:`",
+                                blk.type_name,
+                                blk.type_name,
+                                blk.type_name,
+                                self.generic_structs[&blk.type_name].type_params.join(", "),
+                            ),
+                            blk.span,
+                        );
+                        continue;
+                    }
                     for m in &blk.methods {
                         let param_tys: Vec<Ty> = m.sig.params.iter().map(|p| {
                             p.ty.as_ref().and_then(|t| self.resolve_type(t)).unwrap_or(Ty::Named("infer".into()))
@@ -1430,6 +1506,22 @@ impl Checker {
                 methods: t.methods.iter().filter_map(|sig| self.check_fn_sig(sig)).collect(),
                 span: t.span,
             })),
+            // Mirrors the generic-struct/enum case just above: an `impl
+            // Box<T>:` has no concrete methods of its own until some later
+            // use instantiates `Box<...>` -- already stashed into
+            // `generic_impls` during pass 1, monomorphized on demand by
+            // `instantiate_impl_methods`, and appended to `self.mono_items`
+            // (picked up below, same as every other monomorphized item).
+            Item::Impl(impl_blk) if !impl_blk.type_params.is_empty() => None,
+            // `impl Box:` with no `<...>` naming a struct that *is* generic
+            // (`struct Box<T>: ...`) -- pass 1's registration loop already
+            // reported the real diagnostic ("missing type parameters") at
+            // this exact span. Falling through to the ordinary path below
+            // would additionally run `check_impl`'s own "undefined type
+            // `Box`" check (true in a narrow sense -- `Box` alone, with no
+            // type arguments, really isn't a valid type here -- but a
+            // second, less specific diagnostic for the same root cause).
+            Item::Impl(impl_blk) if impl_blk.type_params.is_empty() && self.generic_structs.contains_key(&impl_blk.type_name) => None,
             Item::Impl(impl_blk) => {
                 let checked = self.check_impl(impl_blk)?;
                 Some(TypedItem::Impl(checked))
@@ -2394,7 +2486,78 @@ impl Checker {
         self.mono_struct_of.insert(mangled.clone(), (template_name.to_string(), args.to_vec()));
         let typed = self.check_struct(&concrete);
         self.mono_items.push(TypedItem::Struct(typed));
+        // Any `impl Box<T>:` blocks registered against this template in pass
+        // 1 (see `generic_impls`) have no concrete methods until a specific
+        // instantiation like this one exists -- generate them now, using
+        // the exact same `args` this struct instantiation just used, so
+        // `Box__i32`'s fields and its `get`/`set` methods share one
+        // consistent binding of `T -> i32`.
+        self.instantiate_impl_methods(template_name, &mangled, args);
         mangled
+    }
+
+    /// Monomorphize every `impl {template_name}<...>:` block (stashed in
+    /// `generic_impls` during pass 1) for the specific instantiation
+    /// `mangled` (e.g. `Box__i32`) just created by `instantiate_struct_inner`
+    /// with type arguments `args`. A no-op if the template has no impl
+    /// blocks at all (an ordinary generic struct with only field access, no
+    /// methods -- the common case before this function existed).
+    ///
+    /// Mirrors `instantiate_fn_inner`'s substitute-then-check shape, but for
+    /// a whole `impl` block's worth of methods at once, and registers every
+    /// method's signature into `self.methods` *before* checking any of their
+    /// bodies (like pass 1 already does for an ordinary, non-generic impl
+    /// block) so two methods in the same `impl Box<T>:` can call each other
+    /// regardless of declaration order.
+    fn instantiate_impl_methods(&mut self, template_name: &str, mangled: &str, args: &[Ty]) {
+        let Some(blocks) = self.generic_impls.get(template_name).cloned() else { return };
+        let self_ty = Ty::Named(mangled.to_string());
+        for blk in &blocks {
+            // `blk.type_params.len() == args.len()` was already enforced
+            // against the struct template's own arity back in pass 1 (see
+            // the `Item::Impl` registration arm in `check`) -- a mismatch
+            // there was already reported once, at the `impl` block's own
+            // span, so this substitution is safe to build unconditionally
+            // even if that count happened to disagree (`zip` just silently
+            // drops the longer side's tail rather than panicking).
+            let subst: HashMap<String, Type> = blk.type_params.iter().cloned().zip(args.iter().map(ty_to_type)).collect();
+            let concrete_methods: Vec<FnDef> = blk.methods.iter().map(|m| FnDef {
+                sig: FnSig {
+                    name: m.sig.name.clone(),
+                    type_params: Vec::new(),
+                    params: m.sig.params.iter().map(|p| Param {
+                        is_self: p.is_self,
+                        is_mut: p.is_mut,
+                        name: p.name.clone(),
+                        ty: p.ty.as_ref().map(|t| subst_type(t, &subst)),
+                        span: p.span,
+                    }).collect(),
+                    ret: m.sig.ret.as_ref().map(|t| subst_type(t, &subst)),
+                    span: m.sig.span,
+                },
+                body: subst_block(&m.body, &subst),
+                span: m.span,
+            }).collect();
+            for m in &concrete_methods {
+                let param_tys: Vec<Ty> = m.sig.params.iter().map(|p| {
+                    if p.is_self {
+                        self_ty.clone()
+                    } else {
+                        p.ty.as_ref().and_then(|t| self.resolve_type(t)).unwrap_or(Ty::Named("infer".into()))
+                    }
+                }).collect();
+                let ret_ty = m.sig.ret.as_ref().and_then(|t| self.resolve_type(t));
+                let has_self = m.sig.params.first().map(|p| p.is_self).unwrap_or(false);
+                self.methods.insert(format!("{}#{}", mangled, m.sig.name), (param_tys, ret_ty, has_self));
+            }
+            let methods: Vec<TypedFnDef> = concrete_methods.iter().filter_map(|m| self.check_fn_with_self_ty(m, &self_ty)).collect();
+            self.mono_items.push(TypedItem::Impl(TypedImplBlock {
+                trait_name: blk.trait_name.clone(),
+                type_name: mangled.to_string(),
+                methods,
+                span: blk.span,
+            }));
+        }
     }
 
     /// Instantiate generic enum `template_name` with concrete `args`. Mirrors

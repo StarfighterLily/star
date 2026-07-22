@@ -369,13 +369,29 @@ impl Codegen {
                 reg
             }
             TypedExpr::SelfExpr(ty, _) => {
-                let ptr = self.sym_ptr("self").unwrap_or_else(|| "%undef".into());
+                // `self` is passed by pointer (see `emit_fn`'s `is_self`
+                // special-casing) and its symbol slot holds a pointer *to*
+                // that pointer, so a single load off the slot -- what
+                // `emit_place`'s own `SelfExpr` arm does -- only ever
+                // recovers the pointer to the caller's struct, not the
+                // struct's value. That's exactly right for `emit_place`'s
+                // job (a base pointer to GEP into for `self.field`), but
+                // this arm's job is the opposite: yield `self` as an
+                // ordinary *value* (`return self`, `let x = self`, passing
+                // `self` to a function expecting the struct by value). This
+                // used to return `emit_place`'s pointer verbatim, one load
+                // short of a real value -- type-checked fine (both are
+                // "some SSA register") but produced a genuine `ptr`-vs-
+                // aggregate LLVM type mismatch at the `ret`/`store` that
+                // consumed it, only ever caught at the `clang` step.
+                let self_ptr = self.emit_place(expr);
                 let reg = self.tmp_name();
-                let struct_ty = match ty {
-                    Ty::Named(n) => format!("%{}", n),
-                    _ => self.llvm_ty(&ty),
-                };
-                self.line(&format!("  {} = load {}*, {}** {}", reg, struct_ty, struct_ty, ptr));
+                let struct_ty = self.llvm_ty(ty);
+                self.line(&format!("  {} = load {}, {}* {}", reg, struct_ty, struct_ty, self_ptr));
+                // Mirrors `Ident`'s own retain-on-read just above: handing
+                // out a value copy of `self` must not let the copy alias
+                // the original's owned fields without its own reference.
+                self.emit_retain_at(&self_ptr, ty);
                 reg
             }
             TypedExpr::TupleIndex { base, index, ty, .. } => {
