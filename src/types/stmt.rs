@@ -321,6 +321,25 @@ impl Checker {
     /// list, and packages the constructed element as a `StructLit` so
     /// codegen only has to append it to the arena's backing array.
     fn check_spawn_stmt(&mut self, arena: &str, args: &[Expr], arg_names: &[Option<String>], vars: &mut HashMap<String, Ty>, span: Span) -> TypedStmt {
+        let (arena, elem) = self.resolve_spawn_elem(arena, args, arg_names, vars, span);
+        TypedStmt::Spawn { arena, elem, span }
+    }
+
+    /// Shared arena/argument resolution behind both `spawn`'s statement form
+    /// (`check_spawn_stmt` above, discards the result) and its expression
+    /// form (`Checker::infer_expr`'s `Expr::Spawn` arm, which additionally
+    /// types the whole thing as `Ty::Int` -- see `Expr::Spawn`'s doc
+    /// comment). Returns the resolved arena name plus the constructed
+    /// element (a `StructLit`) so codegen only has to append it to the
+    /// arena's backing array.
+    pub(super) fn resolve_spawn_elem(
+        &mut self,
+        arena: &str,
+        args: &[Expr],
+        arg_names: &[Option<String>],
+        vars: &mut HashMap<String, Ty>,
+        span: Span,
+    ) -> (String, TypedExpr) {
         let elem_ty = match self.arenas.get(arena) {
             Some(t) => t.clone(),
             None => {
@@ -346,7 +365,7 @@ impl Checker {
                         // Already reported; don't let the arity check below
                         // pile a second diagnostic onto the same spawn.
                         let elem = TypedExpr::StructLit { name: elem_name, args: Vec::new(), ty: elem_ty, span };
-                        return TypedStmt::Spawn { arena: arena.to_string(), elem, span };
+                        return (arena.to_string(), elem);
                     }
                     Err(false) => args.to_vec(),
                 }
@@ -380,7 +399,7 @@ impl Checker {
             self.error(format!("arena `{}` element type `{}` is not a struct", arena, elem_name), span);
         }
         let elem = TypedExpr::StructLit { name: elem_name, args: arg_exprs, ty: elem_ty, span };
-        TypedStmt::Spawn { arena: arena.to_string(), elem, span }
+        (arena.to_string(), elem)
     }
 
     /// Type-check `despawn ArenaName[index]`: resolves the arena (an error if

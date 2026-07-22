@@ -365,6 +365,12 @@ pub enum TypedExpr {
     /// runtime so a non-literal enum-typed expression works too, not just a
     /// literal `EnumName::Variant`). `ty` is always `Ty::Flags(Ty::Enum(enum_name))`.
     FlagsNew { enum_name: String, args: Vec<TypedExpr>, span: Span },
+    /// `let name = spawn ArenaName(args...)` -- see `Expr::Spawn`'s doc
+    /// comment. `elem` is the constructed element (a `StructLit`, exactly
+    /// like `TypedStmt::Spawn::elem`); `ty` is always `Ty::Int`, the raw
+    /// slot index the spawn landed in (or `-1` if the arena was full and the
+    /// spawn was dropped -- see `Codegen::emit_spawn_expr`).
+    Spawn { arena: String, elem: Box<TypedExpr>, ty: Ty, span: Span },
     Error(Ty),
 }
 
@@ -479,6 +485,7 @@ impl TypedExpr {
             TypedExpr::TableNew { elem_ty, .. } => Ty::Table(Box::new(elem_ty)),
             TypedExpr::TableMethod { ty, .. } => ty,
             TypedExpr::TableIndex { ty, .. } => ty,
+            TypedExpr::Spawn { ty, .. } => ty,
         }
     }
 
@@ -503,7 +510,8 @@ impl TypedExpr {
             | TypedExpr::TableNew { span, .. } | TypedExpr::TableMethod { span, .. }
             | TypedExpr::TableIndex { span, .. }
             | TypedExpr::WrappingNew { span, .. } | TypedExpr::FixedNew { span, .. }
-            | TypedExpr::BitFieldNew { span, .. } | TypedExpr::FlagsNew { span, .. } => *span,
+            | TypedExpr::BitFieldNew { span, .. } | TypedExpr::FlagsNew { span, .. }
+            | TypedExpr::Spawn { span, .. } => *span,
             TypedExpr::SelfExpr(_, s) => *s,
             TypedExpr::Error(_) => Span::dummy(),
         }

@@ -502,6 +502,10 @@ impl Checker {
                     span: *span,
                 })
             }
+            Expr::Spawn { arena, args, arg_names, span } => {
+                let (arena, elem) = self.resolve_spawn_elem(arena, args, arg_names, vars, *span);
+                Ok(TypedExpr::Spawn { arena, elem: Box::new(elem), ty: Ty::Int, span: *span })
+            }
             Expr::GenRefCreate { inner_ty, value, is_handle, span } => {
                 let kind = if *is_handle { "Handle" } else { "GenRef" };
                 let resolved_inner = self.resolve_type(inner_ty).unwrap_or(Ty::Named("unknown".into()));

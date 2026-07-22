@@ -1480,6 +1480,261 @@ fn runtime_spawn_populates_arena_end_to_end() {
     assert!(stdout.contains("hp: 29"), "third spawned enemy should read back decremented: {}", stdout);
 }
 
+// --- `spawn` as an expression: `let name = spawn ArenaName(args...)` ------
+// (`projects/snake/NOTES.md` section 2.2, "`spawn` is fire-and-forget -- no
+// handle to what you just spawned")
+
+/// `let idx = spawn ArenaName(args...)` parses `value` as `Expr::Spawn`,
+/// distinct from the bare-statement `Stmt::Spawn` form parsed above.
+#[test]
+fn parses_spawn_expr_as_let_initializer() {
+    let src = "fn t():\n    let idx = spawn Enemies(10)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected Let") };
+    let Expr::Spawn { arena, args, .. } = value else { panic!("expected Expr::Spawn") };
+    assert_eq!(arena, "Enemies");
+    assert!(matches!(args[0], Expr::Int(10, _)));
+}
+
+/// `spawn` is only recognized as an expression directly on a `let`'s RHS --
+/// everywhere else (`return`, a call argument) it's still just the bare-
+/// statement keyword, so it's a parse error in those positions (see
+/// `Expr::Spawn`'s doc comment for why this is scoped this narrowly: it
+/// keeps every pass that walks `Expr`/`TypedExpr` generically, like
+/// par/swarm disjointness and frame-escape analysis, from ever having to
+/// handle this node nested arbitrarily deep inside another expression).
+#[test]
+fn rejects_spawn_expr_outside_let_initializer() {
+    let module = Driver::parse("fn t() -> i32:\n    return spawn Enemies(10)\n");
+    assert!(module.is_err(), "`spawn` in return position should be a parse error");
+}
+
+/// Same restriction, a different non-`let` expression position.
+#[test]
+fn rejects_spawn_expr_as_call_argument() {
+    let module = Driver::parse("fn t():\n    print(spawn Enemies(10))\n");
+    assert!(module.is_err(), "`spawn` as a call argument should be a parse error");
+}
+
+/// A valid `let idx = spawn ArenaName(args...)` type-checks.
+#[test]
+fn accepts_spawn_expr_valid() {
+    let src = format!("{}fn t():\n    let idx = spawn Enemies(10)\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "valid spawn-expr should type-check: {:?}", Driver::check(&module).err());
+}
+
+/// `let idx: i32 = spawn Enemies(10)` type-checks (confirming the checker
+/// really infers `Ty::Int` for `Expr::Spawn`, not an unconstrained/wildcard
+/// type that would happen to satisfy any annotation).
+#[test]
+fn accepts_spawn_expr_result_annotated_as_int() {
+    let src = format!("{}fn t():\n    let idx: i32 = spawn Enemies(10)\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "spawn-expr's result should satisfy an `i32` annotation: {:?}", Driver::check(&module).err());
+}
+
+/// `let idx: str = spawn Enemies(10)` is a type mismatch -- the other half
+/// of the same confirmation: `Expr::Spawn` is concretely `i32`, not `str`.
+#[test]
+fn rejects_spawn_expr_result_used_as_wrong_type() {
+    let src = format!("{}fn t():\n    let idx: str = spawn Enemies(10)\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "spawn-expr's result is i32, not str");
+}
+
+/// `spawn`-as-expression into an undefined arena is a type error, same as
+/// the statement form.
+#[test]
+fn rejects_spawn_expr_undefined_arena() {
+    let module = Driver::parse("fn t():\n    let idx = spawn Nope(10)\n").expect("should parse");
+    assert!(Driver::check(&module).is_err(), "spawn-expr into an undefined arena should be a type error");
+}
+
+/// `spawn`-as-expression with the wrong constructor arity is a type error,
+/// same as the statement form.
+#[test]
+fn rejects_spawn_expr_wrong_arity() {
+    let src = format!("{}fn t():\n    let idx = spawn Enemies(1, 2)\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "wrong spawn-expr arity should be a type error");
+}
+
+/// `spawn` used as an expression inside a `par`/`swarm` body is banned for
+/// the same reason the statement form is (`rejects_spawn_inside_par`):
+/// population isn't disjoint across worker threads.
+#[test]
+fn rejects_spawn_expr_inside_par() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        let idx = spawn Enemies(5)\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "spawn-expr inside a par/swarm body should be a type error");
+}
+
+/// The same transitive-hazard-through-a-helper-call ban already proven for
+/// the statement form (`rejects_spawn_hidden_behind_helper_function_call_inside_par`)
+/// must also catch the expression form -- otherwise rewriting a hidden
+/// `spawn Enemies(5)` to `let _ = spawn Enemies(5)` inside a helper would
+/// have silently punched a hole straight through an existing safety ban.
+#[test]
+fn rejects_spawn_expr_hidden_behind_helper_function_call_inside_par() {
+    let src = format!(
+        "{}fn sneaky_spawn() -> i32:\n    let idx = spawn Enemies(5)\n    return idx\n\nfn t():\n    par e in Enemies:\n        sneaky_spawn()\n        e.hp -= 1\n",
+        PAR_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("spawn-expr hidden behind a helper function call should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("sneaky_spawn")), "{:?}", errs);
+}
+
+/// `let idx = spawn ArenaName(frame_local)` is the same frame-escape hazard
+/// as the statement form (`rejects_spawn_using_frame_local_struct`): the
+/// arena outlives the `frame:` scope the constructor argument was allocated
+/// in.
+#[test]
+fn rejects_spawn_expr_using_frame_local_struct() {
+    let src = format!(
+        "{}struct Enemy:\n    pos: Point\n\narena Enemies: Enemy\n\nfn t():\n    frame:\n        let temp = Point(1, 1)\n        let idx = spawn Enemies(temp)\n",
+        FRAME_ESCAPE_SRC_PREFIX
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("spawn-expr with a frame-local struct argument should be a type error");
+    assert!(errs.iter().any(|d| d.message.contains("frame")), "error should mention the frame escape: {:?}", errs);
+}
+
+/// Codegen for `spawn`-as-expression: same allocate/store/bump-generation
+/// machinery as the statement form (`codegen_spawn_allocates_and_appends`),
+/// plus a final `phi i32` merging the real (truncated) slot index with the
+/// `-1` dropped-spawn sentinel used when the arena was full.
+#[test]
+fn codegen_spawn_expr_returns_phi_of_index_and_drop_sentinel() {
+    let src = format!("{}fn t():\n    let idx = spawn Enemies(10)\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("call i8* @malloc("), "should lazily malloc the backing array: {}", ir);
+    assert!(ir.contains("trunc i64") && ir.contains("to i32"), "should truncate the i64 slot index to i32: {}", ir);
+    assert!(ir.contains("phi i32") && ir.contains("-1"), "should phi the real index against the -1 drop sentinel: {}", ir);
+}
+
+/// Runtime test: three successive `let idx = spawn ...` calls report the
+/// arena's actual sequential slot indices (0, 1, 2) -- the core promise of
+/// this feature (`NOTES.md` 2.2): the caller finally learns *which* slot it
+/// just populated, instead of only ever being able to assume index 0 (as
+/// `examples/arena_freelist.star` was forced to before this).
+#[test]
+fn runtime_spawn_expr_returns_sequential_indices_end_to_end() {
+    let src = concat!(
+        "struct Enemy:\n",
+        "    mut hp: i32\n",
+        "arena Enemies: Enemy\n",
+        "fn main():\n",
+        "    let a = spawn Enemies(10)\n",
+        "    let b = spawn Enemies(20)\n",
+        "    let c = spawn Enemies(30)\n",
+        "    println(f\"{a} {b} {c}\")\n",
+    );
+    let output = compile_and_run("spawn_expr_sequential_indices", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.replace("\r\n", "\n").trim_end(), "0 1 2", "{}", stdout);
+}
+
+/// Runtime test: after a `despawn`, the freed slot's index is reused by the
+/// next `spawn` (see `emit_spawn_inner`'s free-list preference) -- `let idx
+/// = spawn ...` must report the entity's *actual* landing slot, not just an
+/// ever-incrementing counter, or the index it hands back would be useless
+/// for building a `GenRef` to the right slot.
+#[test]
+fn runtime_spawn_expr_reports_reused_freed_slot_index_end_to_end() {
+    let src = concat!(
+        "struct Enemy:\n",
+        "    mut hp: i32\n",
+        "arena Enemies: Enemy\n",
+        "fn main():\n",
+        "    let a = spawn Enemies(10)\n",
+        "    let b = spawn Enemies(20)\n",
+        "    despawn Enemies[a]\n",
+        "    let c = spawn Enemies(30)\n",
+        "    println(f\"{a} {b} {c}\")\n",
+    );
+    let output = compile_and_run("spawn_expr_reused_slot_index", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.replace("\r\n", "\n").trim_end(),
+        "0 1 0",
+        "reusing a freed slot should report that slot's own index, not a fresh one: {}",
+        stdout
+    );
+}
+
+/// Runtime test: spawning past a full arena reports the `-1` drop sentinel
+/// instead of a garbage/uninitialized value or a crash -- the same "safe
+/// sentinel on failure" convention as `GenRef`'s stale/out-of-bounds reads.
+#[test]
+fn runtime_spawn_expr_returns_negative_one_when_arena_full_end_to_end() {
+    let src = concat!(
+        "struct Enemy:\n",
+        "    mut hp: i32\n",
+        "arena Enemies: Enemy = 2\n",
+        "fn main():\n",
+        "    let a = spawn Enemies(1)\n",
+        "    let b = spawn Enemies(2)\n",
+        "    let c = spawn Enemies(3)\n",
+        "    println(f\"{a} {b} {c}\")\n",
+    );
+    let output = compile_and_run("spawn_expr_overflow_sentinel", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The once-only overflow warning (`emit_spawn_inner`'s
+    // `capacity_warn_label`) also prints to stdout ahead of our own
+    // `println` -- only the last line is this test's own output.
+    let last_line = stdout.replace("\r\n", "\n").trim_end().lines().last().unwrap_or("").to_string();
+    assert_eq!(
+        last_line,
+        "0 1 -1",
+        "the third spawn should report -1 once the arena is full, not a garbage index: {}",
+        stdout
+    );
+}
+
+/// End-to-end test of the actual motivating use case from `NOTES.md` 2.2:
+/// grab a live `GenRef` handle to the entity a `spawn` call just created.
+/// Previously impossible for anything but slot 0 (right after an arena's
+/// first-ever spawn) -- `examples/arena_freelist.star`'s own example leaned
+/// on that one hardcoded case. Spawns three enemies, keeps the *second*
+/// one's reported index, builds a `GenRef` from it, mutates through that
+/// handle, then reads the mutation back through an independently
+/// constructed second `GenRef` to the same slot -- proving the index
+/// `spawn` reported really does name the live slot those constructor
+/// arguments landed in, not some other one.
+#[test]
+fn runtime_spawn_expr_index_feeds_genref_to_just_spawned_entity_end_to_end() {
+    let src = concat!(
+        "struct Enemy:\n",
+        "    mut hp: i32\n",
+        "arena Enemies: Enemy\n",
+        "fn main():\n",
+        "    spawn Enemies(1)\n",
+        "    let target = spawn Enemies(50)\n",
+        "    spawn Enemies(3)\n",
+        "    let handle = GenRef<Enemy>(target)\n",
+        "    handle[0].hp -= 5\n",
+        "    let check = GenRef<Enemy>(target)\n",
+        "    println(f\"hp={check[0].hp}\")\n",
+    );
+    let output = compile_and_run("spawn_expr_genref_to_just_spawned", src);
+    assert!(output.status.success(), "{:?}\nstderr: {}", output.status, String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.replace("\r\n", "\n").trim_end(),
+        "hp=45",
+        "the GenRef built from spawn's reported index should reach the entity actually just constructed: {}",
+        stdout
+    );
+}
+
 // --- `despawn` / `GenRef` lifecycle ----------------------------------------
 
 /// Parse `despawn ArenaName[index]`.

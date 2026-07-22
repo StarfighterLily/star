@@ -314,6 +314,32 @@ example does). Any pattern wanting "grab a live reference to the thing I
 just spawned" (a projectile's owner reference, a UI element that should
 track a specific new entity) has no supported path today.
 
+**Fixed** (follow-up compiler pass, after this write-up): `let name = spawn
+ArenaName(args...)` is now also legal, with `spawn` evaluating to the raw
+`i32` index of the slot it just landed in (`-1` if the arena was full and
+the spawn was silently dropped — the same "safe sentinel" convention as
+`GenRef`'s stale/out-of-bounds reads falling back to a zero value rather
+than crashing). Feed that index straight into `GenRef<T>(idx)` to get a live
+handle to the entity a `spawn` call *just* created, closing exactly the gap
+above — no more only-ever-knowing-slot-0.
+
+The bare-statement form (`spawn ArenaName(...)`, no binding) is unchanged
+and still legal wherever it already worked. The expression form is
+deliberately narrow: the parser only recognizes `spawn` as a value-producing
+expression directly on a `let`'s right-hand side (`Parser::parse_let`) —
+never nested inside another expression (a call argument, a binary operand,
+a `return`). That keeps every other pass that walks expressions generically
+— `par`/`swarm` disjointness (`par_analysis.rs`) and `frame:` escape
+analysis (`frame_analysis.rs`) — from ever having to reason about a `spawn`
+arbitrarily deep inside some other expression; both were extended to treat
+`let idx = spawn ...` exactly as hazardously as the existing bare-statement
+form (arena population still isn't disjoint across `par`/`swarm` worker
+threads, and a frame-local struct passed as a constructor argument still
+can't outlive the arena it's spawned into — both confirmed rejected, plus
+confirmed rejected transitively through a helper-function call the same way
+the statement form already was). See `tests/frontend.rs`'s
+`*_spawn_expr_*` tests.
+
 ### 2.3 Generic structs cannot have methods
 
 `impl Box<T>:` is a hard parse error:
@@ -406,8 +432,9 @@ pitch, which only works on a struct field, not a bare value).
   arena instead of flooding the console every tick a full spawner keeps
   retrying.
 - ~~A per-arena selective-despawn/sweep primitive (2.1)~~ — fixed, see 2.1
-  above. A way to get a handle to a just-spawned entity (2.2) is still
-  open, and remains more urgent, in this game's own experience, than the
-  module search-path gap `gamedev_gaps.md` #3 already flags (real, but this
-  project's diamond-dependency finding, 1.1, is the sharper edge of that
-  same gap).
+  above. ~~A way to get a handle to a just-spawned entity (2.2)~~ — fixed,
+  see 2.2 above: `let idx = spawn ArenaName(...)` now reports the slot index
+  to feed straight into `GenRef<T>(idx)`. The module search-path gap
+  `gamedev_gaps.md` #3 already flags (real, but this project's diamond-
+  dependency finding, 1.1, is the sharper edge of that same gap) is the
+  most significant gap from this exercise still open.

@@ -1728,6 +1728,7 @@ impl Codegen {
             TypedExpr::FixedNew { bits, frac, .. } => Ty::Fixed(*bits, *frac),
             TypedExpr::BitFieldNew { bits, .. } => Ty::BitField(*bits),
             TypedExpr::FlagsNew { enum_name, .. } => Ty::Flags(Box::new(Ty::Enum(enum_name.clone()))),
+            TypedExpr::Spawn { ty, .. } => ty.clone(),
         }
     }
 

@@ -635,6 +635,33 @@ pub enum Expr {
         value: Box<Expr>,
         span: Span,
     },
+    /// `spawn ArenaName(args...)` used as a `let` initializer's value,
+    /// rather than a bare statement (see `Stmt::Spawn`, which remains the
+    /// fire-and-forget form) -- addresses `projects/snake/NOTES.md` section
+    /// 2.2 ("`spawn` is fire-and-forget -- no handle to what you just
+    /// spawned"). Evaluates to the newly-created slot's raw index (`i32`),
+    /// or `-1` if the arena was full and the spawn was silently dropped
+    /// (mirroring every other "safe sentinel on failure" convention in the
+    /// arena machinery -- e.g. `GenRef`'s out-of-bounds/stale read falling
+    /// back to a zero value rather than crashing). Pass that index straight
+    /// to `GenRef<T>(idx)` to get a live handle to the entity just spawned.
+    ///
+    /// Deliberately only reachable via `let name = spawn ArenaName(args...)`
+    /// -- `Parser::parse_primary` never offers `spawn` as a general
+    /// expression-position atom, only `Parser::parse_let` recognizes this
+    /// one shape (see its own doc comment). That keeps every other pass that
+    /// walks `Expr`/`TypedExpr` generically (par/swarm disjointness in
+    /// `par_analysis.rs`, frame-escape analysis in `frame_analysis.rs`) from
+    /// ever having to handle this node arbitrarily deep inside another
+    /// expression -- it only ever shows up as a `TypedStmt::Let`'s direct
+    /// `value`.
+    Spawn {
+        arena: String,
+        args: Vec<Expr>,
+        /// Parallel to `args` -- see `Stmt::Spawn::arg_names`.
+        arg_names: Vec<Option<String>>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -668,6 +695,7 @@ impl Expr {
             | Expr::WrappingNew { span: s, .. }
             | Expr::FixedNew { span: s, .. }
             | Expr::BitFieldNew { span: s, .. }
+            | Expr::Spawn { span: s, .. }
             | Expr::ListLit(_, s) => *s,
             Expr::TupleLit(_, s) => *s,
         }

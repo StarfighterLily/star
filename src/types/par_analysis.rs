@@ -381,6 +381,19 @@ impl Checker {
                     self.walk_par_stmts(&e.stmts, &mut l);
                 }
             }
+            // Same race as `TypedStmt::Spawn` above: every worker thread
+            // would contend on the same arena's `count`/`data` globals.
+            // Only reachable as a `TypedStmt::Let`'s direct value (see
+            // `Expr::Spawn`'s doc comment), but `Let` itself dispatches
+            // through this generic expression walk (see `walk_par_stmt`'s
+            // own `TypedStmt::Let` arm), so it still needs an explicit ban
+            // here rather than falling through to some default.
+            TypedExpr::Spawn { span, .. } => {
+                self.error(
+                    "`spawn` cannot be used inside a par/swarm body (arena population is not disjoint across threads)",
+                    *span,
+                );
+            }
             TypedExpr::GenRefCreate { value, .. } => self.walk_par_expr(value, locals),
             TypedExpr::WrappingNew { value, .. } => self.walk_par_expr(value, locals),
             TypedExpr::FixedNew { value, .. } => self.walk_par_expr(value, locals),

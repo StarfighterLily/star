@@ -390,6 +390,28 @@ impl Codegen {
     /// `par`/`swarm` workers may be reading it concurrently from other
     /// threads.
     pub(super) fn emit_spawn_stmt(&mut self, arena: &str, elem: &TypedExpr) {
+        self.emit_spawn_inner(arena, elem);
+    }
+
+    /// Emit `let name = spawn ArenaName(args...)` (see `Expr::Spawn`'s doc
+    /// comment): identical machinery to the statement form, but the whole
+    /// point of the expression form is the caller wants the result, so this
+    /// hands back the tagged `i32` value `emit_spawn_inner` computed instead
+    /// of discarding it.
+    pub(super) fn emit_spawn_expr(&mut self, arena: &str, elem: &TypedExpr) -> String {
+        let idx = self.emit_spawn_inner(arena, elem);
+        format!("i32 {}", idx)
+    }
+
+    /// Shared machinery behind both `spawn`'s statement form
+    /// (`emit_spawn_stmt`, discards the result) and its expression form
+    /// (`emit_spawn_expr`). Returns the bare (untagged) `i32` register
+    /// holding the slot index this spawn landed in, or `-1` if the arena was
+    /// full and the spawn was dropped -- the same "safe sentinel on failure"
+    /// convention as `GenRef`'s out-of-bounds/stale read falling back to a
+    /// zero value (see `emit_genref_index`) rather than ever leaving the
+    /// caller with an unusable value.
+    fn emit_spawn_inner(&mut self, arena: &str, elem: &TypedExpr) -> String {
         let cap = self.arena_capacity(arena);
         let elem_ty = self.expr_ty(elem);
         let elem_llvm_ty = self.llvm_ty(&elem_ty);
@@ -531,9 +553,28 @@ impl Codegen {
         let next_gen = self.tmp_name();
         self.line(&format!("  {} = add i64 {}, 1", next_gen, cur_gen));
         self.line(&format!("  store i64 {}, i64* {}", next_gen, gen_slot_ptr));
+        // Truncated to `i32` here (matching `emit_each_stmt`'s identical
+        // `idx` truncation): `slot_idx` is bounded by `cap`, itself checked
+        // elsewhere to stay well under `i32::MAX` (`MAX_ARENA_CAPACITY`), so
+        // no value is lost, and `i32` is what `Expr::Spawn`'s result type
+        // (`Ty::Int`) -- and `GenRef<T>(idx)`'s own index argument -- expect.
+        let idx32 = self.tmp_name();
+        self.line(&format!("  {} = trunc i64 {} to i32", idx32, slot_idx));
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&end_label);
+        // Merges the successful-spawn path (`store_label`, carrying the real
+        // slot index) with both dropped-spawn paths (`capacity_warn_label`
+        // when the once-only warning already latched, `warn_label` right
+        // after printing it) -- both dropped paths phi in `-1` rather than
+        // some undefined/garbage value, so `Expr::Spawn`'s result is always
+        // well-defined even when the arena was full.
+        let result = self.tmp_name();
+        self.line(&format!(
+            "  {} = phi i32 [ {}, %{} ], [ -1, %{} ], [ -1, %{} ]",
+            result, idx32, store_label, capacity_warn_label, warn_label
+        ));
+        result
     }
 
     /// Emit `despawn ArenaName[index]`: if the slot is currently live (odd

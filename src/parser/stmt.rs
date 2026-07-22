@@ -180,10 +180,32 @@ impl Parser {
             None
         };
         self.expect(&TokenKind::Assign)?;
-        let value = self.parse_expr()?;
+        // `let name = spawn ArenaName(args...)` is the one place `spawn` is
+        // recognized as a value-producing expression (see `Expr::Spawn`'s
+        // doc comment) -- checked directly here, rather than folded into
+        // `parse_expr`'s general recursive-descent grammar, so `spawn`
+        // everywhere else keeps parsing exactly as before (a bare statement
+        // via `parse_spawn_stmt`, or a hard parse error in any other
+        // expression position).
+        let value = if self.at(&TokenKind::Spawn) { self.parse_spawn_expr()? } else { self.parse_expr()? };
         self.expect_line_end()?;
         let span = start.to(self.prev_span());
         Some(Stmt::Let { is_mut, name, ty, value, span })
+    }
+
+    /// Parse `spawn ArenaName(args...)` in expression position -- only ever
+    /// called from `parse_let` above, never reachable as a nested
+    /// sub-expression. Shares `spawn`'s statement-form argument grammar
+    /// (`parse_call_args`) with `parse_spawn_stmt` below; the only
+    /// difference is this one produces a value (`Expr::Spawn`) instead of a
+    /// void statement (`Stmt::Spawn`).
+    fn parse_spawn_expr(&mut self) -> Option<Expr> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Spawn)?;
+        let arena = self.expect_ident()?;
+        let (args, arg_names) = self.parse_call_args()?;
+        let span = start.to(self.prev_span());
+        Some(Expr::Spawn { arena, args, arg_names, span })
     }
 
     fn parse_return(&mut self) -> Option<Stmt> {

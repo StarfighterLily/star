@@ -672,5 +672,11 @@ fn rename_expr(expr: &Expr, names: &HashMap<String, String>) -> Expr {
         Expr::BitFieldNew { bits, value, span } => {
             Expr::BitFieldNew { bits: *bits, value: Box::new(rename_expr(value, names)), span: *span }
         }
+        Expr::Spawn { arena, args, arg_names, span } => Expr::Spawn {
+            arena: mangled(arena, names),
+            args: args.iter().map(|a| rename_expr(a, names)).collect(),
+            arg_names: arg_names.clone(),
+            span: *span,
+        },
     }
 }

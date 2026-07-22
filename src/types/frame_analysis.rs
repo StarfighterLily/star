@@ -82,7 +82,27 @@ impl Checker {
         tail: bool,
     ) {
         match stmt {
-            TypedStmt::Let { name, .. } => {
+            TypedStmt::Let { name, value, .. } => {
+                // `let name = spawn ArenaName(args...)` -- the expression
+                // form of `spawn` (see `Expr::Spawn`'s doc comment) is only
+                // ever reachable as exactly this statement's `value`, so
+                // this is the one place that needs the same frame-escape
+                // check `TypedStmt::Spawn`'s arm below applies to the
+                // statement form: the spawned struct's constructor args
+                // must not reference a frame-local (or self-captured-by-
+                // pointer) struct that doesn't outlive the arena.
+                if let TypedExpr::Spawn { elem, span, .. } = value {
+                    if let Some(escaped) = frame_escape_source(elem, frame_locals, local_structs) {
+                        self.error(
+                            format!(
+                                "cannot `spawn` using `{}`: it is {} and does not outlive the arena",
+                                escaped,
+                                escape_reason(&escaped, frame_locals)
+                            ),
+                            *span,
+                        );
+                    }
+                }
                 // Registered regardless of `ty` -- not just a `Ty::Named`
                 // local -- mirroring `frame_locals`'s own unconditional
                 // insert just below. A tuple/array-typed local (`let pair:
@@ -431,6 +451,14 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>, local_s
         // regardless of what its `base` is.
         | TypedExpr::ArrayRepeat { .. }
         | TypedExpr::ArrayLen { .. }
+        // `TypedExpr::Spawn`'s own result is always `Ty::Int` (the raw slot
+        // index, or `-1` on drop -- see its doc comment), never `Ty::Named`,
+        // so it can never itself carry a frame-local struct's identity
+        // onward. Its constructor args are a separate concern, checked
+        // directly in `walk_frame_stmt`'s `TypedStmt::Let` arm (mirroring
+        // the existing `TypedStmt::Spawn` statement-form check just below)
+        // rather than here.
+        | TypedExpr::Spawn { .. }
         | TypedExpr::Error(_) => None,
     }
 }

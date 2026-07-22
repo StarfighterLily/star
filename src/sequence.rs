@@ -444,6 +444,11 @@ fn scan_expr_for_nested_yield(expr: &Expr, errors: &mut Vec<Diagnostic>) {
         Expr::WrappingNew { value, .. } => scan_expr_for_nested_yield(value, errors),
         Expr::FixedNew { value, .. } => scan_expr_for_nested_yield(value, errors),
         Expr::BitFieldNew { value, .. } => scan_expr_for_nested_yield(value, errors),
+        Expr::Spawn { args, .. } => {
+            for a in args {
+                scan_expr_for_nested_yield(a, errors);
+            }
+        }
         Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Char(..) | Expr::Ident(..) | Expr::SelfExpr(..) => {}
     }
 }
@@ -684,6 +689,12 @@ fn rewrite_expr(expr: &Expr, hoist: &HashSet<String>) -> Expr {
         Expr::BitFieldNew { bits, value, span } => {
             Expr::BitFieldNew { bits: *bits, value: Box::new(rewrite_expr(value, hoist)), span: *span }
         }
+        Expr::Spawn { arena, args, arg_names, span } => Expr::Spawn {
+            arena: arena.clone(),
+            args: args.iter().map(|a| rewrite_expr(a, hoist)).collect(),
+            arg_names: arg_names.clone(),
+            span: *span,
+        },
     }
 }
 
@@ -776,5 +787,6 @@ fn find_forward_ref_expr(expr: &Expr, undeclared: &HashSet<String>) -> Option<(S
         Expr::WrappingNew { value, .. } => find_forward_ref_expr(value, undeclared),
         Expr::FixedNew { value, .. } => find_forward_ref_expr(value, undeclared),
         Expr::BitFieldNew { value, .. } => find_forward_ref_expr(value, undeclared),
+        Expr::Spawn { args, .. } => args.iter().find_map(|a| find_forward_ref_expr(a, undeclared)),
     }
 }

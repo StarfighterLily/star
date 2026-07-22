@@ -1485,6 +1485,7 @@ impl Codegen {
                     format!("{} {}", ty_str, phi)
                 }
             }
+            TypedExpr::Spawn { arena, elem, .. } => self.emit_spawn_expr(arena, elem),
             TypedExpr::GenRefCreate { inner_ty, value, span, .. } => self.emit_genref_create(inner_ty, value, *span),
             TypedExpr::GenRefIndex { base, ty, span, .. } => self.emit_genref_index(base, ty, *span),
             TypedExpr::EnumVariant { enum_name, variant, args, .. } => {

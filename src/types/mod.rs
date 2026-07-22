@@ -3276,6 +3276,12 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
         Expr::BitFieldNew { bits, value, span } => {
             Expr::BitFieldNew { bits: *bits, value: Box::new(subst_expr(value, subst)), span: *span }
         }
+        Expr::Spawn { arena, args, arg_names, span } => Expr::Spawn {
+            arena: arena.clone(),
+            args: args.iter().map(|a| subst_expr(a, subst)).collect(),
+            arg_names: arg_names.clone(),
+            span: *span,
+        },
     }
 }
 
@@ -3555,6 +3561,17 @@ fn scan_expr_for_par_hazards(expr: &Expr, hazard: &mut bool, called: &mut HashSe
         Expr::WrappingNew { value, .. } => scan_expr_for_par_hazards(value, hazard, called),
         Expr::FixedNew { value, .. } => scan_expr_for_par_hazards(value, hazard, called),
         Expr::BitFieldNew { value, .. } => scan_expr_for_par_hazards(value, hazard, called),
+        // Same hazard as `Stmt::Spawn` above: population races across
+        // worker threads. Only reachable as a `let`'s direct value (see
+        // `Expr::Spawn`'s doc comment), so this is only ever hit via
+        // `Stmt::Let`'s arm above -- but the match is over the raw AST
+        // `Expr`, so it needs its own arm regardless.
+        Expr::Spawn { args, .. } => {
+            *hazard = true;
+            for a in args {
+                scan_expr_for_par_hazards(a, hazard, called);
+            }
+        }
     }
 }
 
