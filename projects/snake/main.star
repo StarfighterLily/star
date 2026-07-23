@@ -288,7 +288,7 @@ fn main():
                 let new_head = snake.advance()
                 events.push(Symbol("move"))
 
-                if snake.alive and food::sb::grid::cell_eq(new_head, food_cell):
+                if snake.alive and new_head == food_cell:
                     snake.grow(1)
                     stats.score += 10
                     events.push(Symbol("eat"))

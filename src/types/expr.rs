@@ -2713,6 +2713,36 @@ impl Checker {
                     }
                     return Ty::Bool;
                 }
+                // A fieldless `enum`, a `struct` composed entirely of
+                // structurally-comparable fields (recursively), or a
+                // `Tuple`/`Array` of such -- exactly `Checker::check_hashable_ty`'s
+                // rule for a legal `Map`/`Set` key, since `Codegen::eq_fn_name`/
+                // `emit_eq_body` (already built to compare those same shapes
+                // for `Map`/`Set` lookup) is what actually backs this at
+                // codegen time. No ordering: same reasoning as
+                // `Ty::BitField`/`Ty::Symbol` above -- a discriminant or
+                // field-tuple has no meaningful "less than".
+                if matches!(lhs_ty, Ty::Enum(_) | Ty::Named(_) | Ty::Tuple(_) | Ty::Array(..)) && lhs_ty == rhs_ty {
+                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
+                        self.error(
+                            format!("only `==`/`!=` are supported between `{:?}` values -- there is no ordering for an enum, struct, tuple, or array", lhs_ty),
+                            span,
+                        );
+                        return Ty::Bool;
+                    }
+                    if !self.is_structurally_comparable_ty(lhs_ty) {
+                        self.error(
+                            format!(
+                                "`{}` is not supported between `{:?}` values: only a fieldless enum, or a struct/tuple/array composed entirely of \
+                                 structurally-comparable elements, supports `==`/`!=` -- a payload-carrying enum or anything containing a \
+                                 `GenRef`/`List`/`Map`/`Set`/closure/`ptr` does not",
+                                op_str, lhs_ty
+                            ),
+                            span,
+                        );
+                    }
+                    return Ty::Bool;
+                }
                 if lhs_ty.is_numeric() && rhs_ty.is_numeric() {
                     self.error(
                         format!(

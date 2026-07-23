@@ -32,18 +32,17 @@ impl Snake:
         let mut i = 0
         let mut found = false
         while i < self.body.len():
-            if grid::cell_eq(self.body[i], c):
+            if self.body[i] == c:
                 found = true
             i += 1
         found
 
     # Queue a turn, ignoring a reversal directly onto the segment behind the
-    # head (compared via the resulting movement delta, since `Direction`
-    # itself isn't `==`-comparable -- see grid.star's `cell_eq` comment).
+    # head (`Direction == Direction` compiles directly now -- see NOTES.md
+    # 2.4 -- so this compares the requested/current direction themselves
+    # instead of going through their movement deltas).
     fn queue_turn(mut self, d: grid::Direction):
-        let next = grid::delta(d)
-        let cur = grid::delta(self.dir)
-        let is_reversal = next.x == 0 - cur.x and next.y == 0 - cur.y
+        let is_reversal = d == grid::opposite(self.dir)
         if !is_reversal:
             self.pending_dir = d
 

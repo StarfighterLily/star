@@ -5338,6 +5338,340 @@ fn rejects_struct_with_non_hashable_field_as_map_key() {
     assert!(Driver::check(&module).is_err(), "a struct with a non-hashable field should be a type error as a Map key");
 }
 
+// --- NOTES.md 2.4: fieldless-enum/struct `==`/`!=` -----------------------
+//
+// `Checker::infer_binop_ty` used to reject `Direction == Direction`/
+// `Cell == Cell` outright for *every* user `enum`/`struct`, even though the
+// exact same shapes were already legal `Map`/`Set` keys via a generated
+// structural-equality function (`Checker::check_hashable_ty` /
+// `crate::codegen::eq`). The fix reuses that existing hashability rule (via
+// a new silent probe, `Checker::is_structurally_comparable_ty`, factored out
+// of `check_hashable_ty`'s reporting version) to legalize `==`/`!=` for
+// exactly the same fieldless-enum/comparable-struct shapes, and reuses
+// `Codegen::eq_fn_name`/`emit_eq_body` at codegen time to actually implement
+// it, instead of inventing a second comparison story.
+
+/// A fieldless enum supports `==`/`!=` directly now -- `grid.star`'s
+/// `dir_name`-adjacent `cell_eq`/direction-reversal workarounds existed
+/// specifically because this didn't type-check before.
+#[test]
+fn accepts_fieldless_enum_equality() {
+    let src = "enum Direction:\n    Up\n    Down\nfn same(a: Direction, b: Direction) -> bool:\n    return a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "fieldless enum `==` should type-check: {:?}", Driver::check(&module).err());
+}
+
+/// `!=` is accepted the same way `==` is.
+#[test]
+fn accepts_fieldless_enum_inequality() {
+    let src = "enum Direction:\n    Up\n    Down\nfn differ(a: Direction, b: Direction) -> bool:\n    return a != b\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "fieldless enum `!=` should type-check: {:?}", Driver::check(&module).err());
+}
+
+/// A struct composed entirely of structurally-comparable fields (here two
+/// plain `i32`s, `grid.star`'s own `Cell` shape) supports `==` directly.
+#[test]
+fn accepts_struct_equality_when_fields_comparable() {
+    let src = "struct Cell:\n    x: i32\n    y: i32\nfn same(a: Cell, b: Cell) -> bool:\n    return a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "struct `==` over comparable fields should type-check: {:?}", Driver::check(&module).err());
+}
+
+/// The comparability rule recurses: a struct containing a nested struct
+/// (itself composed of comparable fields) is still comparable.
+#[test]
+fn accepts_nested_struct_equality() {
+    let src = concat!(
+        "struct Cell:\n    x: i32\n    y: i32\n",
+        "struct Segment:\n    head: Cell\n    tail: Cell\n",
+        "fn same(a: Segment, b: Segment) -> bool:\n    return a == b\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "nested-struct `==` should type-check: {:?}", Driver::check(&module).err());
+}
+
+/// A struct containing a `str` field is still comparable (`str` itself
+/// supports structural `==`), matching `check_hashable_ty`'s own rule.
+#[test]
+fn accepts_struct_with_str_field_equality() {
+    let src = "struct Named:\n    label: str\n    id: i32\nfn same(a: Named, b: Named) -> bool:\n    return a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "struct with a `str` field `==` should type-check: {:?}", Driver::check(&module).err());
+}
+
+/// A payload-carrying enum is still rejected -- `check_hashable_ty`'s
+/// existing scope cut (no `Map`/`Set` key support for one either) applies
+/// identically to `==`/`!=`, with a message naming the actual reason instead
+/// of a generic "not supported between" fallback.
+#[test]
+fn rejects_payload_enum_equality() {
+    let src = "enum Shape:\n    Circle(radius: i32)\n    Point\nfn same(a: Shape, b: Shape) -> bool:\n    return a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("payload enum `==` should still be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("payload-carrying")), "{:?}", diags);
+}
+
+/// A struct containing a non-comparable field (`List<i32>`, no hashing/
+/// equality story) is rejected for `==`, mirroring
+/// `rejects_struct_with_non_hashable_field_as_map_key`.
+#[test]
+fn rejects_struct_equality_with_non_comparable_field() {
+    let src = "struct Bag:\n    items: List<i32>\nfn same(a: Bag, b: Bag) -> bool:\n    return a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("struct with a List field `==` should still be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("==")), "{:?}", diags);
+}
+
+/// A struct containing a `GenRef<T>` field is rejected the same way.
+#[test]
+fn rejects_struct_equality_with_genref_field() {
+    let src = "struct Enemy:\n    hp: i32\narena Enemies: Enemy\nstruct Ref:\n    r: GenRef<Enemy>\nfn same(a: Ref, b: Ref) -> bool:\n    return a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "struct with a GenRef field `==` should be a type error");
+}
+
+/// Ordering operators are still rejected for a fieldless enum -- only
+/// `==`/`!=` get the new support, same "no meaningful less-than" reasoning
+/// `Ty::BitField`/`Ty::Symbol` already carry.
+#[test]
+fn rejects_ordering_between_fieldless_enums() {
+    let src = "enum Direction:\n    Up\n    Down\nfn cmp(a: Direction, b: Direction) -> bool:\n    return a < b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("`<` between enums should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("only") && d.message.contains("==")), "{:?}", diags);
+}
+
+/// Ordering operators are still rejected for a comparable struct.
+#[test]
+fn rejects_ordering_between_structs() {
+    let src = "struct Cell:\n    x: i32\n    y: i32\nfn cmp(a: Cell, b: Cell) -> bool:\n    return a > b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("`>` between structs should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("only") && d.message.contains("==")), "{:?}", diags);
+}
+
+/// Two distinct enum types can never be compared -- `lhs_ty == rhs_ty` is a
+/// precondition of the new arm, so a mismatched pair falls through to the
+/// pre-existing generic "not supported between" diagnostic rather than
+/// silently type-checking.
+#[test]
+fn rejects_equality_between_mismatched_enum_types() {
+    let src = "enum A:\n    X\nenum B:\n    Y\nfn same(a: A, b: B) -> bool:\n    return a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "`==` between two different enum types should be a type error");
+}
+
+/// Two distinct struct types can never be compared either.
+#[test]
+fn rejects_equality_between_mismatched_struct_types() {
+    let src = "struct Cell:\n    x: i32\nstruct Point:\n    x: i32\nfn same(a: Cell, b: Point) -> bool:\n    return a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "`==` between two different struct types should be a type error");
+}
+
+/// A tuple gets exactly the same comparability rule as a struct (it's
+/// already a legal `Map`/`Set` key/element under the identical rule -- see
+/// `accepts_tuple_as_set_element_when_all_elements_hashable`), so `==`
+/// should work on one too.
+#[test]
+fn accepts_tuple_equality() {
+    let src = "fn same(a: (i32, i32), b: (i32, i32)) -> bool:\n    return a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "tuple `==` should type-check: {:?}", Driver::check(&module).err());
+}
+
+/// A fixed-size array gets the same comparability rule too.
+#[test]
+fn accepts_array_equality() {
+    let src = "fn same(a: [i32; 3], b: [i32; 3]) -> bool:\n    return a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "array `==` should type-check: {:?}", Driver::check(&module).err());
+}
+
+/// Runtime test: tuple/array equality is structural, element-by-element.
+#[test]
+fn runtime_tuple_and_array_equality_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let ta = (1, 2)\n",
+        "    let tb = (1, 2)\n",
+        "    let tc = (1, 3)\n",
+        "    let aa = [1; 3]\n",
+        "    let ab = [1; 3]\n",
+        "    let mut ac = [1; 3]\n",
+        "    ac[2] = 2\n",
+        "    println(f\"{ta == tb} {ta == tc} {aa == ab} {aa == ac}\")\n",
+    );
+    let output = compile_and_run("tuple_array_equality", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.replace("\r\n", "\n").trim_end(), "true false true false", "{}", stdout);
+}
+
+/// Codegen test: `Direction == Direction` should lower to a call into a
+/// generated `eq_<mangled>` function (the same machinery `Map`/`Set` key
+/// lookup already uses -- see `crate::codegen::eq`), not an ad-hoc inline
+/// comparison, so any future fix to `emit_eq_body` automatically covers this
+/// operator too.
+#[test]
+fn codegen_enum_equality_calls_generated_eq_fn() {
+    let src = "enum Direction:\n    Up\n    Down\nfn same(a: Direction, b: Direction) -> bool:\n    return a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("call i1 @eq_"), "enum `==` should call a generated eq_ function: {}", ir);
+}
+
+/// Same codegen shape for a struct.
+#[test]
+fn codegen_struct_equality_calls_generated_eq_fn() {
+    let src = "struct Cell:\n    x: i32\n    y: i32\nfn same(a: Cell, b: Cell) -> bool:\n    return a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("call i1 @eq_"), "struct `==` should call a generated eq_ function: {}", ir);
+}
+
+/// `!=` should negate the generated `eq_` call's result rather than
+/// generating a wholly separate not-equal comparison function.
+#[test]
+fn codegen_struct_inequality_negates_generated_eq_fn() {
+    let src = "struct Cell:\n    x: i32\n    y: i32\nfn differ(a: Cell, b: Cell) -> bool:\n    return a != b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("call i1 @eq_"), "struct `!=` should still call the generated eq_ function: {}", ir);
+    assert!(ir.contains("xor i1"), "struct `!=` should negate the eq_ call's result via xor: {}", ir);
+}
+
+/// Runtime test: a fieldless enum's `==`/`!=` actually compares by
+/// discriminant, matching same-variant values as equal and different
+/// variants as unequal in both directions.
+#[test]
+fn runtime_fieldless_enum_equality_end_to_end() {
+    let src = concat!(
+        "enum Direction:\n    Up\n    Down\n    Left\n    Right\n",
+        "fn main():\n",
+        "    let a = Direction::Up\n",
+        "    let b = Direction::Up\n",
+        "    let c = Direction::Down\n",
+        "    println(f\"{a == b} {a == c} {a != b} {a != c}\")\n",
+    );
+    let output = compile_and_run("fieldless_enum_equality", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.replace("\r\n", "\n").trim_end(), "true false false true", "{}", stdout);
+}
+
+/// Runtime test: struct equality is structural (field-by-field), not
+/// pointer/identity-based -- two independently constructed `Cell` values
+/// with the same field contents must compare equal.
+#[test]
+fn runtime_struct_equality_end_to_end() {
+    let src = concat!(
+        "struct Cell:\n    x: i32\n    y: i32\n",
+        "fn main():\n",
+        "    let a = Cell(3, 4)\n",
+        "    let b = Cell(3, 4)\n",
+        "    let c = Cell(3, 5)\n",
+        "    println(f\"{a == b} {a == c} {a != c}\")\n",
+    );
+    let output = compile_and_run("struct_equality", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.replace("\r\n", "\n").trim_end(), "true false true", "{}", stdout);
+}
+
+/// Runtime test: nested-struct equality recurses field-by-field into the
+/// inner struct too, not just a shallow top-level comparison.
+#[test]
+fn runtime_nested_struct_equality_end_to_end() {
+    let src = concat!(
+        "struct Cell:\n    x: i32\n    y: i32\n",
+        "struct Segment:\n    head: Cell\n    tail: Cell\n",
+        "fn main():\n",
+        "    let a = Segment(Cell(0, 0), Cell(1, 1))\n",
+        "    let b = Segment(Cell(0, 0), Cell(1, 1))\n",
+        "    let c = Segment(Cell(0, 0), Cell(1, 2))\n",
+        "    println(f\"{a == b} {a == c}\")\n",
+    );
+    let output = compile_and_run("nested_struct_equality", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.replace("\r\n", "\n").trim_end(), "true false", "{}", stdout);
+}
+
+/// Runtime test: a struct with a `str` field compares by string *content*
+/// (`strcmp`-backed structural equality, see `crate::codegen::eq`'s `Str`
+/// arm), not by pointer identity -- two independently-built strings with
+/// the same characters must compare equal.
+#[test]
+fn runtime_struct_with_str_field_equality_end_to_end() {
+    let src = concat!(
+        "struct Named:\n    label: str\n    id: i32\n",
+        "fn main():\n",
+        "    let a = Named(\"snake\", 1)\n",
+        "    let b = Named(concat(\"sna\", \"ke\"), 1)\n",
+        "    let c = Named(\"snake\", 2)\n",
+        "    println(f\"{a == b} {a == c}\")\n",
+    );
+    let output = compile_and_run("struct_str_field_equality", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.replace("\r\n", "\n").trim_end(), "true false", "{}", stdout);
+}
+
+/// Runtime test: comparing structs with `str` fields inside a loop must not
+/// crash or corrupt the heap -- exercises `emit_release_bare`'s transient
+/// release of each side's `str` field after the `eq_fn` call, repeated
+/// enough times that a double-free or a leaked/under-released refcount would
+/// reliably crash or (at minimum) be caught by a future allocator-sanity
+/// check, rather than being a one-shot fluke.
+#[test]
+fn runtime_repeated_struct_str_equality_does_not_corrupt_heap_end_to_end() {
+    let src = concat!(
+        "struct Named:\n    label: str\n    id: i32\n",
+        "fn main():\n",
+        "    let mut matches = 0\n",
+        "    let mut i = 0\n",
+        "    while i < 2000:\n",
+        "        let a = Named(concat(\"snake-\", \"x\"), i)\n",
+        "        let b = Named(concat(\"snake-\", \"x\"), i)\n",
+        "        if a == b:\n",
+        "            matches = matches + 1\n",
+        "        i = i + 1\n",
+        "    println(f\"{matches}\")\n",
+    );
+    let output = compile_and_run("struct_str_equality_loop", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.replace("\r\n", "\n").trim_end(), "2000", "{}", stdout);
+}
+
+/// Runtime test: struct/enum equality composes correctly with `Set<T>` --
+/// the new `==` operator and the pre-existing `Map`/`Set` structural
+/// equality must agree (both are backed by the exact same `eq_fn_name`), so
+/// a value considered `==` to another must also be indistinguishable as a
+/// `Set` element (inserting both only grows the set by one).
+#[test]
+fn runtime_struct_equality_agrees_with_set_dedup_end_to_end() {
+    let src = concat!(
+        "struct Cell:\n    x: i32\n    y: i32\n",
+        "fn main():\n",
+        "    let a = Cell(2, 2)\n",
+        "    let b = Cell(2, 2)\n",
+        "    let mut s = Set<Cell>()\n",
+        "    s.insert(a)\n",
+        "    s.insert(b)\n",
+        "    println(f\"{a == b} {s.len()}\")\n",
+    );
+    let output = compile_and_run("struct_equality_agrees_with_set", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.replace("\r\n", "\n").trim_end(), "true 1", "{}", stdout);
+}
+
 /// `.get(k)` on a `Map<K,V>` returns a real `Option<V>` -- the same builtin
 /// generic enum `?`/`match` already work with, not a bespoke type.
 #[test]

@@ -436,6 +436,37 @@ directly) both exist specifically to work around this. Slightly odd
 inconsistency: the type is hashable enough to dedupe in a `Set`, but not
 comparable enough to write `a == b` directly.
 
+**Fixed** (follow-up compiler pass, after this write-up): `Checker::infer_binop_ty`
+now legalizes `==`/`!=` for exactly the shapes that were already legal
+`Map`/`Set` keys — a fieldless `enum`, or a `struct`/`Tuple`/`Array`
+composed entirely of structurally-comparable elements, recursively — by
+reusing `check_hashable_ty`'s own rule rather than inventing a second one:
+that reporting function was split into a shared, non-reporting
+`check_hashable_ty_inner` and two thin callers, `check_hashable_ty` (the
+existing `Map`/`Set` key-position diagnostic) and the new
+`is_structurally_comparable_ty` (a silent probe for the `==`/`!=` check,
+which wants its own differently-worded diagnostic on failure rather than a
+second one stacked on top). Codegen reuses `Codegen::eq_fn_name`/
+`emit_eq_body` — the exact per-type structural-equality function `Map`/`Set`
+lookup already generates and caches — instead of writing a second comparison
+codepath: `lhs == rhs` lowers to a call into that generated function
+(negated via `xor i1 ... true` for `!=`), so the two features can never
+silently disagree about what "equal" means for a given type. Ordering
+operators (`< > <= >=`) remain rejected for these shapes with a dedicated
+message — same "no meaningful less-than" reasoning `BitField<N>`/`Symbol`
+already carry — and a payload-carrying enum or a struct/tuple/array
+containing a `GenRef`/`List`/`Map`/`Set`/closure/`ptr` still correctly fails,
+now with a message naming the actual reason instead of a generic
+"not supported between" fallback.
+
+`grid.star`'s `cell_eq` helper is gone — `Cell == Cell` is used directly at
+every former call site (`Snake::contains`, `main.star`'s food-collision
+check). `Snake::queue_turn`'s reversal check no longer compares movement
+deltas as a `Direction`-equality workaround; it compares directions
+directly (`d == grid::opposite(self.dir)`). `dir_name`'s hand-written match
+is unrelated and stays — it works around 1.5 (fieldless enums printing as
+garbage hex in an f-string), a separate bug this fix doesn't touch.
+
 ### 2.5 No top-level `const`/`let` — every "constant" is a zero-argument function
 
 Only `struct`/`trait`/`impl`/`fn`/`arena`/`sequence`/`enum`/`import` are

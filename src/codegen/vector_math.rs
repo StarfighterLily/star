@@ -878,6 +878,44 @@ impl Codegen {
                 }
             };
         }
+        // A fieldless `enum`, a `struct` composed entirely of
+        // structurally-comparable fields, or a `Tuple`/`Array` of such --
+        // structural comparison via the same `eq_fn_name`/`emit_eq_body`
+        // machinery `Map`/`Set` key lookup already uses (see
+        // `crate::codegen::eq`'s module doc comment). `Checker::infer_binop_ty`
+        // already restricted this to a same-type pair that passed
+        // `is_structurally_comparable_ty`, so generating `eq_fn_name` here is
+        // always safe.
+        if matches!(lty, Ty::Enum(_) | Ty::Named(_) | Ty::Tuple(_) | Ty::Array(..)) && lty == rty {
+            return match op {
+                BinOp::Eq | BinOp::Ne => {
+                    let l = self.untag(lhs, lty);
+                    let r = self.untag(rhs, rty);
+                    let eq_fn = self.eq_fn_name(lty);
+                    let llvm = self.llvm_ty(lty);
+                    let is_eq = self.tmp_name();
+                    self.line(&format!("  {} = call i1 @{}({} {}, {} {})", is_eq, eq_fn, llvm, l, llvm, r));
+                    // Transiently compared then discarded, never stored --
+                    // release whatever each side's `emit_expr` left it
+                    // owning (see `rc.rs`'s module doc comment); a no-op for
+                    // a plain fieldless enum or an RC-free struct/tuple/array.
+                    self.emit_release_bare(&l, lty);
+                    self.emit_release_bare(&r, rty);
+                    let reg = if op == BinOp::Eq {
+                        is_eq
+                    } else {
+                        let neg = self.tmp_name();
+                        self.line(&format!("  {} = xor i1 {}, true", neg, is_eq));
+                        neg
+                    };
+                    format!("i1 {}", reg)
+                }
+                _ => {
+                    self.err("only `==`/`!=` are supported between enum/struct/tuple/array values", Span::dummy());
+                    "%undef".into()
+                }
+            };
+        }
         // `Quat * Quat`: the true quaternion (Hamilton) product -- see
         // `Ty::Quat`'s doc comment. Checked ahead of the generic vector
         // dispatch below (which would otherwise treat it as a componentwise

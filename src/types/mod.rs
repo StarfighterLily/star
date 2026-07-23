@@ -2070,7 +2070,14 @@ impl Checker {
     /// contain itself by value -- `check_no_recursive_structs` catches that
     /// as its own error only *after* every item has been checked, so this
     /// must not assume that pass has already run.
-    fn check_hashable_ty(&mut self, ty: &Ty, visited: &mut HashSet<String>) -> bool {
+    ///
+    /// `report` controls whether a rejection emits a diagnostic: `true` for
+    /// the `Map`/`Set` key-position call sites (where an unsupported type is
+    /// itself the error), `false` for `Checker::infer_binop_ty`'s `==`/`!=`
+    /// probe (where a `false` result just means "fall through to the
+    /// ordinary not-supported-between-these-types error" -- that call site
+    /// doesn't want a second, differently-worded diagnostic stacked on top).
+    fn check_hashable_ty_inner(&mut self, ty: &Ty, visited: &mut HashSet<String>, report: bool) -> bool {
         match ty {
             // `Quat`/`Color` reuse `Vec4`'s exact layout (see their own `Ty`
             // doc comments), so they're structurally comparable the same way.
@@ -2091,14 +2098,14 @@ impl Checker {
             // named type to recurse-guard against, unlike `Ty::Named` below
             // -- a tuple can't be self-referential without going through a
             // named struct, which already carries its own guard).
-            Ty::Tuple(elems) => elems.iter().all(|t| self.check_hashable_ty(t, visited)),
+            Ty::Tuple(elems) => elems.iter().all(|t| self.check_hashable_ty_inner(t, visited, report)),
             // Same reasoning: an array is stored inline (like a tuple), so
             // it's structurally comparable exactly when its element type is.
-            Ty::Array(elem, _) => self.check_hashable_ty(elem, visited),
+            Ty::Array(elem, _) => self.check_hashable_ty_inner(elem, visited, report),
             // Both lower to a plain fixed-size scalar under the hood (see
             // their own doc comments) -- structurally comparable exactly
             // like any other sized integer.
-            Ty::Wrapping(inner) => self.check_hashable_ty(inner, visited),
+            Ty::Wrapping(inner) => self.check_hashable_ty_inner(inner, visited, report),
             Ty::Fixed(..) => true,
             // A bare `i{N}`/`i64` scalar under the hood -- structurally
             // comparable exactly like `Ty::Wrapping`/`Ty::Fixed` above.
@@ -2106,7 +2113,7 @@ impl Checker {
             Ty::Flags(_) => true,
             Ty::Enum(name) => {
                 let fieldless = self.enums.get(name).map(|e| e.variants.iter().all(|v| v.fields.is_empty())).unwrap_or(true);
-                if !fieldless {
+                if !fieldless && report {
                     self.error(
                         format!("`{}` cannot be used as a `Map`/`Set` key: payload-carrying enums are not yet supported", name),
                         Span::dummy(),
@@ -2127,24 +2134,45 @@ impl Checker {
                     None => true,
                     Some(sdef) => sdef.fields.iter().all(|f| {
                         let fty = self.resolve_type(&f.ty).unwrap_or(Ty::Named("unknown".into()));
-                        self.check_hashable_ty(&fty, visited)
+                        self.check_hashable_ty_inner(&fty, visited, report)
                     }),
                 };
                 visited.remove(name);
                 ok
             }
             _ => {
-                self.error(
-                    format!(
-                        "`{:?}` cannot be used as a `Map`/`Set` key -- only a numeric type (any width)/bool/str/char/fieldless-enum/Vec2/Vec3/Vec4, \
-                         or a struct composed entirely of such fields, are supported",
-                        ty
-                    ),
-                    Span::dummy(),
-                );
+                if report {
+                    self.error(
+                        format!(
+                            "`{:?}` cannot be used as a `Map`/`Set` key -- only a numeric type (any width)/bool/str/char/fieldless-enum/Vec2/Vec3/Vec4, \
+                             or a struct composed entirely of such fields, are supported",
+                            ty
+                        ),
+                        Span::dummy(),
+                    );
+                }
                 false
             }
         }
+    }
+
+    /// Reporting entry point for `check_hashable_ty_inner` -- used at every
+    /// `Map`/`Set` key-position call site, where a rejection *is* the error.
+    fn check_hashable_ty(&mut self, ty: &Ty, visited: &mut HashSet<String>) -> bool {
+        self.check_hashable_ty_inner(ty, visited, true)
+    }
+
+    /// Silent probe for `infer_binop_ty`'s `==`/`!=` support check: true iff
+    /// `ty` is structurally comparable (exactly `check_hashable_ty`'s rule --
+    /// a fieldless `enum`, or a `struct` composed entirely of such fields,
+    /// recursively, since those are exactly the shapes `Codegen::eq_fn_name`/
+    /// `emit_eq_body` already know how to compare). Never emits a
+    /// diagnostic itself -- a `false` result falls through to
+    /// `infer_binop_ty`'s own "not supported between" error, so reporting
+    /// here would just stack a second, differently-worded message on top.
+    fn is_structurally_comparable_ty(&mut self, ty: &Ty) -> bool {
+        let mut visited = HashSet::new();
+        self.check_hashable_ty_inner(ty, &mut visited, false)
     }
 
     /// Resolve a syntactic [`Type`] to a [`Ty`]. A `Type::Generic` naming a

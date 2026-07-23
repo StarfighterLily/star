@@ -26,14 +26,6 @@ fn rows() -> i32:
 fn cell_size() -> i32:
     20
 
-# Fieldless enums do NOT support `==`/`!=` directly (only `i32`/`f32`/`bool`/
-# `str`/`Symbol`/`BitField`/`Flags`/`ptr`/`char` get an equality arm in
-# `Checker::infer_binop_ty` -- a bare user `enum` falls through to the
-# generic "not supported between" error). Structs have the same gap. Both
-# need a hand-written field/variant comparison helper instead.
-fn cell_eq(a: Cell, b: Cell) -> bool:
-    a.x == b.x and a.y == b.y
-
 fn delta(d: Direction) -> Cell:
     match d:
         Direction::Up -> Cell(x = 0, y = 0 - 1)
