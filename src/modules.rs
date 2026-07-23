@@ -66,8 +66,9 @@ pub fn mangle_name(alias: &str, name: &str) -> String {
 /// below an empirically observed cliff" calibration.
 const MAX_IMPORT_DEPTH: u32 = 200;
 
-/// A top-level item's provenance: which canonical source file, and which
-/// original (unmangled) name, it was actually declared under. Tracked
+/// A top-level item's provenance: which canonical source file, which
+/// original (unmangled) name it was actually declared under, and which
+/// `resolve_inner` call instance (see [`CallId`]) produced it. Tracked
 /// *positionally*, one entry per item in the module currently being built --
 /// never keyed by the item's current (possibly mangled, possibly colliding)
 /// name string. Keying by name was tried first and is wrong: two genuinely
@@ -79,7 +80,43 @@ const MAX_IMPORT_DEPTH: u32 = 200;
 /// [`dedupe_by_origin`] to treat a real collision as a diamond-dependency
 /// re-export and silently drop one of the two, hiding a genuine "declared
 /// more than once" diagnostic. Positional tracking never conflates the two.
-type ItemProvenance = Vec<Option<(PathBuf, String)>>;
+///
+/// The [`CallId`] exists for a narrower, previously-unhandled case: plain
+/// `(path, name)` provenance alone can't tell "the same declaration,
+/// independently rediscovered by two different import chains" (a genuine
+/// diamond -- see [`dedupe_by_origin`]'s own doc comment) apart from "two
+/// distinct, both-genuinely-authored declarations sharing one name, sitting
+/// directly in the same file" (a real user error, e.g. `fn foo` written
+/// twice with no imports involved at all). Both shapes produce two items
+/// with identical `(path, name)` provenance -- but the first comes from two
+/// *separate* `resolve_inner` call frames (one per import edge reaching that
+/// file), while the second comes from the *same* call frame's single pass
+/// over one file's own item list. Tagging every provenance entry with which
+/// call frame produced it lets [`dedupe_by_origin`] tell the two apart:
+/// same `CallId` within a `(path, name)` group is left alone (so the
+/// checker's own "declared more than once" pass catches it for real),
+/// different `CallId`s are collapsed to one canonical item (the diamond
+/// case). Confirmed missing before this: `const X: i32 = 1` followed by
+/// `const X: i32 = 2` in one real (on-disk) file -- no imports anywhere --
+/// previously type-checked with *no* diagnostic at all, silently keeping
+/// only the first declaration, because both instances shared the exact same
+/// `(root_path, "X")` provenance and `dedupe_by_origin` (before `CallId`
+/// existed) had no way to distinguish that from a legitimate diamond
+/// re-visit. The same bug applied identically to a plain duplicate `fn`/
+/// `struct`/`enum`/`arena` declared twice directly in one file -- invisible
+/// to this crate's own test suite because every existing "declared more
+/// than once" unit test drives `Checker::check` directly on an in-memory
+/// `Module` (`Driver::parse` + `Driver::check`), never through
+/// `crate::modules::resolve` at all, so none of them exercised this path.
+type ItemProvenance = Vec<Option<(PathBuf, String, CallId)>>;
+
+/// Identifies one call frame of [`resolve_inner`] -- see [`ItemProvenance`]'s
+/// doc comment for why this matters. A plain monotonic counter, shared
+/// (via `&mut`) across the whole recursive resolution of one root module, so
+/// every distinct invocation (the root call, plus one per `import` edge
+/// walked, including revisiting the same file through a second edge) gets a
+/// value no other call frame shares.
+type CallId = u64;
 
 /// Resolve every `import` in `module` (whose own source lives at
 /// `root_path`), recursively inlining each imported file's items under a
@@ -119,8 +156,9 @@ pub fn resolve(module: Module, root_path: &Path) -> Result<(Module, Vec<(String,
     }
     let base_dir = root_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
     let mut files = Vec::new();
+    let mut call_counter: CallId = 0;
     let (resolved, provenance) =
-        resolve_inner(module, &base_dir, root_canonical.as_deref(), &mut loading, &mut files, 0)?;
+        resolve_inner(module, &base_dir, root_canonical.as_deref(), &mut loading, &mut files, 0, &mut call_counter)?;
     Ok((dedupe_by_origin(resolved, &provenance), files))
 }
 
@@ -141,7 +179,12 @@ fn resolve_inner(
     loading: &mut HashSet<PathBuf>,
     files: &mut Vec<(String, String)>,
     depth: u32,
+    call_counter: &mut CallId,
 ) -> Result<(Module, ItemProvenance), Vec<Diagnostic>> {
+    // This call frame's own identity -- see [`ItemProvenance`]'s doc comment
+    // for why every direct declaration below is tagged with it.
+    let this_call_id = *call_counter;
+    *call_counter += 1;
     let mut items = Vec::new();
     let mut provenance: ItemProvenance = Vec::new();
     for item in module.items {
@@ -205,7 +248,7 @@ fn resolve_inner(
                 // implies).
                 let child_base = canonical.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
                 let (resolved_child, child_provenance) =
-                    match resolve_inner(imported, &child_base, Some(&canonical), loading, files, depth + 1) {
+                    match resolve_inner(imported, &child_base, Some(&canonical), loading, files, depth + 1, call_counter) {
                         Ok(m) => m,
                         Err(diags) => {
                             // Re-anchor on this level's own (meaningful) span
@@ -232,7 +275,7 @@ fn resolve_inner(
             }
             other => {
                 let prov = match (item_top_level_name(&other), own_path) {
-                    (Some(name), Some(path)) => Some((path.to_path_buf(), name.to_string())),
+                    (Some(name), Some(path)) => Some((path.to_path_buf(), name.to_string(), this_call_id)),
                     _ => None,
                 };
                 provenance.push(prov);
@@ -254,6 +297,7 @@ fn item_top_level_name(item: &Item) -> Option<&str> {
         Item::Arena(a) => Some(&a.name),
         Item::Sequence(s) => Some(&s.name),
         Item::Enum(e) => Some(&e.name),
+        Item::Const(c) => Some(&c.name),
         Item::Impl(_) | Item::Import(_) | Item::ExternFn(_) => None,
     }
 }
@@ -269,24 +313,36 @@ fn item_top_level_name(item: &Item) -> Option<&str> {
 ///
 /// For every group of items sharing the same `(canonical path, original
 /// name)` provenance (see [`ItemProvenance`] for why this is tracked
-/// positionally, not by name), the first-declared item (in the flattened
-/// module's own item order, which mirrors first-encountered import order)
-/// is kept as canonical; every other item in the group is dropped and every
-/// remaining reference to its name rewritten to the canonical item's name --
-/// reusing the exact same substitution machinery (`rename_item` et al.)
-/// that alias-mangling itself uses, just with a name->name substitution
-/// instead of a name->`alias__name` one. `impl` blocks (which declare no
-/// name of their own -- see [`item_top_level_name`]) are deduplicated too:
-/// once two `impl` blocks' `type_name`s substitute to the same canonical
-/// type, they are, by construction, independent re-resolutions of the very
-/// same source `impl` block, so only the first is kept (the checker/LLVM
-/// would otherwise see the same method defined twice for one type).
+/// positionally, not by name), entries that came from *different*
+/// `resolve_inner` call frames (different [`CallId`]s -- i.e. genuinely
+/// independent re-visits of the same file via different import edges) are
+/// collapsed: the first-declared one (in the flattened module's own item
+/// order, which mirrors first-encountered import order) is kept as
+/// canonical, and every other such entry is dropped with every remaining
+/// reference to its name rewritten to the canonical item's name -- reusing
+/// the exact same substitution machinery (`rename_item` et al.) that
+/// alias-mangling itself uses, just with a name->name substitution instead
+/// of a name->`alias__name` one. `impl` blocks (which declare no name of
+/// their own -- see [`item_top_level_name`]) are deduplicated too: once two
+/// `impl` blocks' `type_name`s substitute to the same canonical type, they
+/// are, by construction, independent re-resolutions of the very same source
+/// `impl` block, so only the first is kept (the checker/LLVM would
+/// otherwise see the same method defined twice for one type).
+///
+/// Entries sharing both the group's `(path, name)` *and* the same
+/// `CallId` are left untouched instead -- they came from one single pass
+/// over one file's own item list, i.e. that file directly declares the same
+/// name twice with no import indirection involved at all, a genuine
+/// duplicate the checker's own "declared more than once" pass needs to see
+/// as two distinct, un-collapsed items to diagnose (see [`ItemProvenance`]'s
+/// doc comment for the bug this previously caused: silently keeping only
+/// the first of two same-named top-level declarations with no diagnostic).
 fn dedupe_by_origin(module: Module, provenance: &ItemProvenance) -> Module {
     debug_assert_eq!(module.items.len(), provenance.len());
-    let mut groups: HashMap<&(PathBuf, String), Vec<usize>> = HashMap::new();
+    let mut groups: HashMap<(PathBuf, String), Vec<usize>> = HashMap::new();
     for (idx, prov) in provenance.iter().enumerate() {
-        if let Some(key) = prov {
-            groups.entry(key).or_default().push(idx);
+        if let Some((path, name, _call_id)) = prov {
+            groups.entry((path.clone(), name.clone())).or_default().push(idx);
         }
     }
 
@@ -294,8 +350,16 @@ fn dedupe_by_origin(module: Module, provenance: &ItemProvenance) -> Module {
     let mut drop: HashSet<usize> = HashSet::new();
     for indices in groups.values() {
         if indices.len() > 1 {
+            let first_call_id = provenance[indices[0]].as_ref().map(|(_, _, c)| *c);
             let canonical_name = item_top_level_name(&module.items[indices[0]]).map(|s| s.to_string());
             for &dup_idx in &indices[1..] {
+                let dup_call_id = provenance[dup_idx].as_ref().map(|(_, _, c)| *c);
+                if dup_call_id == first_call_id {
+                    // Same call frame as the group's first entry -- a real,
+                    // directly-authored duplicate, not a diamond re-visit.
+                    // Leave it in place; see this function's doc comment.
+                    continue;
+                }
                 if let (Some(canonical_name), Some(dup_name)) = (&canonical_name, item_top_level_name(&module.items[dup_idx])) {
                     subst.insert(dup_name.to_string(), canonical_name.clone());
                 }
@@ -326,8 +390,8 @@ fn dedupe_by_origin(module: Module, provenance: &ItemProvenance) -> Module {
 // --- renaming: prefix every top-level declaration with `alias__` ----------
 
 /// Collect the mangled name for every top-level declaration in `module`
-/// (structs, enums, traits, functions, arenas, sequences -- everything that
-/// can be the target of an `alias::name` reference). Impl blocks don't
+/// (structs, enums, traits, functions, arenas, sequences, consts -- everything
+/// that can be the target of an `alias::name` reference). Impl blocks don't
 /// declare a new name of their own, and method names live in a separate
 /// namespace reached only through `.method(...)` field syntax, so neither
 /// contributes an entry here.
@@ -421,6 +485,12 @@ fn rename_item(item: &Item, names: &HashMap<String, String>) -> Item {
                 })
                 .collect(),
             span: e.span,
+        }),
+        Item::Const(c) => Item::Const(ConstDecl {
+            name: mangled(&c.name, names),
+            ty: rename_type(&c.ty, names),
+            value: rename_expr(&c.value, names),
+            span: c.span,
         }),
         // Never present: `resolve_inner` only ever passes already-import-free
         // modules to `rename_module`.

@@ -2,10 +2,10 @@
 # dimensions every other module needs to agree on. No `main` -- a pure
 # library file, imported via `import "grid.star" as grid`.
 #
-# NOTE: Star has no top-level `let`/`const` -- only `struct`/`enum`/`trait`/
-# `impl`/`fn`/`arena`/`sequence` are legal top-level items (confirmed via
-# `src/parser/items.rs::parse_item`). Board-size "constants" are therefore
-# zero-argument functions instead of shared globals.
+# Board-size "constants" are genuine top-level `const`s (NOTES.md 2.5 --
+# previously the only way to share a named value across a module was a
+# zero-argument function; a real repro of that gap sat here until the
+# compiler grew `const NAME: Type = <constant expr>` as a top-level item).
 
 struct Cell:
     x: i32
@@ -17,14 +17,9 @@ enum Direction:
     Left
     Right
 
-fn cols() -> i32:
-    32
-
-fn rows() -> i32:
-    24
-
-fn cell_size() -> i32:
-    20
+const COLS: i32 = 32
+const ROWS: i32 = 24
+const CELL_SIZE: i32 = 20
 
 fn delta(d: Direction) -> Cell:
     match d:
@@ -58,12 +53,12 @@ fn wrap(c: Cell) -> Cell:
     let mut x = c.x
     let mut y = c.y
     if x < 0:
-        x = cols() - 1
-    if x >= cols():
+        x = COLS - 1
+    if x >= COLS:
         x = 0
     if y < 0:
-        y = rows() - 1
-    if y >= rows():
+        y = ROWS - 1
+    if y >= ROWS:
         y = 0
     Cell(x = x, y = y)
 

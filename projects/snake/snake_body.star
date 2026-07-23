@@ -4,9 +4,13 @@
 # fixed-length sliding window, but the snake's length changes over the
 # game's lifetime, so `advance()` below manages growth itself: `push` a new
 # head every tick, and only `pop` the old tail when the snake did *not* eat
-# this tick. N is set to every cell on the board (`cols() * rows()`), the
-# worst case where the snake fills the entire grid, so the ring's own
-# capacity-eviction path is never actually exercised in normal play.
+# this tick. N is set to every cell on the board (`grid::COLS * grid::ROWS`),
+# the worst case where the snake fills the entire grid, so the ring's own
+# capacity-eviction path is never actually exercised in normal play. Written
+# as the literal `768`, not `grid::COLS * grid::ROWS`, since `Ring<T, N>`'s
+# `N` is parsed by a dedicated bare-integer-literal grammar
+# (`Parser::parse_ring_new`/`parse_type_inner`), not a general expression --
+# unlike a `const`'s own initializer, it can't reference another `const`.
 
 import "grid.star" as grid
 

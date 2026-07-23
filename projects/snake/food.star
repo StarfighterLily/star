@@ -61,9 +61,9 @@ fn spawn_food(body: Ring<sb::grid::Cell, 768>, len: i32) -> sb::grid::Cell:
     let occ = occupied_cells(body, len)
     let mut free_cells: List<sb::grid::Cell> = List<sb::grid::Cell>()
     let mut y = 0
-    while y < sb::grid::rows():
+    while y < sb::grid::ROWS:
         let mut x = 0
-        while x < sb::grid::cols():
+        while x < sb::grid::COLS:
             if !occ.contains(sb::grid::Cell(x = x, y = y)):
                 free_cells.push(sb::grid::Cell(x = x, y = y))
             x += 1

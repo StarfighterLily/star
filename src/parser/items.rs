@@ -17,6 +17,7 @@ impl Parser {
             TokenKind::Enum => self.parse_enum().map(Item::Enum),
             TokenKind::Import => self.parse_import().map(Item::Import),
             TokenKind::Extern => self.parse_extern_fn().map(Item::ExternFn),
+            TokenKind::Const => self.parse_const().map(Item::Const),
             TokenKind::At => {
                 let span = self.peek_span();
                 self.error("decorators are only supported on struct fields", span);
@@ -24,7 +25,7 @@ impl Parser {
             }
             _ => {
                 let span = self.peek_span();
-                self.error("expected a top-level item (struct, trait, impl, fn, arena)", span);
+                self.error("expected a top-level item (struct, trait, impl, fn, arena, const)", span);
                 None
             }
         }
@@ -115,6 +116,28 @@ impl Parser {
         self.expect_line_end()?;
         let span = start.to(self.prev_span());
         Some(ArenaDecl { name, ty, capacity, span })
+    }
+
+    /// `const NAME: Type = <expr>` -- a top-level named constant (§2.5 of
+    /// `projects/snake/NOTES.md`: previously the only way to share a named
+    /// value across a module was a zero-argument function). The type
+    /// annotation is required (unlike `let`, which infers it) so a
+    /// mismatched initializer is caught at the declaration site rather than
+    /// wherever it first gets used. Whether `value` actually reduces to a
+    /// compile-time constant is a checker concern (`Checker::resolve_const`),
+    /// not this grammar -- the parser accepts any expression here, same as
+    /// `parse_let`.
+    fn parse_const(&mut self) -> Option<ConstDecl> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Const)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::Colon)?;
+        let ty = self.parse_type()?;
+        self.expect(&TokenKind::Assign)?;
+        let value = self.parse_expr()?;
+        self.expect_line_end()?;
+        let span = start.to(self.prev_span());
+        Some(ConstDecl { name, ty, value, span })
     }
 
     fn parse_sequence(&mut self) -> Option<SequenceDef> {

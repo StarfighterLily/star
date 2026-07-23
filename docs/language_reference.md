@@ -90,6 +90,32 @@ health = 80          # Simple assignment
 health -= 20         # Compound assignment
 ```
 
+### Top-Level Constants
+
+`const NAME: Type = <expr>` declares a named constant at module scope --
+unlike `let`, it's legal outside a function body (alongside `struct`/`fn`/
+`arena`/etc.) and its type annotation is required. `<expr>` must be a
+constant expression: a literal, a unary/binary operator over other constant
+expressions, a numeric cast, or a reference to another `const` -- in any
+declaration order, including forward references and references across an
+`import`. It's evaluated once at compile time and inlined at every use site;
+there is no runtime global behind it.
+
+```star
+const COLS: i32 = 32
+const ROWS: i32 = 24
+const CELL_SIZE: i32 = 20
+const BOARD_CELLS: i32 = COLS * ROWS   # forward/cross references are fine
+
+fn board_width() -> i32:
+    COLS * CELL_SIZE
+```
+
+Anything that isn't reducible to a compile-time literal (a function call, a
+field access, a collection literal, ...) is rejected with a diagnostic at
+the point it fails to fold, not silently accepted. See
+`examples/top_level_const.star`.
+
 ---
 
 ## Control Flow

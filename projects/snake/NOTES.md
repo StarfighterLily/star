@@ -477,6 +477,55 @@ across modules. Minor next to the findings above, but real friction for
 anything wanting shared tunable/constant values (exactly `@tweakable`'s own
 pitch, which only works on a struct field, not a bare value).
 
+**Fixed** (follow-up compiler pass, after this write-up): `const NAME: Type
+= <expr>` is now a legal top-level item, alongside `struct`/`fn`/`arena`/etc.
+(`Parser::parse_const`). Unlike `let`, the type annotation is required (a
+top-level declaration has no surrounding call site to infer it from) and
+`<expr>` is restricted to a genuine *constant* expression: literals,
+unary/binary operators over other constant expressions, numeric casts, and
+references to other `const`s (including forward references and references
+across `import`s, resolved order-independently with cycle detection —
+`Checker::resolve_const`). A `const` never becomes a runtime global: the
+checker folds its initializer down to a literal at check time and
+substitutes that literal directly at every reference site
+(`Checker::consts`, consulted by `infer_expr`'s `Expr::Ident` arm ahead of
+the ordinary function/builtin lookup), so codegen never has any notion that
+`const` exists at all — the exact same "just inline it" strategy the
+zero-argument-function workaround was already leaning on, minus the
+function-call syntax and the artificial `fn`. `grid.star`'s `cols()`/
+`rows()`/`cell_size()` are gone, replaced with `const COLS: i32 = 32`/
+`const ROWS: i32 = 24`/`const CELL_SIZE: i32 = 20`; every call site across
+`food.star`/`main.star` (including the qualified `food::sb::grid::CELL_SIZE`
+forms reached through the diamond-avoiding import chain from 1.1) now reads
+the const directly instead of calling it. See
+`examples/top_level_const.star` for a standalone repro of literals,
+cross-const references, casts, and the diagnostics for a cycle/duplicate/
+non-constant initializer.
+
+Chasing this down surfaced an unrelated, previously-invisible bug in
+`crate::modules::resolve`'s diamond-dependency collapsing (1.1's own fix):
+two top-level declarations sharing one name *directly in the same real
+on-disk file*, with no `import` involved at all (`const X: i32 = 1` twice in
+one file; a plain duplicate `fn foo` behaves identically), silently kept
+only the first and reported no diagnostic whatsoever — `dedupe_by_origin`
+tagged every direct declaration in a file with `(that file's canonical path,
+declared name)` provenance to detect the *legitimate* diamond case (the same
+underlying declaration independently re-discovered through two different
+import chains), but had no way to tell that apart from two *genuinely
+different* same-named declarations sitting side by side in one file, since
+both shapes produce two items with identical provenance. Invisible to this
+crate's existing test suite because every prior "declared more than once"
+unit test drives the checker directly on an in-memory `Module`
+(`Driver::parse` + `Driver::check`), never through `crate::modules::resolve`
+at all — only found because a real, on-disk two-`const`-named-`X` test file
+surfaced it. **Fixed**: `ItemProvenance` now also tags each entry with a
+`CallId` identifying which `resolve_inner` call frame produced it (a plain
+counter incremented once per invocation, shared across the whole recursive
+resolve); `dedupe_by_origin` only collapses same-`(path, name)` entries that
+came from *different* call frames (a real diamond re-visit) and leaves
+same-call-frame duplicates untouched so the checker's own duplicate-name
+diagnostic catches them as intended.
+
 ---
 
 ## 3. What worked well (worth recording as much as what didn't)
@@ -530,7 +579,9 @@ pitch, which only works on a struct field, not a bare value).
 - ~~A per-arena selective-despawn/sweep primitive (2.1)~~ — fixed, see 2.1
   above. ~~A way to get a handle to a just-spawned entity (2.2)~~ — fixed,
   see 2.2 above: `let idx = spawn ArenaName(...)` now reports the slot index
-  to feed straight into `GenRef<T>(idx)`. The module search-path gap
+  to feed straight into `GenRef<T>(idx)`. ~~No top-level `const`/`let`
+  (2.5)~~ — fixed, see 2.5 above: `const NAME: Type = <constant expr>` is
+  now a legal top-level item. The module search-path gap
   `gamedev_gaps.md` #3 already flags (real, but this project's diamond-
   dependency finding, 1.1, is the sharper edge of that same gap) is the
   most significant gap from this exercise still open.

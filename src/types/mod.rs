@@ -898,6 +898,167 @@ fn is_builtin_name(name: &str) -> bool {
     builtin_return_ty(name, &[]).is_some()
 }
 
+/// A top-level `const`'s fully-folded compile-time value -- see
+/// `Checker::consts`/`Checker::resolve_const`. Mirrors the literal variants
+/// of `TypedExpr` (`Int`/`Float`/`Bool`/`Str`/`Char`) exactly, since a const
+/// initializer's whole job is to reduce to one of those.
+#[derive(Clone, Debug)]
+enum ConstValue {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+    Char(char),
+}
+
+impl ConstValue {
+    /// Rebuild the literal `TypedExpr` this value came from, stamped with a
+    /// *use site's* span (not the `const` declaration's own) -- so an error
+    /// against, say, an out-of-range cast of `const X: i32 = 5` used
+    /// elsewhere still points at the use, not back at line 1 of some other
+    /// file.
+    fn into_typed_expr(self, span: Span) -> TypedExpr {
+        match self {
+            ConstValue::Int(v) => TypedExpr::Int(v, Ty::Int, span),
+            ConstValue::Float(v) => TypedExpr::Float(v, Ty::Float, span),
+            ConstValue::Bool(v) => TypedExpr::Bool(v, Ty::Bool, span),
+            ConstValue::Str(v) => TypedExpr::Str(v, Ty::Str, span),
+            ConstValue::Char(v) => TypedExpr::Char(v, Ty::Char, span),
+        }
+    }
+}
+
+/// Collect the name of every other `const` (per `decls`) that `expr`
+/// references, so `Checker::resolve_const` can resolve them first. Only
+/// walks the expression shapes a constant initializer can actually be built
+/// from (`Ident`/`Unary`/`Binary`/`Cast`) -- deliberately not a fully general
+/// AST walk: anything else nested inside (a call's arguments, say) is
+/// already doomed to fail `fold_const_expr`'s "not a constant expression"
+/// check regardless of whether a const it happens to reference gets resolved
+/// first, so under-collecting here costs nothing but a slightly-less-eager
+/// dependency resolution, never a wrong answer.
+fn collect_const_refs(expr: &Expr, decls: &HashMap<String, ConstDecl>) -> Vec<String> {
+    fn walk(expr: &Expr, decls: &HashMap<String, ConstDecl>, out: &mut Vec<String>) {
+        match expr {
+            Expr::Ident(name, _) => {
+                if decls.contains_key(name) {
+                    out.push(name.clone());
+                }
+            }
+            Expr::Unary { operand, .. } => walk(operand, decls, out),
+            Expr::Binary { lhs, rhs, .. } => {
+                walk(lhs, decls, out);
+                walk(rhs, decls, out);
+            }
+            Expr::Cast { expr, .. } => walk(expr, decls, out),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(expr, decls, &mut out);
+    out
+}
+
+/// Fold an already-type-checked `TypedExpr` down to a compile-time
+/// [`ConstValue`], or `Err((span, message))` pointing at the first
+/// sub-expression that isn't one of the handful of shapes a constant
+/// expression is allowed to be built from (see `ConstDecl`'s doc comment):
+/// a literal, a unary/binary operator over other constant expressions, or a
+/// numeric cast. Any `Ident` node reaching here is *not* an unresolved const
+/// reference -- `Checker::infer_expr`'s `Expr::Ident` arm already substitutes
+/// a resolved const with its literal `TypedExpr` directly (see
+/// `ConstValue::into_typed_expr`), so an `Ident` surviving to this point can
+/// only be an ordinary variable/function name, which is exactly as invalid
+/// in a constant expression as a call or a field access.
+fn fold_const_expr(expr: &TypedExpr) -> Result<ConstValue, (Span, String)> {
+    match expr {
+        TypedExpr::Int(v, _, _) => Ok(ConstValue::Int(*v)),
+        TypedExpr::Float(v, _, _) => Ok(ConstValue::Float(*v)),
+        TypedExpr::Bool(v, _, _) => Ok(ConstValue::Bool(*v)),
+        TypedExpr::Str(v, _, _) => Ok(ConstValue::Str(v.clone())),
+        TypedExpr::Char(v, _, _) => Ok(ConstValue::Char(*v)),
+        TypedExpr::Unary { op, operand, span, .. } => {
+            let v = fold_const_expr(operand)?;
+            match (op, v) {
+                (UnOp::Neg, ConstValue::Int(i)) => Ok(ConstValue::Int(i.wrapping_neg())),
+                (UnOp::Neg, ConstValue::Float(f)) => Ok(ConstValue::Float(-f)),
+                (UnOp::Not, ConstValue::Bool(b)) => Ok(ConstValue::Bool(!b)),
+                _ => Err((*span, "this operator is not supported in a constant expression".to_string())),
+            }
+        }
+        TypedExpr::Binary { op, lhs, rhs, span, .. } => {
+            let l = fold_const_expr(lhs)?;
+            let r = fold_const_expr(rhs)?;
+            eval_const_binop(*op, l, r, *span)
+        }
+        TypedExpr::Cast { expr: inner, ty, span } => {
+            let v = fold_const_expr(inner)?;
+            match (v, ty) {
+                (ConstValue::Int(i), Ty::Float) => Ok(ConstValue::Float(i as f64)),
+                (ConstValue::Float(f), Ty::Int) => Ok(ConstValue::Int(f as i64)),
+                _ => Err((*span, "this cast is not supported in a constant expression".to_string())),
+            }
+        }
+        other => Err((
+            other.span(),
+            "this expression is not allowed in a `const` initializer -- only literals, arithmetic, casts, and references to other `const`s are supported".to_string(),
+        )),
+    }
+}
+
+/// The arithmetic/comparison/logical half of [`fold_const_expr`]'s `Binary`
+/// case, split out purely to keep that match arm readable. Mirrors exactly
+/// the operand-type combinations `Checker::infer_binop_ty` already accepts
+/// for `i32`/`f32`/`bool`/`str`/`char` -- this never needs to re-validate
+/// that the two `ConstValue`s' shapes agree, only to compute the result, since
+/// `infer_expr` already rejected any mismatched-type `Binary` node before
+/// `fold_const_expr` ever sees it.
+fn eval_const_binop(op: BinOp, l: ConstValue, r: ConstValue, span: Span) -> Result<ConstValue, (Span, String)> {
+    use ConstValue::*;
+    let div_by_zero = || (span, "division by zero in a constant expression".to_string());
+    match (op, l, r) {
+        (BinOp::Add, Int(a), Int(b)) => Ok(Int(a.wrapping_add(b))),
+        (BinOp::Sub, Int(a), Int(b)) => Ok(Int(a.wrapping_sub(b))),
+        (BinOp::Mul, Int(a), Int(b)) => Ok(Int(a.wrapping_mul(b))),
+        (BinOp::Div, Int(a), Int(b)) => if b == 0 { Err(div_by_zero()) } else { Ok(Int(a.wrapping_div(b))) },
+        (BinOp::Rem, Int(a), Int(b)) => if b == 0 { Err(div_by_zero()) } else { Ok(Int(a.wrapping_rem(b))) },
+        (BinOp::Eq, Int(a), Int(b)) => Ok(Bool(a == b)),
+        (BinOp::Ne, Int(a), Int(b)) => Ok(Bool(a != b)),
+        (BinOp::Lt, Int(a), Int(b)) => Ok(Bool(a < b)),
+        (BinOp::Gt, Int(a), Int(b)) => Ok(Bool(a > b)),
+        (BinOp::Le, Int(a), Int(b)) => Ok(Bool(a <= b)),
+        (BinOp::Ge, Int(a), Int(b)) => Ok(Bool(a >= b)),
+        (BinOp::Add, Float(a), Float(b)) => Ok(Float(a + b)),
+        (BinOp::Sub, Float(a), Float(b)) => Ok(Float(a - b)),
+        (BinOp::Mul, Float(a), Float(b)) => Ok(Float(a * b)),
+        (BinOp::Div, Float(a), Float(b)) => Ok(Float(a / b)),
+        (BinOp::Rem, Float(a), Float(b)) => Ok(Float(a % b)),
+        (BinOp::Eq, Float(a), Float(b)) => Ok(Bool(a == b)),
+        (BinOp::Ne, Float(a), Float(b)) => Ok(Bool(a != b)),
+        (BinOp::Lt, Float(a), Float(b)) => Ok(Bool(a < b)),
+        (BinOp::Gt, Float(a), Float(b)) => Ok(Bool(a > b)),
+        (BinOp::Le, Float(a), Float(b)) => Ok(Bool(a <= b)),
+        (BinOp::Ge, Float(a), Float(b)) => Ok(Bool(a >= b)),
+        (BinOp::Eq, Bool(a), Bool(b)) => Ok(Bool(a == b)),
+        (BinOp::Ne, Bool(a), Bool(b)) => Ok(Bool(a != b)),
+        (BinOp::And, Bool(a), Bool(b)) => Ok(Bool(a && b)),
+        (BinOp::Or, Bool(a), Bool(b)) => Ok(Bool(a || b)),
+        (BinOp::Eq, Str(a), Str(b)) => Ok(Bool(a == b)),
+        (BinOp::Ne, Str(a), Str(b)) => Ok(Bool(a != b)),
+        (BinOp::Lt, Str(a), Str(b)) => Ok(Bool(a < b)),
+        (BinOp::Gt, Str(a), Str(b)) => Ok(Bool(a > b)),
+        (BinOp::Le, Str(a), Str(b)) => Ok(Bool(a <= b)),
+        (BinOp::Ge, Str(a), Str(b)) => Ok(Bool(a >= b)),
+        (BinOp::Eq, Char(a), Char(b)) => Ok(Bool(a == b)),
+        (BinOp::Ne, Char(a), Char(b)) => Ok(Bool(a != b)),
+        (BinOp::Lt, Char(a), Char(b)) => Ok(Bool(a < b)),
+        (BinOp::Gt, Char(a), Char(b)) => Ok(Bool(a > b)),
+        (BinOp::Le, Char(a), Char(b)) => Ok(Bool(a <= b)),
+        (BinOp::Ge, Char(a), Char(b)) => Ok(Bool(a >= b)),
+        _ => Err((span, "this operator is not supported in a constant expression".to_string())),
+    }
+}
+
 /// Every symbol name `Codegen::emit_builtins`/`emit_rc_runtime` unconditionally
 /// `declare`s or `define`s at the top of *every* generated module (the CRT/
 /// Win32 imports backing `print`/math/file-I/O/`par`/`swarm`, plus the RC
@@ -957,6 +1118,14 @@ pub struct Checker {
     enums: HashMap<String, EnumDef>,
     /// Function signatures: maps function name -> (param_tys, ret_ty)
     functions: HashMap<String, (Vec<Ty>, Option<Ty>)>,
+    /// Top-level `const` name -> its fully-folded compile-time value,
+    /// populated up front by `resolve_const` (called from `check`, before any
+    /// function body is checked). `infer_expr`'s `Expr::Ident` arm consults
+    /// this (after `vars`, so a local binding still shadows a same-named
+    /// const, and before `functions`) and substitutes a literal `TypedExpr`
+    /// directly rather than ever emitting `TypedExpr::Ident` for a const --
+    /// so codegen never needs to know consts exist at all.
+    consts: HashMap<String, ConstValue>,
     /// Impl-method signatures: maps `"{struct_name}#{method_name}"` ->
     /// (param_tys including the receiver, ret_ty). Kept separate from
     /// `functions` (which used to also hold methods, keyed by bare method
@@ -1100,6 +1269,7 @@ impl Checker {
             arenas: HashMap::new(),
             enums: HashMap::new(),
             functions: HashMap::new(),
+            consts: HashMap::new(),
             methods: HashMap::new(),
             generic_structs: HashMap::new(),
             generic_impls: HashMap::new(),
@@ -1314,6 +1484,12 @@ impl Checker {
         for item in &module.items {
             match item {
                 Item::Struct(_) | Item::Enum(_) => {}
+                // Resolved in its own dedicated pass just below (`resolve_const`),
+                // once every struct/fn/arena signature above is registered --
+                // a const's initializer is type-checked with the ordinary
+                // `infer_expr`, which needs those tables populated to give a
+                // meaningful diagnostic for e.g. `const X: i32 = some_fn()`.
+                Item::Const(_) => {}
                 Item::Trait(t) => { self.traits.insert(t.name.clone(), t.clone()); }
                 Item::Arena(a) => {
                     if !arena_names_seen.insert(a.name.clone()) {
@@ -1440,6 +1616,37 @@ impl Checker {
                 // checker ever runs; never present past this point.
                 Item::Import(_) => {}
             }
+        }
+
+        // Resolve every top-level `const` into a compile-time literal value
+        // (§2.5: previously there was no way to share a named constant across
+        // a module short of a zero-argument function). Must run after pass 1
+        // above (so a const initializer referencing a function/struct gets a
+        // real diagnostic instead of "undefined name") but before the main
+        // per-item checking loop below (so a function body referencing a
+        // const sees it already folded into `self.consts` -- see
+        // `infer_expr`'s `Expr::Ident` arm). `const`s may reference each
+        // other in any declaration order, including forward references,
+        // exactly like top-level functions; `resolve_const` handles that via
+        // on-demand recursion with cycle detection.
+        let const_decls: HashMap<String, ConstDecl> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Const(c) => Some((c.name.clone(), c.clone())),
+                _ => None,
+            })
+            .collect();
+        for item in &module.items {
+            if let Item::Const(c) = item {
+                if !value_names_seen.insert(c.name.clone()) {
+                    self.error(format!("the constant `{}` is declared more than once", c.name), c.span);
+                }
+            }
+        }
+        for name in const_decls.keys() {
+            let mut in_progress = HashSet::new();
+            self.resolve_const(name, &const_decls, &mut in_progress);
         }
 
         let mut typed_items = Vec::new();
@@ -1573,6 +1780,87 @@ impl Checker {
             // ever runs; never present past this point.
             Item::Import(_) => None,
             Item::ExternFn(e) => self.check_extern_fn(e),
+            // Already fully resolved by `resolve_const` (called from `check`,
+            // before this per-item loop runs) into a literal substituted
+            // directly at every reference site -- nothing left to emit.
+            Item::Const(_) => None,
+        }
+    }
+
+    /// Resolve the top-level `const` named `name` into `self.consts`,
+    /// recursively resolving any other `const`s its initializer references
+    /// first (in on-demand, declaration-order-independent fashion, exactly
+    /// like a forward reference to a top-level `fn`). `in_progress` is a
+    /// single `HashSet` shared across the whole recursive descent from one
+    /// top-level call in `check` -- a name already in it means resolving
+    /// that name is an ancestor of the current call, i.e. a genuine cycle
+    /// (`const A: i32 = B`, `const B: i32 = A`), reported once at the point
+    /// the cycle closes rather than recursing forever. Returns whether `name`
+    /// ended up with a value in `self.consts` (an already-diagnosed failure
+    /// -- an undefined dependency, a cycle, a non-constant initializer --
+    /// leaves it absent, and every caller here just skips using it, letting
+    /// the *original* diagnostic stand rather than cascading a second one).
+    fn resolve_const(&mut self, name: &str, decls: &HashMap<String, ConstDecl>, in_progress: &mut HashSet<String>) -> bool {
+        if self.consts.contains_key(name) {
+            return true;
+        }
+        let Some(decl) = decls.get(name).cloned() else { return false };
+        if !in_progress.insert(name.to_string()) {
+            self.error(format!("const `{}` recursively refers to itself", name), decl.span);
+            return false;
+        }
+        let ok = self.resolve_const_inner(name, &decl, decls, in_progress);
+        in_progress.remove(name);
+        ok
+    }
+
+    /// The body of `resolve_const`, split out purely so `in_progress` can be
+    /// cleaned up on every exit path (including the early-return ones below)
+    /// from one place in the caller, rather than duplicating the
+    /// `in_progress.remove` call at each `return` here.
+    fn resolve_const_inner(
+        &mut self,
+        name: &str,
+        decl: &ConstDecl,
+        decls: &HashMap<String, ConstDecl>,
+        in_progress: &mut HashSet<String>,
+    ) -> bool {
+        for dep in collect_const_refs(&decl.value, decls) {
+            if !self.resolve_const(&dep, decls, in_progress) {
+                // The dependency's own resolution already recorded a
+                // diagnostic (undefined/cycle/non-constant) -- don't also
+                // fail `name` with a second, derivative one; `infer_expr`
+                // below will hit the same missing-value case via its own
+                // "undefined name" path if `dep` is used directly, or (if
+                // `dep` is only reachable through another const that itself
+                // failed) `name` simply never gets a value either, silently.
+                return false;
+            }
+        }
+        let declared_ty = self.resolve_type(&decl.ty);
+        let typed = match self.infer_expr(&decl.value, &mut HashMap::new()) {
+            Ok(t) => t,
+            Err(()) => return false,
+        };
+        if let Some(declared) = &declared_ty {
+            let actual = typed.clone().into_ty();
+            if !Self::types_compatible(declared, &actual) {
+                self.error(
+                    format!("`const {}: {:?}` but the value has type `{:?}`", name, declared, actual),
+                    decl.span,
+                );
+                return false;
+            }
+        }
+        match fold_const_expr(&typed) {
+            Ok(value) => {
+                self.consts.insert(name.to_string(), value);
+                true
+            }
+            Err((span, msg)) => {
+                self.error(msg, span);
+                false
+            }
         }
     }
 

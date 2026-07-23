@@ -39,6 +39,10 @@ pub enum TokenKind {
     Impl,
     Fn,
     Let,
+    /// `const NAME: Type = <constant expr>` -- a top-level, compile-time
+    /// constant (see [`crate::ast::ConstDecl`]). Unlike `Let`, never valid
+    /// inside a function body; only recognized at item position.
+    Const,
     Mut,
     Match,
     Return,
@@ -138,6 +142,7 @@ impl TokenKind {
             TokenKind::Impl => "'impl'".into(),
             TokenKind::Fn => "'fn'".into(),
             TokenKind::Let => "'let'".into(),
+            TokenKind::Const => "'const'".into(),
             TokenKind::Mut => "'mut'".into(),
             TokenKind::Match => "'match'".into(),
             TokenKind::Return => "'return'".into(),
@@ -861,6 +866,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "impl" => TokenKind::Impl,
         "fn" => TokenKind::Fn,
         "let" => TokenKind::Let,
+        "const" => TokenKind::Const,
         "mut" => TokenKind::Mut,
         "match" => TokenKind::Match,
         "return" => TokenKind::Return,

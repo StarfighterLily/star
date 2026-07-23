@@ -47,6 +47,26 @@ pub enum Item {
     /// `extern "C" fn ...` - a foreign function declaration with no body,
     /// see [`ExternFnDecl`].
     ExternFn(ExternFnDecl),
+    /// `const NAME: Type = <constant expr>` - a named, compile-time-evaluated
+    /// constant, see [`ConstDecl`]. Never emitted as a runtime global: the
+    /// checker folds `value` down to a literal and substitutes it at every
+    /// reference (`crate::types::Checker::resolve_const`), so codegen never
+    /// sees an `Item::Const` at all.
+    Const(ConstDecl),
+}
+
+/// `const NAME: Type = <constant expr>` - see [`Item::Const`]. `value` is
+/// restricted (by the checker, not the parser) to a "constant expression":
+/// literals, unary/binary operators on other constant expressions, casts
+/// between numeric constants, and references to other `const`s -- anything
+/// else (a function call, a field access, a collection literal, ...) is
+/// rejected once the value can't be folded to a compile-time literal.
+#[derive(Clone, Debug)]
+pub struct ConstDecl {
+    pub name: String,
+    pub ty: Type,
+    pub value: Expr,
+    pub span: Span,
 }
 
 /// `extern "C" fn name(params) -> ret` - declares a symbol implemented

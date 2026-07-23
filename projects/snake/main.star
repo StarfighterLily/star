@@ -154,11 +154,11 @@ fn demo_genref_staleness():
     println(f"[genref demo] fresh ref reads tag={fresh_ref[0].tag} (expect 222)")
 
 fn cell_px(c: food::sb::grid::Cell) -> (i32, i32):
-    (c.x * food::sb::grid::cell_size(), c.y * food::sb::grid::cell_size())
+    (c.x * food::sb::grid::CELL_SIZE, c.y * food::sb::grid::CELL_SIZE)
 
 fn draw_cell(w: ptr, c: food::sb::grid::Cell, color: Color32):
     let px = cell_px(c)
-    draw_rect(w, px.0, px.1, food::sb::grid::cell_size() - 1, food::sb::grid::cell_size() - 1, color)
+    draw_rect(w, px.0, px.1, food::sb::grid::CELL_SIZE - 1, food::sb::grid::CELL_SIZE - 1, color)
 
 # A tiny generic-flavored helper (no generic `impl` needed -- see NOTES.md's
 # "generic structs can't have methods" finding) to pick a color by a
@@ -190,8 +190,8 @@ fn pick_color(cond: bool, a: Color32, b: Color32) -> Color32:
     result
 
 fn main():
-    let width = food::sb::grid::cols() * food::sb::grid::cell_size()
-    let height = food::sb::grid::rows() * food::sb::grid::cell_size()
+    let width = food::sb::grid::COLS * food::sb::grid::CELL_SIZE
+    let height = food::sb::grid::ROWS * food::sb::grid::CELL_SIZE
     let w = window_create("Star Snake", width, height)
     if is_null(w):
         println("window_create failed")
@@ -293,8 +293,8 @@ fn main():
                     stats.score += 10
                     events.push(Symbol("eat"))
                     let px = cell_px(food_cell)
-                    let burst_x = (px.0 + food::sb::grid::cell_size() / 2) as f32
-                    let burst_y = (px.1 + food::sb::grid::cell_size() / 2) as f32
+                    let burst_x = (px.0 + food::sb::grid::CELL_SIZE / 2) as f32
+                    let burst_y = (px.1 + food::sb::grid::CELL_SIZE / 2) as f32
                     pool.spawn_burst(burst_x, burst_y)
                     spawn Particles(burst_x, burst_y, 0.0, 0.0, 0.45)
                     let mut flash = FlashOnEat(w)
@@ -342,8 +342,8 @@ fn main():
             w,
             food_px.0 - food_grow,
             food_px.1 - food_grow,
-            food::sb::grid::cell_size() - 1 + food_grow * 2,
-            food::sb::grid::cell_size() - 1 + food_grow * 2,
+            food::sb::grid::CELL_SIZE - 1 + food_grow * 2,
+            food::sb::grid::CELL_SIZE - 1 + food_grow * 2,
             Color32(230, 90, 90, 255),
         )
 

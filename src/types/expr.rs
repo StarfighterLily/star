@@ -84,6 +84,20 @@ impl Checker {
                 Ok(TypedExpr::FStr(typed_parts, Ty::Str, *s))
             }
             Expr::Ident(name, s) => {
+                // A top-level `const` reference substitutes directly to its
+                // already-folded literal value here (see
+                // `Checker::resolve_const`) -- checked after `vars` (so a
+                // local binding of the same name still shadows it, ordinary
+                // lexical scoping) but before the function/builtin case just
+                // below, so codegen never has to know `const`s exist at all:
+                // by the time any `TypedExpr` tree reaches it, every const
+                // reference is already an ordinary `TypedExpr::Int`/`Float`/
+                // `Bool`/`Str`/`Char` node.
+                if !vars.contains_key(name) {
+                    if let Some(value) = self.consts.get(name) {
+                        return Ok(value.clone().into_typed_expr(*s));
+                    }
+                }
                 let ty = if let Some(t) = vars.get(name) {
                     t.clone()
                 } else if self.functions.contains_key(name) || self.generic_fns.contains_key(name) || is_builtin_name(name) {
