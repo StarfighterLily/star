@@ -760,6 +760,27 @@ impl Codegen {
                 }
             };
         }
+        // `bool == bool` / `!=` -- a single `i1` comparison. See
+        // `Checker::infer_binop_ty`'s own doc comment on this arm for why
+        // this was previously unreachable (`bool` isn't `is_numeric()`, so
+        // the checker rejected `==`/`!=` on it outright before codegen ever
+        // saw a chance to lower it).
+        if matches!((lty, rty), (Ty::Bool, Ty::Bool)) {
+            return match op {
+                BinOp::Eq | BinOp::Ne => {
+                    let l = self.untag(lhs, &Ty::Bool);
+                    let r = self.untag(rhs, &Ty::Bool);
+                    let pred = if op == BinOp::Eq { "eq" } else { "ne" };
+                    let reg = self.tmp_name();
+                    self.line(&format!("  {} = icmp {} i1 {}, {}", reg, pred, l, r));
+                    format!("i1 {}", reg)
+                }
+                _ => {
+                    self.err("only `==`/`!=` are supported between `bool` values", Span::dummy());
+                    "%undef".into()
+                }
+            };
+        }
         // `Symbol == Symbol` / `!=` -- a single `i64` id comparison, no
         // `strcmp`/RC involved at all (unlike `str == str` just below) --
         // see `Ty::Symbol`'s doc comment.

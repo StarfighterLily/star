@@ -604,8 +604,12 @@ Because a `par`/`swarm` body genuinely runs across worker threads, it may
 never call anything that touches SDL's shared window/renderer state or its
 global input-event queue (`window_create`, `clear_screen`, `draw_pixel`,
 `draw_rect`, `draw_line`, `present`, `key_down`, `mouse_x`, `mouse_y`,
-`mouse_button_down`, ...) — concurrent calls into those crash SDL itself, not
-just Star-level state. Use `each` (below) for a loop that needs to draw.
+`mouse_button_down`, `draw_text`, `get_pixel`, ...) — concurrent calls into
+those crash SDL itself, not just Star-level state. Use `each` (below) for a
+loop that needs to draw. `font_load`/`font_free`/`default_font`/
+`measure_text` touch no shared window/renderer state (a font handle is its
+own independent resource) and remain callable from `par`/`swarm`, same as
+`delay`/`ticks`.
 
 ### Sequential Arena Iteration (`each`)
 
@@ -942,6 +946,47 @@ fn main():
 ```
 
 Audio playback and gamepad input are still open (`todo.md` #4).
+
+### Text Rendering / Font Loading
+
+SDL2 itself bundles no text renderer (that's `SDL_ttf`, a separate library
+this repo doesn't vendor), so `draw_text`/`measure_text`/`font_load`/
+`font_free`/`default_font` are a from-scratch bitmap-font renderer built on
+top of `draw_rect`'s own `SDL_RenderFillRect` primitive, not a binding to a
+third-party text library. `default_font()` returns a handle (`ptr`, same
+opaque-handle convention as `window_create`) to a compiled-in 5x7 monospace
+font covering space, common punctuation, digits, and uppercase letters — any
+other character in its own declared range renders as a blank, same-width
+glyph, and lowercase `a`-`z` is folded to its uppercase glyph before lookup.
+`font_load(path) -> ptr` reads a custom font from a small on-disk format
+(`[width: u8][height: u8][first_char: u8][num_chars: u8]` followed by
+`num_chars * height` row bytes, one byte per glyph row, `width` in `1..=8`)
+— `null` on any failure (missing file, truncated/malformed header), checked
+with `is_null`. Free a loaded font with `font_free`; **never** pass a
+`default_font()` handle to `font_free` — it's a pointer into a compiled-in
+constant, not something `font_load` allocated.
+
+```star
+fn main():
+    let w = window_create("My Game", 640, 480)
+    let f = default_font()
+    clear_screen(w, Color32(20, 20, 30, 255))
+    draw_text(w, f, "SCORE: 0", 8, 8, 2, Color32(255, 255, 255, 255))
+    present(w)
+    window_destroy(w)
+```
+
+`draw_text(window, font, text, x, y, scale, color)` draws `text` starting at
+`(x, y)`, each font pixel blown up to a `scale`x`scale` square; `\n` inside
+`text` starts a new line. `measure_text(font, text, scale) -> (int, int)`
+returns the `(width, height)` in pixels `draw_text` would occupy, without
+drawing anything — useful for centering a HUD string or sizing a background
+panel behind it. Both clamp `scale` to at least `1`.
+
+`get_pixel(window, x, y) -> Color32` reads a single pixel back from the
+window's current (drawn, not-yet-presented) framebuffer via
+`SDL_RenderReadPixels` — the only way to observe what a drawing builtin
+actually drew; every other SDL drawing builtin here is write-only.
 
 ### Sequential Animations
 

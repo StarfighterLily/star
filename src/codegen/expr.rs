@@ -635,6 +635,14 @@ impl Codegen {
                     Some("mouse_button_down") => self.emit_mouse_button_down(args),
                     Some("delay") => { self.emit_delay(args); "%undef".into() }
                     Some("ticks") => self.emit_ticks(),
+                    // Text-rendering/font-loading builtins -- see
+                    // `crate::codegen::font`.
+                    Some("font_load") => self.emit_font_load(args),
+                    Some("font_free") => { self.emit_font_free(args); "%undef".into() }
+                    Some("default_font") => self.emit_default_font(),
+                    Some("draw_text") => { self.emit_draw_text(args); "%undef".into() }
+                    Some("measure_text") => self.emit_measure_text(args),
+                    Some("get_pixel") => self.emit_get_pixel(args),
                     Some(name) if self.extern_fns.contains(name) => self.emit_extern_call(name, args, expr),
                     _ => self.emit_call_expr(callee, args, expr),
                 }

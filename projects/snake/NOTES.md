@@ -709,7 +709,7 @@ diagnostic catches them as intended.
 
 ## 4. Nice-to-have / would-help-a-real-game (extends `gamedev_gaps.md`)
 
-- **No text/font rendering at all** (`window_create`/`draw_pixel`/
+- ~~**No text/font rendering at all** (`window_create`/`draw_pixel`/
   `draw_rect`/`draw_line`/`present` is the entire drawing surface — no
   `draw_text`, no font loading). This game's score/HUD can only be printed
   to the console, never shown in the game window itself. Not previously
@@ -717,7 +717,47 @@ diagnostic catches them as intended.
   for "shipping something a player can read" than it might sound —
   `gamedev_gaps.md` #1 (audio/gamepad) is the documented half of "game
   language I/O still missing"; this is the other, undocumented half.
-  Confirmed absent by reading every builtin `src/codegen/sdl.rs` declares.
+  Confirmed absent by reading every builtin `src/codegen/sdl.rs` declares.~~
+
+  **Fixed** (follow-up compiler pass, after this write-up): `crate::codegen::
+  font` adds `default_font() -> ptr` (a compiled-in 5x7 monospace font
+  covering space, common punctuation, digits, and uppercase letters),
+  `font_load(path) -> ptr`/`font_free(font)` (a small custom on-disk bitmap
+  font format — `null` on failure, same convention as `file_open`/
+  `window_create`), and `draw_text(window, font, text, x, y, scale, color)`/
+  `measure_text(font, text, scale) -> (int, int)`. Rather than vendor
+  `SDL_ttf` (a second binary DLL dependency, plus its own transitive
+  `libfreetype` dependency), this is a from-scratch bitmap-font renderer
+  built directly on `draw_rect`'s own `SDL_RenderFillRect` primitive
+  (extracted into a shared `emit_fill_rect` helper specifically so this
+  reuse was possible). `\n` inside `text` starts a new line; lowercase
+  `a`-`z` folds to its uppercase glyph before lookup; a character outside a
+  font's declared range renders as a blank, same-width cell rather than
+  garbage. A second new builtin, `get_pixel(window, x, y) -> Color32`
+  (`SDL_RenderReadPixels`), was added alongside this specifically so both
+  this feature's own tests *and* every future SDL drawing builtin's tests
+  can verify actual rendered pixels instead of only "didn't crash" — there
+  was previously no way to read a framebuffer pixel back at all. See
+  `docs/language_reference.md`'s "Text Rendering / Font Loading" section and
+  the test section at the end of `tests/frontend.rs` (checker arg/type
+  validation, `par`/`swarm` ban-list membership, font-file-format edge cases
+  — missing/truncated/size-mismatched/out-of-range-width files — and several
+  `get_pixel`-verified rendering-correctness tests, including a full custom-
+  font-file round trip). `main.star` now draws the score and pause/game-over
+  messages directly in the game window via `draw_text`/`default_font`
+  instead of only ever printing them to the console.
+
+  Chasing this down also turned up an unrelated, previously-unnoticed
+  checker/codegen gap: `bool == bool`/`!=` was entirely unsupported (`Ty::
+  Bool` is deliberately not `is_numeric()`, so it fell through every
+  dedicated equality arm in `Checker::infer_binop_ty` — `Color32`/`Symbol`/
+  `ptr`/`BitField<N>`/`Flags<E>`/`str`/`char` all had one, but plain `bool`
+  never did, all the way back to `docs/design.md`'s original "Numeric widths
+  and modes" pass). Confirmed live (`star check` on a bare
+  `println(f"{true == false}")` rejected it outright). **Fixed**: a
+  dedicated `bool`/`bool` arm (`==`/`!=` only, no ordering — same
+  "no meaningful less-than" reasoning every other equality-only type already
+  carries) in both `infer_binop_ty` and `Codegen::emit_binop`.
 - ~~Arena capacity (1024, hardcoded, silent-drop on overflow — already
   flagged in `gamedev_gaps.md` #4) combines badly with 2.1 above~~ — fixed
   alongside 2.1: capacity is now per-arena (`arena Name: Type = N`), and the

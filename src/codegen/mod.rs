@@ -21,6 +21,7 @@ mod expr;
 mod file_io;
 mod fixed;
 mod flags;
+mod font;
 mod geometry;
 mod list;
 mod map;
@@ -207,6 +208,14 @@ pub struct Codegen {
     /// mangled `Ty::Named`/`Ty::Enum` name (`Box__i32`) as a real generic
     /// spelling (`Box<i32>`) in `@export`/`@tweakable` metadata.
     generic_instantiations: std::collections::HashMap<String, (String, Vec<Ty>)>,
+    /// `(global name, byte length)` of the built-in default font's constant
+    /// byte table, populated the first time `default_font()` is called --
+    /// see `crate::codegen::font::emit_default_font`. Memoized the same way
+    /// `fn_value_thunks`/`par_pool_emitted` avoid re-emitting their own
+    /// one-time global machinery: a program calling `default_font()` more
+    /// than once (typically every frame) must get a pointer to the *same*
+    /// global each time, not a fresh duplicate constant per call site.
+    default_font_global: Option<(String, u64)>,
     /// The label of the basic block most recently opened via `open_block`
     /// (reset to `"entry"` at the start of every function/worker/thunk).
     /// A `TypedExpr::If`/`TypedExpr::Match` branch's `phi` merge needs to
@@ -272,6 +281,7 @@ impl Codegen {
             par_pool_emitted: false,
             extern_fns: std::collections::HashSet::new(),
             generic_instantiations: std::collections::HashMap::new(),
+            default_font_global: None,
             current_label: "entry".to_string(),
         }
     }
@@ -481,6 +491,12 @@ impl Codegen {
         self.line("declare i32 @SDL_GetMouseState(i32*, i32*)");
         self.line("declare void @SDL_Delay(i32)");
         self.line("declare i32 @SDL_GetTicks()");
+        // `get_pixel` builtin -- see `crate::codegen::font`. Used to read
+        // back a single pixel's color for testing (no other SDL builtin
+        // here can observe what was actually drawn), and generally useful
+        // for anything wanting to sample its own rendered framebuffer
+        // (color-picking, simple collision-by-pixel, ...).
+        self.line("declare i32 @SDL_RenderReadPixels(i8*, i8*, i32, i8*, i32)");
         self.line("declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)");
         self.line("declare i32 @WaitForSingleObject(i8*, i32)");
         self.line("declare i32 @CloseHandle(i8*)");

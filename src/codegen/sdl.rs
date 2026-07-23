@@ -49,7 +49,7 @@ impl Codegen {
     /// with window-specific wording) if `handle` is a null `ptr`. Used by
     /// every builtin here except `window_create`, which has no handle to
     /// misuse yet.
-    fn abort_if_null_window(&mut self, handle: &str, builtin_name: &str) {
+    pub(super) fn abort_if_null_window(&mut self, handle: &str, builtin_name: &str) {
         let is_null = self.tmp_name();
         self.line(&format!("  {} = icmp eq i8* {}, null", is_null, handle));
         let fail_label = self.block_label("sdl_null_window");
@@ -73,7 +73,7 @@ impl Codegen {
     /// `SDL_GetRenderer(window) -> SDL_Renderer*` -- see this module's own
     /// doc comment for why no builtin here ever holds a renderer handle of
     /// its own.
-    fn emit_sdl_get_renderer(&mut self, window: &str) -> String {
+    pub(super) fn emit_sdl_get_renderer(&mut self, window: &str) -> String {
         let renderer = self.tmp_name();
         self.line(&format!("  {} = call i8* @SDL_GetRenderer(i8* {})", renderer, window));
         renderer
@@ -105,7 +105,7 @@ impl Codegen {
         (channels[0].clone(), channels[1].clone(), channels[2].clone(), channels[3].clone())
     }
 
-    fn emit_set_render_draw_color(&mut self, renderer: &str, color: &TypedExpr) {
+    pub(super) fn emit_set_render_draw_color(&mut self, renderer: &str, color: &TypedExpr) {
         let (r, g, b, a) = self.emit_color32_rgba8(color);
         self.line(&format!("  call i32 @SDL_SetRenderDrawColor(i8* {}, i8 {}, i8 {}, i8 {}, i8 {})", renderer, r, g, b, a));
     }
@@ -326,30 +326,16 @@ impl Codegen {
         self.line(&format!("  call i32 @SDL_RenderDrawPoint(i8* {}, i32 {}, i32 {})", renderer, x, y));
     }
 
-    /// `draw_rect(handle: ptr, x: int, y: int, w: int, h: int, color:
-    /// Color32)`: a filled rectangle -- `SDL_RenderFillRect` against a
-    /// stack-built `SDL_Rect` (`{ i32 x, i32 y, i32 w, i32 h }`, 16 bytes, no
-    /// padding -- the same hand-laid-out-struct move `net.rs`'s
-    /// `emit_tcp_connect` already uses for `sockaddr_in`).
-    pub(super) fn emit_draw_rect(&mut self, args: &[TypedExpr]) {
-        if args.len() < 6 {
-            self.err("draw_rect(..) expects 6 arguments (window, x, y, w, h, color)", Span::dummy());
-            return;
-        }
-        let val = self.emit_expr(&args[0]);
-        let window = self.untag(&val, &Ty::Ptr);
-        self.abort_if_null_window(&window, "draw_rect");
-        let renderer = self.emit_sdl_get_renderer(&window);
-        let xv = self.emit_expr(&args[1]);
-        let x = self.untag(&xv, &Ty::Int);
-        let yv = self.emit_expr(&args[2]);
-        let y = self.untag(&yv, &Ty::Int);
-        let wv = self.emit_expr(&args[3]);
-        let w = self.untag(&wv, &Ty::Int);
-        let hv = self.emit_expr(&args[4]);
-        let h = self.untag(&hv, &Ty::Int);
-        self.emit_set_render_draw_color(&renderer, &args[5]);
-
+    /// Build a stack `SDL_Rect` (`{ i32 x, i32 y, i32 w, i32 h }`, 16 bytes,
+    /// no padding -- the same hand-laid-out-struct move `net.rs`'s
+    /// `emit_tcp_connect` already uses for `sockaddr_in`) and
+    /// `SDL_RenderFillRect` it against `renderer`, using whatever draw color
+    /// is already set (callers set it once via `emit_set_render_draw_color`
+    /// before calling this -- unlike `emit_draw_rect`'s single call,
+    /// `crate::codegen::font`'s per-pixel glyph blitting calls this once per
+    /// lit font pixel and would rather not reset the same color hundreds of
+    /// times over). `x`/`y`/`w`/`h` are raw (untagged) `i32` operands.
+    pub(super) fn emit_fill_rect(&mut self, renderer: &str, x: &str, y: &str, w: &str, h: &str) {
         let rect_buf = self.tmp_name();
         self.line(&format!("  {} = alloca [16 x i8]", rect_buf));
         let rect_ptr = self.tmp_name();
@@ -378,6 +364,30 @@ impl Codegen {
         self.line(&format!("  store i32 {}, i32* {}", h, h_ptr));
 
         self.line(&format!("  call i32 @SDL_RenderFillRect(i8* {}, i8* {})", renderer, rect_ptr));
+    }
+
+    /// `draw_rect(handle: ptr, x: int, y: int, w: int, h: int, color:
+    /// Color32)`: a filled rectangle -- sets the draw color once, then
+    /// `emit_fill_rect`.
+    pub(super) fn emit_draw_rect(&mut self, args: &[TypedExpr]) {
+        if args.len() < 6 {
+            self.err("draw_rect(..) expects 6 arguments (window, x, y, w, h, color)", Span::dummy());
+            return;
+        }
+        let val = self.emit_expr(&args[0]);
+        let window = self.untag(&val, &Ty::Ptr);
+        self.abort_if_null_window(&window, "draw_rect");
+        let renderer = self.emit_sdl_get_renderer(&window);
+        let xv = self.emit_expr(&args[1]);
+        let x = self.untag(&xv, &Ty::Int);
+        let yv = self.emit_expr(&args[2]);
+        let y = self.untag(&yv, &Ty::Int);
+        let wv = self.emit_expr(&args[3]);
+        let w = self.untag(&wv, &Ty::Int);
+        let hv = self.emit_expr(&args[4]);
+        let h = self.untag(&hv, &Ty::Int);
+        self.emit_set_render_draw_color(&renderer, &args[5]);
+        self.emit_fill_rect(&renderer, &x, &y, &w, &h);
     }
 
     /// `draw_line(handle: ptr, x1: int, y1: int, x2: int, y2: int, color:

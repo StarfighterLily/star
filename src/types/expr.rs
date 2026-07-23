@@ -2531,6 +2531,67 @@ impl Checker {
             "mouse_x" | "mouse_y" | "ticks" => {
                 arity_ok(0, self);
             }
+            // Text-rendering/font-loading builtins -- see
+            // `crate::codegen::font`.
+            "font_load" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Str) {
+                    self.error(format!("`font_load` expects a `str` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "font_free" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                    self.error(format!("`font_free` expects a `ptr` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "default_font" => {
+                arity_ok(0, self);
+            }
+            "draw_text" => {
+                if arity_ok(7, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`draw_text` argument 1 (window) expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Ptr) {
+                        self.error(format!("`draw_text` argument 2 (font) expected `ptr`, found `{:?}`", arg_tys[1]), span);
+                    }
+                    if !tys_eq(&arg_tys[2], &Ty::Str) {
+                        self.error(format!("`draw_text` argument 3 (text) expected `str`, found `{:?}`", arg_tys[2]), span);
+                    }
+                    for (i, t) in arg_tys[3..6].iter().enumerate() {
+                        if !tys_eq(t, &Ty::Int) {
+                            self.error(format!("`draw_text` argument {} expected `int`, found `{:?}`", i + 4, t), span);
+                        }
+                    }
+                    if !tys_eq(&arg_tys[6], &Ty::Color32) {
+                        self.error(format!("`draw_text` argument 7 (color) expected `Color32`, found `{:?}`", arg_tys[6]), span);
+                    }
+                }
+            }
+            "measure_text" => {
+                if arity_ok(3, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`measure_text` argument 1 (font) expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Str) {
+                        self.error(format!("`measure_text` argument 2 (text) expected `str`, found `{:?}`", arg_tys[1]), span);
+                    }
+                    if !tys_eq(&arg_tys[2], &Ty::Int) {
+                        self.error(format!("`measure_text` argument 3 (scale) expected `int`, found `{:?}`", arg_tys[2]), span);
+                    }
+                }
+            }
+            "get_pixel" => {
+                if arity_ok(3, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`get_pixel` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    for (i, t) in arg_tys[1..3].iter().enumerate() {
+                        if !tys_eq(t, &Ty::Int) {
+                            self.error(format!("`get_pixel` argument {} expected `int`, found `{:?}`", i + 2, t), span);
+                        }
+                    }
+                }
+            }
             "str_contains" | "str_starts_with" | "str_ends_with" | "str_index_of" => {
                 if arity_ok(2, self) {
                     for (i, t) in arg_tys.iter().enumerate() {
@@ -2667,6 +2728,21 @@ impl Checker {
                 if *lhs_ty == Ty::Ptr && *rhs_ty == Ty::Ptr {
                     if !matches!(op, BinOp::Eq | BinOp::Ne) {
                         self.error("only `==`/`!=` are supported on `ptr` values", span);
+                    }
+                    return Ty::Bool;
+                }
+                // `bool == bool` / `!=` -- a single `i1` comparison. No
+                // ordering: `Ty::Bool` isn't `is_numeric()` (deliberately --
+                // see that method's doc comment), so it never reached
+                // `emit_scalar_binop` above, and fell all the way through to
+                // this function's own "not supported" fallback for *every*
+                // operator, `==`/`!=` included -- confirmed live (`star
+                // check` on a bare `println(f"{true == false}")` rejects it
+                // outright), a real gap despite `bool` being one of this
+                // codebase's own oldest, most basic types.
+                if *lhs_ty == Ty::Bool && *rhs_ty == Ty::Bool {
+                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
+                        self.error("only `==`/`!=` are supported between `bool` values", span);
                     }
                     return Ty::Bool;
                 }

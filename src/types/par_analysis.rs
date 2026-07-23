@@ -14,13 +14,23 @@ use std::collections::HashSet;
 
 use super::*;
 
-/// True for every SDL builtin (`crate::codegen::sdl`) that touches the
-/// shared `SDL_Window`/`SDL_Renderer` object or SDL's process-global input-
-/// event queue -- see `walk_par_expr`'s `TypedExpr::Call` arm for the full
-/// rationale and the confirmed-crash repro. `delay`/`ticks` are
-/// deliberately excluded: `SDL_Delay`/`SDL_GetTicks` don't touch any
-/// window/renderer/event-queue state, so they're as safe as any other pure
-/// builtin here.
+/// True for every SDL builtin (`crate::codegen::sdl`/`crate::codegen::font`)
+/// that touches the shared `SDL_Window`/`SDL_Renderer` object or SDL's
+/// process-global input-event queue -- see `walk_par_expr`'s
+/// `TypedExpr::Call` arm for the full rationale and the confirmed-crash
+/// repro. `delay`/`ticks` are deliberately excluded: `SDL_Delay`/
+/// `SDL_GetTicks` don't touch any window/renderer/event-queue state, so
+/// they're as safe as any other pure builtin here. `draw_text`/`get_pixel`
+/// join the ban list for the same reason `draw_rect`/`draw_pixel` are
+/// banned -- both re-derive and read/write through the shared
+/// `SDL_Renderer*`. `font_load`/`font_free`/`default_font`/`measure_text`
+/// are deliberately *not* banned: a font handle is its own independent
+/// resource (a `malloc`'d buffer or a compiled-in constant), never the
+/// shared window/renderer/event queue, so two threads loading/measuring/
+/// freeing distinct font handles concurrently are exactly as safe as any
+/// other pure builtin here (concurrently misusing the *same* handle from
+/// two threads is a real but narrower hazard, no different in kind from any
+/// other shared `ptr` a `par` body could already be handed).
 fn is_banned_sdl_builtin_in_par(name: &str) -> bool {
     matches!(
         name,
@@ -36,6 +46,8 @@ fn is_banned_sdl_builtin_in_par(name: &str) -> bool {
             | "mouse_x"
             | "mouse_y"
             | "mouse_button_down"
+            | "draw_text"
+            | "get_pixel"
     )
 }
 

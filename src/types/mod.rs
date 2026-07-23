@@ -883,6 +883,19 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         }
         "window_should_close" | "key_down" | "mouse_button_down" => Some(Ty::Bool),
         "mouse_x" | "mouse_y" | "ticks" => Some(Ty::Int),
+        // Text-rendering/font-loading builtins -- see `crate::codegen::font`
+        // (closes `projects/snake/NOTES.md` section 4's "no text/font
+        // rendering at all" gap). `font_load`/`default_font` reuse `Ty::Ptr`
+        // as an opaque font handle exactly like `window_create` does for
+        // `SDL_Window*` (null on failure for `font_load`; `default_font`
+        // never fails). `measure_text` returns `(width, height)` in pixels.
+        // `get_pixel` reads a single pixel back from the window's current
+        // framebuffer (there's otherwise no way to observe what a drawing
+        // builtin actually drew).
+        "font_load" | "default_font" => Some(Ty::Ptr),
+        "font_free" | "draw_text" => Some(Ty::Named("unknown".into())),
+        "measure_text" => Some(Ty::Tuple(vec![Ty::Int, Ty::Int])),
+        "get_pixel" => Some(Ty::Color32),
         _ => None,
     }
 }
@@ -1099,6 +1112,8 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     "SDL_RenderClear", "SDL_RenderDrawPoint", "SDL_RenderFillRect", "SDL_RenderDrawLine",
     "SDL_RenderPresent", "SDL_PollEvent", "SDL_GetKeyboardState", "SDL_GetMouseState",
     "SDL_Delay", "SDL_GetTicks",
+    // `get_pixel` builtin -- see `crate::codegen::font`.
+    "SDL_RenderReadPixels",
 ];
 
 /// The error type for type checking.

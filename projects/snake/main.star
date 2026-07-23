@@ -5,9 +5,10 @@
 # `GenRef`, `par`/`swarm`/`each`, `sequence` coroutines, `List`/`Map`/`Set`/
 # `Ring`/tuples/fixed arrays, `Wrapping`/`BitField`/`Flags`, `Symbol`, file
 # I/O, string/math builtins, a minimal `extern "C"` FFI call, and SDL2
-# graphics/input. See NOTES.md (this directory) for every gap/roadblock this
-# surfaced along the way and how each was ultimately closed at the compiler
-# level -- most notably a module-diamond-dependency limitation (section 1.1;
+# graphics/input/text rendering. See NOTES.md (this directory) for every
+# gap/roadblock this surfaced along the way and how each was ultimately
+# closed at the compiler level -- most notably a module-diamond-dependency
+# limitation (section 1.1;
 # `main` imports `grid.star`, `snake_body.star`, and `food.star` directly
 # below, the "obvious" diamond-shaped module graph that used to fail to
 # type-check at all) and a confirmed regression in
@@ -201,6 +202,15 @@ fn main():
     demo_genref_staleness()
     println(f"[frame demo] node1.x + node2.y = {frame_demo()}")
 
+    # NOTES.md section 4's "no text/font rendering at all" gap: the score/
+    # HUD used to only ever reach the console (`println`) -- `default_font`/
+    # `draw_text`/`measure_text` (`crate::codegen::font`) now put it in the
+    # game window itself, where a player watching it run can actually read
+    # it. Loaded once (not per-frame) purely to skip the trivial per-call
+    # `default_font_global` lookup every frame -- `default_font()` itself is
+    # memoized and safe to call every frame regardless.
+    let font = default_font()
+
     let save_path = "snake_save.txt"
     let loaded = save::load_high_score(save_path)
     let mut stats = Stats(score = 0, high_score = loaded.0, move_interval_ms = 120)
@@ -358,6 +368,23 @@ fn main():
         tick_particle_arena(0.016)
         draw_particle_arena(w)
         reclaim_dead_particles()
+
+        draw_text(w, font, f"SCORE: {stats.score}", 6, 6, 2, Color32(240, 240, 245, 255))
+        draw_text(w, font, f"HIGH: {stats.high_score}", 6, 24, 2, Color32(190, 190, 200, 255))
+
+        if flags_has(flags, GameFlag::Paused):
+            let msg = "PAUSED"
+            let sz = measure_text(font, msg, 3)
+            draw_text(w, font, msg, (width - sz.0) / 2, (height - sz.1) / 2, 3, Color32(255, 220, 90, 255))
+
+        if !snake.alive:
+            let line1 = "GAME OVER"
+            let line2 = "PRESS R TO RESTART"
+            let sz1 = measure_text(font, line1, 3)
+            let sz2 = measure_text(font, line2, 2)
+            let y1 = height / 2 - sz1.1 - 6
+            draw_text(w, font, line1, (width - sz1.0) / 2, y1, 3, Color32(230, 90, 90, 255))
+            draw_text(w, font, line2, (width - sz2.0) / 2, height / 2 + 6, 2, Color32(230, 230, 235, 255))
 
         if flags_has(flags, GameFlag::Debug):
             println(f"[debug] score={stats.score} high={stats.high_score} len={snake.length()} paused={flags_has(flags, GameFlag::Paused)} dir={snake.dir} boost={boosting}")

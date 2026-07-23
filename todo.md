@@ -34,6 +34,23 @@ Core to the "game language" pitch.
   resolution" already documents for `tcp_connect`).
 - Audio playback -- still open, deferred as originally planned (least
   blocking for "useful program" broadly).
+- ~~Text rendering / font loading~~ -- done: `crate::codegen::font` closes
+  `projects/snake/NOTES.md` section 4's "no text/font rendering at all" gap
+  (undocumented here previously; the "audio/gamepad" bullet above was only
+  half of "game language I/O still missing"). SDL2 bundles no text renderer
+  of its own (that's `SDL_ttf`, a separate library not vendored here), so
+  this is a from-scratch bitmap-font renderer built on `draw_rect`'s own
+  `SDL_RenderFillRect` primitive rather than a binding to a third-party text
+  library: `default_font() -> ptr` (a compiled-in 5x7 monospace font),
+  `font_load(path) -> ptr`/`font_free(font)` (a small custom on-disk bitmap
+  format, `null` on failure), `draw_text(window, font, text, x, y, scale,
+  color)`/`measure_text(font, text, scale) -> (int, int)`. Also added
+  `get_pixel(window, x, y) -> Color32` (`SDL_RenderReadPixels`) as supporting
+  infrastructure -- previously there was no way for a Star program (or a
+  test) to read back a drawn pixel at all, so every SDL drawing builtin's
+  own tests could only assert "didn't crash," never "drew the right thing."
+  See `docs/language_reference.md`'s "Text Rendering / Font Loading" section
+  and the new test section at the end of `tests/frontend.rs`.
 
 Building a program that calls any of these needs SDL2 linked explicitly --
 `star build foo.star -L sdl/lib/x64 -l SDL2` -- and `sdl/lib/x64/SDL2.dll`
