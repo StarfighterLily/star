@@ -35,17 +35,18 @@ fn opposite(d: Direction) -> Direction:
         Direction::Left -> Direction::Right
         Direction::Right -> Direction::Left
 
-# Fieldless enums also can't be interpolated into an f-string (no `Ty::Enum`
-# arm in the f-string/print formatting tables -- falls through to the `%p`
-# vararg catch-all, the same invalid-IR bug class the historical
-# Color32/aggregate-vector f-string bugs were, per todo.md's bug-hunting
-# rounds 5/6). Route any HUD/console text through this instead of `f"{d}"`.
-fn dir_name(d: Direction) -> str:
-    match d:
-        Direction::Up -> "Up"
-        Direction::Down -> "Down"
-        Direction::Left -> "Left"
-        Direction::Right -> "Right"
+# A fieldless enum used to print as garbage hex (`0000000000000001`-style)
+# when interpolated straight into an f-string -- neither `emit_print_like`
+# nor the general f-string-as-value codegen path had a `Ty::Enum` arm in
+# their format-specifier tables, so the bare `i32` discriminant fell through
+# to the `%p` pointer catch-all (NOTES.md section 1.5; the same bug class
+# `Color32`/aggregate-vector f-strings hit before those got fixed). Both call
+# sites now have that arm, so `f"{d}"` prints the variant's real name
+# (`Down`, `Right`, ...) directly -- see
+# `runtime_println_fieldless_enum_prints_variant_name_end_to_end` /
+# `runtime_fstring_value_with_fieldless_enum_prints_variant_name_end_to_end`
+# in `tests/frontend.rs`. `dir_name`'s hand-written match is gone; callers
+# just write `f"{d}"`.
 
 # Wrap a cell around the board edges (borderless/classic-arcade mode) --
 # self-collision is the only death condition in this build.

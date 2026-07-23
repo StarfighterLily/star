@@ -4,7 +4,7 @@ This game (`grid.star`, `snake_body.star`, `food.star`, `save.star`,
 `main.star`) was written specifically to dogfood the Star compiler on a
 small but real multi-module program — `todo.md` #8 / `gamedev_gaps.md` item
 10's own suggestion. It deliberately touches modules, structs/enums/traits,
-generics, closures, match, `frame`/`arena`/`GenRef`, `par`/`swarm`,
+generics, closures, match, `frame`/`arena`/`GenRef`, `par`/`swarm`/`each`,
 `sequence` coroutines, `List`/`Map`/`Set`/`Ring`/tuples/fixed arrays,
 `Wrapping`/`BitField`/`Flags`, `Symbol`, file I/O, string/math builtins, a
 minimal `extern "C"` FFI call, and SDL2 graphics/input. Every finding below
@@ -24,6 +24,19 @@ Escape quits.
 ---
 
 ## 1. Confirmed compiler bugs (not missing features — genuine defects)
+
+**Every bug in this section has since been fixed** (follow-up compiler
+passes, after this write-up originally shipped) — each entry below now
+carries its own **Fixed** note explaining how, mirroring section 2's
+existing convention rather than inventing a second one. `projects/snake`'s
+own source has been updated to drop the corresponding workaround wherever
+doing so was a real improvement (not just possible) — see each entry for
+specifics, and the top of this file's build command/controls block, which
+is unaffected. The one gap this section's fixes *don't* touch is the
+broader "no module search-path resolution" issue `gamedev_gaps.md` #3
+tracks (resolving `import "foo.star"` against a search path rather than a
+literal relative path) — a genuinely different feature from diamond-import
+*unification* (1.1), which is what's fixed here.
 
 ### 1.1 Module system: diamond dependencies don't unify types (the big one)
 
@@ -77,6 +90,30 @@ on a `food::sb::Snake`-typed value) — `todo.md`'s own round-7 write-up only
 explicitly tested struct/function/enum-variant construction at depth, not
 method dispatch. That part holds up.
 
+**Fixed** (follow-up compiler pass, after this write-up): `crate::modules::
+resolve` now tags every top-level item with the canonical source file (and
+original declared name) it truly came from — `ItemProvenance` — and
+`dedupe_by_origin` collapses same-provenance items to one canonical
+declaration regardless of how many alias chains reach them, instead of
+mangling by alias-chain-to-reach-it. `main` importing `grid.star`,
+`snake_body.star`, and `food.star` all directly (the diamond shape this
+project's first draft wanted and couldn't have) now type-checks and runs
+correctly — see `resolve_collapses_diamond_dependency_to_one_struct_
+definition` / `runtime_diamond_dependency_import_unifies_shared_struct_
+type_end_to_end` in `tests/frontend.rs`. `projects/snake` itself has been
+updated to use this natural, non-linear import graph: `food.star` now
+imports `grid.star` directly instead of routing through `snake_body.star`,
+and `main.star` imports `grid.star`/`snake_body.star`/`food.star` all
+directly, spelling types as plain `grid::Cell`/`sb::Snake` instead of the
+old three-segment `food::sb::grid::Cell` chain. Chasing this fix down
+surfaced one more real bug, described in `resolve_reports_direct_duplicate_
+even_when_a_diamond_reimport_shares_the_same_name`'s own doc comment
+(`tests/frontend.rs`) and section 2.5 below: two *genuinely different*
+same-named top-level declarations sitting directly in one file (no import
+involved at all) used to be silently deduped as if they were the same
+diamond-reimported item — now fixed by tagging provenance with the
+`resolve_inner` call frame that produced it, not just the source path.
+
 ### 1.2 `frame:` blocks only reclaim space once per block, not per loop iteration
 
 `docs/language_reference.md` pitches `frame:` as "ephemeral... automatically
@@ -112,6 +149,21 @@ element is copied out by value, never a dangling pointer). `main.star`'s
 `frame_demo()` instead shows a `frame:` block correctly sized for its real
 budget — two small struct locals, no loop.
 
+**Fixed** (follow-up compiler pass, after this write-up): `@frame.off` is
+now saved/restored *per loop iteration* (`for`/`while` bodies inside a
+`frame:` block each get their own per-pass restore, including on `continue`
+and `break`, not just normal fallthrough), so a loop's allocations no
+longer accumulate across passes — see `runtime_for_loop_inside_frame_
+block_reclaims_space_per_iteration_end_to_end` / `runtime_while_loop_
+inside_frame_block_with_continue_reclaims_space_per_iteration_end_to_end` /
+`runtime_break_inside_frame_loop_reclaims_space_before_exiting_end_to_end`
+in `tests/frontend.rs`. `food.star`'s `spawn_food` was *not* reverted back
+to the original loop-inside-`frame:` shape this bug blocked: a plain
+`List<Cell>` never needed `frame:`'s safety net in the first place (see
+its own header comment), so there's nothing to gain by reintroducing a
+byte-budget to think about. `main.star`'s `frame_demo` is still the small,
+genuinely-bounded case `frame:` is actually for.
+
 ### 1.3 A `frame:` block ending in an explicit `return` emits invalid LLVM IR
 
 Tried as an intermediate fix for 1.2 before landing on the workaround
@@ -139,6 +191,17 @@ tiny one well under the byte cap.
 **Workaround shipped here**: never let a `return` be the last statement
 executed inside a `frame:` block. Write into a `let mut` declared *before*
 the block and return it as an ordinary trailing expression afterward.
+
+**Fixed** (follow-up compiler pass, after this write-up): `emit_frame_body`
+now skips the offset-restore `store` entirely when the block's body already
+terminates (`return`/`break`/`continue`, including through both arms of an
+`if`/`match`), since a terminated body never falls through to where the
+restore would run anyway — see `runtime_frame_block_ending_in_return_
+compiles_and_runs_end_to_end` / `runtime_frame_block_ending_in_if_else_
+both_returning_compiles_and_runs_end_to_end` in `tests/frontend.rs`. Not
+retrofitted into `projects/snake` itself — the workaround above (write into
+a `let mut`, return it afterward) isn't something this fix makes worse or
+better to keep, so it's left as-is rather than churned for its own sake.
 
 ### 1.4 A bare trailing `if cond: a else: b` is never a value — only `if` on a `let`'s RHS is
 
@@ -172,6 +235,44 @@ position. Confirmed two ways:
 `let` before using its value (`main.star`'s `pick_color` helper), and
 never end a `frame:` block with a bare conditional (see 1.2/1.3's fix).
 
+**Fixed** (follow-up compiler pass, after this write-up): `parse_if_stmt`
+now reuses the same compact single-line arm grammar (`parse_if_expr_arm`)
+the expression form already had, so a bare statement-position `if cond: a
+else: b` parses; `Checker::trailing_value_ty` gained a matching
+`TypedStmt::If` arm (mirroring the one `match` already had) so a bare
+trailing `if`/`else` — as a function's implicit return, or a `frame:`
+block's last statement — is recognized as a value, not just a
+`let`'s RHS. See `parses_compact_inline_if_else_at_statement_position` /
+`runtime_bare_trailing_compact_if_else_as_implicit_return_end_to_end` /
+`runtime_frame_block_ending_in_bare_if_else_as_trailing_value_end_to_end`
+in `tests/frontend.rs`. `main.star`'s `pick_color` no longer needs the
+`let result = ...; result` two-liner — it's a plain one-line `if cond: a
+else: b` implicit return now.
+
+Chasing this fix down turned up one more, independent codegen bug: the
+`TypedStmt::If` codegen path merges both arms' values with a `phi`, reading
+the merged LLVM type off of whichever arm's own *tagged* value string comes
+back (`"i32 %r"`, not bare `"%r"` — the convention every `emit_expr` arm is
+supposed to follow, per `reg_of`'s own doc comment). `TypedExpr::Ident`'s
+`emit_expr` arm didn't follow it — it returned a bare register with no type
+tag, since every *other* consumer of an `Ident`'s value only ever strips
+the type back off via `reg_of` and never noticed the tag was missing in the
+first place. A trailing `if cond: a else: b` returning a parameter
+*directly* — exactly `pick_color`'s real shape, `a`/`b` are `Color32`
+parameters, not literals — hit exactly this: the merge step found no space
+to split a type off of, `?`-propagated `None`, and the whole function
+failed at the `clang` step with "function must end in a value-producing
+expression or explicit return", despite `star check` accepting it cleanly.
+Confirmed live applying this very fix to `projects/snake`. **Fixed**:
+`TypedExpr::Ident`'s `emit_expr` arm now tags its result the same way every
+other arm does. Covered by `runtime_trailing_if_else_with_bare_struct_
+ident_arms_end_to_end` / `runtime_trailing_if_else_with_bare_scalar_ident_
+arms_end_to_end` / `runtime_trailing_if_else_with_one_bare_ident_arm_end_
+to_end` (the failure mode itself) and `runtime_ident_value_used_in_binop_
+and_call_arg_still_works_end_to_end` (guarding every other `Ident`-reading
+call site still works now that the tag is actually present) in
+`tests/frontend.rs`.
+
 ### 1.5 A fieldless enum interpolated into an f-string silently prints garbage
 
 Not a crash, not a compile error — a **silent wrong value**. Confirmed:
@@ -203,6 +304,15 @@ easiest variant of this bug class to ship without noticing.
 
 **Workaround shipped here**: `grid.star`'s `dir_name(d: Direction) -> str`
 hand-written match, used everywhere the game needs to show a direction.
+
+**Fixed** (follow-up compiler pass, after this write-up): both call sites
+(`Codegen::emit_print_like`'s fast path and the general f-string-as-value
+path in `codegen/expr.rs`) gained a `Ty::Enum` arm in their format-specifier
+tables, printing the variant's real name instead of falling through to the
+`%p` catch-all. See `runtime_println_fieldless_enum_prints_variant_name_
+end_to_end` / `runtime_fstring_value_with_fieldless_enum_prints_variant_
+name_end_to_end` in `tests/frontend.rs`. `grid.star`'s `dir_name` is gone —
+callers write `f"{d}"` directly now (`main.star`'s debug overlay does).
 
 ### 1.6 `docs/language_reference.md`'s own ECS render-system example doesn't compile
 
@@ -248,6 +358,27 @@ SDL, so that part is legal) but is never rendered, and its dead slots can
 never be reclaimed (see 2.1 below) — it's arena-shaped weight the game
 carries purely for the exercise, not something a real game would want to
 ship this way.
+
+**Fixed** (follow-up compiler pass, after this write-up, as part of closing
+2.1): `each item in ArenaName:` runs its body once per live element
+sequentially on the calling thread, so none of `par`/`swarm`'s cross-thread
+disjointness restrictions apply — SDL drawing builtins type-check and run
+fine inside it. See `accepts_each_calling_sdl_draw_builtins` and `runtime_each_calls_sdl_
+draw_builtin_end_to_end` in `tests/frontend.rs`, plus
+`runtime_snake_particle_each_draws_live_particles_via_sdl_end_to_end`'s
+direct exercise of `projects/snake`'s own `draw_particle_arena` shape.
+`main.star` no longer carries two
+parallel particle systems (a hand-rolled `[Particle; 32]` pool that got
+drawn, plus a genuine `Particles` arena that never did) — the arena is now
+the only particle system, drawn directly via `each p in Particles: ...
+draw_pixel(...)`, while `par` still ticks per-frame physics and `swarm`
+still dumps live particles to the console on the F1 debug toggle. `each`
+being sequential-only means it still can't replace `par`/`swarm` for
+anything that actually wants cross-thread work (ticking physics on 4
+workers, say) — it closes "can an arena's contents be drawn at all", not
+"can drawing happen concurrently across the worker pool", which remains
+out of scope for the reasons `par`/`swarm`'s SDL ban exists in the first
+place.
 
 ---
 
@@ -339,6 +470,15 @@ can't outlive the arena it's spawned into — both confirmed rejected, plus
 confirmed rejected transitively through a helper-function call the same way
 the statement form already was). See `tests/frontend.rs`'s
 `*_spawn_expr_*` tests.
+
+`projects/snake` originally only exercised this on the throwaway `Scratch`
+arena (`demo_genref_staleness`, a one-shot startup diagnostic, never touched
+by real gameplay). `main.star`'s `spawn_particle_burst` now uses it for
+real: `let idx = spawn Particles(...)` in the eat-handling path, feeding the
+last spawned burst particle's index into `GenRef<Particle>(idx)` for a
+debug-overlay log line when the F1 debug toggle is on — the actual "grab a
+live reference to the thing I just spawned" pattern this section's gap
+description names, not just an isolated repro of it.
 
 ### 2.3 Generic structs cannot have methods
 
@@ -495,9 +635,10 @@ zero-argument-function workaround was already leaning on, minus the
 function-call syntax and the artificial `fn`. `grid.star`'s `cols()`/
 `rows()`/`cell_size()` are gone, replaced with `const COLS: i32 = 32`/
 `const ROWS: i32 = 24`/`const CELL_SIZE: i32 = 20`; every call site across
-`food.star`/`main.star` (including the qualified `food::sb::grid::CELL_SIZE`
-forms reached through the diamond-avoiding import chain from 1.1) now reads
-the const directly instead of calling it. See
+`food.star`/`main.star` (spelled `grid::CELL_SIZE` now that 1.1's fix lets
+both modules import `grid.star` directly, rather than the three-segment
+`food::sb::grid::CELL_SIZE` the diamond-avoiding import chain used to force)
+now reads the const directly instead of calling it. See
 `examples/top_level_const.star` for a standalone repro of literals,
 cross-const references, casts, and the diagnostics for a cycle/duplicate/
 non-constant initializer.
@@ -534,21 +675,28 @@ diagnostic catches them as intended.
   see 1.1's positive note.
 - `Ring<T,N>` as a hand-managed deque (push new head, conditionally pop old
   tail) worked exactly as documented, including under a qualified element
-  type (`Ring<sb::grid::Cell, 768>`).
+  type (`Ring<grid::Cell, 768>`).
 - `Set<T>`/`Map<K,V>` over a plain 2-field `i32` struct (`Cell`) worked with
   zero friction.
 - `Wrapping<u8>`, `BitField<8>`, `Flags<E>`, `Symbol` all worked first try,
   including printing `BitField<8>`/`Wrapping<u8>` directly in f-strings
-  (unlike plain enums — see 1.5) and `Symbol` round-tripping through
-  `symbol_name`.
+  (plain enums now print their variant name directly too, post-1.5's fix)
+  and `Symbol` round-tripping through `symbol_name`.
 - `sequence` coroutines (`FlashOnEat`/`GameOverFlash`) worked exactly as
   `examples/sequence.star` shows, including being constructed fresh inside
   a loop rather than once at startup.
 - `par`/`swarm` safety guarantees held up under real use — mutating a loop
-  variable's own fields, calling `println` (not banned) from `swarm`.
+  variable's own fields, calling `println` (not banned) from `swarm`. Once
+  `each` existed (2.1/1.6), the same held for sequential single-threaded
+  arena iteration too, including calling banned-in-`par`/`swarm` SDL
+  drawing builtins from inside it.
 - `GenRef` staleness (`demo_genref_staleness`) reproduced
   `arena_freelist.star`'s own result exactly: a stale reference reads back
-  the zero value, a fresh one reads the new occupant.
+  the zero value, a fresh one reads the new occupant. Once `spawn` gained
+  its expression form (2.2), the same `GenRef` machinery read back a
+  just-spawned entity's own constructor arguments correctly too — exercised
+  for real in `main.star`'s particle-burst handling, not just the isolated
+  `Scratch`-arena demo.
 - File I/O (`file_open`/`file_write`/`file_read_line`/`file_close`/
   `file_exists`), `str_split`/`str_trim`, and a minimal `extern "C" fn
   toupper`/`atoi` FFI pair all worked with no surprises.
@@ -581,7 +729,32 @@ diagnostic catches them as intended.
   see 2.2 above: `let idx = spawn ArenaName(...)` now reports the slot index
   to feed straight into `GenRef<T>(idx)`. ~~No top-level `const`/`let`
   (2.5)~~ — fixed, see 2.5 above: `const NAME: Type = <constant expr>` is
-  now a legal top-level item. The module search-path gap
-  `gamedev_gaps.md` #3 already flags (real, but this project's diamond-
-  dependency finding, 1.1, is the sharper edge of that same gap) is the
-  most significant gap from this exercise still open.
+  now a legal top-level item (plain top-level `let` is still rejected on
+  purpose — a `const` must fold to a literal at check time, which a mutable
+  `let` binding can't guarantee, so the two aren't just spelling variants of
+  the same feature). ~~Generic structs can't have methods (2.3)~~ — fixed,
+  see 2.3 above: `impl Box<T>:` now parses and monomorphizes correctly, plus
+  an independent, previously-invisible codegen bug (`self` returned by value
+  producing a bare pointer instead of the struct value) that fix surfaced
+  along the way. ~~Fieldless enums/structs don't support `==`/`!=` (2.4)~~ —
+  fixed, see 2.4 above: `grid.star`'s `cell_eq` workaround and `Snake`'s
+  delta-based reversal-check workaround are both gone, replaced with direct
+  `==` comparisons.
+- ~~Section 1's six confirmed compiler bugs (module-diamond-import
+  unification 1.1, per-iteration `frame:` reclaim 1.2, `frame:`-ending-in-
+  `return` codegen 1.3, bare trailing `if`/`else` as a value 1.4, fieldless
+  enum f-string printing 1.5, and no way to draw an arena's contents 1.6)~~
+  — all six are now fixed; see each entry's own **Fixed** note in section 1
+  above for what changed and how `projects/snake` itself was updated (or,
+  in 1.2/1.3's case, deliberately left alone) once the underlying compiler
+  bug no longer forced the workaround.
+- The one item from this whole exercise that's still genuinely open: the
+  broader module **search-path resolution** gap `gamedev_gaps.md` #3
+  tracks — resolving `import "foo.star"` against a configurable search path
+  (or a project-relative root) rather than only a literal path relative to
+  the importing file. This project's diamond-import *unification* bug
+  (1.1) was a sharper, concrete edge of the same general "module system
+  can't back a real multi-file project's layout" area, and is now fixed —
+  but path *resolution* itself (as opposed to what happens once two import
+  chains reach the same file) is a different feature, untouched by 1.1's
+  fix, and remains the most significant gap from this exercise still open.

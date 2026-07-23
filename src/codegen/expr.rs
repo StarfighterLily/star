@@ -366,7 +366,24 @@ impl Codegen {
                 // reference -- retain so the duplicate is properly owned
                 // (see `rc.rs`; a no-op unless `ty` is RC-bearing).
                 self.emit_retain_at(&ptr, ty);
-                reg
+                // Every other `emit_expr` arm tags its result with its LLVM
+                // type (`"i32 %r"`, not bare `"%r"` -- see `reg_of`'s doc
+                // comment on the convention every caller relies on). This
+                // arm used to return the bare register, which most callers
+                // never noticed because they only ever strip the type back
+                // off via `reg_of`: harmless on a bare register (nothing to
+                // strip) and harmless on a tagged one (strips the tag). The
+                // one caller that actually needs the tag *present* --
+                // `emit_trailing_if_value`'s `split_once(' ')`, extracting
+                // the phi's merged type from either arm's value -- silently
+                // came back `None` whenever a trailing `if`/`else` arm was a
+                // bare identifier (e.g. `if cond: a else: b` returning a
+                // parameter directly), which `emit_stmts_value`'s `?`
+                // propagated all the way out to "function must end in a
+                // value-producing expression" even though the checker had
+                // already accepted the exact same shape. Confirmed live
+                // building `projects/snake`'s `pick_color` helper.
+                format!("{} {}", ts, reg)
             }
             TypedExpr::SelfExpr(ty, _) => {
                 // `self` is passed by pointer (see `emit_fn`'s `is_self`

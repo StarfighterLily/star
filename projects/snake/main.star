@@ -2,17 +2,20 @@
 # item 10's own suggested "write one small real game" step) meant to exercise
 # as much of the language surface as one program can reasonably reach:
 # modules, structs/enums/traits/generics, closures, match, `frame`/`arena`/
-# `GenRef`, `par`/`swarm`, `sequence` coroutines, `List`/`Map`/`Set`/`Ring`/
-# tuples/fixed arrays, `Wrapping`/`BitField`/`Flags`, `Symbol`, file I/O,
-# string/math builtins, a minimal `extern "C"` FFI call, and SDL2 graphics/
-# input. See NOTES.md (this directory) for every gap/roadblock this surfaced
-# -- most notably a module-diamond-dependency limitation (worked around
-# below by importing `food.star` as the *only* path down to `grid`/`Snake`
-# types, never `snake_body.star` directly -- see food.star's own comment)
-# and a confirmed regression in `docs/language_reference.md`'s own ECS
-# render-system example (SDL drawing builtins are banned inside `par`/
-# `swarm` bodies, so an arena's contents can never be drawn directly --
-# worked around below with a plain fixed-array particle pool instead).
+# `GenRef`, `par`/`swarm`/`each`, `sequence` coroutines, `List`/`Map`/`Set`/
+# `Ring`/tuples/fixed arrays, `Wrapping`/`BitField`/`Flags`, `Symbol`, file
+# I/O, string/math builtins, a minimal `extern "C"` FFI call, and SDL2
+# graphics/input. See NOTES.md (this directory) for every gap/roadblock this
+# surfaced along the way and how each was ultimately closed at the compiler
+# level -- most notably a module-diamond-dependency limitation (section 1.1;
+# `main` imports `grid.star`, `snake_body.star`, and `food.star` directly
+# below, the "obvious" diamond-shaped module graph that used to fail to
+# type-check at all) and a confirmed regression in
+# `docs/language_reference.md`'s own ECS render-system example (section 1.6;
+# SDL drawing builtins are banned inside `par`/`swarm` bodies, but `each`
+# -- added afterward -- runs sequentially and isn't, so the `Particles`
+# arena below is drawn directly through it instead of the hand-rolled
+# object-pool workaround this file used to carry).
 #
 # Build (from the repo root, SDL2 must be linked explicitly):
 #   star build projects/snake/main.star -L sdl/lib/x64 -l SDL2 -o projects/snake/snake.exe
@@ -22,6 +25,8 @@
 # overlay printed to the console, hold Left Shift to boost, R restarts after
 # a game over, Escape quits.
 
+import "grid.star" as grid
+import "snake_body.star" as sb
 import "food.star" as food
 import "save.star" as save
 
@@ -29,15 +34,25 @@ enum GameFlag:
     Paused
     Debug
 
-# ---- Particle burst effect: a fixed-capacity, hand-rolled object pool ----
-# (dead slots, `life <= 0.0`, are just overwritten by the next spawn) rather
-# than an `arena`. An `arena`'s *only* iteration primitives are `par`/
-# `swarm`, and every SDL drawing builtin is banned inside both (confirmed --
-# see this file's own header comment and NOTES.md), so there is no way to
-# draw an arena's contents at all today. `ParticlePool` below is ordinary
-# sequential code instead: a `[Particle; N]` field mutated through `mut
-# self` methods, looped with a plain `while`, free to call `draw_pixel`
-# because it never goes through `par`/`swarm`.
+# ---- Particle burst effect: a real `arena`, drawn directly via `each` -----
+# This used to be two parallel systems: a hand-rolled `[Particle; 32]` pool
+# (mutated with a plain `while` loop, free to call `draw_pixel` because it
+# never went through `par`/`swarm`) that actually got drawn, plus a genuine
+# `Particles` arena kept around only to demonstrate `spawn`/`par`/`swarm`/
+# `GenRef` -- never rendered, because `par`/`swarm` were the *only* arena
+# iteration primitives that existed and both ban every SDL drawing builtin
+# (NOTES.md section 1.6: an arena's contents could never be drawn to the
+# screen, full stop, contradicting `docs/language_reference.md`'s own
+# flagship ECS render-system example). `each` closed that: it runs its body
+# once per live element sequentially on the calling thread, so none of
+# `par`/`swarm`'s cross-thread disjointness restrictions apply, and SDL
+# drawing calls type-check fine inside it (see
+# `accepts_each_calling_sdl_draw_builtins` in `tests/frontend.rs`). The
+# `Particles` arena below is now the *only* particle system -- `par` still
+# ticks physics every frame (mutating each loop variable's own fields, the
+# exact safe pattern NOTES.md section 3 already confirmed), `each` draws and
+# reclaims dead slots, and `swarm` still dumps live particles to the console
+# on the F1 debug toggle.
 struct Particle:
     mut x: f32 = 0.0
     mut y: f32 = 0.0
@@ -45,62 +60,30 @@ struct Particle:
     mut vy: f32 = 0.0
     mut life: f32 = 0.0
 
-struct ParticlePool:
-    mut items: [Particle; 32]
-
-impl ParticlePool:
-    fn spawn_burst(mut self, cx: f32, cy: f32):
-        let mut placed = 0
-        let mut i = 0
-        while i < 32 and placed < 6:
-            if self.items[i].life <= 0.0:
-                let angle = rand() * 6.2831853
-                let speed = 1.0 + rand() * 2.0
-                self.items[i] = Particle(x = cx, y = cy, vx = cos(angle) * speed, vy = sin(angle) * speed, life = 0.45)
-                placed += 1
-            i += 1
-
-    fn update(mut self, dt: f32):
-        let mut i = 0
-        while i < 32:
-            if self.items[i].life > 0.0:
-                self.items[i].life -= dt
-                self.items[i].x += self.items[i].vx
-                self.items[i].y += self.items[i].vy
-                self.items[i].vy += 0.12
-            i += 1
-
-    fn draw(self, w: ptr):
-        let mut i = 0
-        while i < 32:
-            if self.items[i].life > 0.0:
-                let alpha = clamp(self.items[i].life * 255.0 / 0.45, 0.0, 255.0)
-                draw_pixel(w, self.items[i].x as i32, self.items[i].y as i32, Color32(255, 210, 90, alpha as i32))
-            i += 1
-
-# ---- A genuine arena, purely to demonstrate spawn/par/swarm/GenRef -------
-# (not rendered -- see the header comment/NOTES.md for why an arena's
-# contents can't be drawn). Fed the exact same burst events as
-# `ParticlePool` above, ticked by `par` every frame, and dumped to the
-# console via `swarm` (println isn't in the SDL/rand/Symbol ban list, so
-# this one's legal) when the debug overlay is toggled on.
-#
-# NOTES.md section 2.1 used to flag this arena as unable to ever reclaim a
-# dead slot: `despawn` needs a slot index, `par`/`swarm` are the only
-# iteration primitives that existed, and `despawn` is (still, necessarily)
-# banned inside both -- concurrent generation bumps aren't disjoint across
-# worker threads. That gap is now closed at the language level: `each item,
-# idx in ArenaName:` binds the current slot's index, and `despawn` was never
-# actually banned inside `each` (only inside `par`/`swarm`) -- there was
-# just no way to name the slot before. `reclaim_dead_particles` below is
-# exactly the "scan every entity, despawn the ones matching a runtime
-# condition" pattern 2.1 said this game couldn't express.
+# NOTES.md section 2.1: arena capacity is per-arena now (`= 256` here),
+# rather than one hardcoded 1024-element constant shared by every arena in
+# the program.
 arena Particles: Particle = 256
 
 fn tick_particle_arena(dt: f32):
     par p in Particles:
-        p.life -= dt
+        if p.life > 0.0:
+            p.life -= dt
+            p.x += p.vx
+            p.y += p.vy
+            p.vy += 0.12
 
+fn draw_particle_arena(w: ptr):
+    each p in Particles:
+        if p.life > 0.0:
+            let alpha = clamp(p.life * 255.0 / 0.45, 0.0, 255.0)
+            draw_pixel(w, p.x as i32, p.y as i32, Color32(255, 210, 90, alpha as i32))
+
+# NOTES.md section 2.1's own motivating pattern: scan every entity, despawn
+# the ones matching a runtime condition -- impossible before `each item,
+# idx in ArenaName:` existed to name the slot to reclaim (`despawn` itself
+# was never actually banned outside `par`/`swarm`, there was just no
+# expression naming which slot to despawn).
 fn reclaim_dead_particles():
     each p, i in Particles:
         if p.life <= 0.0:
@@ -111,6 +94,25 @@ fn dump_particle_arena():
     swarm p in Particles:
         if p.life > 0.0:
             println(f"  x={p.x} y={p.y} life={p.life}")
+
+# NOTES.md section 2.2: `let idx = spawn ArenaName(...)` reports the raw
+# slot index a spawn just landed in (`-1` if the arena was full and the
+# spawn was silently dropped), closing the old "only ever knowing slot 0"
+# gap -- feed it straight into `GenRef<T>(idx)` for a live handle to the
+# entity that call just created. Returns the last spawned slot's index so
+# `main`'s eat-handling can grab a real handle to it below, instead of only
+# ever exercising this on the throwaway `Scratch` arena the way
+# `demo_genref_staleness` does.
+fn spawn_particle_burst(cx: f32, cy: f32) -> i32:
+    let mut last_idx = 0 - 1
+    let mut n = 0
+    while n < 6:
+        let angle = rand() * 6.2831853
+        let speed = 1.0 + rand() * 2.0
+        let idx = spawn Particles(cx, cy, cos(angle) * speed, sin(angle) * speed, 0.45)
+        last_idx = idx
+        n += 1
+    last_idx
 
 struct ScratchSlot:
     mut tag: i32
@@ -153,17 +155,28 @@ fn demo_genref_staleness():
     println(f"[genref demo] stale ref reads tag={stale_ref[0].tag} (expect 0 -- despawned generation)")
     println(f"[genref demo] fresh ref reads tag={fresh_ref[0].tag} (expect 222)")
 
-fn cell_px(c: food::sb::grid::Cell) -> (i32, i32):
-    (c.x * food::sb::grid::CELL_SIZE, c.y * food::sb::grid::CELL_SIZE)
+fn cell_px(c: grid::Cell) -> (i32, i32):
+    (c.x * grid::CELL_SIZE, c.y * grid::CELL_SIZE)
 
-fn draw_cell(w: ptr, c: food::sb::grid::Cell, color: Color32):
+fn draw_cell(w: ptr, c: grid::Cell, color: Color32):
     let px = cell_px(c)
-    draw_rect(w, px.0, px.1, food::sb::grid::CELL_SIZE - 1, food::sb::grid::CELL_SIZE - 1, color)
+    draw_rect(w, px.0, px.1, grid::CELL_SIZE - 1, grid::CELL_SIZE - 1, color)
 
-# A tiny generic-flavored helper (no generic `impl` needed -- see NOTES.md's
-# "generic structs can't have methods" finding) to pick a color by a
-# boolean condition, exercising `Fn(...) -> T`-shaped code reuse a little
-# further.
+# A tiny generic-flavored helper (no generic `impl` needed for something
+# this small -- see NOTES.md section 2.3: generic struct methods now work,
+# but retrofitting a one-line helper like this onto a `Box<T>`-style wrapper
+# would be churn for its own sake, not something anything still blocks).
+#
+# The body below is now a bare trailing `if`/`else` expression -- NOTES.md
+# section 1.4 confirmed a bare statement-position `if cond: a else: b` never
+# parsed as a value (only `let x = if ... else ...` did), so this used to
+# need a throwaway `let result = ...` binding just to return it on the next
+# line. `parse_if_stmt` now reuses the same compact-arm grammar the
+# expression form always had, and the checker's `trailing_value_ty` gained a
+# matching `TypedStmt::If` arm, so this is a plain one-line implicit return.
+fn pick_color(cond: bool, a: Color32, b: Color32) -> Color32:
+    if cond: a else: b
+
 # A `frame:` block correctly sized for its real 4096-byte capacity (see
 # food.star's `spawn_food` header comment for the loop-shaped version of
 # this that isn't) -- mirrors `docs/language_reference.md`'s own `astar`
@@ -173,25 +186,13 @@ fn draw_cell(w: ptr, c: food::sb::grid::Cell, color: Color32):
 # escape-tracked).
 fn frame_demo() -> i32:
     frame:
-        let node1 = food::sb::grid::Cell(x = 3, y = 4)
-        let node2 = food::sb::grid::Cell(x = 10, y = 20)
+        let node1 = grid::Cell(x = 3, y = 4)
+        let node2 = grid::Cell(x = 10, y = 20)
         node1.x + node2.y
 
-fn pick_color(cond: bool, a: Color32, b: Color32) -> Color32:
-    # A bare statement-position `if` always parses via the imperative
-    # if-STATEMENT grammar (an indented block on each arm), never the
-    # compact single-line `if c: a else: b` expression form -- that form
-    # only parses when it appears in an expression context (e.g. a `let`'s
-    # RHS, confirmed working a few lines below and throughout this file).
-    # Confirmed by a real parse error here: "expected end of line, found
-    # identifier `a`" when this was written as a bare trailing
-    # `if cond: a else: b`. See NOTES.md.
-    let result = if cond: a else: b
-    result
-
 fn main():
-    let width = food::sb::grid::COLS * food::sb::grid::CELL_SIZE
-    let height = food::sb::grid::ROWS * food::sb::grid::CELL_SIZE
+    let width = grid::COLS * grid::CELL_SIZE
+    let height = grid::ROWS * grid::CELL_SIZE
     let w = window_create("Star Snake", width, height)
     if is_null(w):
         println("window_create failed")
@@ -207,7 +208,7 @@ fn main():
 
     rand_seed(ticks())
 
-    let mut snake = food::sb::make_snake()
+    let mut snake = sb::make_snake()
     let mut food_cell = food::spawn_food(snake.body, snake.length())
 
     let mut flags: Flags<GameFlag> = Flags<GameFlag>()
@@ -215,7 +216,6 @@ fn main():
     let mut events: List<Symbol> = List<Symbol>()
     let mut pulse: Wrapping<u8> = Wrapping<u8>(0 as u8)
     let mut leaderboard: [i32; 5] = [0; 5]
-    let mut pool = ParticlePool(items = [Particle(); 32])
 
     let mut last_move = ticks()
     let mut last_key_p = false
@@ -263,20 +263,20 @@ fn main():
         if !snake.alive:
             let r_now = key_down(r_sc)
             if r_now and !last_key_r:
-                snake = food::sb::make_snake()
+                snake = sb::make_snake()
                 food_cell = food::spawn_food(snake.body, snake.length())
                 stats.score = 0
                 events = List<Symbol>()
             last_key_r = r_now
         else:
             if key_down(up_sc) or key_down(w_sc):
-                snake.queue_turn(food::sb::grid::Direction::Up)
+                snake.queue_turn(grid::Direction::Up)
             if key_down(down_sc) or key_down(s_sc):
-                snake.queue_turn(food::sb::grid::Direction::Down)
+                snake.queue_turn(grid::Direction::Down)
             if key_down(left_sc) or key_down(a_sc):
-                snake.queue_turn(food::sb::grid::Direction::Left)
+                snake.queue_turn(grid::Direction::Left)
             if key_down(right_sc) or key_down(d_sc):
-                snake.queue_turn(food::sb::grid::Direction::Right)
+                snake.queue_turn(grid::Direction::Right)
 
             boosting = key_down(shift_sc)
             let effective_interval = if boosting: stats.move_interval_ms / 2 else: stats.move_interval_ms
@@ -293,10 +293,12 @@ fn main():
                     stats.score += 10
                     events.push(Symbol("eat"))
                     let px = cell_px(food_cell)
-                    let burst_x = (px.0 + food::sb::grid::CELL_SIZE / 2) as f32
-                    let burst_y = (px.1 + food::sb::grid::CELL_SIZE / 2) as f32
-                    pool.spawn_burst(burst_x, burst_y)
-                    spawn Particles(burst_x, burst_y, 0.0, 0.0, 0.45)
+                    let burst_x = (px.0 + grid::CELL_SIZE / 2) as f32
+                    let burst_y = (px.1 + grid::CELL_SIZE / 2) as f32
+                    let last_particle_idx = spawn_particle_burst(burst_x, burst_y)
+                    if flags_has(flags, GameFlag::Debug) and last_particle_idx >= 0:
+                        let handle = GenRef<Particle>(last_particle_idx)
+                        println(f"[spawn handle] particle just spawned at slot {last_particle_idx}, life={handle[0].life}")
                     let mut flash = FlashOnEat(w)
                     let mut flashing = true
                     while flashing:
@@ -342,8 +344,8 @@ fn main():
             w,
             food_px.0 - food_grow,
             food_px.1 - food_grow,
-            food::sb::grid::CELL_SIZE - 1 + food_grow * 2,
-            food::sb::grid::CELL_SIZE - 1 + food_grow * 2,
+            grid::CELL_SIZE - 1 + food_grow * 2,
+            grid::CELL_SIZE - 1 + food_grow * 2,
             Color32(230, 90, 90, 255),
         )
 
@@ -353,13 +355,12 @@ fn main():
             draw_cell(w, snake.body[i], pick_color(is_head, Color32(140, 230, 160, 255), Color32(80, 190, 120, 255)))
             i += 1
 
-        pool.update(0.016)
-        pool.draw(w)
         tick_particle_arena(0.016)
+        draw_particle_arena(w)
         reclaim_dead_particles()
 
         if flags_has(flags, GameFlag::Debug):
-            println(f"[debug] score={stats.score} high={stats.high_score} len={snake.length()} paused={flags_has(flags, GameFlag::Paused)} dir={food::sb::grid::dir_name(snake.dir)} boost={boosting}")
+            println(f"[debug] score={stats.score} high={stats.high_score} len={snake.length()} paused={flags_has(flags, GameFlag::Paused)} dir={snake.dir} boost={boosting}")
 
         present(w)
         delay(16)
