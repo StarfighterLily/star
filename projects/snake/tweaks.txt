@@ -1,0 +1,13 @@
+# Star Snake tuning overrides.
+#
+# Applied at startup by `Tuning::load_from_file` (main.star) via the runtime
+# reflection builtins `reflect_has_field`/`reflect_set_i32`/`reflect_set_f32`/
+# `reflect_set_bool` (todo.md #7, "wire up reflection into an actual runtime
+# feature") -- edit a value below and rerun the game to see it take effect,
+# with no recompiling. Unrecognized keys are ignored (logged, not fatal);
+# only fields declared `@tweakable` on `Tuning` (main.star) are reachable
+# this way at all.
+move_interval_ms=100
+particle_gravity=0.0
+particle_life=25
+particles_enabled=true

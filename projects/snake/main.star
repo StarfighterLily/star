@@ -66,13 +66,13 @@ struct Particle:
 # the program.
 arena Particles: Particle = 256
 
-fn tick_particle_arena(dt: f32):
+fn tick_particle_arena(dt: f32, gravity: f32):
     par p in Particles:
         if p.life > 0.0:
             p.life -= dt
             p.x += p.vx
             p.y += p.vy
-            p.vy += 0.12
+            p.vy += gravity
 
 fn draw_particle_arena(w: ptr):
     each p in Particles:
@@ -104,13 +104,13 @@ fn dump_particle_arena():
 # `main`'s eat-handling can grab a real handle to it below, instead of only
 # ever exercising this on the throwaway `Scratch` arena the way
 # `demo_genref_staleness` does.
-fn spawn_particle_burst(cx: f32, cy: f32) -> i32:
+fn spawn_particle_burst(cx: f32, cy: f32, life: f32) -> i32:
     let mut last_idx = 0 - 1
     let mut n = 0
     while n < 6:
         let angle = rand() * 6.2831853
         let speed = 1.0 + rand() * 2.0
-        let idx = spawn Particles(cx, cy, cos(angle) * speed, sin(angle) * speed, 0.45)
+        let idx = spawn Particles(cx, cy, cos(angle) * speed, sin(angle) * speed, life)
         last_idx = idx
         n += 1
     last_idx
@@ -123,7 +123,101 @@ arena Scratch: ScratchSlot
 struct Stats:
     @export mut score: i32 = 0
     @export mut high_score: i32 = 0
+
+extern "C" fn atof(s: str) -> f64
+
+# todo.md #7, "wire up reflection into an actual runtime feature":
+# `@export`/`@tweakable` used to only emit descriptive offset/type metadata
+# strings into the compiled `.ll` (`Codegen::emit_reflect_metadata`) with no
+# in-process consumer at all -- editing a tunable required a recompile like
+# any other constant. `reflect_get_i32`/`_f32`/`_bool`/`reflect_set_i32`/
+# `_f32`/`_bool`/`reflect_has_field` (`crate::codegen::reflect`) close that
+# gap with a real, minimal hot-reload workflow: every knob a designer would
+# actually want to retune while playing lives on this one struct, and
+# `Tuning::load_from_file` (below) applies a plain-text `key=value` file to
+# it by *runtime* field name -- edit `tweaks.txt`, rerun, no recompiling the
+# game to try a new value. `move_interval_ms` used to live on `Stats`
+# instead (grouped with `score`/`high_score` only because both got a
+# decorator early on, before there was any runtime consumer to justify
+# separating "what's read-only-visible" from "what's actually meant to be
+# retuned") -- moved here now that `Tuning` is a real, dedicated home for
+# designer-facing knobs instead of an arbitrary label.
+struct Tuning:
     @tweakable mut move_interval_ms: i32 = 120
+    @tweakable mut particle_gravity: float = 0.12
+    @tweakable mut particle_life: float = 0.45
+    @tweakable mut particles_enabled: bool = true
+
+# A tiny hand-rolled decimal-integer parser rather than `extern "C" fn atoi`
+# -- `save.star` already declares `atoi` for its own difficulty-tag parsing,
+# and an `extern "C" fn` declared more than once anywhere in the same
+# compiled program (even under two different aliases reaching the same real
+# C symbol) is a hard checker error (confirmed live: `extern "C" fn atoi`
+# repeated in `main.star` after `save.star` already has one fails with
+# "extern fn `atoi` is declared more than once") -- and unlike an ordinary
+# `fn`, an `extern "C" fn` isn't reachable through a qualified module path
+# either (confirmed live: `save::atoi(..)` reports "undefined name
+# `save__atoi`"), so there's no way to *reuse* `save.star`'s declaration
+# from here short of duplicating it. `atof` (used by `Tuning::
+# load_from_file` below, for its two `float` fields) has no such collision
+# -- nothing else in this project declares it -- so that one *is* real FFI.
+fn parse_int_tweak(s: str) -> i32:
+    let bytes = bytes_from_str(s)
+    let mut result = 0
+    let mut i = 0
+    let mut neg = false
+    if bytes.len() > 0 and (bytes[0] as i32) == 45:
+        neg = true
+        i = 1
+    while i < bytes.len():
+        let d = (bytes[i] as i32) - 48
+        if d < 0 or d > 9:
+            break
+        result = result * 10 + d
+        i += 1
+    if neg: 0 - result else: result
+
+impl Tuning:
+    # Reads `path` one line at a time (`file_read_line`'s established EOF-is-
+    # empty-string convention, same as `save::load_high_score`), skipping
+    # blank lines and `#`-prefixed comments, and applies every `key=value`
+    # line whose `key` names a real `@tweakable` field of this struct via
+    # the matching typed `reflect_set_*` builtin -- `reflect_has_field`
+    # guards a stray/misspelled key in the file into a harmless no-op rather
+    # than a crash or a confusing silent zero, the same "fail safe" instinct
+    # every other runtime-keyed lookup in this compiler already has. A
+    # missing tweaks file is not an error (mirrors `load_high_score`'s own
+    # "missing save is a fresh start, not a failure" convention exactly) --
+    # the game plays fine with this struct's own compiled-in defaults.
+    fn load_from_file(mut self, path: str):
+        if !file_exists(path):
+            return
+        let f = file_open(path, "r")
+        if is_null(f):
+            return
+        while true:
+            let line = file_read_line(f)
+            if line == "":
+                break
+            let trimmed = str_trim(line)
+            if trimmed == "" or str_starts_with(trimmed, "#"):
+                continue
+            let parts = str_split(trimmed, "=")
+            if parts.len() != 2:
+                continue
+            let key = str_trim(parts[0])
+            let value = str_trim(parts[1])
+            if !reflect_has_field(self, key):
+                println(f"[tweaks] ignoring unknown key \"{key}\" in {path}")
+                continue
+            if key == "move_interval_ms":
+                reflect_set_i32(self, key, parse_int_tweak(value))
+                continue
+            if key == "particles_enabled":
+                reflect_set_bool(self, key, value == "true")
+                continue
+            reflect_set_f32(self, key, atof(value) as float)
+        file_close(f)
 
 sequence FlashOnEat(w: ptr):
     clear_screen(w, Color32(235, 235, 245, 255))
@@ -213,8 +307,12 @@ fn main():
 
     let save_path = "snake_save.txt"
     let loaded = save::load_high_score(save_path)
-    let mut stats = Stats(score = 0, high_score = loaded.0, move_interval_ms = 120)
+    let mut stats = Stats(score = 0, high_score = loaded.0)
     println(f"[save] loaded high score {stats.high_score}, difficulty tag \"{loaded.1}\"")
+
+    let mut tuning = Tuning(move_interval_ms = 120, particle_gravity = 0.12, particle_life = 0.45, particles_enabled = true)
+    tuning.load_from_file("tweaks.txt")
+    println(f"[tweaks] move_interval_ms={tuning.move_interval_ms} particle_gravity={tuning.particle_gravity} particle_life={tuning.particle_life} particles_enabled={tuning.particles_enabled}")
 
     rand_seed(ticks())
 
@@ -289,7 +387,7 @@ fn main():
                 snake.queue_turn(grid::Direction::Right)
 
             boosting = key_down(shift_sc)
-            let effective_interval = if boosting: stats.move_interval_ms / 2 else: stats.move_interval_ms
+            let effective_interval = if boosting: tuning.move_interval_ms / 2 else: tuning.move_interval_ms
 
             let now = ticks()
             if !flags_has(flags, GameFlag::Paused) and now - last_move >= effective_interval:
@@ -305,7 +403,9 @@ fn main():
                     let px = cell_px(food_cell)
                     let burst_x = (px.0 + grid::CELL_SIZE / 2) as f32
                     let burst_y = (px.1 + grid::CELL_SIZE / 2) as f32
-                    let last_particle_idx = spawn_particle_burst(burst_x, burst_y)
+                    let mut last_particle_idx = 0 - 1
+                    if tuning.particles_enabled:
+                        last_particle_idx = spawn_particle_burst(burst_x, burst_y, tuning.particle_life)
                     if flags_has(flags, GameFlag::Debug) and last_particle_idx >= 0:
                         let handle = GenRef<Particle>(last_particle_idx)
                         println(f"[spawn handle] particle just spawned at slot {last_particle_idx}, life={handle[0].life}")
@@ -365,7 +465,7 @@ fn main():
             draw_cell(w, snake.body[i], pick_color(is_head, Color32(140, 230, 160, 255), Color32(80, 190, 120, 255)))
             i += 1
 
-        tick_particle_arena(0.016)
+        tick_particle_arena(0.016, tuning.particle_gravity)
         draw_particle_arena(w)
         reclaim_dead_particles()
 
@@ -387,7 +487,7 @@ fn main():
             draw_text(w, font, line2, (width - sz2.0) / 2, height / 2 + 6, 2, Color32(230, 230, 235, 255))
 
         if flags_has(flags, GameFlag::Debug):
-            println(f"[debug] score={stats.score} high={stats.high_score} len={snake.length()} paused={flags_has(flags, GameFlag::Paused)} dir={snake.dir} boost={boosting}")
+            println(f"[debug] score={stats.score} high={stats.high_score} len={snake.length()} paused={flags_has(flags, GameFlag::Paused)} dir={snake.dir} boost={boosting} interval={tuning.move_interval_ms} gravity={tuning.particle_gravity} particles={tuning.particles_enabled}")
 
         present(w)
         delay(16)

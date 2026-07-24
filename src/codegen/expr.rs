@@ -643,6 +643,15 @@ impl Codegen {
                     Some("draw_text") => { self.emit_draw_text(args); "%undef".into() }
                     Some("measure_text") => self.emit_measure_text(args),
                     Some("get_pixel") => self.emit_get_pixel(args),
+                    // `todo.md` #7, "wire up reflection into an actual
+                    // runtime feature" -- see `crate::codegen::reflect`.
+                    Some("reflect_get_i32") => self.emit_reflect_get(args, &Ty::Int),
+                    Some("reflect_get_f32") => self.emit_reflect_get(args, &Ty::Float),
+                    Some("reflect_get_bool") => self.emit_reflect_get(args, &Ty::Bool),
+                    Some("reflect_set_i32") => self.emit_reflect_set(args, &Ty::Int),
+                    Some("reflect_set_f32") => self.emit_reflect_set(args, &Ty::Float),
+                    Some("reflect_set_bool") => self.emit_reflect_set(args, &Ty::Bool),
+                    Some("reflect_has_field") => self.emit_reflect_has_field(args),
                     Some(name) if self.extern_fns.contains(name) => self.emit_extern_call(name, args, expr),
                     _ => self.emit_call_expr(callee, args, expr),
                 }

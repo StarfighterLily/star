@@ -193,10 +193,34 @@ rather than speculatively.
   argument promotion. New example `examples/trig_log.star`.
 
 ### 7. Wire up reflection into an actual runtime feature
-`@export`/`@tweakable` currently only emit descriptive metadata strings — there
-is no hot-reload runtime or file watcher consuming them yet. Lower priority
-since it's a productivity/tooling win, not a capability unlock: nothing is
-*impossible* without it, just slower to iterate on.
+~~`@export`/`@tweakable` currently only emit descriptive metadata strings —
+there is no hot-reload runtime or file watcher consuming them yet.~~ -- an
+in-process runtime consumer is now done: `reflect_get_i32`/`_f32`/`_bool`,
+`reflect_set_i32`/`_f32`/`_bool`, and `reflect_has_field` (`crate::codegen::
+reflect`) read/write a decorated field by a genuine *runtime* `str` name, not
+just a compile-time-known one — the actual missing piece, since the
+metadata-string emission alone had no consumer at all. Scoped to `i32`/
+`float`/`bool` fields (none carry RC-managed content, so a write never needs
+to release/retain anything); a name matching nothing decorated of the right
+type is a safe fallback (`0`/`0.0`/`false` on read, a no-op on write), the
+same convention an out-of-bounds `List<T>` index already uses. `reflect_set_*`
+additionally only ever matches a field that's *also* `mut` (a plain, non-`mut`
+`@export` field stays read-only through this path too, matching what an
+ordinary `s.field = ...` assignment would already reject) and rejects a bare
+`Table<T>` index as its first argument (the same `table[i].field = v` hazard
+`Checker::writes_through_table_index` exists to catch elsewhere — `emit_place`'s
+documented disconnected-copy fallback for a `TableIndex` would otherwise make
+the write silently vanish). See `docs/language_reference.md`'s "Runtime field
+access by name" section and `projects/snake/main.star`'s `Tuning::
+load_from_file` for a full worked example (a plain-text `key=value` config
+file applied to `@tweakable` fields at startup, no recompiling needed to try
+a new value).
+
+A full external-process hot-reload tool (`docs/features.md` §4's original
+"IPC/shared-memory with a running game" pitch) is still open — this closes
+the in-process half (a real way to read/write by name at all), not a file-
+watcher or editor-side tooling, which was never this checker/codegen's job
+to provide on its own.
 
 ### 8. Build one real, non-toy program in Star
 Everything in `examples/` and `tests/` tops out around ~40 lines of
@@ -207,6 +231,103 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Feature round: reflection runtime (todo.md #7, "wire up reflection into an actual
+runtime feature" — previously `@export`/`@tweakable` only ever emitted a
+descriptive `name:offset:type:decorators` metadata string per struct
+(`Codegen::emit_reflect_metadata`), with confirmed-zero in-process consumers
+anywhere in the codebase before this round). See #7 above for the full
+writeup. New surface: `reflect_get_i32`/`reflect_get_f32`/`reflect_get_bool`
+(read a decorated field by a runtime `str` name, safe `0`/`0.0`/`false`
+fallback on no match), `reflect_set_i32`/`reflect_set_f32`/`reflect_set_bool`
+(write one, safe no-op on no match, `mut`-gated both on the receiver and on
+the matched field itself), and `reflect_has_field` (probe whether a name is
+reflectable at all before picking a typed getter/setter) — seven new
+builtins total, touching every layer the same way a from-scratch builtin
+family always does here (no lexer/parser/AST changes needed, since every one
+is an ordinary `name(args...)` call): `Checker::builtin_return_ty` for name
+registration, a new `check_reflect_struct_arg`/`struct_has_decorated_field_of_ty`
+pair in `Checker::check_builtin_call_args` for arg validation (struct-typed
+first argument, at least one matching decorated field of the right
+primitive type actually existing — the one static half of "does this call
+make sense" possible when the field itself is only named by a runtime
+string), and a new `crate::codegen::reflect` lazily-generated-and-cached
+per-`(struct, type)` `strcmp`-chain accessor function (mirroring
+`Codegen::eq_fn_name`'s existing lazy-generate-and-cache shape from
+`crate::codegen::eq` almost exactly), reusing `Codegen::emit_place` — already
+capable of resolving any local/`self`/field-chain to a real pointer, just
+never previously exposed to a builtin this way — as the "give me a pointer
+to this struct" primitive rather than inventing new address-of syntax.
+Deliberately scoped to `i32`/`float`/`bool` fields only (matching this
+round's own MVP mandate): none of the three carry RC-managed content, so a
+`reflect_set_*` write never needs to release an outgoing value or retain an
+incoming one, sidestepping a real complication a future `str`/`List<T>`/...
+extension of this same mechanism would have to solve properly.
+
+This round found and fixed two real gaps in its own new surface before
+either shipped (not pre-existing bugs — both are specific to the new
+`reflect_set_*` write path, caught by design review before writing the
+first test, then confirmed live):
+1. **A decorated-but-not-`mut` field would otherwise have been silently
+   writable through `reflect_set_*`, bypassing the same immutability an
+   ordinary `s.field = value` assignment already enforces.** `@export`
+   alone only promises hot-reload *visibility*, not writability (`@tweakable`
+   is the one that implies "meant to be retuned") — but nothing before this
+   fix distinguished the two once a name reached codegen's generated
+   `strcmp` chain. Fixed by threading a `require_mut` flag through both
+   halves of the field-matching logic (`Checker::struct_has_decorated_field_of_ty`,
+   `Codegen::reflect_decorated_fields_of_ty`): `reflect_get_*` passes
+   `false` (reading a non-`mut` field is always safe), `reflect_set_*`
+   passes `true`, so a non-`mut` decorated field simply never gets a
+   comparison branch in the generated setter at all — a name that happens
+   to match one is indistinguishable from a name that matches nothing,
+   both falling through to the safe no-op.
+2. **`reflect_set_i32(t[i], "field", v)` (a bare `Table<T>` index as the
+   first argument) would otherwise have silently done nothing, the exact
+   `table[i].field = v` hazard `Checker::writes_through_table_index` exists
+   to catch elsewhere.** `emit_place`'s documented disconnected-copy
+   fallback for a `TableIndex` base (a `Table<T>` element's fields live in
+   independent column buffers with no single addressable struct to project
+   into) means a write through it always targets a throwaway temporary, not
+   the real table. The existing `Checker::check_mut_receiver`'s own
+   table-index hazard check doesn't catch this shape on its own — it was
+   written for a *chain* bottoming out at a `TableIndex` (`t[i].field`), not
+   a bare `t[i]` passed directly, which is exactly what `reflect_set_*`'s
+   first argument legitimately can be. Fixed with an explicit, unconditional
+   `Checker::writes_through_table_index(&args[0])` check ahead of the
+   ordinary `mut`-receiver gate.
+
+38 new tests added (1318 total, up from 1280, all green): parser/checker-level arity/type/mut/
+table-index validation (mirroring `get_pixel`/`str_join`'s own
+`check_builtin_call_args` coverage style), two codegen IR-shape assertions
+(accessor generation is cached/reused across call sites, exactly like
+`eq_fn_name`; a non-`mut` field is excluded from the generated setter's
+`strcmp` chain but still present in the getter's), and end-to-end runtime
+round trips for all three primitive types, the safe-fallback path on both
+read and write, the `mut`-field exclusion, `self`-based access from inside
+an `impl` method, a `Field`-chain receiver (`container.stats`), two
+unrelated structs sharing a field name not cross-contaminating (confirmed
+the per-struct accessor-function cache is keyed correctly even though the
+underlying field-name string constants are deliberately deduplicated and
+shared across structs), a struct with several decorated fields of the same
+type resolving each name correctly (not just "first" or "last"), and
+`@export`/`@tweakable`/both-stacked all being equally reflectable.
+`projects/snake/main.star` now dogfoods this for real: `move_interval_ms`
+moved off `Stats` onto a new dedicated `Tuning` struct alongside two new
+`@tweakable` knobs (`particle_gravity`, `particle_life`) and a new
+`particles_enabled` toggle, and `Tuning::load_from_file` (a plain-text
+`key=value` config file, `projects/snake/tweaks.txt`) applies them at
+startup via these exact builtins — a real, if minimal, "edit a text file,
+rerun, no recompile" workflow, confirmed live (`SDL_VIDEODRIVER=dummy`)
+with a present tweaks file, a missing one (falls back to compiled-in
+defaults, mirroring `save::load_high_score`'s own convention), and one
+containing an unrecognized key (logged and skipped, not fatal). All
+buildable examples still `star build` cleanly (same pre-existing
+`examples/geometry_lib.star`/`examples/reexport_lib.star` no-`main`-by-design
+exception, and the same pre-existing, unrelated `examples/extern_ffi.star`/
+`strstr` collision noted every round since the string-builtins round).
+
+### Previous round
+
 Bug-hunting round 7 (not a feature round): targeted the three newest, least-audited feature
 surfaces landed since round 6 -- the string builtins (`str_contains`/`str_starts_with`/
 `str_ends_with`/`str_index_of`/`str_trim`/`str_replace`/`str_split`/`str_join`), transitive

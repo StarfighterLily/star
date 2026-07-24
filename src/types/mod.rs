@@ -896,6 +896,23 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "font_free" | "draw_text" => Some(Ty::Named("unknown".into())),
         "measure_text" => Some(Ty::Tuple(vec![Ty::Int, Ty::Int])),
         "get_pixel" => Some(Ty::Color32),
+        // `todo.md` #7, "wire up reflection into an actual runtime feature":
+        // read/write a struct's `@export`/`@tweakable` fields by a *runtime*
+        // `str` name, the missing piece `src/codegen/reflect.rs`'s
+        // metadata-string emission alone never provided (nothing previously
+        // consumed it in-process). Each getter/setter is scoped to one
+        // primitive field type -- mirroring `bit_get`/`bit_set`'s own
+        // "separate function per shape" precedent -- since this checker has
+        // no generic-return-type-from-a-runtime-string mechanism to resolve
+        // `T` from a dynamic field name. See `Checker::check_builtin_call_args`
+        // for the "first argument must be a struct with a matching decorated
+        // field" validation and `crate::codegen::reflect` for the generated
+        // per-struct `strcmp`-chain accessor functions.
+        "reflect_get_i32" => Some(Ty::Int),
+        "reflect_get_f32" => Some(Ty::Float),
+        "reflect_get_bool" => Some(Ty::Bool),
+        "reflect_set_i32" | "reflect_set_f32" | "reflect_set_bool" => Some(Ty::Named("unknown".into())),
+        "reflect_has_field" => Some(Ty::Bool),
         _ => None,
     }
 }
@@ -3290,6 +3307,30 @@ impl Checker {
             Ty::Named(n) => self.structs.get(n).and_then(|s| s.fields.iter().find(|f| f.name == *field).map(|f| f.is_mut)),
             _ => None,
         }
+    }
+
+    /// Whether the struct named `struct_name` declares at least one field
+    /// carrying an `@export`/`@tweakable` decorator whose resolved type is
+    /// exactly `want` -- see `Checker::check_reflect_struct_arg`
+    /// (`src/types/expr.rs`), the sole caller. `resolve_type` needs `&mut
+    /// self` (it can synthesize a monomorphized generic instantiation on
+    /// first sight), so `struct_name`'s field list is cloned up front rather
+    /// than held borrowed across that call.
+    ///
+    /// `require_mut` additionally restricts the search to a field also
+    /// declared `mut` -- `reflect_set_i32`/`_f32`/`_bool` pass `true`, since
+    /// `crate::codegen::reflect::reflect_decorated_fields_of_ty` (the
+    /// codegen side of this same gate) only ever generates a *write* branch
+    /// for a `mut` field, mirroring the field-level mutability check an
+    /// ordinary `s.field = value` assignment already gets
+    /// (`Checker::field_is_mut`); `reflect_get_i32`/`_f32`/`_bool` pass
+    /// `false`, since reading a non-`mut` decorated field (e.g. a plain
+    /// `@export` used only for hot-reload *visibility*) is always safe.
+    fn struct_has_decorated_field_of_ty(&mut self, struct_name: &str, want: &Ty, require_mut: bool) -> bool {
+        let Some(sdef) = self.structs.get(struct_name).cloned() else { return false };
+        sdef.fields.iter().any(|f| {
+            !f.decorators.is_empty() && (!require_mut || f.is_mut) && self.resolve_type(&f.ty).as_ref() == Some(want)
+        })
     }
 
     /// True if the last statement of `stmts` unconditionally terminates the

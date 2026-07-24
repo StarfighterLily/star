@@ -82,6 +82,10 @@ impl Codegen {
             .insert(s.name.clone(), s.fields.iter().map(|f| f.name.clone()).collect());
         self.struct_field_types
             .insert(s.name.clone(), s.fields.iter().map(|f| f.ty.clone()).collect());
+        self.struct_field_decorators
+            .insert(s.name.clone(), s.fields.iter().map(|f| f.decorators.clone()).collect());
+        self.struct_field_mut
+            .insert(s.name.clone(), s.fields.iter().map(|f| f.is_mut).collect());
     }
 
     /// Emit a struct's LLVM type declaration and reflection metadata.
@@ -237,5 +241,279 @@ impl Codegen {
             blob.len() + 1,
             escaped
         ));
+    }
+
+    /// Get/create the `[N x i8]` global constant holding `s` (deduplicated
+    /// by content -- a field name like `"health"` is likely to repeat
+    /// across a struct's own get/set/has_field trio, and even across
+    /// unrelated structs), then emit a fresh per-call GEP down to a bare
+    /// `i8*` in whatever function body is currently being written (`self.ir`
+    /// at the time of the call -- the global itself is shared, but the GEP
+    /// instruction that reads it is always local to one function).
+    fn reflect_name_ptr(&mut self, s: &str) -> String {
+        let g = if let Some(g) = self.reflect_name_consts.get(s) {
+            g.clone()
+        } else {
+            let escaped = s.replace('\\', "\\\\").replace('"', "\\22");
+            let g = self.global_name();
+            let n = s.len() + 1;
+            self.global_defs.push(format!(
+                "{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"",
+                g, n, escaped
+            ));
+            self.reflect_name_consts.insert(s.to_string(), g.clone());
+            g
+        };
+        let n = s.len() + 1;
+        let ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0", ptr, n, n, g));
+        ptr
+    }
+
+    /// Every field of `struct_name`, in declaration order, carrying at
+    /// least one `@export`/`@tweakable` decorator whose resolved type is
+    /// exactly `field_ty` -- the set `reflect_get_fn_name`/
+    /// `reflect_set_fn_name` each generate one `strcmp` comparison for.
+    /// Returns `(field index, field name)` pairs; the index is read
+    /// straight out of `struct_field_types`' own position rather than going
+    /// through `Codegen::field_index` (which would just re-derive the same
+    /// index by re-scanning the same `struct_fields` list).
+    ///
+    /// `require_mut` additionally restricts the set to fields declared
+    /// `mut` -- `reflect_set_fn_name` passes `true` (a decorated-but-not-
+    /// `mut` field, legitimate for `@export`-only visibility, must stay
+    /// unwritable, the same field-level gate an ordinary `s.field = value`
+    /// assignment already enforces via `Checker::field_is_mut`), while
+    /// `reflect_get_fn_name` passes `false` (reading is always safe
+    /// regardless of mutability).
+    fn reflect_decorated_fields_of_ty(&self, struct_name: &str, field_ty: &Ty, require_mut: bool) -> Vec<(u32, String)> {
+        let names = self.struct_fields.get(struct_name).cloned().unwrap_or_default();
+        let tys = self.struct_field_types.get(struct_name).cloned().unwrap_or_default();
+        let decos = self.struct_field_decorators.get(struct_name).cloned().unwrap_or_default();
+        let muts = self.struct_field_mut.get(struct_name).cloned().unwrap_or_default();
+        names
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                let ty_ok = tys.get(i) == Some(field_ty);
+                let deco_ok = decos.get(i).map(|d| !d.is_empty()).unwrap_or(false);
+                let mut_ok = !require_mut || muts.get(i).copied().unwrap_or(false);
+                (ty_ok && deco_ok && mut_ok).then_some((i as u32, n))
+            })
+            .collect()
+    }
+
+    /// Every field of `struct_name` carrying at least one decorator,
+    /// regardless of type -- `reflect_has_field_fn_name`'s field set (unlike
+    /// the getters/setters, which are each scoped to one primitive type).
+    fn reflect_all_decorated_field_names(&self, struct_name: &str) -> Vec<String> {
+        let names = self.struct_fields.get(struct_name).cloned().unwrap_or_default();
+        let decos = self.struct_field_decorators.get(struct_name).cloned().unwrap_or_default();
+        names
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, n)| decos.get(i).map(|d| !d.is_empty()).unwrap_or(false).then_some(n))
+            .collect()
+    }
+
+    /// Lazily generate (and cache, keyed by `(struct name, field LLVM
+    /// type)`) `@__star_reflect_get_<ty>_<Struct>(%Struct* %s, i8* %name) ->
+    /// <ty>`: a straight-line `strcmp` chain against every `@export`/
+    /// `@tweakable` field of `struct_name` whose resolved type is exactly
+    /// `field_ty`, returning that field's current value on the first match,
+    /// or `field_ty`'s zero value if `name` doesn't match any of them -- the
+    /// same "safe fallback instead of a crash" convention an out-of-bounds
+    /// `List<T>` index or a stale `GenRef` already use for a runtime-keyed
+    /// lookup that misses. Mirrors `Codegen::eq_fn_name`'s (`crate::codegen::
+    /// eq`) own lazy-generate-and-cache shape: isolate a fresh function's IR
+    /// in a swapped-out `self.ir`, then hand it to `pending_top` to be
+    /// appended at module scope once the caller's own function is done.
+    /// `Checker::check_reflect_struct_arg` has already guaranteed at least
+    /// one matching field exists, so this is only ever generated for a
+    /// struct that truly has one.
+    fn reflect_get_fn_name(&mut self, struct_name: &str, field_ty: &Ty) -> String {
+        let llvm = self.llvm_ty(field_ty);
+        let key = (struct_name.to_string(), llvm.clone());
+        if let Some(name) = self.reflect_get_fns.get(&key).cloned() {
+            return name;
+        }
+        let name = format!("__star_reflect_get_{}_{}", self.mangle_ty(field_ty), struct_name);
+        self.reflect_get_fns.insert(key, name.clone());
+
+        let fields = self.reflect_decorated_fields_of_ty(struct_name, field_ty, false);
+        let zero = self.zero_value(field_ty);
+
+        let saved_ir = std::mem::take(&mut self.ir);
+        self.line(&format!("define {} @{}(%{}* %s, i8* %name) {{", llvm, name, struct_name));
+        self.open_block("entry");
+        for (idx, fname) in &fields {
+            let name_ptr = self.reflect_name_ptr(fname);
+            let cmp = self.tmp_name();
+            self.line(&format!("  {} = call i32 @strcmp(i8* %name, i8* {})", cmp, name_ptr));
+            let eqreg = self.tmp_name();
+            self.line(&format!("  {} = icmp eq i32 {}, 0", eqreg, cmp));
+            let hit = self.block_label("reflect_hit");
+            let next = self.block_label("reflect_next");
+            self.line(&format!("  br i1 {}, label %{}, label %{}", eqreg, hit, next));
+            self.open_block(&hit);
+            let gep = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds %{}, %{}* %s, i32 0, i32 {}", gep, struct_name, struct_name, idx));
+            let val = self.tmp_name();
+            self.line(&format!("  {} = load {}, {}* {}", val, llvm, llvm, gep));
+            self.line(&format!("  ret {} {}", llvm, val));
+            self.open_block(&next);
+        }
+        self.line(&format!("  ret {} {}", llvm, zero));
+        self.line("}");
+        self.line("");
+        let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
+        self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir));
+        name
+    }
+
+    /// Setter counterpart of `reflect_get_fn_name`:
+    /// `@__star_reflect_set_<ty>_<Struct>(%Struct* %s, i8* %name, <ty> %val)
+    /// -> void`, storing `%val` into the first matching field or silently
+    /// doing nothing if `name` doesn't match any of them (mirroring an
+    /// out-of-bounds `List<T>` write's own "no-op, not a crash" convention).
+    /// `field_ty` is always `i32`/`float`/`i1` for this MVP scope (see
+    /// `docs/language_reference.md`'s "Reflection Decorators" section) --
+    /// none of the three carry any RC-managed content, so unlike an
+    /// ordinary `self.field = value` assignment this never needs to
+    /// release an outgoing value or retain an incoming one.
+    fn reflect_set_fn_name(&mut self, struct_name: &str, field_ty: &Ty) -> String {
+        let llvm = self.llvm_ty(field_ty);
+        let key = (struct_name.to_string(), llvm.clone());
+        if let Some(name) = self.reflect_set_fns.get(&key).cloned() {
+            return name;
+        }
+        let name = format!("__star_reflect_set_{}_{}", self.mangle_ty(field_ty), struct_name);
+        self.reflect_set_fns.insert(key, name.clone());
+
+        let fields = self.reflect_decorated_fields_of_ty(struct_name, field_ty, true);
+
+        let saved_ir = std::mem::take(&mut self.ir);
+        self.line(&format!("define void @{}(%{}* %s, i8* %name, {} %val) {{", name, struct_name, llvm));
+        self.open_block("entry");
+        for (idx, fname) in &fields {
+            let name_ptr = self.reflect_name_ptr(fname);
+            let cmp = self.tmp_name();
+            self.line(&format!("  {} = call i32 @strcmp(i8* %name, i8* {})", cmp, name_ptr));
+            let eqreg = self.tmp_name();
+            self.line(&format!("  {} = icmp eq i32 {}, 0", eqreg, cmp));
+            let hit = self.block_label("reflect_hit");
+            let next = self.block_label("reflect_next");
+            self.line(&format!("  br i1 {}, label %{}, label %{}", eqreg, hit, next));
+            self.open_block(&hit);
+            let gep = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds %{}, %{}* %s, i32 0, i32 {}", gep, struct_name, struct_name, idx));
+            self.line(&format!("  store {} %val, {}* {}", llvm, llvm, gep));
+            self.line("  ret void");
+            self.open_block(&next);
+        }
+        self.line("  ret void");
+        self.line("}");
+        self.line("");
+        let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
+        self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir));
+        name
+    }
+
+    /// `@__star_reflect_has_field_<Struct>(i8* %name) -> i1`: `strcmp`
+    /// against *every* decorated field of `struct_name` regardless of type
+    /// (unlike the type-scoped getter/setter pair above), so a caller can
+    /// probe whether a runtime name is reflectable at all before picking
+    /// which typed getter/setter to call.
+    fn reflect_has_field_fn_name(&mut self, struct_name: &str) -> String {
+        if let Some(name) = self.reflect_has_field_fns.get(struct_name).cloned() {
+            return name;
+        }
+        let name = format!("__star_reflect_has_field_{}", struct_name);
+        self.reflect_has_field_fns.insert(struct_name.to_string(), name.clone());
+
+        let fields = self.reflect_all_decorated_field_names(struct_name);
+
+        let saved_ir = std::mem::take(&mut self.ir);
+        self.line(&format!("define i1 @{}(i8* %name) {{", name));
+        self.open_block("entry");
+        for fname in &fields {
+            let name_ptr = self.reflect_name_ptr(fname);
+            let cmp = self.tmp_name();
+            self.line(&format!("  {} = call i32 @strcmp(i8* %name, i8* {})", cmp, name_ptr));
+            let eqreg = self.tmp_name();
+            self.line(&format!("  {} = icmp eq i32 {}, 0", eqreg, cmp));
+            let hit = self.block_label("reflect_hit");
+            let next = self.block_label("reflect_next");
+            self.line(&format!("  br i1 {}, label %{}, label %{}", eqreg, hit, next));
+            self.open_block(&hit);
+            self.line("  ret i1 1");
+            self.open_block(&next);
+        }
+        self.line("  ret i1 0");
+        self.line("}");
+        self.line("");
+        let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
+        self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir));
+        name
+    }
+
+    /// `reflect_get_i32`/`_f32`/`_bool` builtin call codegen: resolve
+    /// argument 1's static struct type, get/generate that struct's
+    /// `field_ty`-scoped accessor, and call it with a real pointer to
+    /// argument 1's storage (`emit_place`, the same primitive `player.field`
+    /// read codegen itself GEPs through) plus argument 2 evaluated as a
+    /// plain `i8*`.
+    pub(super) fn emit_reflect_get(&mut self, args: &[TypedExpr], field_ty: &Ty) -> String {
+        let Ty::Named(struct_name) = self.expr_ty(&args[0]) else {
+            unreachable!("Checker::check_reflect_struct_arg guarantees argument 1 is a struct value");
+        };
+        let fn_name = self.reflect_get_fn_name(&struct_name, field_ty);
+        let base_ptr = self.emit_place(&args[0]);
+        let name_val = self.emit_expr(&args[1]);
+        let name_bare = self.untag(&name_val, &Ty::Str);
+        let llvm = self.llvm_ty(field_ty);
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = call {} @{}(%{}* {}, i8* {})", reg, llvm, fn_name, struct_name, base_ptr, name_bare));
+        format!("{} {}", llvm, reg)
+    }
+
+    /// `reflect_set_i32`/`_f32`/`_bool` builtin call codegen -- setter
+    /// counterpart of `emit_reflect_get`. `Checker::check_mut_receiver` has
+    /// already validated argument 1 is a genuine, mutable place (not a
+    /// `Table<T>` index or an rvalue that would silently write through a
+    /// disconnected temporary), so `emit_place` always resolves to real,
+    /// writable storage here.
+    pub(super) fn emit_reflect_set(&mut self, args: &[TypedExpr], field_ty: &Ty) -> String {
+        let Ty::Named(struct_name) = self.expr_ty(&args[0]) else {
+            unreachable!("Checker::check_reflect_struct_arg guarantees argument 1 is a struct value");
+        };
+        let fn_name = self.reflect_set_fn_name(&struct_name, field_ty);
+        let base_ptr = self.emit_place(&args[0]);
+        let name_val = self.emit_expr(&args[1]);
+        let name_bare = self.untag(&name_val, &Ty::Str);
+        let val_val = self.emit_expr(&args[2]);
+        let val_bare = self.untag(&val_val, field_ty);
+        let llvm = self.llvm_ty(field_ty);
+        self.line(&format!("  call void @{}(%{}* {}, i8* {}, {} {})", fn_name, struct_name, base_ptr, name_bare, llvm, val_bare));
+        "%undef".into()
+    }
+
+    /// `reflect_has_field(s, name)` builtin call codegen. Argument 1 is only
+    /// used for static type inference (which struct's field-name table to
+    /// consult) -- still routed through `emit_place` so any side effect and
+    /// RC bookkeeping in evaluating it happens exactly once, same as every
+    /// other place-taking builtin, even though the resulting pointer itself
+    /// is never read.
+    pub(super) fn emit_reflect_has_field(&mut self, args: &[TypedExpr]) -> String {
+        let Ty::Named(struct_name) = self.expr_ty(&args[0]) else {
+            unreachable!("Checker::check_reflect_struct_arg guarantees argument 1 is a struct value");
+        };
+        let fn_name = self.reflect_has_field_fn_name(&struct_name);
+        let _ = self.emit_place(&args[0]);
+        let name_val = self.emit_expr(&args[1]);
+        let name_bare = self.untag(&name_val, &Ty::Str);
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = call i1 @{}(i8* {})", reg, fn_name, name_bare));
+        format!("i1 {}", reg)
     }
 }

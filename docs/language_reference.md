@@ -832,6 +832,59 @@ struct Player:
 - `@export`: Marks field for hot-reloading
 - `@tweakable`: Marks field as runtime-tweakable
 
+Every field carrying at least one of these decorators (order and which one
+don't matter -- `@export`, `@tweakable`, or both stacked all count) gets an
+entry in a per-struct metadata string an external tool can read out of the
+compiled `.ll`/binary (`name:byte_offset:type:decorators`, in declaration
+order). Decorators are otherwise inert at compile time: they don't add
+runtime overhead to an ordinary `player.health` read/write, and an
+undecorated field never appears in the metadata.
+
+### Runtime field access by name
+
+A set of builtins reads/writes a decorated field by a genuine *runtime*
+`str` name, not just a compile-time-known one -- the piece that actually
+makes the metadata above useful from inside a running program, e.g. to
+apply designer-facing config values loaded from a file without recompiling:
+
+```star
+struct Stats:
+    @export mut score: i32 = 0
+    @tweakable mut speed: f32 = 5.0
+
+fn tweak(mut s: Stats, name: str, value: i32):
+    if reflect_has_field(s, name):
+        reflect_set_i32(s, name, value)
+```
+
+- `reflect_has_field(s, name: str) -> bool`: true if `name` names any
+  decorated field of `s`'s struct type, of any type.
+- `reflect_get_i32(s, name: str) -> i32` / `reflect_get_f32(s, name: str) ->
+  float` / `reflect_get_bool(s, name: str) -> bool`: read a decorated field
+  of the matching type by name. A name that doesn't match any decorated
+  field of that type returns `0`/`0.0`/`false` -- a safe fallback, not an
+  error, the same convention an out-of-bounds `List<T>` index already uses.
+- `reflect_set_i32(s, name: str, value)` / `reflect_set_f32(..)` /
+  `reflect_set_bool(..)`: write a decorated field of the matching type by
+  name. `s` must be declared `mut` (mutating your first argument in place,
+  exactly like a mutating method call's receiver), and only ever matches a
+  field that's *also* declared `mut` -- a plain `@export health: i32` (no
+  `mut`) is readable via `reflect_get_i32` but never writable via
+  `reflect_set_i32`, the same immutability an ordinary `s.health = ...`
+  assignment would already reject. A name that doesn't match anything
+  writable is a safe no-op.
+
+Scoped to `i32`/`float`/`bool` fields only -- none carry any reference-
+counted content, so a write never needs to release an outgoing value or
+retain an incoming one. Each getter/setter is its own builtin (rather than
+one generic function) since the field's Star type isn't known until the
+name is looked up at runtime, and this checker has no mechanism to infer a
+return type from a runtime value.
+
+See `projects/snake/main.star`'s `Tuning::load_from_file` for a complete
+worked example: a plain-text `key=value` config file applied to a struct's
+`@tweakable` fields at startup via these builtins.
+
 ---
 
 ## Operators

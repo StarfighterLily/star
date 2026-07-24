@@ -758,6 +758,21 @@ diagnostic catches them as intended.
   dedicated `bool`/`bool` arm (`==`/`!=` only, no ordering — same
   "no meaningful less-than" reasoning every other equality-only type already
   carries) in both `infer_binop_ty` and `Codegen::emit_binop`.
+- **No runtime consumer for `@export`/`@tweakable` at all** (`gamedev_gaps.md`
+  #5 / `todo.md` #7): the reflection metadata this game already decorated
+  `Stats.score`/`Stats.high_score`/`Stats.move_interval_ms` with from the
+  start was pure description — nothing in or out of process ever read it
+  back. **Added** (follow-up compiler pass): `reflect_get_i32`/`_f32`/
+  `_bool`/`reflect_set_i32`/`_f32`/`_bool`/`reflect_has_field`
+  (`crate::codegen::reflect`) read/write a decorated field by a runtime
+  `str` name. This game now dogfoods it for real: `move_interval_ms` moved
+  off `Stats` onto a new dedicated `Tuning` struct (alongside two new
+  `@tweakable` knobs pulled out of previously-hardcoded magic numbers,
+  `particle_gravity`/`particle_life`, plus a new `particles_enabled`
+  toggle), and `Tuning::load_from_file` applies `projects/snake/tweaks.txt`
+  (a plain `key=value` text file) to it at startup — edit a value, rerun,
+  no recompile. See `docs/language_reference.md`'s "Runtime field access by
+  name" section for the full builtin surface.
 - ~~Arena capacity (1024, hardcoded, silent-drop on overflow — already
   flagged in `gamedev_gaps.md` #4) combines badly with 2.1 above~~ — fixed
   alongside 2.1: capacity is now per-arena (`arena Name: Type = N`), and the

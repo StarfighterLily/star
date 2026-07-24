@@ -2635,7 +2635,130 @@ impl Checker {
                     }
                 }
             }
+            // `reflect_get_*`/`reflect_set_*`: argument 1 must be a real
+            // struct value (any `Ty::Named` this checker actually declared,
+            // including a monomorphized generic instantiation -- the same
+            // `self.structs.contains_key` test `Table<T>`'s own element-type
+            // validation already uses) that declares at least one
+            // `@export`/`@tweakable` field of the exact primitive type this
+            // getter/setter reads/writes. That second half is the one static
+            // guarantee this checker *can* give -- which specific field (if
+            // any) a given call actually hits depends on argument 2, a
+            // runtime `str` this checker can't see the value of, so a name
+            // that doesn't match anything is left to codegen's generated
+            // `strcmp` chain to fail safe on (`crate::codegen::reflect`),
+            // mirroring this codebase's established "safe fallback, not a
+            // crash" convention for every other runtime-keyed lookup (an
+            // out-of-bounds `List<T>` index, a stale `GenRef`, ...).
+            "reflect_get_i32" | "reflect_get_f32" | "reflect_get_bool" => {
+                if arity_ok(2, self) {
+                    let want = match name {
+                        "reflect_get_i32" => Ty::Int,
+                        "reflect_get_f32" => Ty::Float,
+                        _ => Ty::Bool,
+                    };
+                    self.check_reflect_struct_arg(name, &arg_tys[0], &want, false, span);
+                    if !tys_eq(&arg_tys[1], &Ty::Str) {
+                        self.error(format!("`{}` argument 2 expected `str`, found `{:?}`", name, arg_tys[1]), span);
+                    }
+                }
+            }
+            "reflect_set_i32" | "reflect_set_f32" | "reflect_set_bool" => {
+                if arity_ok(3, self) {
+                    let want = match name {
+                        "reflect_set_i32" => Ty::Int,
+                        "reflect_set_f32" => Ty::Float,
+                        _ => Ty::Bool,
+                    };
+                    self.check_reflect_struct_arg(name, &arg_tys[0], &want, true, span);
+                    if !tys_eq(&arg_tys[1], &Ty::Str) {
+                        self.error(format!("`{}` argument 2 expected `str`, found `{:?}`", name, arg_tys[1]), span);
+                    }
+                    if !tys_eq(&arg_tys[2], &want) {
+                        self.error(format!("`{}` argument 3 expected `{:?}`, found `{:?}`", name, want, arg_tys[2]), span);
+                    }
+                    // `Checker::writes_through_table_index` (consulted by
+                    // `check_mut_receiver` below too) only flags a *chain*
+                    // bottoming out at a `TableIndex` (`t[i].field`) --
+                    // `check_mut_receiver`'s own `matches!` guard was written
+                    // for a method-call receiver, which is never a *bare*
+                    // `TableIndex` itself for any legitimate reason
+                    // (`t[i].method()` reaching that shape is a pre-existing,
+                    // out-of-scope gap this fix doesn't try to close). But
+                    // argument 1 here legitimately *can* be a bare `t[i]`
+                    // (`reflect_set_i32(t[i], "score", 1)`), which
+                    // `check_mut_receiver` alone would silently let through:
+                    // `emit_place`'s `TableIndex` fallback materializes a
+                    // *disconnected* copy of the element (a `Table<T>`'s
+                    // fields live in independent column buffers with no
+                    // single addressable struct to project into), so the
+                    // write would silently vanish instead of erroring or
+                    // taking effect -- the exact `table[i].field = v` hazard
+                    // `Checker::writes_through_table_index` exists to catch,
+                    // just reached through this builtin instead of a plain
+                    // assignment. Checked explicitly (unconditionally, not
+                    // gated by `check_mut_receiver`'s outer-node-kind guard)
+                    // before falling through to the ordinary mut-binding
+                    // check.
+                    if Self::writes_through_table_index(&args[0]) {
+                        self.error(
+                            format!(
+                                "cannot call `{}(..)` on a `Table<T>` index -- a table element's fields live in independent columns with no addressable storage of their own; assign or read the whole element instead (`table[i] = ...`)",
+                                name
+                            ),
+                            span,
+                        );
+                    } else {
+                        // The same `mut`-receiver gate a mutating collection
+                        // method call's receiver already gets (`List::push`,
+                        // `Map::insert`, ...) -- `reflect_set_*` mutates
+                        // argument 1 in place exactly like a method call
+                        // would mutate its receiver, just spelled as a free
+                        // function instead of `s.reflect_set_i32(..)`.
+                        self.check_mut_receiver(&args[0], name, span);
+                    }
+                }
+            }
+            "reflect_has_field" => {
+                if arity_ok(2, self) {
+                    match &arg_tys[0] {
+                        Ty::Named(n) if self.structs.contains_key(n) => {}
+                        t if is_placeholder(t) => {}
+                        t => self.error(format!("`reflect_has_field` argument 1 must be a struct value, found `{:?}`", t), span),
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Str) {
+                        self.error(format!("`reflect_has_field` argument 2 expected `str`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// Shared argument-1 validation for `reflect_get_*`/`reflect_set_*`: must
+    /// be a known struct type that declares at least one `@export`/
+    /// `@tweakable` field whose resolved type is exactly `want` (and, when
+    /// `require_mut` is set -- `reflect_set_*` only -- that's also declared
+    /// `mut`, see `struct_has_decorated_field_of_ty`'s doc comment). See
+    /// `check_builtin_call_args`'s `reflect_get_*`/`reflect_set_*` arms for
+    /// why this is the one static half of the check that's actually
+    /// possible.
+    fn check_reflect_struct_arg(&mut self, name: &str, arg_ty: &Ty, want: &Ty, require_mut: bool, span: Span) {
+        match arg_ty {
+            Ty::Named(n) if self.structs.contains_key(n) => {
+                if !self.struct_has_decorated_field_of_ty(n, want, require_mut) {
+                    let mut_note = if require_mut { " (also `mut`)" } else { "" };
+                    self.error(
+                        format!(
+                            "`{}` argument 1 (`{}`) declares no `@export`/`@tweakable` field of type `{:?}`{}",
+                            name, n, want, mut_note
+                        ),
+                        span,
+                    );
+                }
+            }
+            Ty::Named(n) if matches!(n.as_str(), "unknown" | "infer_error" | "infer" | "Self") => {}
+            t => self.error(format!("`{}` argument 1 must be a struct value, found `{:?}`", name, t), span),
         }
     }
 

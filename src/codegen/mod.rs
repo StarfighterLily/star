@@ -189,6 +189,46 @@ pub struct Codegen {
     /// type reuses one generated function instead of each emitting a
     /// duplicate `define`.
     eq_fns: std::collections::HashMap<String, String>,
+    /// Per-struct decorator lists, parallel to `struct_field_types`/
+    /// `struct_fields` (same declaration order, populated alongside them by
+    /// `register_struct`) -- the piece `reflect_get_fn_name`/
+    /// `reflect_set_fn_name`/`reflect_has_field_fn_name` (`crate::codegen::
+    /// reflect`) need that those two maps don't carry, since they're looked
+    /// up by struct *name* alone (lazily, on first `reflect_get_*`/
+    /// `reflect_set_*`/`reflect_has_field` call) rather than handed a
+    /// `TypedStructDef` directly the way `emit_reflect_metadata` is.
+    struct_field_decorators: std::collections::HashMap<String, Vec<Vec<String>>>,
+    /// Per-struct `is_mut` flags, parallel to `struct_field_decorators` --
+    /// `reflect_set_fn_name` (unlike `reflect_get_fn_name`) only matches a
+    /// decorated field that's *also* declared `mut`, the same field-level
+    /// mutability gate an ordinary `s.field = value` assignment already
+    /// enforces (`Checker::field_is_mut`). A decorated-but-not-`mut` field
+    /// (legitimate for `@export`, which only promises hot-reload
+    /// *visibility*, not writability) must stay unwritable through
+    /// `reflect_set_*` too, or it would silently bypass the same
+    /// compile-time immutability every ordinary assignment already respects.
+    struct_field_mut: std::collections::HashMap<String, Vec<bool>>,
+    /// Maps `(struct name, field LLVM type)` -> the name of the generated
+    /// `@__star_reflect_get_*` `strcmp`-chain accessor for that pair, lazily
+    /// created the first time a `reflect_get_i32`/`_f32`/`_bool` call needs
+    /// it (see `crate::codegen::reflect::reflect_get_fn_name`).
+    reflect_get_fns: std::collections::HashMap<(String, String), String>,
+    /// Setter counterpart of `reflect_get_fns` (`crate::codegen::reflect::
+    /// reflect_set_fn_name`).
+    reflect_set_fns: std::collections::HashMap<(String, String), String>,
+    /// Maps a struct name -> the name of its generated
+    /// `@__star_reflect_has_field_*` function (`crate::codegen::reflect::
+    /// reflect_has_field_fn_name`), which -- unlike the getters/setters --
+    /// checks a runtime name against *every* decorated field regardless of
+    /// type, so it needs no type component in its cache key.
+    reflect_has_field_fns: std::collections::HashMap<String, String>,
+    /// Field-name string content -> already-declared `[N x i8]` global
+    /// constant holding it, shared across every generated reflection
+    /// accessor function that needs to `strcmp` against that name (a name
+    /// like `"health"` is likely to repeat across a struct's own get/set/
+    /// has_field trio, and even across unrelated structs) -- see
+    /// `crate::codegen::reflect::reflect_name_global`.
+    reflect_name_consts: std::collections::HashMap<String, String>,
     /// True once the persistent `par`/`swarm` worker-thread pool's static
     /// machinery (globals, `@par.pool.worker_main`, `@par.pool.ensure_init`)
     /// has been pushed to `pending_top`. Guards against re-emitting it for a
@@ -278,6 +318,12 @@ impl Codegen {
             map_release_thunks: std::collections::HashMap::new(),
             table_release_thunks: std::collections::HashMap::new(),
             eq_fns: std::collections::HashMap::new(),
+            struct_field_decorators: std::collections::HashMap::new(),
+            struct_field_mut: std::collections::HashMap::new(),
+            reflect_get_fns: std::collections::HashMap::new(),
+            reflect_set_fns: std::collections::HashMap::new(),
+            reflect_has_field_fns: std::collections::HashMap::new(),
+            reflect_name_consts: std::collections::HashMap::new(),
             par_pool_emitted: false,
             extern_fns: std::collections::HashSet::new(),
             generic_instantiations: std::collections::HashMap::new(),
