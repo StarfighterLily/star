@@ -296,7 +296,7 @@ first test, then confirmed live):
    `Checker::writes_through_table_index(&args[0])` check ahead of the
    ordinary `mut`-receiver gate.
 
-38 new tests added (1318 total, up from 1280, all green): parser/checker-level arity/type/mut/
+46 new tests added (all green): parser/checker-level arity/type/mut/
 table-index validation (mirroring `get_pixel`/`str_join`'s own
 `check_builtin_call_args` coverage style), two codegen IR-shape assertions
 (accessor generation is cached/reused across call sites, exactly like
@@ -325,6 +325,144 @@ buildable examples still `star build` cleanly (same pre-existing
 `examples/geometry_lib.star`/`examples/reexport_lib.star` no-`main`-by-design
 exception, and the same pre-existing, unrelated `examples/extern_ffi.star`/
 `strstr` collision noted every round since the string-builtins round).
+
+### Previous round
+
+Bug-hunting round 8 (not a feature round): targeted the newest feature commits landed since
+round 7 that hadn't gone through a dedicated audit round of their own -- `const`, generic
+struct methods, spawn-expression handles, configurable arena capacity, and fieldless-enum/
+struct `==`/`!=` legalization, plus this round's own "reflection runtime" feature commit --
+each had its own inline tests written alongside it, but (unlike every prior round's target)
+none had been through a second pass looking specifically for gaps between what shipped and
+what the surrounding type system actually promises. 3 confirmed bugs found and fixed -- one a
+"the entire feature silently doesn't work outside its one demonstrated case" gap, the other
+two a matched pair of cross-cutting checker-state corruption bugs reachable from any
+generic-instantiation call site, not a crash in any case; 7 new tests added (1325 total, up
+from 1318, all green). Full suite (`cargo +stable-x86_64-pc-windows-gnu test --release`)
+passes clean.
+
+**On-demand generic monomorphization mid-block silently corrupted the enclosing function's
+`mut`-variable tracking (1, real, cross-cutting -- confirmed via a real `star check` run
+before the fix)**: `Checker::check_block` -- the entry point for type-checking *any* function
+body -- unconditionally called `self.mut_vars.clear()` at its start, on the unstated
+assumption that it's only ever entered "fresh," once per top-level function, in an order that
+never nests. That assumption is false: `instantiate_struct`/`instantiate_enum`/
+`instantiate_generic_fn`/`instantiate_impl_methods` (the on-demand monomorphization paths
+behind a generic struct/enum/function/method's *first* use anywhere in a module) all
+eventually call `check_fn` -> `check_block` to type-check the freshly-synthesized item's own
+body -- and that can happen *mid-statement*, while some unrelated enclosing block's own
+statement loop is still in progress (e.g. the first call to a generic struct's method inside a
+`while` loop's body). The nested `check_block` call's `.clear()` wiped out the *enclosing*
+block's live `mut_vars` set (a single `Checker`-wide field, not scoped per call) for the rest
+of that block, so a `mut` variable declared earlier in the very same block -- a loop counter,
+critically -- would spuriously fail `` cannot assign to `i` -- it was not declared `mut` ``
+on every assignment *after* the point where the first not-yet-instantiated generic use
+appeared, with nothing about `i` itself having changed. Confirmed via a real repro: `let mut i
+= 0` followed by a `while i < N:` body calling a generic struct's method before `i = i + 1`
+failed to type-check at all. This is a plausible real-world footgun, not just a crafted edge
+case -- "declare a mutable loop counter, then use a generic collection/helper type for the
+first time later in the same loop body" is an extremely ordinary shape (every `Table<T>`/
+`Map<K,V>`/`Set<T>`/`Option<T>`/`Result<T,E>` first-use inside a loop is exactly this
+trigger, once *any* other generic use in the whole preceding module hasn't already forced the
+same instantiation first). Fixed with the minimal, general, root-cause fix: `check_block` now
+`std::mem::take`s (rather than `.clear()`s) `self.mut_vars` -- still handing the freshly
+entered function body an empty set to populate from its own params, exactly as before -- and
+restores the caller's original set once this function body is fully checked, so an
+interruption partway through an enclosing block's own statement loop leaves that block's
+tracking exactly as it was once control returns. 2 new tests: the exact generic-struct-method
+repro, and the same shape triggered by a generic *function* instead (`instantiate_generic_fn`)
+to confirm the fix is the shared root cause, not something that happened to only patch one
+call site.
+
+**Same root hazard, second field: on-demand generic monomorphization mid-loop also corrupted
+`loop_depth`, spuriously rejecting a real `break`/`continue` (1, real -- confirmed via a real
+`star check` run before the fix)**: `Checker::check_fn_with_self_ty` -- also, like
+`check_block` above, the entry point for type-checking any function/method body, including one
+entered on demand mid-statement -- unconditionally did `self.loop_depth = 0` at its start, with
+a comment explicitly (and, it turns out, wrongly) calling this "defensive" on the assumption
+loop nesting could only ever already be `0` there. The exact same nested-monomorphization-
+mid-loop trigger as the `mut_vars` bug above (a generic struct's method called for the first
+time inside a `while` loop) zeroed the *enclosing* loop's `loop_depth` once the nested,
+loop-free method body finished checking, so a `break`/`continue` appearing later in that same
+loop body was rejected with `` `break` outside of a loop `` even though it was textually
+inside one. Confirmed via a real repro: a `while` loop calling a generic struct's method before
+its own trailing `if ...: break` failed to type-check. Fixed the same way: save `loop_depth`
+before resetting it for the freshly-entered function body, restore the caller's value once that
+body is fully checked (placed alongside the pre-existing `current_ret_ty` save/restore
+`check_fn_with_self_ty` already had -- confirming that one, at least, was already following the
+correct pattern; `loop_depth`'s own reset was the one spot in this function that hadn't been).
+2 new tests: the exact `break`-after-generic-method-call repro, and a bare `break` outside any
+loop still correctly rejected (guarding the fix didn't also weaken the underlying check).
+
+**Top-level `const` was completely unusable for every numeric type except `i32`/`f32` (1,
+real -- confirmed via real `star check` runs before the fix)**: `const X: i8 = 100 as i8`
+failed with "this cast is not supported in a constant expression", and even the more basic
+`const X: i8 = 100` (no cast at all) failed with `` `const X: I8` but the value has type
+`Int` `` -- despite `docs/language_reference.md`'s "Top-Level Constants" section explicitly
+documenting "a numeric cast" as a supported constant-expression form, and despite the exact
+same cast being legal everywhere else in the language. Root cause, two compounding gaps in
+`src/types/mod.rs`: (1) `ConstValue::Int`/`Float` carried no width/type tag at all -- every
+folded integer constant was implicitly `i32`, every float implicitly `f32` -- so
+`ConstValue::into_typed_expr` always rebuilt a bare `Ty::Int`/`Ty::Float` literal regardless
+of the `const`'s own declared type, guaranteeing a type mismatch for any narrower/wider
+declared type even when the value obviously fit; (2) `fold_const_expr`'s `Cast` arm only
+special-cased the `Int <-> Float` pairing (i.e. `i32 <-> f32`), rejecting every other numeric
+cast (`as i8`/`as u8`/`as i16`/`as u16`/`as u32`/`as i64`/`as u64`/`as f64`) outright, so even
+fixing (1) alone wouldn't have helped -- there was no way to *produce* a narrower/wider
+`ConstValue` from an `i32`/`f32` literal to begin with. Fixed by threading the resolved `Ty`
+through both `ConstValue` variants and rewriting the `Cast` arm to cover the full numeric
+matrix (int/int of any width/signedness via `cast_int_to_ty`, a `Rust`-`as`-chain-based
+canonicalization proven bit-identical to `Codegen::emit_cast`'s `trunc`/`sext`/`zext`
+lowering; int<->float via signedness-aware `sitofp`/`uitofp`-equivalent conversion; float<->
+float relabeling), and re-canonicalizing every arithmetic/unary-negation result to its
+operand's width too (so `const X: u8 = (255 as u8) + (1 as u8)` wraps to `0` instead of
+silently carrying an out-of-range value forward, matching real `Wrapping<T>`-shaped runtime
+overflow behavior) -- `Ty::U64`'s comparison/division additionally needed an explicit unsigned
+path (`int_cmp`, and unsigned `wrapping_div`/`wrapping_rem`) since its canonical `i64` storage
+can be negative-looking for a value past `i64::MAX` (e.g. `(0 as u64) - (1 as u64)` folding to
+`u64::MAX`), the one width where plain signed `i64` comparison/division would silently give
+the wrong answer; every narrower unsigned width's canonical value is always non-negative, so
+it doesn't matter there either way. `char` casts were deliberately left unfolded (a
+documented, unchanged gap, not a regression) -- unlike every numeric pairing, a `char`
+conversion can fail (not every `i32` is a valid Unicode scalar value) with no existing runtime
+convention this compiler's own unchecked runtime `char` cast establishes to match. A
+`Ty::F64`-typed `ConstValue` is deliberately never lowered straight to a bare
+`TypedExpr::Float` (`Codegen::emit_expr`'s `Float` arm always renders `f32`-shaped literal
+text regardless of the node's own `Ty` tag) -- instead wrapped in the identical `f32`-literal-
+then-`fpext` `TypedExpr::Cast` shape a real `<literal> as f64` already produces, reusing
+already-correct codegen instead of teaching it a new literal form. 3 new tests: every non-
+default numeric width accepted via an explicit cast (checker-level), a bare un-cast literal
+against a narrower declared type still rejected (guarding the fix doesn't also legalize
+*implicit* literal narrowing, which the rest of the language doesn't support either), and a
+runtime end-to-end round trip covering `u8`/`i8` wraparound, signed-vs-unsigned ordering, and
+`u64` unsigned comparison/division computed from a wrapping subtraction that goes negative
+internally.
+
+**Areas audited with no bugs found**: the reflection runtime's struct-name/field-type cache
+keying (generic struct instantiations register under their own mangled name, so no cross-
+instantiation collision), `emit_place`'s rvalue-spill fallback composing correctly with
+`reflect_get_*` called on a non-place struct expression (a fresh struct literal or a function
+call's return value), fieldless-enum/struct `==`/`!=` codegen's transient-value release
+composing with nested structs and `str` fields under sustained loop pressure (re-confirmed,
+not just re-read), array/`Ring<T,N>` sizes rejecting a `const`-typed size expression with a
+clean, specific diagnostic rather than a confusing fallback (a real, if narrow, unsupported-
+combination gap -- `[i32; N]`/`Ring<i32, N>` require a literal, not a `const` reference --
+left as documented out-of-scope rather than a bug, since neither the language reference nor
+this round's own `const` feature ever claimed that combination was supported), and the
+diamond-dependency/direct-duplicate `CallId` distinction in `crate::modules::dedupe_by_origin`
+for `const` items specifically (both paths already had dedicated tests from the original
+"Top-level `let`/`const`" commit; re-run and re-read, not re-litigated). After finding the
+`mut_vars`/`loop_depth` pair, every other single-instance `Checker` field that looks like
+per-call "current context" scratch state (`current_ret_ty`, plus the pre-existing lambda-body/
+`frame:`-block `loop_depth` save/restore pairs in `src/types/expr.rs`/`stmt.rs`) was
+specifically re-read for the same "reset with no restore, reachable from a nested `check_fn`
+call" shape; none of the others had it -- `current_ret_ty` already saved/restored correctly,
+and the other two `loop_depth` resets are both already paired with their own save/restore for
+a different reason (a lambda/`frame:` body's own loop nesting must not let a `break`/`continue`
+cross that boundary either direction). Configurable arena capacity and spawn-expression handles
+were both read but not driven to a repro this round -- left genuinely unaudited (not
+"audited, clean") pending a future round, since this round's time went to following the
+`mut_vars`/`loop_depth` thread instead once it turned up.
 
 ### Previous round
 
@@ -984,4 +1122,3 @@ field default expression referencing an undefined name gets independently re-typ
 (and re-reports the identical diagnostic) once at struct-definition time and once per
 construction call site using that default -- duplicate messages, not a wrong or missing
 one, and not specific to any type added this round.
-

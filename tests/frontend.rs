@@ -11312,6 +11312,105 @@ fn rejects_assignment_to_lambda_param_shadowing_outer_mut_var_when_param_not_mut
     assert!(errs.iter().any(|d| d.message.contains("not declared `mut`")), "{:?}", errs);
 }
 
+/// `mut_vars` corruption-through-monomorphization regression guard:
+/// on-demand generic instantiation (`Checker::instantiate_struct`/
+/// `instantiate_impl_methods`/`instantiate_generic_fn`/`instantiate_enum`,
+/// all of which route through `check_fn` -> `check_block` to type-check the
+/// freshly-synthesized item's own body) can be triggered *mid-statement*,
+/// while an enclosing block's own statement loop is still in progress --
+/// e.g. the very first use of a generic struct's method inside a `while`
+/// loop. `Checker::check_block` used to unconditionally `self.mut_vars.
+/// clear()` at the start of *every* function body it checked, including one
+/// triggered this way, silently wiping out whatever the enclosing (still
+/// in-progress) block's own live `mut_vars` set was -- so a `mut` variable
+/// declared earlier in the very same block (a loop counter, here) would
+/// spuriously fail "cannot assign to `i` -- it was not declared `mut`" on
+/// every assignment *after* the point where the first not-yet-instantiated
+/// generic use appeared, purely because of unrelated code earlier in the
+/// same block. Confirmed via a real `star check` run before this fix: a
+/// `let mut i = 0` followed by a `while i < N:` body that calls a generic
+/// struct's method before `i = i + 1` failed to type-check at all, even
+/// though nothing about `i`'s own mutability changed.
+#[test]
+fn runtime_mut_loop_counter_survives_first_use_of_generic_struct_method_mid_loop_end_to_end() {
+    let src = concat!(
+        "struct Box<T>:\n    mut value: T\n    label: str\n",
+        "impl Box<T>:\n    fn get_self(self) -> Box<T>:\n        return self\n",
+        "fn main():\n",
+        "    let mut i = 0\n",
+        "    while i < 5:\n",
+        "        let b = Box<i32>(value = i, label = \"x\")\n",
+        "        let c = b.get_self()\n",
+        "        i = i + 1\n",
+        "    println(f\"{i}\")\n",
+    );
+    let output = compile_and_run("mut_counter_survives_generic_method_mid_loop", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "5");
+}
+
+/// Same shape, but the first-use-mid-loop trigger is a generic *function*
+/// (`instantiate_generic_fn`) rather than a generic struct's method
+/// (`instantiate_impl_methods`) -- guards the fix in `Checker::check_block`
+/// is the shared root cause fix (every on-demand-instantiation path funnels
+/// through it), not something that happened to only cover one call site.
+#[test]
+fn runtime_mut_loop_counter_survives_first_use_of_generic_fn_mid_loop_end_to_end() {
+    let src = concat!(
+        "fn identity<T>(x: T) -> T:\n    return x\n",
+        "fn main():\n",
+        "    let mut i = 0\n",
+        "    while i < 5:\n",
+        "        let y = identity(i)\n",
+        "        i = i + 1\n",
+        "    println(f\"{i}\")\n",
+    );
+    let output = compile_and_run("mut_counter_survives_generic_fn_mid_loop", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "5");
+}
+
+/// `loop_depth` corruption-through-monomorphization regression guard --
+/// the exact same hazard class as `runtime_mut_loop_counter_survives_first_
+/// use_of_generic_struct_method_mid_loop_end_to_end` above, just against
+/// `Checker::check_fn_with_self_ty`'s own `loop_depth` reset instead of
+/// `check_block`'s `mut_vars` reset. A `while` loop's body calling a generic
+/// struct's method (triggering monomorphization, which re-enters
+/// `check_fn_with_self_ty` for that method's own loop-free body) *before* a
+/// trailing `if ...: break` used to make that `break` spuriously fail ``
+/// `break` outside of a loop `` -- the nested method's own body-checking
+/// zeroed `loop_depth` and never restored the enclosing `while` loop's
+/// nesting count afterward.
+#[test]
+fn runtime_break_survives_first_use_of_generic_struct_method_mid_loop_end_to_end() {
+    let src = concat!(
+        "struct Box<T>:\n    mut value: T\n",
+        "impl Box<T>:\n    fn get_self(self) -> Box<T>:\n        return self\n",
+        "fn main():\n",
+        "    let mut i = 0\n",
+        "    while i < 5:\n",
+        "        let b = Box<i32>(value = i)\n",
+        "        let c = b.get_self()\n",
+        "        i = i + 1\n",
+        "        if i == 3:\n            break\n",
+        "    println(f\"{i}\")\n",
+    );
+    let output = compile_and_run("break_survives_generic_method_mid_loop", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "3");
+}
+
+/// A `break` genuinely outside any loop is still rejected -- guards the
+/// `loop_depth` save/restore fix above didn't also weaken the underlying
+/// check itself.
+#[test]
+fn rejects_break_outside_loop_after_loop_depth_fix() {
+    let src = "fn main():\n    break\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else { panic!("`break` outside a loop should still be rejected") };
+    assert!(errs.iter().any(|d| d.message.contains("outside of a loop")), "{:?}", errs);
+}
+
 /// A match-arm binding pattern (`Pattern::Binding`) introduces an immutable
 /// local by default, same as a plain `let` -- there's no `mut` syntax for a
 /// pattern binding, so it can never be reassigned inside its arm.
@@ -20945,6 +21044,81 @@ fn rejects_const_declared_type_mismatch() {
     let module = Driver::parse(src).expect("should parse");
     let errs = Driver::check(&module).expect_err("i32 declared but a float value given");
     assert!(errs.iter().any(|d| d.message.contains("but the value has type")), "{:?}", errs);
+}
+
+/// Every non-default numeric width (`i8`/`u8`/`i16`/`u16`/`u32`/`i64`/`u64`/
+/// `f64`) is usable as a `const`'s declared type via an explicit `as` cast --
+/// previously `fold_const_expr`'s `Cast` arm only ever folded `Int <-> Float`
+/// (i.e. `i32 <-> f32`), so `const X: i8 = 100 as i8` failed with "this cast
+/// is not supported in a constant expression" even though the identical cast
+/// is legal everywhere else in the language, and even a bare `const X: i8 =
+/// 100` (no cast at all) failed with `` `const X: I8` but the value has type
+/// `Int` `` since a folded `ConstValue` carried no width of its own -- every
+/// `const` narrower than `i32`/`f32` was completely unusable. Confirmed via
+/// real `star check` runs before this fix (see this test's runtime
+/// counterpart, `runtime_const_of_every_numeric_width_end_to_end`, for the
+/// value-correctness half).
+#[test]
+fn accepts_const_of_every_numeric_width_via_explicit_cast() {
+    let src = "const A: i8 = 100 as i8\n\
+               const B: u8 = 200 as u8\n\
+               const C: i16 = -1234 as i16\n\
+               const D: u16 = 40000 as u16\n\
+               const E: u32 = 4000000000 as u32\n\
+               const F: i64 = 5000000000 as i64\n\
+               const G: u64 = 5 as u64\n\
+               const H: f64 = 3.5 as f64\n\
+               fn main():\n    println(f\"{A} {B} {C} {D} {E} {F} {G} {H}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("every non-default numeric const width should type-check via an explicit cast");
+}
+
+/// A `const` narrower than `i32` still requires the same explicit `as` cast
+/// an ordinary `let`/function-argument literal already requires (`docs/
+/// language_reference.md`'s numeric-literal-widening convention) -- a bare,
+/// un-cast literal stays `Ty::Int` and is rejected against a narrower
+/// declared type, exactly like `let y: i8 = 100` is (this fix legalizes the
+/// *cast* path, not implicit literal narrowing).
+#[test]
+fn rejects_const_narrower_type_without_explicit_cast() {
+    let src = "const X: i8 = 100\nfn main():\n    println(f\"{X}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let errs = Driver::check(&module).expect_err("a bare i32-typed literal should not satisfy a narrower `const` type without a cast");
+    assert!(errs.iter().any(|d| d.message.contains("but the value has type")), "{:?}", errs);
+}
+
+/// Runtime test: a `const` of every non-default numeric width folds to the
+/// *correct* value, not just a type that happens to compile -- covers
+/// straight-through values for the narrower widths and, more importantly,
+/// width-correct wrapping arithmetic (`u8`/`i8` overflow), signed vs.
+/// unsigned ordering (`i8`'s `-1 > 100` is false; `u8`'s `200 > 100` is
+/// true), and unsigned division/comparison for `u64` computed from a
+/// wrapping subtraction that goes through `i64`'s negative range internally
+/// (`0u64 - 1u64` must fold to `u64::MAX`, not a negative-looking value, and
+/// `u64::MAX / 2` must divide as unsigned, not signed) -- exactly the
+/// canonicalization `cast_int_to_ty`/`int_cmp` exist to get right.
+#[test]
+fn runtime_const_of_every_numeric_width_end_to_end() {
+    let src = "const WRAP_U8: u8 = (255 as u8) + (1 as u8)\n\
+               const WRAP_I8: i8 = (127 as i8) + (1 as i8)\n\
+               const SUB_U8: u8 = (5 as u8) - (10 as u8)\n\
+               const CMP_U8: bool = (200 as u8) > (100 as u8)\n\
+               const CMP_I8: bool = (-1 as i8) > (100 as i8)\n\
+               const U64_MAX: u64 = (0 as u64) - (1 as u64)\n\
+               const U64_MAX_GT: bool = U64_MAX > (1 as u64)\n\
+               const U64_MAX_HALF: u64 = U64_MAX / (2 as u64)\n\
+               const PI64: f64 = 3.25 as f64\n\
+               fn main():\n    \
+               println(f\"{WRAP_U8} {WRAP_I8} {SUB_U8} {CMP_U8} {CMP_I8} {U64_MAX} {U64_MAX_GT} {U64_MAX_HALF} {PI64}\")\n";
+    let output = compile_and_run("const_every_numeric_width", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.replace("\r\n", "\n").trim_end(),
+        "0 -128 251 true false 18446744073709551615 true 9223372036854775807 3.250000",
+        "{}",
+        stdout
+    );
 }
 
 /// Integer division by zero inside a `const` initializer is a clean

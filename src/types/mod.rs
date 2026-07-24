@@ -932,13 +932,53 @@ fn is_builtin_name(name: &str) -> bool {
 /// `Checker::consts`/`Checker::resolve_const`. Mirrors the literal variants
 /// of `TypedExpr` (`Int`/`Float`/`Bool`/`Str`/`Char`) exactly, since a const
 /// initializer's whole job is to reduce to one of those.
+///
+/// `Int`/`Float` additionally carry the exact `Ty` the value was folded
+/// under (`Ty::Int`/`I8`/`U8`/`I16`/`U16`/`U32`/`I64`/`U64` for `Int`;
+/// `Ty::Float`/`F64` for `Float`) -- every `Int`/`Float` value handled by
+/// `fold_const_expr` is kept canonicalized to that width (see
+/// `cast_int_to_ty`), so a `const X: u8 = 255 + 1` wraps to `0` exactly like
+/// the equivalent runtime `Wrapping<u8>` arithmetic would, instead of
+/// silently carrying an out-of-range `i32`-shaped value forward. Without
+/// this the type only ever "worked" for the language's default `i32`/`f32`
+/// widths -- `const X: i8 = 100` failed with `` `const X: I8` but the value
+/// has type `Int` `` even though `100` obviously fits `i8`, and `const X:
+/// u32 = 5 as u32` failed with "this cast is not supported in a constant
+/// expression" even though the exact same cast is legal everywhere else in
+/// the language -- confirmed via both real `star check` runs before this
+/// fix.
 #[derive(Clone, Debug)]
 enum ConstValue {
-    Int(i64),
-    Float(f64),
+    Int(i64, Ty),
+    Float(f64, Ty),
     Bool(bool),
     Str(String),
     Char(char),
+}
+
+/// Re-canonicalize `v` to `ty`'s exact bit width/signedness, matching
+/// `Codegen::emit_cast`'s int/int `trunc`/`sext`/`zext` lowering bit-for-bit
+/// (see that function's own doc comment) -- Rust's `as` between integer
+/// primitive types is already defined purely on the two's-complement bit
+/// pattern, which is exactly what LLVM's trunc/sext/zext combo computes, so
+/// as long as every `ConstValue::Int`'s `i64` field is always kept
+/// canonicalized this way (every construction site below routes through
+/// this), one flat match over the *target* type alone is sufficient --
+/// there's no need to separately consider the *source* width/signedness at
+/// all, unlike `emit_cast`'s own runtime lowering (which has to pick
+/// `sext`/`zext` per source signedness because it starts from a fixed-width
+/// LLVM register with no wider canonical form to fall back on).
+fn cast_int_to_ty(v: i64, ty: &Ty) -> i64 {
+    match ty {
+        Ty::I8 => v as i8 as i64,
+        Ty::U8 => v as u8 as i64,
+        Ty::I16 => v as i16 as i64,
+        Ty::U16 => v as u16 as i64,
+        Ty::Int => v as i32 as i64,
+        Ty::U32 => v as u32 as i64,
+        Ty::I64 | Ty::U64 => v,
+        _ => v,
+    }
 }
 
 impl ConstValue {
@@ -947,10 +987,27 @@ impl ConstValue {
     /// against, say, an out-of-range cast of `const X: i32 = 5` used
     /// elsewhere still points at the use, not back at line 1 of some other
     /// file.
+    ///
+    /// `Float(_, Ty::F64)` is deliberately never lowered to a bare
+    /// `TypedExpr::Float` directly: `Codegen::emit_expr`'s `TypedExpr::Float`
+    /// arm always renders its text via `format_f32_literal` regardless of
+    /// the node's own `Ty` tag (there is no bare-`double`-literal text
+    /// path), so a `Float(_, Ty::F64)` node would silently emit an `f32`-
+    /// shaped `float` literal wherever LLVM IR expected a `double`, a type
+    /// mismatch `clang`/`llc` would reject. Routing it through the exact
+    /// same `f32`-literal-then-`fpext` shape a real `<float literal> as f64`
+    /// already produces (`Codegen::emit_cast`'s float/float arm) reuses
+    /// already-correct, already-tested machinery instead of teaching
+    /// codegen a new literal form.
     fn into_typed_expr(self, span: Span) -> TypedExpr {
         match self {
-            ConstValue::Int(v) => TypedExpr::Int(v, Ty::Int, span),
-            ConstValue::Float(v) => TypedExpr::Float(v, Ty::Float, span),
+            ConstValue::Int(v, ty) => TypedExpr::Int(v, ty, span),
+            ConstValue::Float(v, Ty::F64) => TypedExpr::Cast {
+                expr: Box::new(TypedExpr::Float(v, Ty::Float, span)),
+                ty: Ty::F64,
+                span,
+            },
+            ConstValue::Float(v, ty) => TypedExpr::Float(v, ty, span),
             ConstValue::Bool(v) => TypedExpr::Bool(v, Ty::Bool, span),
             ConstValue::Str(v) => TypedExpr::Str(v, Ty::Str, span),
             ConstValue::Char(v) => TypedExpr::Char(v, Ty::Char, span),
@@ -1002,16 +1059,16 @@ fn collect_const_refs(expr: &Expr, decls: &HashMap<String, ConstDecl>) -> Vec<St
 /// in a constant expression as a call or a field access.
 fn fold_const_expr(expr: &TypedExpr) -> Result<ConstValue, (Span, String)> {
     match expr {
-        TypedExpr::Int(v, _, _) => Ok(ConstValue::Int(*v)),
-        TypedExpr::Float(v, _, _) => Ok(ConstValue::Float(*v)),
+        TypedExpr::Int(v, ty, _) => Ok(ConstValue::Int(cast_int_to_ty(*v, ty), ty.clone())),
+        TypedExpr::Float(v, ty, _) => Ok(ConstValue::Float(*v, ty.clone())),
         TypedExpr::Bool(v, _, _) => Ok(ConstValue::Bool(*v)),
         TypedExpr::Str(v, _, _) => Ok(ConstValue::Str(v.clone())),
         TypedExpr::Char(v, _, _) => Ok(ConstValue::Char(*v)),
         TypedExpr::Unary { op, operand, span, .. } => {
             let v = fold_const_expr(operand)?;
             match (op, v) {
-                (UnOp::Neg, ConstValue::Int(i)) => Ok(ConstValue::Int(i.wrapping_neg())),
-                (UnOp::Neg, ConstValue::Float(f)) => Ok(ConstValue::Float(-f)),
+                (UnOp::Neg, ConstValue::Int(i, ty)) => Ok(ConstValue::Int(cast_int_to_ty(i.wrapping_neg(), &ty), ty)),
+                (UnOp::Neg, ConstValue::Float(f, ty)) => Ok(ConstValue::Float(-f, ty)),
                 (UnOp::Not, ConstValue::Bool(b)) => Ok(ConstValue::Bool(!b)),
                 _ => Err((*span, "this operator is not supported in a constant expression".to_string())),
             }
@@ -1021,11 +1078,35 @@ fn fold_const_expr(expr: &TypedExpr) -> Result<ConstValue, (Span, String)> {
             let r = fold_const_expr(rhs)?;
             eval_const_binop(*op, l, r, *span)
         }
-        TypedExpr::Cast { expr: inner, ty, span } => {
+        // A numeric cast (int<->int of any width/signedness, int<->float,
+        // float<->float) -- the same matrix `Checker::infer_expr`'s
+        // `Expr::Cast` arm already legalized via `Ty::is_numeric`/
+        // `int_shape` before this ever runs, so every pairing reaching here
+        // is guaranteed legal; this only has to compute the result, mirroring
+        // `Codegen::emit_cast`'s int/int `trunc`/`sext`/`zext` (via
+        // `cast_int_to_ty`, which subsumes same-width sign-reinterpreting
+        // casts like `u8 as i8` too) and int<->float `sitofp`/`uitofp`/
+        // `fptosi`/`fptoui` lowering, just computed at compile time instead
+        // of emitted as instructions. `char` casts are deliberately not
+        // folded here (left as a documented remaining gap, same as before
+        // this fix) -- unlike every numeric pairing, a `Rust`-level `char`
+        // conversion can fail (not every `i32` is a valid Unicode scalar
+        // value), which this compiler's own runtime `char` cast doesn't
+        // validate either (a trusted bit reinterpretation, see
+        // `Checker::infer_expr`'s `Expr::Cast` doc comment) -- folding it at
+        // compile time would need to pick a behavior (panic vs. a
+        // replacement character) with no existing runtime convention to
+        // match.
+        TypedExpr::Cast { expr: inner, ty: target, span } => {
             let v = fold_const_expr(inner)?;
-            match (v, ty) {
-                (ConstValue::Int(i), Ty::Float) => Ok(ConstValue::Float(i as f64)),
-                (ConstValue::Float(f), Ty::Int) => Ok(ConstValue::Int(f as i64)),
+            match (v, target) {
+                (ConstValue::Int(i, _), t) if t.int_shape().is_some() => Ok(ConstValue::Int(cast_int_to_ty(i, t), t.clone())),
+                (ConstValue::Int(i, src_ty), Ty::Float | Ty::F64) => {
+                    let f = if src_ty.int_shape().is_some_and(|(_, signed)| signed) { i as f64 } else { i as u64 as f64 };
+                    Ok(ConstValue::Float(f, target.clone()))
+                }
+                (ConstValue::Float(f, _), t) if t.int_shape().is_some() => Ok(ConstValue::Int(cast_float_to_int_ty(f, t), t.clone())),
+                (ConstValue::Float(f, _), Ty::Float | Ty::F64) => Ok(ConstValue::Float(f, target.clone())),
                 _ => Err((*span, "this cast is not supported in a constant expression".to_string())),
             }
         }
@@ -1033,6 +1114,40 @@ fn fold_const_expr(expr: &TypedExpr) -> Result<ConstValue, (Span, String)> {
             other.span(),
             "this expression is not allowed in a `const` initializer -- only literals, arithmetic, casts, and references to other `const`s are supported".to_string(),
         )),
+    }
+}
+
+/// Order two canonicalized `ConstValue::Int` payloads per `ty`'s own
+/// signedness -- see `eval_const_binop`'s doc comment for why only
+/// `Ty::U64` actually needs the unsigned comparison path (every narrower
+/// unsigned width's canonical `i64` value is always non-negative, so a
+/// plain signed comparison already agrees with the unsigned one there).
+fn int_cmp(a: i64, b: i64, ty: &Ty) -> std::cmp::Ordering {
+    if ty.int_shape().is_some_and(|(_, signed)| !signed) {
+        (a as u64).cmp(&(b as u64))
+    } else {
+        a.cmp(&b)
+    }
+}
+
+/// Float -> integer const-cast, per `target`'s exact width/signedness --
+/// Rust's own `f64 as iN`/`as uN` is a saturating, NaN-to-zero conversion
+/// (stable since Rust 1.45), the exact behavior `Codegen::emit_cast`'s
+/// `llvm.fptosi.sat`/`llvm.fptoui.sat` lowering documents itself as
+/// matching ("the saturating ... clamp `Checker::infer_expr`'s `Expr::Cast`
+/// doc comment already promises"), so this can defer to it directly instead
+/// of re-implementing the clamp by hand.
+fn cast_float_to_int_ty(f: f64, ty: &Ty) -> i64 {
+    match ty {
+        Ty::I8 => f as i8 as i64,
+        Ty::U8 => f as u8 as i64,
+        Ty::I16 => f as i16 as i64,
+        Ty::U16 => f as u16 as i64,
+        Ty::Int => f as i32 as i64,
+        Ty::U32 => f as u32 as i64,
+        Ty::I64 => f as i64,
+        Ty::U64 => f as u64 as i64,
+        _ => f as i64,
     }
 }
 
@@ -1047,28 +1162,58 @@ fn eval_const_binop(op: BinOp, l: ConstValue, r: ConstValue, span: Span) -> Resu
     use ConstValue::*;
     let div_by_zero = || (span, "division by zero in a constant expression".to_string());
     match (op, l, r) {
-        (BinOp::Add, Int(a), Int(b)) => Ok(Int(a.wrapping_add(b))),
-        (BinOp::Sub, Int(a), Int(b)) => Ok(Int(a.wrapping_sub(b))),
-        (BinOp::Mul, Int(a), Int(b)) => Ok(Int(a.wrapping_mul(b))),
-        (BinOp::Div, Int(a), Int(b)) => if b == 0 { Err(div_by_zero()) } else { Ok(Int(a.wrapping_div(b))) },
-        (BinOp::Rem, Int(a), Int(b)) => if b == 0 { Err(div_by_zero()) } else { Ok(Int(a.wrapping_rem(b))) },
-        (BinOp::Eq, Int(a), Int(b)) => Ok(Bool(a == b)),
-        (BinOp::Ne, Int(a), Int(b)) => Ok(Bool(a != b)),
-        (BinOp::Lt, Int(a), Int(b)) => Ok(Bool(a < b)),
-        (BinOp::Gt, Int(a), Int(b)) => Ok(Bool(a > b)),
-        (BinOp::Le, Int(a), Int(b)) => Ok(Bool(a <= b)),
-        (BinOp::Ge, Int(a), Int(b)) => Ok(Bool(a >= b)),
-        (BinOp::Add, Float(a), Float(b)) => Ok(Float(a + b)),
-        (BinOp::Sub, Float(a), Float(b)) => Ok(Float(a - b)),
-        (BinOp::Mul, Float(a), Float(b)) => Ok(Float(a * b)),
-        (BinOp::Div, Float(a), Float(b)) => Ok(Float(a / b)),
-        (BinOp::Rem, Float(a), Float(b)) => Ok(Float(a % b)),
-        (BinOp::Eq, Float(a), Float(b)) => Ok(Bool(a == b)),
-        (BinOp::Ne, Float(a), Float(b)) => Ok(Bool(a != b)),
-        (BinOp::Lt, Float(a), Float(b)) => Ok(Bool(a < b)),
-        (BinOp::Gt, Float(a), Float(b)) => Ok(Bool(a > b)),
-        (BinOp::Le, Float(a), Float(b)) => Ok(Bool(a <= b)),
-        (BinOp::Ge, Float(a), Float(b)) => Ok(Bool(a >= b)),
+        // `Checker::infer_binop_ty` only ever accepts a same-`Ty` pair for
+        // int/int arithmetic (no implicit widening -- an explicit `as` is
+        // required, matching `Ty::Wrapping`'s own model), so `ty`/`_ty2`
+        // below are always equal; `ty` (the left operand's) is threaded
+        // through as the result's type. `wrapping_add`/`_sub`/`_mul` at the
+        // full `i64` width followed by `cast_int_to_ty` reproduces exactly
+        // the width-correct wrapping a real `i{N}`/`u{N}` LLVM `add`/`sub`/
+        // `mul` instruction performs (two's-complement wraparound is
+        // identical whether or not the result is subsequently
+        // reinterpreted as signed or unsigned), so `Div`/`Rem`/ordering are
+        // the only operators that actually need to branch on `ty`'s own
+        // signedness (`Ty::U64`'s canonical `i64` storage can be negative
+        // when the true value exceeds `i64::MAX` -- see `ConstValue`'s doc
+        // comment -- so a plain signed `i64` comparison/division would be
+        // wrong for those; every narrower unsigned width's canonical value
+        // is always non-negative, so it doesn't matter there either way).
+        (BinOp::Add, Int(a, ty), Int(b, _)) => Ok(Int(cast_int_to_ty(a.wrapping_add(b), &ty), ty)),
+        (BinOp::Sub, Int(a, ty), Int(b, _)) => Ok(Int(cast_int_to_ty(a.wrapping_sub(b), &ty), ty)),
+        (BinOp::Mul, Int(a, ty), Int(b, _)) => Ok(Int(cast_int_to_ty(a.wrapping_mul(b), &ty), ty)),
+        (BinOp::Div, Int(a, ty), Int(b, _)) => {
+            if b == 0 {
+                return Err(div_by_zero());
+            }
+            let unsigned = ty.int_shape().is_some_and(|(_, signed)| !signed);
+            let v = if unsigned { ((a as u64).wrapping_div(b as u64)) as i64 } else { a.wrapping_div(b) };
+            Ok(Int(cast_int_to_ty(v, &ty), ty))
+        }
+        (BinOp::Rem, Int(a, ty), Int(b, _)) => {
+            if b == 0 {
+                return Err(div_by_zero());
+            }
+            let unsigned = ty.int_shape().is_some_and(|(_, signed)| !signed);
+            let v = if unsigned { ((a as u64).wrapping_rem(b as u64)) as i64 } else { a.wrapping_rem(b) };
+            Ok(Int(cast_int_to_ty(v, &ty), ty))
+        }
+        (BinOp::Eq, Int(a, _), Int(b, _)) => Ok(Bool(a == b)),
+        (BinOp::Ne, Int(a, _), Int(b, _)) => Ok(Bool(a != b)),
+        (BinOp::Lt, Int(a, ty), Int(b, _)) => Ok(Bool(int_cmp(a, b, &ty).is_lt())),
+        (BinOp::Gt, Int(a, ty), Int(b, _)) => Ok(Bool(int_cmp(a, b, &ty).is_gt())),
+        (BinOp::Le, Int(a, ty), Int(b, _)) => Ok(Bool(int_cmp(a, b, &ty).is_le())),
+        (BinOp::Ge, Int(a, ty), Int(b, _)) => Ok(Bool(int_cmp(a, b, &ty).is_ge())),
+        (BinOp::Add, Float(a, ty), Float(b, _)) => Ok(Float(a + b, ty)),
+        (BinOp::Sub, Float(a, ty), Float(b, _)) => Ok(Float(a - b, ty)),
+        (BinOp::Mul, Float(a, ty), Float(b, _)) => Ok(Float(a * b, ty)),
+        (BinOp::Div, Float(a, ty), Float(b, _)) => Ok(Float(a / b, ty)),
+        (BinOp::Rem, Float(a, ty), Float(b, _)) => Ok(Float(a % b, ty)),
+        (BinOp::Eq, Float(a, _), Float(b, _)) => Ok(Bool(a == b)),
+        (BinOp::Ne, Float(a, _), Float(b, _)) => Ok(Bool(a != b)),
+        (BinOp::Lt, Float(a, _), Float(b, _)) => Ok(Bool(a < b)),
+        (BinOp::Gt, Float(a, _), Float(b, _)) => Ok(Bool(a > b)),
+        (BinOp::Le, Float(a, _), Float(b, _)) => Ok(Bool(a <= b)),
+        (BinOp::Ge, Float(a, _), Float(b, _)) => Ok(Bool(a >= b)),
         (BinOp::Eq, Bool(a), Bool(b)) => Ok(Bool(a == b)),
         (BinOp::Ne, Bool(a), Bool(b)) => Ok(Bool(a != b)),
         (BinOp::And, Bool(a), Bool(b)) => Ok(Bool(a && b)),
@@ -2225,9 +2370,22 @@ impl Checker {
     }
 
     fn check_fn_with_self_ty(&mut self, f: &FnDef, self_ty: &Ty) -> Option<TypedFnDef> {
-        // Defensive reset: `loop_depth` should already be balanced back to 0
-        // by the previous item's checks, but resetting here guarantees one
-        // function's loop nesting can never leak into the next.
+        // Save (not just reset) `loop_depth` -- same hazard `check_block`'s
+        // own `mut_vars` fix above documents: this function is the entry
+        // point for type-checking *any* function/method body, including one
+        // triggered on demand mid-statement by generic monomorphization
+        // (`instantiate_struct`/`instantiate_enum`/`instantiate_generic_fn`/
+        // `instantiate_impl_methods`), while some unrelated enclosing loop's
+        // own body is still being checked. A plain `self.loop_depth = 0`
+        // here used to silently zero out that *enclosing* loop's nesting
+        // count for the rest of its body once this (possibly loop-free)
+        // nested function finished checking, so a `break`/`continue`
+        // appearing later in the very same loop body -- after the point
+        // where the first not-yet-instantiated generic use appeared -- was
+        // spuriously rejected as `` `break` outside of a loop ``. Confirmed
+        // via a real repro: a `while` loop calling a generic struct's method
+        // before its own trailing `if ...: break` failed to type-check.
+        let saved_loop_depth = self.loop_depth;
         self.loop_depth = 0;
         let sig = self.check_fn_sig_with_self_ty(&f.sig, self_ty)?;
         // `main` is always lowered to `i32 @main(...)` regardless of its
@@ -2251,6 +2409,7 @@ impl Checker {
         let saved_ret_ty = std::mem::replace(&mut self.current_ret_ty, Some(sig.ret.clone()));
         let body = self.check_block(&f.body, &sig)?;
         self.current_ret_ty = saved_ret_ty;
+        self.loop_depth = saved_loop_depth;
         // §1.3's other half: `return`-statement checking above only catches
         // an *explicit* `return <expr>`. Star also allows an *implicit*
         // trailing-expression return (`fn get_val() -> i32:\n    "not an
@@ -2319,14 +2478,39 @@ impl Checker {
 
     fn check_block(&mut self, block: &Block, fn_sig: &TypedFnSig) -> Option<TypedBlock> {
         let mut vars: HashMap<String, Ty> = HashMap::new();
-        self.mut_vars.clear();
+        // Save (not just clear) the caller's `mut_vars` -- `check_block` is
+        // the entry point for *any* function body, including one triggered
+        // on demand mid-expression by monomorphization (`instantiate_struct`/
+        // `instantiate_enum`/`instantiate_generic_fn`/`instantiate_impl_methods`
+        // all eventually call `check_fn`, which calls this). A generic
+        // type/function/method used for the first time inside a `while`/`if`
+        // body is instantiated (and its own body fully type-checked, via this
+        // exact function) *while the enclosing block's own statement loop is
+        // still mid-iteration* -- a plain `.clear()` here used to wipe the
+        // enclosing function's live `mut_vars` set out from under it for the
+        // rest of that block, so any `mut` variable declared earlier in the
+        // same block (e.g. a `while` loop counter) would spuriously fail
+        // "cannot assign to `x` -- it was not declared `mut`" on every
+        // assignment *after* the point where the first not-yet-instantiated
+        // generic use appeared, even though `x` was declared `mut` and nothing
+        // about it changed. Confirmed via a real repro: `let mut i = 0` then a
+        // `while i < N:` body that first calls a generic struct's method
+        // (triggering monomorphization) and only *afterward* does `i = i + 1`
+        // -- the assignment was rejected purely because of unrelated code
+        // earlier in the same loop body. `std::mem::take` empties `mut_vars`
+        // for this (possibly brand-new) function body exactly like `.clear()`
+        // did, while also handing back whatever the *caller* had live so it
+        // can be restored once this function body is fully checked.
+        let saved_mut_vars = std::mem::take(&mut self.mut_vars);
         for p in &fn_sig.params {
             vars.insert(p.name.clone(), p.ty.clone());
             if p.is_mut {
                 self.mut_vars.insert(p.name.clone());
             }
         }
-        Some(self.check_block_inner(block, &mut vars))
+        let result = self.check_block_inner(block, &mut vars);
+        self.mut_vars = saved_mut_vars;
+        Some(result)
     }
 
     /// Type-check a block reusing an inherited variable table. Used for nested
