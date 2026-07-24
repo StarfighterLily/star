@@ -420,15 +420,56 @@ fn mangled(name: &str, names: &HashMap<String, String>) -> String {
 /// mangling, or from [`dedupe_by_origin`]'s duplicate->canonical
 /// substitution).
 ///
-/// Known limitation shared with `crate::sequence`'s hoisting rewrite: this
-/// matches purely on identifier text, so a local variable that happens to
-/// share a name with one of the module's own top-level declarations would
-/// also get rewritten. Not a concern in practice since Star's naming
-/// convention already separates PascalCase types from snake_case values/fns,
-/// but a real name-resolution pass would need to track scopes properly.
+/// This matches on identifier text, but is not fooled by a local variable
+/// (parameter, `let`, `for`/`each`/`par` loop variable, closure parameter, or
+/// match-pattern binding) that happens to share a name with one of the
+/// module's own top-level declarations: every `rename_*` helper below threads
+/// a `shadowed` set of such names currently in scope, and `Expr::Ident`
+/// (`resolve_ident`) only ever mangles a name that *isn't* in it. This is not
+/// just a theoretical concern -- unlike a struct/enum name (PascalCase),
+/// function/const/arena names share the exact same snake_case convention as
+/// ordinary parameters and locals, so an ordinarily-named helper function
+/// (`fn helper() -> i32: ...`) colliding with an equally ordinary parameter
+/// name (`fn compute(helper: i32) -> i32: return helper + 1`) in the same
+/// imported module was previously a real, silent miscompile: the parameter
+/// itself was never renamed (`rename_param` only touches its type), but every
+/// *reference* to it inside the function body was blindly mangled to
+/// `alias__helper` regardless of whether it actually meant the parameter or
+/// the top-level function, producing a nonsensical
+/// `` `+` is not supported between `Closure([], Int)` and `Int` `` diagnostic
+/// instead of type-checking and running correctly. Confirmed via a real
+/// `star check`/build+run before this fix.
 fn rename_module(module: &Module, names: &HashMap<String, String>) -> Module {
     let items = module.items.iter().map(|item| rename_item(item, names)).collect();
     Module { items }
+}
+
+/// Resolve one `Expr::Ident`/bare-name reference: mangled per `names` unless
+/// `name` is currently shadowed by a local binding, in which case it's left
+/// alone -- see `rename_module`'s doc comment for why this distinction
+/// matters.
+fn resolve_ident(name: &str, names: &HashMap<String, String>, shadowed: &HashSet<String>) -> String {
+    if shadowed.contains(name) {
+        name.to_string()
+    } else {
+        mangled(name, names)
+    }
+}
+
+/// Add every name a pattern binds (a plain `Binding`, or the destructured
+/// fields of an `EnumVariant`/`Struct` pattern) to `shadowed`, for the
+/// duration of the match arm body it guards -- see `rename_module`'s doc
+/// comment.
+fn collect_pattern_bindings(pattern: &Pattern, shadowed: &mut HashSet<String>) {
+    match pattern {
+        Pattern::Binding(n) => {
+            shadowed.insert(n.clone());
+        }
+        Pattern::EnumVariant(_, _, bindings) | Pattern::Struct(_, bindings) => {
+            shadowed.extend(bindings.iter().cloned());
+        }
+        Pattern::Wildcard | Pattern::Int(_) | Pattern::Bool(_) | Pattern::Compare(..) => {}
+    }
 }
 
 fn rename_item(item: &Item, names: &HashMap<String, String>) -> Item {
@@ -462,12 +503,16 @@ fn rename_item(item: &Item, names: &HashMap<String, String>) -> Item {
             capacity: a.capacity,
             span: a.span,
         }),
-        Item::Sequence(s) => Item::Sequence(SequenceDef {
-            name: mangled(&s.name, names),
-            params: s.params.iter().map(|p| rename_param(p, names)).collect(),
-            body: rename_block(&s.body, names),
-            span: s.span,
-        }),
+        Item::Sequence(s) => {
+            let mut shadowed = HashSet::new();
+            shadowed.extend(s.params.iter().map(|p| p.name.clone()));
+            Item::Sequence(SequenceDef {
+                name: mangled(&s.name, names),
+                params: s.params.iter().map(|p| rename_param(p, names)).collect(),
+                body: rename_block(&s.body, names, &shadowed),
+                span: s.span,
+            })
+        }
         Item::Enum(e) => Item::Enum(EnumDef {
             name: mangled(&e.name, names),
             type_params: e.type_params.clone(),
@@ -489,7 +534,7 @@ fn rename_item(item: &Item, names: &HashMap<String, String>) -> Item {
         Item::Const(c) => Item::Const(ConstDecl {
             name: mangled(&c.name, names),
             ty: rename_type(&c.ty, names),
-            value: rename_expr(&c.value, names),
+            value: rename_expr(&c.value, names, &HashSet::new()),
             span: c.span,
         }),
         // Never present: `resolve_inner` only ever passes already-import-free
@@ -506,7 +551,7 @@ fn rename_field(f: &FieldDef, names: &HashMap<String, String>) -> FieldDef {
         is_mut: f.is_mut,
         name: f.name.clone(),
         ty: rename_type(&f.ty, names),
-        default: f.default.as_ref().map(|e| rename_expr(e, names)),
+        default: f.default.as_ref().map(|e| rename_expr(e, names, &HashSet::new())),
         decorators: f.decorators.clone(),
         span: f.span,
     }
@@ -548,6 +593,8 @@ fn rename_fn_sig(sig: &FnSig, names: &HashMap<String, String>) -> FnSig {
 }
 
 fn rename_fn(f: &FnDef, names: &HashMap<String, String>, mangle_own_name: bool) -> FnDef {
+    let mut shadowed = HashSet::new();
+    shadowed.extend(f.sig.params.iter().map(|p| p.name.clone()));
     FnDef {
         sig: FnSig {
             name: if mangle_own_name { mangled(&f.sig.name, names) } else { f.sig.name.clone() },
@@ -556,80 +603,114 @@ fn rename_fn(f: &FnDef, names: &HashMap<String, String>, mangle_own_name: bool) 
             ret: f.sig.ret.as_ref().map(|t| rename_type(t, names)),
             span: f.sig.span,
         },
-        body: rename_block(&f.body, names),
+        body: rename_block(&f.body, names, &shadowed),
         span: f.span,
     }
 }
 
-fn rename_block(block: &Block, names: &HashMap<String, String>) -> Block {
-    Block { stmts: block.stmts.iter().map(|s| rename_stmt(s, names)).collect(), span: block.span }
+/// Rename one block's statements in order, threading a `shadowed` set of
+/// locally-bound names (params, `let`s seen so far in this same block,
+/// enclosing loop/match/lambda bindings, ...) so `Expr::Ident` never mangles
+/// a reference that actually means a local, not a top-level declaration --
+/// see `rename_module`'s doc comment. Takes (rather than mutates) the
+/// caller's set: a name `let`-bound partway through this block is visible to
+/// the rest of *this* block but must not leak back out to whatever comes
+/// after the block ends (an `if`/`while`/`for`/... body, a match arm, ...),
+/// exactly like real block scoping -- hence cloning into a fresh `local` set
+/// up front rather than accepting `&mut HashSet` from the caller.
+fn rename_block(block: &Block, names: &HashMap<String, String>, shadowed: &HashSet<String>) -> Block {
+    let mut local = shadowed.clone();
+    let stmts = block.stmts.iter().map(|s| rename_stmt(s, names, &mut local)).collect();
+    Block { stmts, span: block.span }
 }
 
-fn rename_stmt(stmt: &Stmt, names: &HashMap<String, String>) -> Stmt {
+/// Rename one statement, consulting (and, for a `let`, extending) `shadowed`
+/// -- mutated in place so a `let` partway through a block shadows for every
+/// statement *after* it in the same `rename_block` call, but a nested body
+/// (an `if`'s `then_block`, a loop's `body`, ...) only ever gets a read-only
+/// view (`rename_block` clones it), so bindings inside that nested body never
+/// leak back out to `shadowed` here.
+fn rename_stmt(stmt: &Stmt, names: &HashMap<String, String>, shadowed: &mut HashSet<String>) -> Stmt {
     match stmt {
-        Stmt::Let { is_mut, name, ty, value, span } => Stmt::Let {
-            is_mut: *is_mut,
-            name: name.clone(),
-            ty: ty.as_ref().map(|t| rename_type(t, names)),
-            value: rename_expr(value, names),
-            span: *span,
-        },
-        Stmt::Assign { target, op, value, span } => {
-            Stmt::Assign { target: rename_expr(target, names), op: *op, value: rename_expr(value, names), span: *span }
+        Stmt::Let { is_mut, name, ty, value, span } => {
+            // Render `value` under the set as it stood *before* this binding
+            // -- `let x = x` must still refer to whatever `x` meant on the
+            // right-hand side (an outer local, or a top-level declaration
+            // due for mangling), not the not-yet-introduced new `x`.
+            let renamed_value = rename_expr(value, names, shadowed);
+            let renamed_ty = ty.as_ref().map(|t| rename_type(t, names));
+            shadowed.insert(name.clone());
+            Stmt::Let { is_mut: *is_mut, name: name.clone(), ty: renamed_ty, value: renamed_value, span: *span }
         }
-        Stmt::Return { value, span } => Stmt::Return { value: value.as_ref().map(|v| rename_expr(v, names)), span: *span },
-        Stmt::Expr(e) => Stmt::Expr(rename_expr(e, names)),
+        Stmt::Assign { target, op, value, span } => {
+            Stmt::Assign { target: rename_expr(target, names, shadowed), op: *op, value: rename_expr(value, names, shadowed), span: *span }
+        }
+        Stmt::Return { value, span } => Stmt::Return { value: value.as_ref().map(|v| rename_expr(v, names, shadowed)), span: *span },
+        Stmt::Expr(e) => Stmt::Expr(rename_expr(e, names, shadowed)),
         Stmt::If { cond, then_block, else_block, span } => Stmt::If {
-            cond: rename_expr(cond, names),
-            then_block: rename_block(then_block, names),
-            else_block: else_block.as_ref().map(|b| rename_block(b, names)),
+            cond: rename_expr(cond, names, shadowed),
+            then_block: rename_block(then_block, names, shadowed),
+            else_block: else_block.as_ref().map(|b| rename_block(b, names, shadowed)),
             span: *span,
         },
         Stmt::While { cond, body, else_block, span } => Stmt::While {
-            cond: rename_expr(cond, names),
-            body: rename_block(body, names),
-            else_block: else_block.as_ref().map(|b| rename_block(b, names)),
+            cond: rename_expr(cond, names, shadowed),
+            body: rename_block(body, names, shadowed),
+            else_block: else_block.as_ref().map(|b| rename_block(b, names, shadowed)),
             span: *span,
         },
-        Stmt::For { var, start, end, body, span } => Stmt::For {
-            var: var.clone(),
-            start: rename_expr(start, names),
-            end: rename_expr(end, names),
-            body: rename_block(body, names),
-            span: *span,
-        },
+        Stmt::For { var, start, end, body, span } => {
+            let mut body_shadow = shadowed.clone();
+            body_shadow.insert(var.clone());
+            Stmt::For {
+                var: var.clone(),
+                start: rename_expr(start, names, shadowed),
+                end: rename_expr(end, names, shadowed),
+                body: rename_block(body, names, &body_shadow),
+                span: *span,
+            }
+        }
         Stmt::Break { span } => Stmt::Break { span: *span },
         Stmt::Continue { span } => Stmt::Continue { span: *span },
-        Stmt::Frame { body, span } => Stmt::Frame { body: rename_block(body, names), span: *span },
+        Stmt::Frame { body, span } => Stmt::Frame { body: rename_block(body, names, shadowed), span: *span },
         Stmt::Par { var, arena, body, span } => {
-            Stmt::Par { var: var.clone(), arena: mangled(arena, names), body: rename_block(body, names), span: *span }
+            let mut body_shadow = shadowed.clone();
+            body_shadow.insert(var.clone());
+            Stmt::Par { var: var.clone(), arena: mangled(arena, names), body: rename_block(body, names, &body_shadow), span: *span }
         }
-        Stmt::Each { var, index_var, arena, body, span } => Stmt::Each {
-            var: var.clone(),
-            index_var: index_var.clone(),
-            arena: mangled(arena, names),
-            body: rename_block(body, names),
-            span: *span,
-        },
+        Stmt::Each { var, index_var, arena, body, span } => {
+            let mut body_shadow = shadowed.clone();
+            body_shadow.insert(var.clone());
+            if let Some(idx) = index_var {
+                body_shadow.insert(idx.clone());
+            }
+            Stmt::Each {
+                var: var.clone(),
+                index_var: index_var.clone(),
+                arena: mangled(arena, names),
+                body: rename_block(body, names, &body_shadow),
+                span: *span,
+            }
+        }
         Stmt::Yield { span } => Stmt::Yield { span: *span },
         Stmt::Spawn { arena, args, arg_names, span } => Stmt::Spawn {
             arena: mangled(arena, names),
-            args: args.iter().map(|a| rename_expr(a, names)).collect(),
+            args: args.iter().map(|a| rename_expr(a, names, shadowed)).collect(),
             arg_names: arg_names.clone(),
             span: *span,
         },
         Stmt::Despawn { arena, index, span } => {
-            Stmt::Despawn { arena: mangled(arena, names), index: rename_expr(index, names), span: *span }
+            Stmt::Despawn { arena: mangled(arena, names), index: rename_expr(index, names, shadowed), span: *span }
         }
     }
 }
 
-fn rename_pattern(pattern: &Pattern, names: &HashMap<String, String>) -> Pattern {
+fn rename_pattern(pattern: &Pattern, names: &HashMap<String, String>, shadowed: &HashSet<String>) -> Pattern {
     match pattern {
         Pattern::Wildcard => Pattern::Wildcard,
         Pattern::Int(v) => Pattern::Int(*v),
         Pattern::Bool(v) => Pattern::Bool(*v),
-        Pattern::Compare(op, e) => Pattern::Compare(*op, Box::new(rename_expr(e, names))),
+        Pattern::Compare(op, e) => Pattern::Compare(*op, Box::new(rename_expr(e, names, shadowed))),
         Pattern::Binding(n) => Pattern::Binding(n.clone()),
         Pattern::EnumVariant(enum_name, variant, bindings) => {
             Pattern::EnumVariant(mangled(enum_name, names), variant.clone(), bindings.clone())
@@ -638,7 +719,7 @@ fn rename_pattern(pattern: &Pattern, names: &HashMap<String, String>) -> Pattern
     }
 }
 
-fn rename_expr(expr: &Expr, names: &HashMap<String, String>) -> Expr {
+fn rename_expr(expr: &Expr, names: &HashMap<String, String>, shadowed: &HashSet<String>) -> Expr {
     match expr {
         Expr::Int(v, s) => Expr::Int(*v, *s),
         Expr::Float(v, s) => Expr::Float(*v, *s),
@@ -650,102 +731,115 @@ fn rename_expr(expr: &Expr, names: &HashMap<String, String>) -> Expr {
                 .iter()
                 .map(|p| match p {
                     FStrExpr::Literal(l) => FStrExpr::Literal(l.clone()),
-                    FStrExpr::Expr(e) => FStrExpr::Expr(Box::new(rename_expr(e, names))),
+                    FStrExpr::Expr(e) => FStrExpr::Expr(Box::new(rename_expr(e, names, shadowed))),
                 })
                 .collect(),
             *s,
         ),
-        Expr::Ident(name, s) => Expr::Ident(mangled(name, names), *s),
+        Expr::Ident(name, s) => Expr::Ident(resolve_ident(name, names, shadowed), *s),
         Expr::SelfExpr(s) => Expr::SelfExpr(*s),
         Expr::Field { base, field, span } => {
-            Expr::Field { base: Box::new(rename_expr(base, names)), field: field.clone(), span: *span }
+            Expr::Field { base: Box::new(rename_expr(base, names, shadowed)), field: field.clone(), span: *span }
         }
         Expr::Call { callee, args, arg_names, span } => Expr::Call {
-            callee: Box::new(rename_expr(callee, names)),
-            args: args.iter().map(|a| rename_expr(a, names)).collect(),
+            callee: Box::new(rename_expr(callee, names, shadowed)),
+            args: args.iter().map(|a| rename_expr(a, names, shadowed)).collect(),
             arg_names: arg_names.clone(),
             span: *span,
         },
         Expr::Binary { op, lhs, rhs, span } => Expr::Binary {
             op: *op,
-            lhs: Box::new(rename_expr(lhs, names)),
-            rhs: Box::new(rename_expr(rhs, names)),
+            lhs: Box::new(rename_expr(lhs, names, shadowed)),
+            rhs: Box::new(rename_expr(rhs, names, shadowed)),
             span: *span,
         },
-        Expr::Unary { op, operand, span } => Expr::Unary { op: *op, operand: Box::new(rename_expr(operand, names)), span: *span },
+        Expr::Unary { op, operand, span } => {
+            Expr::Unary { op: *op, operand: Box::new(rename_expr(operand, names, shadowed)), span: *span }
+        }
         Expr::Match { scrutinee, arms, span } => Expr::Match {
-            scrutinee: Box::new(rename_expr(scrutinee, names)),
+            scrutinee: Box::new(rename_expr(scrutinee, names, shadowed)),
             arms: arms
                 .iter()
-                .map(|a| MatchArm { pattern: rename_pattern(&a.pattern, names), body: rename_block(&a.body, names), span: a.span })
+                .map(|a| {
+                    let pattern = rename_pattern(&a.pattern, names, shadowed);
+                    let mut arm_shadow = shadowed.clone();
+                    collect_pattern_bindings(&a.pattern, &mut arm_shadow);
+                    MatchArm { pattern, body: rename_block(&a.body, names, &arm_shadow), span: a.span }
+                })
                 .collect(),
             span: *span,
         },
         Expr::StructLit { name, type_args, args, arg_names, span } => Expr::StructLit {
             name: mangled(name, names),
             type_args: type_args.iter().map(|t| rename_type(t, names)).collect(),
-            args: args.iter().map(|a| rename_expr(a, names)).collect(),
+            args: args.iter().map(|a| rename_expr(a, names, shadowed)).collect(),
             arg_names: arg_names.clone(),
             span: *span,
         },
         Expr::If { cond, then_block, else_block, span } => Expr::If {
-            cond: Box::new(rename_expr(cond, names)),
-            then_block: rename_block(then_block, names),
-            else_block: else_block.as_ref().map(|b| rename_block(b, names)),
+            cond: Box::new(rename_expr(cond, names, shadowed)),
+            then_block: rename_block(then_block, names, shadowed),
+            else_block: else_block.as_ref().map(|b| rename_block(b, names, shadowed)),
             span: *span,
         },
         Expr::GenRefCreate { inner_ty, value, is_handle, span } => Expr::GenRefCreate {
             inner_ty: rename_type(inner_ty, names),
-            value: Box::new(rename_expr(value, names)),
+            value: Box::new(rename_expr(value, names, shadowed)),
             is_handle: *is_handle,
             span: *span,
         },
-        Expr::GenRefIndex { base, index, span } => {
-            Expr::GenRefIndex { base: Box::new(rename_expr(base, names)), index: Box::new(rename_expr(index, names)), span: *span }
-        }
+        Expr::GenRefIndex { base, index, span } => Expr::GenRefIndex {
+            base: Box::new(rename_expr(base, names, shadowed)),
+            index: Box::new(rename_expr(index, names, shadowed)),
+            span: *span,
+        },
         Expr::EnumVariant { enum_name, type_args, variant, args, arg_names, span } => Expr::EnumVariant {
             enum_name: mangled(enum_name, names),
             type_args: type_args.iter().map(|t| rename_type(t, names)).collect(),
             variant: variant.clone(),
-            args: args.iter().map(|a| rename_expr(a, names)).collect(),
+            args: args.iter().map(|a| rename_expr(a, names, shadowed)).collect(),
             arg_names: arg_names.clone(),
             span: *span,
         },
-        Expr::Lambda { params, ret, body, span } => Expr::Lambda {
-            params: params.iter().map(|p| rename_param(p, names)).collect(),
-            ret: ret.as_ref().map(|t| rename_type(t, names)),
-            body: rename_block(body, names),
-            span: *span,
-        },
-        Expr::ListLit(elems, span) => Expr::ListLit(elems.iter().map(|e| rename_expr(e, names)).collect(), *span),
-        Expr::Try { inner, span } => Expr::Try { inner: Box::new(rename_expr(inner, names)), span: *span },
-        Expr::TupleLit(elems, span) => Expr::TupleLit(elems.iter().map(|e| rename_expr(e, names)).collect(), *span),
+        Expr::Lambda { params, ret, body, span } => {
+            let mut body_shadow = shadowed.clone();
+            body_shadow.extend(params.iter().map(|p| p.name.clone()));
+            Expr::Lambda {
+                params: params.iter().map(|p| rename_param(p, names)).collect(),
+                ret: ret.as_ref().map(|t| rename_type(t, names)),
+                body: rename_block(body, names, &body_shadow),
+                span: *span,
+            }
+        }
+        Expr::ListLit(elems, span) => Expr::ListLit(elems.iter().map(|e| rename_expr(e, names, shadowed)).collect(), *span),
+        Expr::Try { inner, span } => Expr::Try { inner: Box::new(rename_expr(inner, names, shadowed)), span: *span },
+        Expr::TupleLit(elems, span) => Expr::TupleLit(elems.iter().map(|e| rename_expr(e, names, shadowed)).collect(), *span),
         Expr::TupleIndex { base, index, span } => {
-            Expr::TupleIndex { base: Box::new(rename_expr(base, names)), index: *index, span: *span }
+            Expr::TupleIndex { base: Box::new(rename_expr(base, names, shadowed)), index: *index, span: *span }
         }
         Expr::ArrayRepeat { value, count, span } => {
-            Expr::ArrayRepeat { value: Box::new(rename_expr(value, names)), count: *count, span: *span }
+            Expr::ArrayRepeat { value: Box::new(rename_expr(value, names, shadowed)), count: *count, span: *span }
         }
         Expr::RingNew { elem_ty, count, span } => {
             Expr::RingNew { elem_ty: rename_type(elem_ty, names), count: *count, span: *span }
         }
         Expr::Cast { expr, ty, span } => {
-            Expr::Cast { expr: Box::new(rename_expr(expr, names)), ty: rename_type(ty, names), span: *span }
+            Expr::Cast { expr: Box::new(rename_expr(expr, names, shadowed)), ty: rename_type(ty, names), span: *span }
         }
         Expr::WrappingNew { inner_ty, value, span } => Expr::WrappingNew {
             inner_ty: rename_type(inner_ty, names),
-            value: Box::new(rename_expr(value, names)),
+            value: Box::new(rename_expr(value, names, shadowed)),
             span: *span,
         },
         Expr::FixedNew { bits, frac, value, span } => {
-            Expr::FixedNew { bits: *bits, frac: *frac, value: Box::new(rename_expr(value, names)), span: *span }
+            Expr::FixedNew { bits: *bits, frac: *frac, value: Box::new(rename_expr(value, names, shadowed)), span: *span }
         }
         Expr::BitFieldNew { bits, value, span } => {
-            Expr::BitFieldNew { bits: *bits, value: Box::new(rename_expr(value, names)), span: *span }
+            Expr::BitFieldNew { bits: *bits, value: Box::new(rename_expr(value, names, shadowed)), span: *span }
         }
         Expr::Spawn { arena, args, arg_names, span } => Expr::Spawn {
             arena: mangled(arena, names),
-            args: args.iter().map(|a| rename_expr(a, names)).collect(),
+            args: args.iter().map(|a| rename_expr(a, names, shadowed)).collect(),
             arg_names: arg_names.clone(),
             span: *span,
         },

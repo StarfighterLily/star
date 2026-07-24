@@ -10985,6 +10985,266 @@ fn runtime_sequence_match_binding_shadowing_hoisted_field_end_to_end() {
     assert_eq!(stdout.trim_end(), "42", "the match arm's own bound `n` must shadow the hoisted `n` field: {}", stdout);
 }
 
+// --- `crate::modules`'s import-mangling rename pass had the same shadowing-
+// hygiene bug as `crate::sequence`'s hoisting rewrite above, just never
+// fixed: `rename_expr`'s `Expr::Ident` arm mangled *every* identifier
+// matching one of the imported file's top-level declaration names on pure
+// text, regardless of whether it actually referred to that declaration or to
+// a same-named local (parameter, `let`, loop variable, match binding,
+// closure parameter) currently shadowing it. Unlike the struct/enum-name
+// collision the old doc comment dismissed as "not a concern in practice"
+// (PascalCase types can't collide with snake_case locals), a top-level
+// *function*/const/arena name shares the exact same snake_case convention as
+// an ordinary parameter or local, so this was a real, silently-reachable
+// miscompile, not just a theoretical gap -- confirmed via a real pre-fix
+// `star check` producing `` `+` is not supported between `Closure([], Int)`
+// and `Int` `` for the `helper`/`compute` case below instead of type-checking
+// and running at all. Each test below is end to end through a real
+// `clang`-compiled executable, covering every kind of local binding
+// `rename_*` had to learn to track: a parameter, a `let`, a `for` loop
+// variable, a `match` binding, and a lambda parameter -- plus one regression
+// guard confirming a *genuine* (non-shadowed) reference to the top-level
+// declaration is still correctly mangled, so the fix doesn't overcorrect into
+// never mangling anything.
+
+/// The original repro: `lib.star` declares a top-level `fn helper() -> i32`
+/// and, separately, `fn compute(helper: i32) -> i32: return helper + 1` --
+/// `compute`'s own parameter is named `helper`, shadowing the unrelated
+/// top-level function of the same name for the extent of `compute`'s body.
+#[test]
+fn runtime_imported_fn_param_shadowing_top_level_fn_name_end_to_end() {
+    let dir = test_scratch_dir("runtime_imported_fn_param_shadowing_top_level_fn_name_end_to_end");
+    write_test_file(
+        &dir, "lib.star",
+        "fn helper() -> i32:\n    return 1\n\nfn compute(helper: i32) -> i32:\n    return helper + 1\n",
+    );
+    let main_path = write_test_file(
+        &dir, "main.star",
+        "import \"lib.star\" as lib\nfn main():\n    println(f\"{lib::compute(5)}\")\n",
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_imported_fn_param_shadowing.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "6",
+        "compute(5)'s own `helper` parameter must shadow the unrelated top-level `helper` function, not get rewritten to `lib__helper`"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Same bug, a `let` binding: `via_let` shadows a top-level `count() -> i32`
+/// function with a same-named local.
+#[test]
+fn runtime_imported_let_shadowing_top_level_fn_name_end_to_end() {
+    let dir = test_scratch_dir("runtime_imported_let_shadowing_top_level_fn_name_end_to_end");
+    write_test_file(
+        &dir, "lib.star",
+        "fn count() -> i32:\n    return 100\n\nfn via_let() -> i32:\n    let count = 5\n    return count + 1\n",
+    );
+    let main_path = write_test_file(
+        &dir, "main.star",
+        "import \"lib.star\" as lib\nfn main():\n    println(f\"{lib::via_let()}\")\n",
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_imported_let_shadowing.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "6",
+        "the local `let count = 5` must shadow the unrelated top-level `count()` function"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Same bug, a `for` loop's own induction variable shadowing a top-level
+/// function name.
+#[test]
+fn runtime_imported_for_loop_var_shadowing_top_level_fn_name_end_to_end() {
+    let dir = test_scratch_dir("runtime_imported_for_loop_var_shadowing_top_level_fn_name_end_to_end");
+    write_test_file(
+        &dir, "lib.star",
+        "fn count() -> i32:\n    return 100\n\nfn via_for() -> i32:\n    let mut total = 0\n    for count in 0..3:\n        total = total + count\n    return total\n",
+    );
+    let main_path = write_test_file(
+        &dir, "main.star",
+        "import \"lib.star\" as lib\nfn main():\n    println(f\"{lib::via_for()}\")\n",
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_imported_for_loop_var_shadowing.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "3",
+        "the for-loop's own `count` (0+1+2=3) must shadow the unrelated top-level `count()` function"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Same bug, a `match` arm's `Pattern::Binding` shadowing a top-level
+/// function name.
+#[test]
+fn runtime_imported_match_binding_shadowing_top_level_fn_name_end_to_end() {
+    let dir = test_scratch_dir("runtime_imported_match_binding_shadowing_top_level_fn_name_end_to_end");
+    write_test_file(
+        &dir, "lib.star",
+        "fn count() -> i32:\n    return 100\n\nfn via_match(x: i32) -> i32:\n    match x:\n        count -> count + 1\n",
+    );
+    let main_path = write_test_file(
+        &dir, "main.star",
+        "import \"lib.star\" as lib\nfn main():\n    println(f\"{lib::via_match(9)}\")\n",
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_imported_match_binding_shadowing.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "10",
+        "the match arm's own bound `count` must shadow the unrelated top-level `count()` function"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Same bug, a lambda's own parameter shadowing a top-level function name.
+#[test]
+fn runtime_imported_lambda_param_shadowing_top_level_fn_name_end_to_end() {
+    let dir = test_scratch_dir("runtime_imported_lambda_param_shadowing_top_level_fn_name_end_to_end");
+    write_test_file(
+        &dir, "lib.star",
+        "fn count() -> i32:\n    return 100\n\nfn via_lambda() -> i32:\n    let f = fn(count: i32) -> i32:\n        return count * 2\n    return f(4)\n",
+    );
+    let main_path = write_test_file(
+        &dir, "main.star",
+        "import \"lib.star\" as lib\nfn main():\n    println(f\"{lib::via_lambda()}\")\n",
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_imported_lambda_param_shadowing.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "8",
+        "the lambda's own `count` parameter must shadow the unrelated top-level `count()` function"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Regression guard against overcorrecting: a genuine, non-shadowed reference
+/// to a top-level function from another function in the same imported module
+/// must still be mangled and resolve correctly, not accidentally left
+/// referring to the wrong (unmangled, and therefore undefined post-import)
+/// name.
+#[test]
+fn runtime_imported_fn_reference_still_mangled_when_not_shadowed_end_to_end() {
+    let dir = test_scratch_dir("runtime_imported_fn_reference_still_mangled_when_not_shadowed_end_to_end");
+    write_test_file(
+        &dir, "lib.star",
+        "fn count() -> i32:\n    return 100\n\nfn real_reference() -> i32:\n    return count() + 1\n",
+    );
+    let main_path = write_test_file(
+        &dir, "main.star",
+        "import \"lib.star\" as lib\nfn main():\n    println(f\"{lib::real_reference()}\")\n",
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_imported_fn_reference_still_mangled.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "101",
+        "a genuine (non-shadowed) reference to the top-level `count()` function must still resolve correctly"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `sequence.rs`'s `check_no_nested_yield` only recognized statement-form
 /// control flow (`Stmt::If`/`While`/`Frame`/`For`) -- a `match` used as a
 /// statement is `Stmt::Expr(Expr::Match{..})`, so a `yield` nested inside a

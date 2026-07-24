@@ -231,6 +231,92 @@ is the best validation that the "useful programs today" bar has actually
 been cleared.
 
 ## Last actions:
+Bug-hunting round 9 (not a feature round): rather than pick up round 8's own
+explicitly-left-unaudited items (configurable arena capacity, spawn-expression
+handles), this round re-derived from first principles a "known limitation"
+`crate::modules`'s rename pass had already documented and dismissed as
+theoretical -- prompted by noticing `crate::sequence`'s own hoisting rewrite
+had needed an almost identical fix for the same bug shape in an earlier round.
+1 confirmed bug found and fixed, a real silent miscompile (not a crash); 6 new
+tests added (1331 total, up from 1325, all green). Full suite
+(`cargo +stable-x86_64-pc-windows-gnu test --release`) passes clean.
+
+**Import-mangling rename pass had no lexical hygiene, silently misrenaming a
+local binding that shadows a top-level declaration name in an imported module
+(1, real -- confirmed via a real pre-fix `star check` before the fix)**:
+`crate::modules::rename_module` inlines an imported file's top-level
+declarations under an `alias__name` mangled form and rewrites every reference
+to match, but did so by matching on identifier text alone with no
+scope-awareness at all -- `rename_expr`'s `Expr::Ident` arm mangled *every*
+occurrence of a name present in the top-level `names` map, including one that
+actually referred to a parameter/`let`/loop variable/match binding/closure
+parameter of the same name currently shadowing it (none of which
+`rename_param`/`Stmt::Let`/etc. ever renamed -- only *usages* went through the
+blind substitution, so the binding and its own references silently disagreed).
+The function's own doc comment already flagged this as a "known limitation,"
+but dismissed it as "not a concern in practice since Star's naming convention
+already separates PascalCase types from snake_case values/fns" -- true for a
+struct/enum name, but a top-level function/const/arena name is snake_case,
+the exact same convention as an ordinary parameter or local, so an entirely
+ordinary shape (`fn helper() -> i32: ...` alongside `fn compute(helper: i32)
+-> i32: return helper + 1` in the same file) reliably reproduced it:
+`compute`'s own `helper` parameter was left un-renamed, but the `return
+helper + 1` reference inside its body was blindly rewritten to
+`alias__helper`, producing `` `+` is not supported between `Closure([], Int)`
+and `Int` `` instead of type-checking and returning `6`. Fixed by threading a
+`shadowed: HashSet<String>` of locally-bound names through every `rename_*`
+helper (`rename_fn`/`rename_block`/`rename_stmt`/`rename_expr`/
+`rename_pattern`), mirroring the checker's own `vars: HashMap` scoping shape:
+extended at every binding site (function/lambda parameters, a `let` for the
+rest of its own block, `for`/`each`/`par` loop variables for their body,
+match-arm pattern bindings for their arm), and consulted only at the one true
+choke point every name reference funnels through, `Expr::Ident` (a new
+`resolve_ident` helper) -- a shadowed name is left alone, an unshadowed one is
+mangled exactly as before. Type/pattern-level renaming (`rename_type`,
+`Pattern::EnumVariant`/`Pattern::Struct`'s own type-name mangling) needed no
+such tracking: Star's grammar never lets a local binding be referenced in a
+type-annotation or pattern-type position, so those stay unaffected by any
+local shadowing regardless of naming convention. This same fix also covers
+`dedupe_by_origin`'s diamond-import duplicate-substitution pass, which reuses
+the identical `rename_item` machinery for an unrelated reason (collapsing two
+distinct diamond-imported copies of the same declaration to one canonical
+name) and had the exact same latent hazard. 6 new tests, all real
+`clang`-compiled end-to-end runs through an actual `import`: a parameter, a
+`let`, a `for` loop variable, a `match` binding, and a lambda parameter each
+shadowing a top-level function name and computing the locally-correct result,
+plus one regression guard confirming a genuine (non-shadowed) cross-reference
+is still mangled and resolves correctly (guarding the fix doesn't overcorrect
+into never mangling anything).
+
+**Areas audited with no bugs found**: `Checker`'s per-instantiation single-
+instance state (`mono_depth` increment/decrement balance around
+`instantiate_struct`/`instantiate_enum`; every other field re-derived from
+round 8's own "reset with no restore, reachable from a nested `check_fn` call"
+sweep was re-confirmed rather than re-litigated, not re-read from scratch);
+`frame_analysis.rs`/`par_analysis.rs` confirmed to carry no single-instance
+`Checker` fields of their own reset-without-restore shape; `Codegen`'s own
+nested-function-emission call sites (`emit_par_stmt`'s worker function,
+`emit_closure_lit`'s deferred body and per-closure RC-release thunk,
+`emit_fn_value`'s extern-forwarding thunk) each re-checked for the identical
+save/restore hazard -- all four correctly save/restore (or, for the two
+thunks that never call `track_owned`/reference `self.symbols`, correctly don't
+need to) `self.ir`/`self.symbols`/`self.owned_stack`/`self.in_frame`/
+`self.in_main`; configurable arena capacity's boundary handling (parser-level
+non-positive rejection, checker-level `MAX_ARENA_CAPACITY` clamping, and
+codegen's per-arena `arena_capacity` lookup with a safe default fallback) and
+`spawn`-as-an-expression's `-1`-on-full-arena sentinel feeding into a
+`GenRef<T>` construction and dereference, read closely but not driven to a
+fresh repro this round -- both are already extensively covered by their own
+original feature-round tests (arena capacity: `checks_arena_capacity_above_
+max_is_rejected`/`parses_arena_rejects_non_positive_capacity`/
+`runtime_configurable_arena_capacity_overflow_warns_with_actual_capacity_end_
+to_end`; spawn-expression: 15+ dedicated tests including `runtime_spawn_expr_
+returns_negative_one_when_arena_full_end_to_end`), so this round's limited
+time went to the rename-pass thread above instead once it turned up a
+confirmed real bug.
+
+### Previous round
+
 Feature round: reflection runtime (todo.md #7, "wire up reflection into an actual
 runtime feature" — previously `@export`/`@tweakable` only ever emitted a
 descriptive `name:offset:type:decorators` metadata string per struct
