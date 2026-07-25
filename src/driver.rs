@@ -33,6 +33,40 @@ pub struct Compilation {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Result of [`Driver::codegen_verified`]: the generated LLVM IR text,
+/// always present, plus whatever `crate::ir_check::verify` found about it,
+/// split by severity so a caller can act on `errors` (build-blocking)
+/// without losing access to `ir` (needed even when `errors` isn't empty --
+/// see that method's doc comment).
+pub struct IrVerification {
+    pub ir: String,
+    pub errors: Vec<Diagnostic>,
+    pub warnings: Vec<Diagnostic>,
+}
+
+impl IrVerification {
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
+
+/// Render one `crate::ir_check::IrError` as a `Diagnostic` pointing at the
+/// *generated IR's* line, not any position in the `.star` source -- there's
+/// no meaningful source span for a structural defect in the emitter's own
+/// output, so this always carries [`Span::dummy`] and relies on the message
+/// text itself citing the IR line number.
+fn ir_finding_to_diagnostic(e: crate::ir_check::IrError) -> Diagnostic {
+    let prefix = match e.severity {
+        crate::ir_check::Severity::Error => "internal compiler error: malformed LLVM IR emitted",
+        crate::ir_check::Severity::Warning => "internal compiler notice: suspicious LLVM IR emitted",
+    };
+    let message = format!("{} (generated IR line {}): {}", prefix, e.line, e.message);
+    match e.severity {
+        crate::ir_check::Severity::Error => Diagnostic::error(message, Span::dummy()),
+        crate::ir_check::Severity::Warning => Diagnostic::warning(message, Span::dummy()),
+    }
+}
+
 impl Compilation {
     /// True when no error-severity diagnostics were produced.
     pub fn is_ok(&self) -> bool {
@@ -148,7 +182,12 @@ impl Driver {
 
     /// Generate LLVM IR from a checked module, then verify its structural
     /// well-formedness (`crate::ir_check`) before handing it back to a
-    /// caller that's ultimately going to feed it to `clang`.
+    /// caller that's ultimately going to feed it to `clang`. A thin wrapper
+    /// around [`Driver::codegen_verified`] for the common case (this
+    /// crate's own tests, and any caller that just wants the IR or a reason
+    /// it couldn't get one) -- see that method's doc comment for callers
+    /// that need the generated IR text even when verification finds a
+    /// problem with it (`star emit llvm`'s whole purpose).
     ///
     /// This is the fix for the systemic weak point `ASSESSMENT.md` ("The
     /// Ugly" #1) names explicitly: previously a codegen bug could produce
@@ -161,22 +200,54 @@ impl Driver {
     /// every caller (`star build`, `star emit llvm`, and this crate's own
     /// tests) gets it automatically.
     pub fn codegen(typed: &TypedModule) -> Result<String, Vec<Diagnostic>> {
+        let v = Self::codegen_verified(typed)?;
+        if v.errors.is_empty() { Ok(v.ir) } else { Err(v.errors) }
+    }
+
+    /// [`Driver::codegen`], but never discarding the generated IR text on a
+    /// verification failure -- only `Codegen::emit` itself failing (a
+    /// genuine codegen-stage semantic error, e.g. an unsupported type;
+    /// there is truly no IR to show in that case) is a hard `Err` here.
+    /// Every [`IrError`](crate::ir_check::IrError) `crate::ir_check::verify`
+    /// finds comes back split by [`Severity`](crate::ir_check::Severity)
+    /// into [`IrVerification::errors`] (what `codegen`'s `Err` case is built
+    /// from) and [`IrVerification::warnings`] (surfaced for a caller to
+    /// print, but never on their own a reason to withhold the IR) -- so a
+    /// caller that wants to inspect/emit the malformed IR a real bug
+    /// produced (`star emit llvm`'s whole purpose as a debugging tool, and
+    /// exactly the situation a verifier false positive would otherwise make
+    /// impossible to work around) still can, by reading `.ir` regardless of
+    /// whether `.errors` is empty.
+    ///
+    /// `crate::ir_check` is explicitly a best-effort heuristic checker over
+    /// a dialect it infers from reading this compiler's own example output,
+    /// not a reimplementation of LLVM's verifier (see that module's own doc
+    /// comment) -- so a panic inside it is treated as "verification
+    /// inconclusive," not "build failed": it's caught here and downgraded
+    /// to a warning rather than taking `star build`/`star check` down over
+    /// what, at worst, should cost a missed diagnostic. `clang` remains the
+    /// actual authority on well-formedness either way.
+    pub fn codegen_verified(typed: &TypedModule) -> Result<IrVerification, Vec<Diagnostic>> {
         let mut cg = Codegen::new();
         let ir = cg.emit(typed)?;
-        let ir_errors = crate::ir_check::verify(&ir);
-        if ir_errors.is_empty() {
-            Ok(ir)
-        } else {
-            Err(ir_errors
-                .into_iter()
-                .map(|e| {
-                    Diagnostic::error(
-                        format!("internal compiler error: malformed LLVM IR emitted (generated IR line {}): {}", e.line, e.message),
-                        Span::dummy(),
-                    )
-                })
-                .collect())
-        }
+        let findings = match std::panic::catch_unwind(|| crate::ir_check::verify(&ir)) {
+            Ok(findings) => findings,
+            Err(_) => {
+                let warning = Diagnostic::warning(
+                    "internal IR verifier panicked and was skipped for this build (please report a bug) -- \
+                     the generated IR was not double-checked before being handed to clang"
+                        .to_string(),
+                    Span::dummy(),
+                );
+                return Ok(IrVerification { ir, errors: Vec::new(), warnings: vec![warning] });
+            }
+        };
+        let (errors, warnings): (Vec<_>, Vec<_>) = findings.into_iter().partition(|e| e.severity == crate::ir_check::Severity::Error);
+        Ok(IrVerification {
+            ir,
+            errors: errors.into_iter().map(ir_finding_to_diagnostic).collect(),
+            warnings: warnings.into_iter().map(ir_finding_to_diagnostic).collect(),
+        })
     }
 
     /// A short label for diagnostics (the file name, not the full path).

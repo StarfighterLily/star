@@ -29,17 +29,38 @@
 
 use std::collections::{HashMap, HashSet};
 
-/// One verification failure: a 1-based line number into the generated IR
-/// text, and a human-readable description.
+/// How confident a given finding is that `clang`/LLVM will actually reject
+/// the module. [`Severity::Error`] is reserved for shapes LLVM's own parser
+/// or verifier is known to reject outright (backed by the historical bugs
+/// this module's top-level doc comment cites, or by the same class of
+/// violation); callers should treat these as build-blocking. [`Severity::Warning`]
+/// covers findings that are syntactically valid LLVM IR `clang` will accept
+/// -- but that are still suspicious enough (e.g. a basic block no branch in
+/// the function ever reaches) to be worth surfacing without stopping the
+/// build over what may be intentional or merely dead code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+/// One verification finding: a 1-based line number into the generated IR
+/// text, a human-readable description, and how confident the finding is
+/// (see [`Severity`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IrError {
     pub line: usize,
     pub message: String,
+    pub severity: Severity,
 }
 
 impl IrError {
     fn new(line: usize, message: impl Into<String>) -> Self {
-        Self { line, message: message.into() }
+        Self { line, message: message.into(), severity: Severity::Error }
+    }
+
+    fn warning(line: usize, message: impl Into<String>) -> Self {
+        Self { line, message: message.into(), severity: Severity::Warning }
     }
 }
 
@@ -70,10 +91,11 @@ pub fn verify(ir: &str) -> Vec<IrError> {
 
     let type_names = collect_type_names(&lines);
     let global_names = collect_global_symbols(&lines, &mut errors);
+    let fn_sigs = collect_function_sigs(&lines);
     let functions = split_functions(&lines, &mut errors);
 
     for func in &functions {
-        check_function(func, &type_names, &mut errors);
+        check_function(func, &type_names, &fn_sigs, &mut errors);
     }
 
     check_global_uses(&lines, &global_names, &mut errors);
@@ -342,6 +364,66 @@ fn check_global_uses(lines: &[&str], global_names: &HashSet<String>, errors: &mu
     }
 }
 
+/// A `declare`/`define` signature, as far as `check_call_arity` needs: how
+/// many fixed parameters it takes, and whether it's variadic (`...` as the
+/// last parameter, e.g. `@printf`).
+struct FnSig {
+    param_count: usize,
+    is_vararg: bool,
+}
+
+/// Number of comma-separated, non-`...` entries in a parameter or argument
+/// list's inner text (whether that's a `declare`/`define`'s parameter types,
+/// or a `call`'s argument values -- both are top-level-comma-separated lists
+/// with the same nesting rules), and whether a trailing `...` marks the
+/// list variadic.
+fn parse_param_list(inner: &str) -> (usize, bool) {
+    let mut count = 0usize;
+    let mut is_vararg = false;
+    for chunk in split_top_level_commas(inner) {
+        let chunk = chunk.trim();
+        if chunk.is_empty() {
+            continue;
+        }
+        if chunk == "..." {
+            is_vararg = true;
+        } else {
+            count += 1;
+        }
+    }
+    (count, is_vararg)
+}
+
+/// Every function's signature, keyed by name (`@` sigil stripped) -- from
+/// its `declare` if it only has one, its `define` otherwise. Used by
+/// `check_call_arity` to catch a `call` passing the wrong number of
+/// arguments, the direct-call analogue of the `phi`-type-mismatch bug this
+/// module already targets: an argument-count bug is just as invisible to
+/// this emitter's string templating as an untagged register is, and `clang`
+/// rejects it just as outright ("too many/few arguments to function call").
+fn collect_function_sigs(lines: &[&str]) -> HashMap<String, FnSig> {
+    let mut sigs = HashMap::new();
+    for line in lines {
+        let Some(rest) = line.strip_prefix("declare ").or_else(|| line.strip_prefix("define ")) else {
+            continue;
+        };
+        let Some(at_idx) = rest.find('@') else { continue };
+        let after_at = &rest[at_idx + 1..];
+        let Some(paren_idx) = after_at.find('(') else { continue };
+        let name = after_at[..paren_idx].trim().to_string();
+        let Some(close_idx) = find_matching_bracket(after_at, paren_idx, '(', ')') else { continue };
+        let params_str = &after_at[paren_idx + 1..close_idx];
+        let (param_count, is_vararg) = parse_param_list(params_str);
+        // First signature seen wins -- a `define` normally also has a prior
+        // `declare` (or none at all), and the two are expected to agree; a
+        // mismatched second signature isn't this check's concern (that's an
+        // ordinary duplicate-definition case `collect_global_symbols`
+        // already flags for `define`/`define` pairs).
+        sigs.entry(name).or_insert(FnSig { param_count, is_vararg });
+    }
+    sigs
+}
+
 // --------------------------------------------------------------------
 // Pass 2: split the module into functions and, within each, into basic
 // blocks.
@@ -430,6 +512,9 @@ fn split_functions<'a>(lines: &[&'a str], errors: &mut Vec<IrError>) -> Vec<Func
 
 struct Block<'a> {
     label: String,
+    /// Line the block's own `label:` line was found on -- used only to point
+    /// a duplicate-label error somewhere sensible.
+    header_line: usize,
     /// Instruction lines in this block, in order, *excluding* the label
     /// line itself.
     lines: Vec<(usize, &'a str)>,
@@ -446,15 +531,32 @@ fn parse_label_line(t: &str) -> Option<String> {
     Some(name.to_string())
 }
 
+/// Split a function's body into basic blocks, and flag two blocks sharing
+/// one label -- `clang` rejects this outright ("label ... already defined")
+/// and, unlike most malformed shapes this module checks for, it isn't
+/// self-evident from a later pass: a duplicate label silently folds two
+/// blocks' instructions into what downstream checks see as one block
+/// (`cur` above only ever tracks the *most recent* block for a name), so
+/// this is the one place that folding is still visible and must be caught
+/// before it happens.
 fn split_blocks<'a>(func: &Function<'a>, errors: &mut Vec<IrError>) -> Vec<Block<'a>> {
     let mut blocks = Vec::new();
     let mut cur: Option<Block> = None;
+    let mut seen_labels: HashMap<String, usize> = HashMap::new();
     for &(lineno, text) in &func.body {
         if let Some(label) = parse_label_line(text) {
             if let Some(b) = cur.take() {
                 blocks.push(b);
             }
-            cur = Some(Block { label, lines: Vec::new() });
+            if let Some(&prev) = seen_labels.get(&label) {
+                errors.push(IrError::new(
+                    lineno,
+                    format!("block label `{}` in `@{}` is defined more than once (already defined at line {})", label, func.name, prev),
+                ));
+            } else {
+                seen_labels.insert(label.clone(), lineno);
+            }
+            cur = Some(Block { label, header_line: lineno, lines: Vec::new() });
         } else {
             match &mut cur {
                 Some(b) => b.lines.push((lineno, text)),
@@ -557,7 +659,7 @@ fn infer_result_type(instr: &Instr) -> Option<String> {
 // Pass 3: per-function checks.
 // --------------------------------------------------------------------
 
-fn check_function(func: &Function, type_names: &HashSet<String>, errors: &mut Vec<IrError>) {
+fn check_function(func: &Function, type_names: &HashSet<String>, fn_sigs: &HashMap<String, FnSig>, errors: &mut Vec<IrError>) {
     let blocks = split_blocks(func, errors);
     if blocks.is_empty() {
         errors.push(IrError::new(func.header_line, format!("function `@{}` has no basic blocks", func.name)));
@@ -627,6 +729,26 @@ fn check_function(func: &Function, type_names: &HashSet<String>, errors: &mut Ve
         check_block_terminator(func, block, errors);
         check_phi_placement(func, block, errors);
         check_phis(func, block, &predecessors, &reg_types, errors);
+        check_call_arity(func, block, fn_sigs, errors);
+    }
+
+    // A block other than the function's first (which `clang` always treats
+    // as the entry point regardless of its label spelling, and which is
+    // therefore always "reachable" with no `br` pointing at it) that no
+    // `br` anywhere in the function ever targets is dead code no path
+    // through this function can reach. Unlike every other check in this
+    // module this isn't a shape `clang` rejects -- an unreachable block is
+    // perfectly legal LLVM IR -- so it's a [`Severity::Warning`], not an
+    // [`Severity::Error`]: real, but not build-blocking, since a
+    // conditional the type checker (not this module) already proved
+    // statically true/false can legitimately produce one.
+    for block in blocks.iter().skip(1) {
+        if predecessors.get(&block.label).map(|p| p.is_empty()).unwrap_or(true) {
+            errors.push(IrError::warning(
+                block.header_line,
+                format!("block `{}` in `@{}` is unreachable -- no `br` in this function ever targets it", block.label, func.name),
+            ));
+        }
     }
 
     // Whole-function undefined-value-use scan.
@@ -779,6 +901,85 @@ fn check_phis(func: &Function, block: &Block, predecessors: &HashMap<String, Vec
     }
 }
 
+/// The `(<args>)` this instruction's text ends with, and everything before
+/// it -- i.e. `s` split at the *last* top-level `(`, found by scanning
+/// backwards from `s`'s own closing `)` and tracking paren depth. Unlike a
+/// simple "first `(`" search, this handles a variadic callee's explicit
+/// `<ret> (<param types>) @callee(<args>)` call syntax (the real shape
+/// `call i32 (i8*, ...) @printf(...)` this emitter's `emit_print_like`
+/// produces) correctly: the *first* `(` in that text opens the parameter-
+/// type annotation, not the argument list. Returns `None` for anything that
+/// doesn't end in a balanced `(...)`, including every malformed shape a
+/// fuzzed/garbled input could produce -- this check only ever fires on text
+/// it's confident it parsed correctly.
+fn split_trailing_paren_group(s: &str) -> Option<(&str, &str)> {
+    let trimmed = s.trim_end();
+    if !trimmed.ends_with(')') {
+        return None;
+    }
+    let close_idx = trimmed.len() - 1;
+    let mut depth = 0i32;
+    let mut open_idx = None;
+    for (i, ch) in trimmed.char_indices().rev() {
+        match ch {
+            ')' => depth += 1,
+            '(' => {
+                depth -= 1;
+                if depth == 0 {
+                    open_idx = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let open_idx = open_idx?;
+    Some((trimmed[..open_idx].trim(), &trimmed[open_idx + 1..close_idx]))
+}
+
+/// A direct `call`'s argument count must agree with its callee's declared
+/// parameter count (or, for a variadic callee, be at least that many).
+/// Deliberately skips anything it can't confidently resolve to a concrete,
+/// non-variadic-mismatched signature -- an indirect call through a register
+/// (`call i32 %fnptr(...)`, the shape a closure/generic dispatch produces)
+/// has no statically-known arity here and is left unchecked, and a callee
+/// this module never found a `declare`/`define` for is already reported by
+/// `check_global_uses` and not re-flagged here.
+fn check_call_arity(func: &Function, block: &Block, fn_sigs: &HashMap<String, FnSig>, errors: &mut Vec<IrError>) {
+    for &(lineno, text) in &block.lines {
+        let instr = parse_instr(text);
+        if instr.opcode != "call" {
+            continue;
+        }
+        let Some((before, args_str)) = split_trailing_paren_group(instr.rest) else { continue };
+
+        let (_, callee) = split_type_and_value(before);
+        let Some(name) = callee.strip_prefix('@') else { continue };
+        if name.starts_with("llvm.") {
+            continue;
+        }
+        let Some(sig) = fn_sigs.get(name) else { continue };
+
+        let (actual, _) = parse_param_list(args_str);
+        let mismatched = if sig.is_vararg { actual < sig.param_count } else { actual != sig.param_count };
+        if mismatched {
+            errors.push(IrError::new(
+                lineno,
+                format!(
+                    "call to `@{}` in `@{}` passes {} argument{} but it {} {}{}",
+                    name,
+                    func.name,
+                    actual,
+                    if actual == 1 { "" } else { "s" },
+                    if sig.is_vararg { "requires at least" } else { "takes" },
+                    sig.param_count,
+                    if sig.param_count == 1 { "" } else { "s" },
+                ),
+            ));
+        }
+    }
+}
+
 fn check_phi_incoming_type(func: &Function, lineno: usize, phi_ty: &str, value: &str, reg_types: &HashMap<String, String>, errors: &mut Vec<IrError>) {
     if value == "null" {
         if !phi_ty.ends_with('*') {
@@ -848,7 +1049,7 @@ fn check_return_types(func: &Function, blocks: &[Block], errors: &mut Vec<IrErro
 
 #[cfg(test)]
 mod tests {
-    use super::verify;
+    use super::{verify, Severity};
 
     /// A minimal, well-formed module (mirroring the shape real `Codegen`
     /// output takes) should never produce any error -- the baseline every
@@ -1189,5 +1390,303 @@ merge:
             "expected a phi-placement error, got: {:?}",
             errs
         );
+    }
+
+    #[test]
+    fn catches_duplicate_block_label() {
+        let ir = r#"target triple = "x86_64-w64-windows-gnu"
+define i32 @main() {
+entry:
+  br label %again
+again:
+  ret i32 0
+again:
+  ret i32 1
+}
+"#;
+        let errs = verify(ir);
+        assert!(
+            errs.iter().any(|e| e.severity == Severity::Error && e.message.contains("defined more than once")),
+            "expected a duplicate-block-label error, got: {:?}",
+            errs
+        );
+    }
+
+    /// A block no `br` in the function ever targets is dead, real LLVM IR
+    /// `clang` happily accepts (the exhaustive-`match` catch-all shape
+    /// `struct_destructure.ll` actually ships) -- so this must surface as a
+    /// non-blocking [`Severity::Warning`], never a build-blocking
+    /// [`Severity::Error`].
+    #[test]
+    fn flags_unreachable_block_as_warning_only() {
+        let ir = r#"target triple = "x86_64-w64-windows-gnu"
+define i32 @main() {
+entry:
+  ret i32 0
+orphan:
+  ret i32 1
+}
+"#;
+        let errs = verify(ir);
+        assert!(
+            errs.iter().any(|e| e.severity == Severity::Warning && e.message.contains("unreachable") && e.message.contains("orphan")),
+            "expected an unreachable-block warning naming `orphan`, got: {:?}",
+            errs
+        );
+        assert!(
+            !errs.iter().any(|e| e.severity == Severity::Error),
+            "an unreachable block must never itself produce an Error-severity finding, got: {:?}",
+            errs
+        );
+    }
+
+    /// The function's first block is always the entry point regardless of
+    /// its label spelling and is never expected to have a `br` pointing at
+    /// it -- it must never be flagged as "unreachable" itself.
+    #[test]
+    fn does_not_flag_entry_block_as_unreachable() {
+        let ir = r#"target triple = "x86_64-w64-windows-gnu"
+define i32 @main() {
+entry:
+  ret i32 0
+}
+"#;
+        let errs = verify(ir);
+        assert!(errs.is_empty(), "entry block must never be flagged unreachable, got: {:?}", errs);
+    }
+
+    #[test]
+    fn catches_call_with_too_few_arguments() {
+        let ir = r#"target triple = "x86_64-w64-windows-gnu"
+declare i32 @add(i32, i32)
+define i32 @main() {
+entry:
+  %r = call i32 @add(i32 1)
+  ret i32 %r
+}
+"#;
+        let errs = verify(ir);
+        assert!(
+            errs.iter().any(|e| e.severity == Severity::Error && e.message.contains("passes 1 argument") && e.message.contains("takes 2")),
+            "expected a call-arity error, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn catches_call_with_too_many_arguments() {
+        let ir = r#"target triple = "x86_64-w64-windows-gnu"
+declare void @f(i32)
+define i32 @main() {
+entry:
+  call void @f(i32 1, i32 2)
+  ret i32 0
+}
+"#;
+        let errs = verify(ir);
+        assert!(
+            errs.iter().any(|e| e.severity == Severity::Error && e.message.contains("passes 2 arguments") && e.message.contains("takes 1")),
+            "expected a call-arity error, got: {:?}",
+            errs
+        );
+    }
+
+    /// A variadic callee (`declare i32 @printf(i8*, ...)`) only has a
+    /// *minimum* argument count -- passing more than its fixed parameters
+    /// is exactly the point of `...`, not a defect.
+    #[test]
+    fn does_not_flag_extra_varargs_to_variadic_callee() {
+        let ir = r#"target triple = "x86_64-w64-windows-gnu"
+declare i32 @printf(i8*, ...)
+define i32 @main() {
+entry:
+  %r = call i32 (i8*, ...) @printf(i8* null, i32 1, i32 2, i32 3)
+  ret i32 %r
+}
+"#;
+        let errs = verify(ir);
+        assert!(errs.is_empty(), "expected no errors for extra varargs to a variadic callee, got: {:?}", errs);
+    }
+
+    /// A variadic callee still needs at least its fixed parameters supplied.
+    #[test]
+    fn catches_too_few_arguments_to_variadic_callee() {
+        let ir = r#"target triple = "x86_64-w64-windows-gnu"
+declare i32 @printf(i8*, ...)
+define i32 @main() {
+entry:
+  %r = call i32 (i8*, ...) @printf()
+  ret i32 %r
+}
+"#;
+        let errs = verify(ir);
+        assert!(
+            errs.iter().any(|e| e.severity == Severity::Error && e.message.contains("requires at least 1")),
+            "expected a variadic-callee arity error, got: {:?}",
+            errs
+        );
+    }
+
+    /// An indirect call through a register (the shape closures/generic
+    /// dispatch produce) has no statically-known arity in this checker and
+    /// must never be flagged.
+    #[test]
+    fn does_not_flag_indirect_call_arity() {
+        let ir = r#"target triple = "x86_64-w64-windows-gnu"
+define i32 @main(i32 (i8*)* %fn, i8* %env) {
+entry:
+  %r = call i32 %fn(i8* %env)
+  ret i32 %r
+}
+"#;
+        let errs = verify(ir);
+        assert!(errs.is_empty(), "expected no errors for an indirect call, got: {:?}", errs);
+    }
+}
+
+/// Adversarial/malformed-input coverage: every check above is written to
+/// degrade gracefully (return fewer/no findings) on IR text that doesn't
+/// match this emitter's dialect rather than panic -- since a panic here
+/// would crash `star build`/`star check` outright over what should, at
+/// worst, be a missed diagnostic (see `crate::driver::Driver::codegen`,
+/// which additionally wraps the call to `verify` in `catch_unwind` as a
+/// second line of defense). These tests exist to keep that property honest
+/// as new checks get added, not to assert anything about *which* findings a
+/// given garbled input produces.
+#[cfg(test)]
+mod robustness {
+    use super::verify;
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
+            &items[(self.next() as usize) % items.len()]
+        }
+    }
+
+    #[test]
+    fn fuzz_never_panics() {
+        let tokens = [
+            "define", "declare", "i32", "@main", "@foo", "(", ")", "{", "}", "[", "]", "<", ">", ",",
+            "%a", "%b", "%.argc", "entry:", "merge:", "ret", "br", "label", "phi", "i1", "true", "false",
+            "null", "icmp", "eq", "call", "load", "store", "alloca", "getelementptr", "inbounds", "=",
+            "\"", "c\"foo\\00\"", "atomic", "to", "x", "float", "double", "0x7FF0000000000000", "...",
+            "-1", "99999999999999999999", "%", "@", "type", "unreachable", "bitcast", "*", "\n",
+        ];
+        let mut rng = Rng(0x9E3779B97F4A7C15);
+        for _ in 0..2000 {
+            let n_lines = 1 + (rng.next() % 12) as usize;
+            let mut ir = String::new();
+            for _ in 0..n_lines {
+                let n_tok = 1 + (rng.next() % 8) as usize;
+                for _ in 0..n_tok {
+                    ir.push_str(rng.pick(&tokens));
+                    ir.push(' ');
+                }
+                ir.push('\n');
+            }
+            // Should never panic regardless of how garbled the input is.
+            let _ = verify(&ir);
+        }
+    }
+
+    #[test]
+    fn empty_input_ok() {
+        assert!(verify("").is_empty());
+    }
+
+    #[test]
+    fn only_whitespace_ok() {
+        let _ = verify("   \n\n\t\n");
+    }
+
+    #[test]
+    fn unbalanced_brackets_do_not_panic() {
+        let _ = verify("define i32 @f((((((( {\nentry:\n  ret i32 0\n");
+        let _ = verify("define i32 @f() {\nentry:\n  %m = phi i32 [ 0, %a\n  ret i32 %m\n}\n");
+        let _ = verify("%x = phi [[[[[ i32 [ 0, %a ]\n");
+    }
+
+    #[test]
+    fn unterminated_string_literal_does_not_panic() {
+        let _ = verify(r#"@.str = constant [4 x i8] c"abc"#);
+    }
+
+    #[test]
+    fn lone_sigils_do_not_panic() {
+        let _ = verify("% @ %% @@ %.. @..\n");
+    }
+
+    #[test]
+    fn huge_integer_literal_in_phi_does_not_panic() {
+        let ir = r#"define i32 @main() {
+entry:
+  br label %m
+m:
+  %v = phi i32 [ 999999999999999999999999999999, %entry ]
+  ret i32 %v
+}
+"#;
+        let _ = verify(ir);
+    }
+}
+
+/// Regression coverage against every `.ll` file this compiler actually
+/// ships (`examples/`, `projects/`) -- real `Codegen` output, not
+/// hand-written fixtures. A [`Severity::Warning`] here is fine (and, for
+/// e.g. an exhaustive `match`'s trailing `unreachable` catch-all block,
+/// expected); a [`Severity::Error`] is not: every one of these files
+/// already builds and runs today, so this module reporting a build-blocking
+/// error against any of them would be a false positive in this checker
+/// itself, not a real bug in the fixture.
+#[cfg(test)]
+mod real_fixture_regression {
+    use super::{verify, Severity};
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn walk(dir: &str) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![PathBuf::from(dir)];
+        while let Some(d) = stack.pop() {
+            if let Ok(rd) = fs::read_dir(&d) {
+                for entry in rd.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn no_error_severity_findings_on_shipped_ll_files() {
+        let mut total_files = 0usize;
+        let mut failures = String::new();
+        for dir in ["examples", "projects"] {
+            for entry in walk(dir) {
+                if entry.extension().map(|e| e == "ll").unwrap_or(false) {
+                    total_files += 1;
+                    let text = fs::read_to_string(&entry).unwrap();
+                    for e in verify(&text) {
+                        if e.severity == Severity::Error {
+                            failures.push_str(&format!("{}:{}: {}\n", entry.display(), e.line, e.message));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(total_files > 0, "expected to find at least one .ll fixture under examples/ or projects/");
+        assert!(failures.is_empty(), "false-positive Error-severity findings on real, working .ll fixtures:\n{}", failures);
     }
 }

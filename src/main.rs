@@ -56,6 +56,17 @@ enum Command {
         /// `-L<path>`), e.g. `-L C:\SDL2\lib`. Repeatable.
         #[arg(short = 'L', long = "lib-path")]
         lib_paths: Vec<String>,
+        /// Hand the generated `.ll` to clang even if this compiler's own IR
+        /// verifier (`star::ir_check`) flagged it as malformed. The
+        /// verifier is a best-effort heuristic checker over this emitter's
+        /// own dialect, not a reimplementation of `clang`'s -- if it's
+        /// wrong about a specific program (a false positive on a codegen
+        /// shape it hasn't seen before), this is the escape hatch: `clang`
+        /// remains the actual authority on well-formedness either way, and
+        /// this flag just lets it have the final word instead of the build
+        /// stopping short of ever asking it.
+        #[arg(long = "skip-ir-verify")]
+        skip_ir_verify: bool,
     },
     /// Emit an intermediate representation for debugging.
     Emit {
@@ -115,8 +126,8 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> ExitCode {
     match cli.command {
         Command::Check { file } => cmd_check(&file),
-        Command::Build { file, output, opt_level, release, libs, lib_paths } => {
-            cmd_build(&file, output.as_deref(), opt_level, release, &libs, &lib_paths)
+        Command::Build { file, output, opt_level, release, libs, lib_paths, skip_ir_verify } => {
+            cmd_build(&file, output.as_deref(), opt_level, release, &libs, &lib_paths, skip_ir_verify)
         }
         Command::Emit { what, file } => cmd_emit(what, &file),
     }
@@ -162,7 +173,7 @@ fn link_args(libs: &[String], lib_paths: &[String]) -> Vec<String> {
 }
 
 /// Full pipeline: parse, type-check, emit LLVM IR, compile with clang.
-fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, release: bool, libs: &[String], lib_paths: &[String]) -> ExitCode {
+fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, release: bool, libs: &[String], lib_paths: &[String], skip_ir_verify: bool) -> ExitCode {
     let driver = Driver::new(file);
     let compilation = match driver.compile() {
         Ok(c) => c,
@@ -178,22 +189,47 @@ fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, release: bool, lib
     }
 
     let typed = compilation.typed.as_ref().expect("typed module after successful compile");
-    let llvm_ir = match Driver::codegen(typed) {
-        Ok(ir) => ir,
+    let verification = match Driver::codegen_verified(typed) {
+        Ok(v) => v,
         Err(diags) => {
+            // `Codegen::emit` itself failed -- a genuine codegen-stage
+            // semantic error (e.g. an unsupported type). There is no IR at
+            // all to fall back on here, unlike a verifier finding below.
             for d in &diags {
                 eprintln!("codegen error: {}", d.message);
             }
             return ExitCode::FAILURE;
         }
     };
+    for w in &verification.warnings {
+        eprintln!("warning: {}", w.message);
+    }
 
-    // Write .ll file next to the source.
+    // Written before the verification-error check below (not after) so the
+    // false-positive case -- a bug in this compiler's own best-effort IR
+    // verifier flagging real, working IR -- isn't a dead end: the offending
+    // `.ll` is on disk either way, for a manual `clang` run or a bug report,
+    // whether or not this function goes on to refuse the build over it.
     let src_path = Path::new(file);
     let ll_path = src_path.with_extension("ll");
-    if let Err(e) = std::fs::write(&ll_path, &llvm_ir) {
+    if let Err(e) = std::fs::write(&ll_path, &verification.ir) {
         eprintln!("error: could not write {}: {}", ll_path.display(), e);
         return ExitCode::FAILURE;
+    }
+
+    if !verification.is_ok() {
+        for e in &verification.errors {
+            eprintln!("{}", e.message);
+        }
+        if !skip_ir_verify {
+            eprintln!(
+                "error: internal IR verifier rejected the generated IR (see above) -- refusing to hand it to clang.\n\
+                 The offending IR was still written to {} for inspection; pass --skip-ir-verify to build it anyway.",
+                ll_path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+        eprintln!("warning: --skip-ir-verify set -- building despite the internal IR verifier's findings above.");
     }
 
     // Compile with clang.
@@ -252,7 +288,7 @@ fn find_clang_on(path_var: Option<&std::ffi::OsStr>) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{emit_llvm_ir, find_clang_on, link_args, opt_flag};
+    use super::{emit_llvm_ir_verified, find_clang_on, link_args, opt_flag};
 
     /// `star emit llvm` on a file with an `import` must resolve it exactly
     /// like `star check`/`star build` do (both go through `Driver::compile`,
@@ -261,9 +297,9 @@ mod tests {
     /// skipped `star::modules::resolve` entirely, so every `alias::name`
     /// reference (already mangled to `alias__name` by the parser) failed as
     /// "undefined" even though the identical program built fine with `star
-    /// build`. Exercises `emit_llvm_ir` (the extracted, testable pipeline)
-    /// directly against real files on disk, since import resolution is
-    /// inherently file-based.
+    /// build`. Exercises `emit_llvm_ir_verified` (the extracted, testable
+    /// pipeline) directly against real files on disk, since import
+    /// resolution is inherently file-based.
     #[test]
     fn emit_llvm_resolves_imports_like_check_and_build_do() {
         let dir = std::env::temp_dir().join("star_main_tests").join("emit_llvm_resolves_imports");
@@ -273,7 +309,9 @@ mod tests {
         std::fs::write(&main_path, "import \"lib.star\" as lib\nfn main() -> i32:\n    return lib::helper()\n").expect("write main.star");
 
         let source = std::fs::read_to_string(&main_path).unwrap();
-        let ir = emit_llvm_ir(main_path.to_str().unwrap(), &source).expect("should resolve the import and codegen cleanly");
+        let v = emit_llvm_ir_verified(main_path.to_str().unwrap(), &source).expect("should resolve the import and codegen cleanly");
+        assert!(v.errors.is_empty(), "expected no IR-verifier errors, got: {:?}", v.errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+        let ir = v.ir;
         assert!(ir.contains("define i32 @lib__helper("), "expected the imported fn to be mangled and defined: {}", ir);
         assert!(ir.contains("call i32 @lib__helper()"), "expected main to call the mangled imported fn: {}", ir);
 
@@ -406,10 +444,28 @@ fn cmd_emit(what: EmitKind, file: &str) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        EmitKind::Llvm => match emit_llvm_ir(file, &source) {
-            Ok(ir) => {
-                println!("{}", ir);
-                ExitCode::SUCCESS
+        // Unlike `Build`, this is explicitly a debugging tool -- so unlike
+        // `cmd_build`, a verifier finding never withholds the IR text: if
+        // `Codegen::emit` produced *something*, that's exactly what a
+        // developer chasing a codegen bug (or a false positive in the
+        // verifier itself) needs to see, printed regardless of whether
+        // `crate::ir_check` was happy with it. Verifier findings still
+        // print (to stderr, so they don't get piped along with the IR
+        // itself) and still fail the exit code on an `Error`-severity one.
+        EmitKind::Llvm => match emit_llvm_ir_verified(file, &source) {
+            Ok(v) => {
+                for w in &v.warnings {
+                    eprintln!("warning: {}", w.message);
+                }
+                println!("{}", v.ir);
+                if v.errors.is_empty() {
+                    ExitCode::SUCCESS
+                } else {
+                    for e in &v.errors {
+                        eprintln!("{}", e.message);
+                    }
+                    ExitCode::FAILURE
+                }
             }
             Err(diags) => {
                 for d in diags {
@@ -429,15 +485,16 @@ fn cmd_emit(what: EmitKind, file: &str) -> ExitCode {
 /// multi-file program's `alias::name` references -- already mangled to
 /// `alias__name` by the parser -- failed as "undefined" instead of resolving,
 /// even though `star check`/`star build` on the same file worked fine).
-fn emit_llvm_ir(file: &str, source: &str) -> Result<String, Vec<star::diagnostics::Diagnostic>> {
+///
+/// Returns the full [`star::driver::IrVerification`] (IR text plus
+/// severity-split verifier findings) rather than collapsing it down to "the
+/// IR, or an error", since `cmd_emit`'s `EmitKind::Llvm` branch -- an
+/// explicitly debugging-oriented command -- wants to print the IR text
+/// regardless of whether the verifier was happy with it.
+fn emit_llvm_ir_verified(file: &str, source: &str) -> Result<star::driver::IrVerification, Vec<star::diagnostics::Diagnostic>> {
     let module = Driver::parse(source)?;
     let (module, _imported_files) = star::modules::resolve(module, Path::new(file))?;
     let mut checker = star::types::Checker::new();
     let typed = checker.check(&module)?;
-    Driver::codegen(&typed).map_err(|diags| {
-        diags
-            .into_iter()
-            .map(|d| star::diagnostics::Diagnostic::error(format!("codegen error: {}", d.message), d.span))
-            .collect()
-    })
+    Driver::codegen_verified(&typed)
 }

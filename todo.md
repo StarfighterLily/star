@@ -87,3 +87,29 @@ programs, biggest lever first within each tier.
     maintained `vendor-libs` stub directory — a plain `cargo build` fails
     outright on the reference machine. Fine for a solo project; a real
     barrier if outside contribution is ever a goal.
+
+# Previous work:
+Added an IR verification phase (src/ir_check.rs) that runs after LLVM IR codegen and before the IR is ever handed to clang, directly addressing the "Ugly #1" gap identified in ASSESSMENT.md: a hand-rolled textual IR emitter with no builder verifying well-formedness ahead of the clang boundary.
+
+What it checks, grounded in reading the actual .ll dialect this emitter produces (not general LLVM IR):
+
+Every basic block ends with exactly one terminator (ret/br/unreachable) and nothing follows it — this is the exact shape of the documented frame:-block-ending-in-return bug (store emitted after ret).
+phi nodes are grouped at the top of their block, their incoming-label list matches the block's actual predecessors, and (best-effort) incoming value types agree with the phi's declared type — targets the documented "untagged register" bug.
+No duplicate SSA register or function/global definitions (defense against the diamond-import mangling bug class).
+Every branch target is a real label; every %register/@global reference resolves to something actually defined (skipping llvm.* intrinsics, which clang auto-declares from the call site).
+ret types match the function's declared signature.
+Wired into Driver::codegen (src/driver.rs) so every caller — star build, star emit llvm, and the test suite — gets it automatically rather than opt-in.
+
+Validated it: scanned all 73 shipped .ll files plus the 7,900-line projects/snake/main.ll (zero false positives), ran it against all 1,331 existing tests (initially caught 3 real false positives from my own checker — a phi-type-parsing bug when the phi's type itself starts with [ — which I fixed and turned into regression tests), and added 16 targeted unit tests including direct reproductions of both historically-documented bug classes. Full end-to-end star build → clang → run still works correctly.
+
+Robustness expansion (src/ir_check.rs):
+
+Added Severity::{Error, Warning} to IrError — findings that clang genuinely rejects stay build-blocking Errors; findings that are legal-but-suspicious IR (e.g. an unreachable block) are non-blocking Warnings.
+New checks: duplicate basic-block labels, unreachable/orphaned blocks (warning-only — validated against a real fixture, struct_destructure.ll's intentional unreachable catch-all block, confirming the severity split was necessary), and call-argument-count mismatches against in-module declare/define signatures (including correct handling of the call i32 (i8*, ...) @printf(...) explicit-signature syntax variadic calls actually use — caught and fixed a real bug in my first draft of that check).
+Added a permanent regression test that runs verify() against all 74 shipped .ll fixtures and asserts zero Error-severity findings, plus a fuzz test (2000 random garbled inputs) and hand-written adversarial cases (unbalanced brackets, unterminated strings, huge integer literals) asserting the checker never panics.
+Graceful failure (src/driver.rs, src/main.rs):
+
+Driver::codegen_verified now wraps the call to ir_check::verify in catch_unwind: a bug in this best-effort heuristic checker degrades to a warning instead of crashing the whole compiler.
+The generated IR is no longer discarded when verification fails — IrVerification { ir, errors, warnings } always carries the IR text. star build now writes the .ll file even on a verifier rejection (so a false positive isn't a dead end), and star emit llvm — the actual debugging tool — always prints the IR regardless of verifier findings.
+Added star build --skip-ir-verify as an explicit escape hatch to let clang have the final word when the verifier is wrong.
+Driver::codegen's signature (used by ~200 existing tests) is untouched — it's now a thin wrapper over codegen_verified.
