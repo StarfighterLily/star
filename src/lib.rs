@@ -8,6 +8,7 @@ pub mod ast;
 pub mod codegen;
 pub mod diagnostics;
 pub mod driver;
+pub mod ir_check;
 pub mod lexer;
 pub mod modules;
 pub mod parser;

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ast::Module;
 use crate::codegen::Codegen;
-use crate::diagnostics::{self, Diagnostic};
+use crate::diagnostics::{self, Diagnostic, Span};
 use crate::lexer::{Lexer, Token};
 use crate::parser::Parser;
 use crate::types::{Checker, TypedModule};
@@ -146,10 +146,37 @@ impl Driver {
         Ok(Compilation { file, source, imported_files, module, typed, diagnostics })
     }
 
-    /// Generate LLVM IR from a checked module.
+    /// Generate LLVM IR from a checked module, then verify its structural
+    /// well-formedness (`crate::ir_check`) before handing it back to a
+    /// caller that's ultimately going to feed it to `clang`.
+    ///
+    /// This is the fix for the systemic weak point `ASSESSMENT.md` ("The
+    /// Ugly" #1) names explicitly: previously a codegen bug could produce
+    /// IR that `Codegen::emit` itself considered successful (its own
+    /// `errors` vec only catches semantic problems it happens to check for
+    /// explicitly, e.g. an unsupported type) and that only failed once
+    /// `clang` parsed the `.ll` file -- with no diagnostic pointing back
+    /// into the compiler. Running the verifier here, inside `codegen`
+    /// itself rather than as an opt-in step callers might forget, means
+    /// every caller (`star build`, `star emit llvm`, and this crate's own
+    /// tests) gets it automatically.
     pub fn codegen(typed: &TypedModule) -> Result<String, Vec<Diagnostic>> {
         let mut cg = Codegen::new();
-        cg.emit(typed)
+        let ir = cg.emit(typed)?;
+        let ir_errors = crate::ir_check::verify(&ir);
+        if ir_errors.is_empty() {
+            Ok(ir)
+        } else {
+            Err(ir_errors
+                .into_iter()
+                .map(|e| {
+                    Diagnostic::error(
+                        format!("internal compiler error: malformed LLVM IR emitted (generated IR line {}): {}", e.line, e.message),
+                        Span::dummy(),
+                    )
+                })
+                .collect())
+        }
     }
 
     /// A short label for diagnostics (the file name, not the full path).
