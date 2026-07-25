@@ -25,7 +25,7 @@ Game math must execute at hardware speeds. Star incorporates native GLSL-style v
 
 The Abstraction: Provides native vec2, vec3, vec4, and mat4 types complete with GLSL-style swizzling (e.g., vector.xyz).
 
-Operator Overloading: Hides manual SIMD intrinsics (like _mm_add_ps) behind standard overloaded operators like + and *.
+Operator Overloading: Hides manual SIMD intrinsics (like _mm_add_ps) behind standard overloaded operators like + and *. (User-defined structs can overload the same operators too, via `Add`/`Sub`/`Mul`/`Div`/`Rem`/`Eq`/`Ord`/`Neg` traits -- see `docs/language_reference.md`'s "Operator Overloading" section; the vector/matrix types below get theirs from dedicated compiler-internal lowering rather than that trait mechanism, since they need to compile straight to native SIMD instructions.)
 
 Technical Viability: Relies on Clang's ext_vector_type or GCC's native vector extensions in the backend.
 

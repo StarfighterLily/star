@@ -367,6 +367,9 @@ impl Checker {
             Expr::Binary { op, lhs, rhs, span } => {
                 let lhs_expr = self.infer_expr(lhs, vars)?;
                 let rhs_expr = self.infer_expr(rhs, vars)?;
+                if let Some(overloaded) = self.try_operator_overload_call(op, &lhs_expr, &rhs_expr, *span) {
+                    return Ok(overloaded);
+                }
                 let lhs_ty = lhs_expr.clone().into_ty();
                 let rhs_ty = rhs_expr.clone().into_ty();
                 let ty = self.infer_binop_ty(op, &lhs_ty, &rhs_ty, *span);
@@ -390,22 +393,50 @@ impl Checker {
                     }
                 }
                 let operand_expr = self.infer_expr(operand, vars)?;
+                if matches!(op, UnOp::Neg) {
+                    if let Some(overloaded) = self.try_neg_overload_call(&operand_expr, *span) {
+                        return Ok(overloaded);
+                    }
+                }
                 // `-x` preserves the operand's own numeric type (Int stays
                 // Int, Float stays Float) rather than always widening to Int.
                 let ty = match op {
                     // Reuse binary `-`'s own type-legality check (`Neg`
                     // lowers to exactly `0 - x` in `Codegen::emit_unary`) so
                     // an operand type that doesn't support subtraction
-                    // (`str`, a struct, `List<T>`, `GenRef<T>`, ...) is
-                    // rejected here with a real source location instead of
-                    // silently passing the checker and only failing later
-                    // with an unlocated "unsupported operand types" codegen
-                    // error -- the exact same class of bug `infer_binop_ty`'s
-                    // own doc comments describe already being fixed for
-                    // binary `+ - * / %` and comparisons.
+                    // (`str`, `List<T>`, `GenRef<T>`, ...) is rejected here
+                    // with a real source location instead of silently
+                    // passing the checker and only failing later with an
+                    // unlocated "unsupported operand types" codegen error --
+                    // the exact same class of bug `infer_binop_ty`'s own doc
+                    // comments describe already being fixed for binary
+                    // `+ - * / %` and comparisons. A struct operand is
+                    // special-cased out entirely rather than falling into
+                    // `infer_binop_ty(Sub, ...)`: `try_neg_overload_call`
+                    // just above already handled the one case where a struct
+                    // has real unary-`-` semantics (implementing `Neg`), and
+                    // routing a non-`Neg` struct through `infer_binop_ty`
+                    // here would wrongly accept it whenever that same struct
+                    // happens to implement `Sub` (added alongside this same
+                    // feature, for binary `-`) -- computing `x.sub(x)`
+                    // instead of a real negation, and disagreeing with
+                    // `Codegen::emit_unary`'s still-`Sub`-trait-unaware
+                    // `Ty::Named` lowering (`zeroinitializer` minus an
+                    // aggregate struct is not legal LLVM IR).
                     UnOp::Neg => {
                         let operand_ty = operand_expr.clone().into_ty();
-                        self.infer_binop_ty(&BinOp::Sub, &operand_ty, &operand_ty, *span)
+                        if matches!(operand_ty, Ty::Named(_)) && !Self::is_placeholder_ty(&operand_ty) {
+                            self.error(
+                                format!(
+                                    "unary `-` is not supported on `{:?}` -- implement the `Neg` trait (`fn neg(self) -> Self`) to support it",
+                                    operand_ty
+                                ),
+                                *span,
+                            );
+                            operand_ty
+                        } else {
+                            self.infer_binop_ty(&BinOp::Sub, &operand_ty, &operand_ty, *span)
+                        }
                     }
                     UnOp::Not => {
                         // `Codegen::emit_unary`'s `Not` case unconditionally
@@ -2795,6 +2826,145 @@ impl Checker {
             Ty::Named(n) if matches!(n.as_str(), "unknown" | "infer_error" | "infer" | "Self") => {}
             t => self.error(format!("`{}` argument 1 must be a struct value, found `{:?}`", name, t), span),
         }
+    }
+
+    /// Render a `BinOp` back to its source spelling, for diagnostics -- the
+    /// same small match every `infer_binop_ty` branch already repeats
+    /// locally for its own error messages, factored out just for the two
+    /// operator-overloading diagnostics below (not a wholesale refactor of
+    /// every existing inline copy, to keep this change scoped).
+    fn binop_symbol(op: &BinOp) -> &'static str {
+        match op {
+            BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*", BinOp::Div => "/", BinOp::Rem => "%",
+            BinOp::Eq => "==", BinOp::Ne => "!=", BinOp::Lt => "<", BinOp::Gt => ">", BinOp::Le => "<=", BinOp::Ge => ">=",
+            BinOp::And => "&&", BinOp::Or => "||",
+        }
+    }
+
+    /// The canonical `(trait, method)` pair an operator maps to when
+    /// overloaded on a user struct, e.g. `+` -> `("Add", "add")` for an
+    /// `impl Add for Point: fn add(self, rhs: Self) -> Self:` block. `None`
+    /// for `&&`/`||`, which stay `bool`-only and are never overloadable.
+    ///
+    /// `==`/`!=` share the single `Eq` trait's `eq` method -- `!=` is
+    /// desugared to `!eq(...)` by `try_operator_overload_call`, mirroring
+    /// how `PartialEq::ne` is derived from `eq` in languages with the same
+    /// split, so implementing `Eq` is enough to get both operators. `< > <=
+    /// >=` are four independent methods on one `Ord` trait rather than
+    /// derived from a single `cmp`-style method: this language has no
+    /// `Ordering`-shaped return type to invent for that, and a trait
+    /// declaring only a subset (say, just `lt`) naturally yields support for
+    /// only the corresponding operator (`<`) rather than an all-or-nothing
+    /// requirement.
+    fn operator_trait_method(op: &BinOp) -> Option<(&'static str, &'static str)> {
+        Some(match op {
+            BinOp::Add => ("Add", "add"),
+            BinOp::Sub => ("Sub", "sub"),
+            BinOp::Mul => ("Mul", "mul"),
+            BinOp::Div => ("Div", "div"),
+            BinOp::Rem => ("Rem", "rem"),
+            BinOp::Eq | BinOp::Ne => ("Eq", "eq"),
+            BinOp::Lt => ("Ord", "lt"),
+            BinOp::Gt => ("Ord", "gt"),
+            BinOp::Le => ("Ord", "le"),
+            BinOp::Ge => ("Ord", "ge"),
+            BinOp::And | BinOp::Or => return None,
+        })
+    }
+
+    /// Desugar `lhs op rhs` into an ordinary method call (`lhs.add(rhs)`,
+    /// `lhs.eq(rhs)`, ...) whenever `lhs`'s type is a struct that nominally
+    /// implements the trait `op` canonically maps to (see
+    /// `operator_trait_method`) -- reusing the exact same, already-tested
+    /// method-call type-checking (`self.methods`'s argument/return-type
+    /// checks via `check_call_args`) and codegen (`Codegen::emit_call_expr`'s
+    /// `TypedExpr::Field` branch) a hand-written `.add(...)` call would get,
+    /// rather than inventing a second, parallel dispatch path just for
+    /// operator syntax -- so a synthesized call here needs zero codegen
+    /// changes of its own.
+    ///
+    /// This is also what makes a trait-bounded generic body's own use of an
+    /// operator work at all (`fn total<T: Add>(a: T, b: T) -> T: return a +
+    /// b`): `Checker::instantiate_fn_inner` substitutes `T` with a concrete
+    /// type before this function's caller (`Expr::Binary`'s own arm) ever
+    /// runs, so the substituted body's `a + b` reaches this exact same
+    /// check, resolved the same way a hand-written `a.add(b)` on that
+    /// concrete type would be.
+    ///
+    /// Returns `None` -- leaving the caller to fall back to
+    /// `infer_binop_ty`'s native scalar/vector dispatch, or (for `==`/`!=`)
+    /// `Ty::Named`'s existing structural-comparison fallback -- whenever the
+    /// operator isn't overloadable at all, the left operand isn't a struct,
+    /// or that struct never wrote an `impl <Trait> for <Type>:` block for
+    /// it. Only the left operand's type ever selects an implementation:
+    /// there is no right-hand/`impl Add<Point> for i32`-style dispatch, so
+    /// `5 + point` is never overloaded even if `Point` implements `Add`.
+    fn try_operator_overload_call(&mut self, op: &BinOp, lhs_expr: &TypedExpr, rhs_expr: &TypedExpr, span: Span) -> Option<TypedExpr> {
+        let lhs_ty = lhs_expr.clone().into_ty();
+        let Ty::Named(struct_name) = &lhs_ty else { return None };
+        let (trait_name, method_name) = Self::operator_trait_method(op)?;
+        if !self.ty_implements_trait(&lhs_ty, trait_name) {
+            return None;
+        }
+        let method_key = format!("{}#{}", struct_name, method_name);
+        let (param_tys, ret_ty, has_self) = self.methods.get(&method_key)?.clone();
+        let callee = TypedExpr::Field {
+            base: Box::new(lhs_expr.clone()),
+            field: method_name.to_string(),
+            ty: Ty::Named("unknown".into()),
+            span,
+        };
+        let args = vec![rhs_expr.clone()];
+        self.check_call_args(&param_tys, has_self, &args, span);
+        let mut result_ty = ret_ty.unwrap_or(Ty::Named("unknown".into()));
+        let is_comparison = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge);
+        if is_comparison && result_ty != Ty::Bool && !Self::is_placeholder_ty(&result_ty) {
+            self.error(
+                format!(
+                    "`{}`'s `{}` method must return `bool` to back operator `{}`, found `{:?}`",
+                    trait_name, method_name, Self::binop_symbol(op), result_ty
+                ),
+                span,
+            );
+            // Report just the one error above, not a second cascading
+            // "condition must be bool"/mismatched-operand diagnostic from
+            // whatever consumes this comparison next -- safe to force
+            // regardless of the method's real declared return type since a
+            // checker error here always aborts before codegen ever sees
+            // this (possibly LLVM-type-mismatched) `ty` (see `Driver::check`).
+            result_ty = Ty::Bool;
+        }
+        let call = TypedExpr::Call { callee: Box::new(callee), args, ty: result_ty, span };
+        if matches!(op, BinOp::Ne) {
+            return Some(TypedExpr::Unary { op: UnOp::Not, operand: Box::new(call), ty: Ty::Bool, span });
+        }
+        Some(call)
+    }
+
+    /// The unary-operator counterpart of `try_operator_overload_call`:
+    /// desugars `-operand` into `operand.neg()` when `operand`'s type is a
+    /// struct implementing `Neg` (`impl Neg for Point: fn neg(self) ->
+    /// Self:`). Returns `None` for every other type, leaving the caller's
+    /// existing (struct-excluding, see that call site's own comment)
+    /// `infer_binop_ty(Sub, ...)`-based legality check for plain
+    /// numeric/vector negation untouched.
+    fn try_neg_overload_call(&mut self, operand_expr: &TypedExpr, span: Span) -> Option<TypedExpr> {
+        let operand_ty = operand_expr.clone().into_ty();
+        let Ty::Named(struct_name) = &operand_ty else { return None };
+        if !self.ty_implements_trait(&operand_ty, "Neg") {
+            return None;
+        }
+        let method_key = format!("{}#neg", struct_name);
+        let (param_tys, ret_ty, has_self) = self.methods.get(&method_key)?.clone();
+        let callee = TypedExpr::Field {
+            base: Box::new(operand_expr.clone()),
+            field: "neg".to_string(),
+            ty: Ty::Named("unknown".into()),
+            span,
+        };
+        self.check_call_args(&param_tys, has_self, &[], span);
+        let result_ty = ret_ty.unwrap_or(Ty::Named("unknown".into()));
+        Some(TypedExpr::Call { callee: Box::new(callee), args: Vec::new(), ty: result_ty, span })
     }
 
     /// Infer the result type of a binary operator, dispatching on whether

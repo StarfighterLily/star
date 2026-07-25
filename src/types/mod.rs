@@ -1525,6 +1525,21 @@ pub struct Checker {
     /// parameter fields' types/arity against a sequence constructor call
     /// rather than the full desugared field list.
     sequence_param_counts: HashMap<String, usize>,
+    /// Set for the duration of `resolve_type`ing a *trait's own* method
+    /// signatures (`Item::Trait`'s `check_fn_sig` calls) -- the one context
+    /// where the bare identifier `Self` is a meaningful type, standing for
+    /// "whatever type ends up implementing this trait" (needed for
+    /// operator-overload traits like `Add`/`Eq`, whose right-hand operand
+    /// and result are almost always the implementing type itself; see
+    /// `subst_self_type`, which substitutes it back to a concrete type when
+    /// an `impl` is checked against the trait). `resolve_type` only accepts
+    /// `Type::Named("Self")` while this is `true`; everywhere else (a plain
+    /// function, a struct field, an impl's own methods, which always spell
+    /// out the concrete type name instead) it's rejected as an undefined
+    /// type, same as any other unknown identifier -- so `Self` can't leak
+    /// through the checker into codegen from a context with no concrete
+    /// type to substitute it with.
+    trait_sig_context: bool,
 }
 
 impl Checker {
@@ -1555,6 +1570,7 @@ impl Checker {
             extern_fn_names_seen: HashSet::new(),
             mono_depth: 0,
             sequence_param_counts: HashMap::new(),
+            trait_sig_context: false,
         }
     }
 
@@ -2006,11 +2022,12 @@ impl Checker {
             Item::Struct(s) => Some(TypedItem::Struct(self.check_struct(s))),
             Item::Enum(e) if !e.type_params.is_empty() => None,
             Item::Enum(e) => Some(TypedItem::Enum(self.check_enum(e))),
-            Item::Trait(t) => Some(TypedItem::Trait(TypedTraitDef {
-                name: t.name.clone(),
-                methods: t.methods.iter().filter_map(|sig| self.check_fn_sig(sig)).collect(),
-                span: t.span,
-            })),
+            Item::Trait(t) => {
+                self.trait_sig_context = true;
+                let methods = t.methods.iter().filter_map(|sig| self.check_fn_sig(sig)).collect();
+                self.trait_sig_context = false;
+                Some(TypedItem::Trait(TypedTraitDef { name: t.name.clone(), methods, span: t.span }))
+            }
             // Mirrors the generic-struct/enum case just above: an `impl
             // Box<T>:` has no concrete methods of its own until some later
             // use instantiates `Box<...>` -- already stashed into
@@ -2445,6 +2462,39 @@ impl Checker {
         ok
     }
 
+    /// Replace every occurrence of the bare identifier `Self` inside a
+    /// trait-declared type with `concrete` -- the only place `Self` (as a
+    /// *type*, distinct from the `self`/`mut self` receiver parameter,
+    /// which is tracked separately via `Param::is_self` and never goes
+    /// through type resolution at all) has any meaning in this compiler.
+    /// This is what lets a trait method signature refer to "whatever type
+    /// implements this trait" once, in the trait declaration itself
+    /// (`trait Add: fn add(self, rhs: Self) -> Self`), rather than needing a
+    /// separate trait per implementing type -- needed for operator-overload
+    /// traits (`Add`/`Sub`/`Eq`/`Ord`/...), where the right-hand operand and
+    /// result are almost always the implementing type itself. Only consumed
+    /// by `check_impl_satisfies_trait`, since that's the only place a
+    /// trait's own declared signatures are ever compared against anything
+    /// (see that method's doc comment: there is no dynamic dispatch through
+    /// a trait anywhere else in this compiler to give `Self` any other
+    /// meaning).
+    fn subst_self_type(ty: &Type, concrete: &str) -> Type {
+        match ty {
+            Type::Named(n) if n == "Self" => Type::Named(concrete.to_string()),
+            Type::Named(n) => Type::Named(n.clone()),
+            Type::Generic(n, args) => Type::Generic(n.clone(), args.iter().map(|a| Self::subst_self_type(a, concrete)).collect()),
+            Type::Fn(params, ret) => Type::Fn(
+                params.iter().map(|p| Self::subst_self_type(p, concrete)).collect(),
+                Box::new(Self::subst_self_type(ret, concrete)),
+            ),
+            Type::Tuple(items) => Type::Tuple(items.iter().map(|t| Self::subst_self_type(t, concrete)).collect()),
+            Type::Array(elem, n) => Type::Array(Box::new(Self::subst_self_type(elem, concrete)), *n),
+            Type::Ring(elem, n) => Type::Ring(Box::new(Self::subst_self_type(elem, concrete)), *n),
+            Type::Fixed(a, b) => Type::Fixed(*a, *b),
+            Type::BitField(n) => Type::BitField(*n),
+        }
+    }
+
     /// Report a checker error for each method `impl trait_name for
     /// impl_blk.type_name` fails to faithfully provide -- previously nothing
     /// checked this at all: a genuinely missing method, or one present under
@@ -2455,6 +2505,12 @@ impl Checker {
     /// site) -- this was the only place such a mismatch could ever be
     /// caught. `is_mut` is deliberately not compared: requiring exact
     /// mutability agreement is a stricter rule than this check aims for.
+    /// Every trait-declared param/return type is passed through
+    /// `subst_self_type` (replacing `Self` with `impl_blk.type_name`) before
+    /// comparison, so a trait written with `Self` (as every operator-overload
+    /// trait -- `Add`, `Eq`, `Ord`, ... -- naturally is) compares correctly
+    /// against an impl that (necessarily) spells out the concrete type name
+    /// instead.
     fn check_impl_satisfies_trait(&mut self, trait_name: &str, impl_blk: &ImplBlock) {
         let Some(tdef) = self.traits.get(trait_name).cloned() else { return };
         for req in &tdef.methods {
@@ -2487,21 +2543,25 @@ impl Checker {
                         ),
                         provided.sig.span,
                     );
-                } else if !rp.is_self && rp.ty != pp.ty {
-                    self.error(
-                        format!(
-                            "parameter `{}` of method `{}` in `impl {} for {}` has type `{:?}`, but trait `{}` declares `{:?}`",
-                            pp.name, req.name, impl_blk.type_name, trait_name, pp.ty, trait_name, rp.ty
-                        ),
-                        provided.sig.span,
-                    );
+                } else if !rp.is_self {
+                    let expected = rp.ty.as_ref().map(|t| Self::subst_self_type(t, &impl_blk.type_name));
+                    if expected != pp.ty {
+                        self.error(
+                            format!(
+                                "parameter `{}` of method `{}` in `impl {} for {}` has type `{:?}`, but trait `{}` declares `{:?}`",
+                                pp.name, req.name, impl_blk.type_name, trait_name, pp.ty, trait_name, expected
+                            ),
+                            provided.sig.span,
+                        );
+                    }
                 }
             }
-            if req.ret != provided.sig.ret {
+            let expected_ret = req.ret.as_ref().map(|t| Self::subst_self_type(t, &impl_blk.type_name));
+            if expected_ret != provided.sig.ret {
                 self.error(
                     format!(
                         "method `{}` in `impl {} for {}` returns `{:?}`, but trait `{}` declares `{:?}`",
-                        req.name, impl_blk.type_name, trait_name, provided.sig.ret, trait_name, req.ret
+                        req.name, impl_blk.type_name, trait_name, provided.sig.ret, trait_name, expected_ret
                     ),
                     provided.sig.span,
                 );
@@ -2943,6 +3003,18 @@ impl Checker {
                 let ret_ty = self.resolve_type(ret)?;
                 Some(Ty::Closure(param_tys, Box::new(ret_ty)))
             }
+            // The bare identifier `Self`, only inside a trait's own method
+            // signatures (see `trait_sig_context`'s doc comment) -- resolves
+            // to the `Ty::Named("Self")` placeholder sentinel
+            // `is_placeholder_ty` already recognizes, so it silently
+            // suppresses any further cascading error in whatever consumes
+            // this `TypedTraitDef` (which is otherwise never more than
+            // record-keeping -- there's no dynamic dispatch through a trait
+            // anywhere in this compiler, see `check_impl_satisfies_trait`'s
+            // doc comment) rather than resolving to a real type. Checked
+            // first, ahead of every other arm below, so it stays unconditional
+            // even if some other kind of declaration were ever named `Self`.
+            Type::Named(name) if name == "Self" && self.trait_sig_context => Some(Ty::Named("Self".into())),
             Type::Named(name) if self.enums.contains_key(name) => Some(Ty::Enum(name.clone())),
             // A user struct takes priority over a same-named builtin scalar
             // (`Vec2`, `Tick`, ...) below, mirroring the `enums` guard just

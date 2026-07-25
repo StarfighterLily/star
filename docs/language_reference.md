@@ -1159,6 +1159,93 @@ Compound assignment operators: `+=`, `-=`, `*=`, `/=`
 | `\|\|` | `or` | Short-circuiting OR |
 | `!` | `not` | Logical NOT |
 
+### Operator Overloading
+
+A `struct` can give any of the operators above (except `&&`/`||`, which stay
+`bool`-only) a custom meaning by implementing the trait that operator
+canonically maps to:
+
+| Operator | Trait | Method |
+|----------|-------|--------|
+| `+` | `Add` | `add(self, rhs) -> Ret` |
+| `-` (binary) | `Sub` | `sub(self, rhs) -> Ret` |
+| `*` | `Mul` | `mul(self, rhs) -> Ret` |
+| `/` | `Div` | `div(self, rhs) -> Ret` |
+| `%` | `Rem` | `rem(self, rhs) -> Ret` |
+| `==`, `!=` | `Eq` | `eq(self, rhs) -> bool` |
+| `<` | `Ord` | `lt(self, rhs) -> bool` |
+| `>` | `Ord` | `gt(self, rhs) -> bool` |
+| `<=` | `Ord` | `le(self, rhs) -> bool` |
+| `>=` | `Ord` | `ge(self, rhs) -> bool` |
+| `-` (unary) | `Neg` | `neg(self) -> Ret` |
+
+`Add`/`Sub`/`Mul`/`Div`/`Rem`/`Eq`/`Ord`/`Neg` are not builtin/reserved --
+they're declared exactly like any other trait (see "Traits and
+Implementations" below), using the special `Self` type to refer to "whatever
+type ends up implementing this trait":
+
+```star
+trait Add:
+    fn add(self, rhs: Self) -> Self
+
+struct Point:
+    x: i32
+    y: i32
+
+impl Add for Point:
+    fn add(self, rhs: Point) -> Point:
+        return Point(x = self.x + rhs.x, y = self.y + rhs.y)
+
+fn main():
+    let a = Point(x = 1, y = 2)
+    let b = Point(x = 3, y = 4)
+    println(f"{(a + b).x}, {(a + b).y}")  # 4, 6
+```
+
+`a + b` desugars to `a.add(b)` at compile time -- the operator is purely
+syntactic sugar over an ordinary method call, resolved by looking up the
+matching trait/method on the *left* operand's type. A few consequences
+follow directly from that:
+
+- **Only the left operand's type selects an implementation.** There's no
+  `impl Add<Point> for i32`-style right-hand dispatch, so `5 + point` is
+  never overloaded even if `Point` implements `Add` -- it still hits `i32`'s
+  own (numeric-only) arithmetic rules and is rejected.
+- **`Self` is only meaningful inside a trait's own method signatures.**
+  Writing `Self` anywhere else (a plain function, a struct field, an impl's
+  own methods, which always spell out the concrete type name instead) is
+  rejected as an undefined type.
+- **`!=` is always `!eq(...)`.** Implementing `Eq` (just the one `eq`
+  method) is enough to get both `==` and `!=` -- there's no separate `ne`
+  method to implement.
+- **`< > <= >=` are four independent `Ord` methods, not derived from a
+  single `cmp`.** A trait declaring only `lt` (and an impl providing only
+  that) yields support for only `<` -- `>`/`<=`/`>=` on that type are still
+  rejected, exactly as if `Ord` had never been implemented at all. This
+  language has no `Ordering`-shaped return type to build a single-method
+  derivation around.
+- **A struct with no matching trait impl keeps its previous behavior
+  unchanged.** `+`/`-`/`*`/`/`/`%` on a struct that never implements the
+  corresponding trait is still a compile error; `==`/`!=` on a struct that
+  never implements `Eq` still falls back to this language's existing
+  structural comparison (a fieldless enum, or a struct/tuple/array composed
+  entirely of structurally-comparable fields, gets `==`/`!=` for free with
+  no `impl` needed at all -- see the comparison table above).
+- **Compound assignment (`+=`, `-=`, ...) is not overloaded by this
+  mechanism.** Only the plain binary/unary operator forms desugar to a
+  method call; `point += other` on a struct is still a compile error even
+  if `Point` implements `Add`.
+
+This is also what closes the one gap trait-bounded generics originally left
+open: a bounded generic body can now use an operator on its type parameter,
+not just call a trait method on it, resolved the exact same way once
+monomorphized against a concrete type argument:
+
+```star
+fn total<T: Add>(a: T, b: T) -> T:
+    return a + b       # not just `a.add(b)` -- the operator itself works too
+```
+
 ---
 
 ## Compilation Toolchain

@@ -12330,6 +12330,350 @@ fn runtime_impl_satisfying_trait_exactly_end_to_end() {
     assert_eq!(stdout.trim_end(), "5", "{}", stdout);
 }
 
+// ===== operator overloading ===================================================
+//
+// `todo.md`'s trait-bounded-generics entry named this the still-missing
+// "other half" of that feature: a bounded generic body could call a trait
+// *method* on `T`, but never use an *operator* on it, and no concrete type
+// (generic or not) could overload an operator at all. `Checker::operator_trait_method`
+// maps each overloadable operator to a canonical `(trait, method)` pair
+// (`+` -> `Add::add`, `==`/`!=` -> `Eq::eq`, `< > <= >=` -> `Ord::{lt,gt,le,ge}`,
+// unary `-` -> `Neg::neg`); `Checker::try_operator_overload_call`/
+// `try_neg_overload_call` desugar the operator into an ordinary method call
+// (`a.add(b)`) at type-check time whenever the left operand's type nominally
+// implements that trait, reusing the exact same, already-tested method-call
+// type-checking and codegen a hand-written `.add(...)` call gets.
+
+const OP_OVERLOAD_ADD_SRC: &str = "trait Add:\n    fn add(self, rhs: Self) -> Self\n\nstruct Point:\n    x: i32\n    y: i32\n\nimpl Add for Point:\n    fn add(self, rhs: Point) -> Point:\n        return Point(x = self.x + rhs.x, y = self.y + rhs.y)\n\n";
+
+const OP_OVERLOAD_EQ_SRC: &str = "trait Eq:\n    fn eq(self, rhs: Self) -> bool\n\nstruct Point:\n    x: i32\n    y: i32\n\nimpl Eq for Point:\n    fn eq(self, rhs: Point) -> bool:\n        return self.x == rhs.x and self.y == rhs.y\n\n";
+
+const OP_OVERLOAD_ORD_SRC: &str = "trait Ord:\n    fn lt(self, rhs: Self) -> bool\n    fn gt(self, rhs: Self) -> bool\n    fn le(self, rhs: Self) -> bool\n    fn ge(self, rhs: Self) -> bool\n\nstruct Point:\n    x: i32\n\nimpl Ord for Point:\n    fn lt(self, rhs: Point) -> bool:\n        return self.x < rhs.x\n    fn gt(self, rhs: Point) -> bool:\n        return self.x > rhs.x\n    fn le(self, rhs: Point) -> bool:\n        return self.x <= rhs.x\n    fn ge(self, rhs: Point) -> bool:\n        return self.x >= rhs.x\n\n";
+
+const OP_OVERLOAD_NEG_SRC: &str = "trait Neg:\n    fn neg(self) -> Self\n\nstruct Point:\n    x: i32\n    y: i32\n\nimpl Neg for Point:\n    fn neg(self) -> Point:\n        return Point(x = 0 - self.x, y = 0 - self.y)\n\n";
+
+/// `+` on a struct implementing `Add` type-checks, resolving to `Point`
+/// (the method's own return type), not falling through to the numeric-only
+/// "not supported" error `Ty::Named` otherwise hits.
+#[test]
+fn accepts_struct_operator_overload_add() {
+    let src = format!("{}{}", OP_OVERLOAD_ADD_SRC, "fn main():\n    let a = Point(x = 1, y = 2)\n    let b = Point(x = 3, y = 4)\n    let c = a + b\n");
+    let module = Driver::parse(&src).expect("should parse");
+    Driver::check(&module).expect("`+` on a struct implementing `Add` should type-check");
+}
+
+/// A struct implementing `Eq` gets both `==` and `!=` from the single `eq`
+/// method -- `!=` is desugared to a negation of the same call, not a
+/// separately-required method.
+#[test]
+fn accepts_struct_operator_overload_eq_and_ne() {
+    let src = format!(
+        "{}{}",
+        OP_OVERLOAD_EQ_SRC,
+        "fn main():\n    let a = Point(x = 1, y = 2)\n    let b = Point(x = 1, y = 2)\n    if a == b:\n        println(\"eq\")\n    if a != b:\n        println(\"ne\")\n"
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    Driver::check(&module).expect("`==`/`!=` on a struct implementing `Eq` should type-check");
+}
+
+/// A struct with no `Eq` impl at all keeps using the pre-existing structural
+/// `==`/`!=` fallback -- overloading is opt-in, and a struct composed
+/// entirely of structurally-comparable fields must not regress.
+#[test]
+fn structural_equality_fallback_still_works_without_eq_trait() {
+    let src = "struct Point:\n    x: i32\n    y: i32\n\nfn main():\n    let a = Point(x = 1, y = 2)\n    let b = Point(x = 1, y = 2)\n    if a == b:\n        println(\"eq\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("structural `==` must still work for a struct that never implements `Eq`");
+}
+
+/// All four `Ord` methods (`lt`/`gt`/`le`/`ge`) back their corresponding
+/// operator independently.
+#[test]
+fn accepts_struct_operator_overload_ord_all_four_comparisons() {
+    let src = format!(
+        "{}{}",
+        OP_OVERLOAD_ORD_SRC,
+        "fn main():\n    let a = Point(x = 1)\n    let b = Point(x = 2)\n    if a < b:\n        println(\"lt\")\n    if b > a:\n        println(\"gt\")\n    if a <= a:\n        println(\"le\")\n    if a >= a:\n        println(\"ge\")\n"
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    Driver::check(&module).expect("all four `Ord` comparison operators should type-check");
+}
+
+/// A trait declaring only a subset of the four comparison methods yields
+/// support for only the corresponding operator(s) -- there's no
+/// `Ordering`-shaped auto-derivation of the other three from one `cmp`, so a
+/// type is free to support (say) just `<` without also being on the hook for
+/// `> <= >=`.
+#[test]
+fn partial_ord_trait_yields_only_the_declared_comparison_operators() {
+    let src = "trait Ord:\n    fn lt(self, rhs: Self) -> bool\n\nstruct Point:\n    x: i32\n\nimpl Ord for Point:\n    fn lt(self, rhs: Point) -> bool:\n        return self.x < rhs.x\n\nfn main():\n    let a = Point(x = 1)\n    let b = Point(x = 2)\n    if a < b:\n        println(\"lt\")\n    if a > b:\n        println(\"gt\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("`>` should still be rejected when the `Ord` impl only ever provided `lt`")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("only `==`/`!=` are supported")), "{:?}", errs);
+}
+
+/// Unary `-` on a struct implementing `Neg` type-checks and resolves to the
+/// method's own return type.
+#[test]
+fn accepts_struct_neg_overload() {
+    let src = format!("{}{}", OP_OVERLOAD_NEG_SRC, "fn main():\n    let a = Point(x = 1, y = 2)\n    let b = -a\n");
+    let module = Driver::parse(&src).expect("should parse");
+    Driver::check(&module).expect("unary `-` on a struct implementing `Neg` should type-check");
+}
+
+/// The core motivating case named in `todo.md`: a trait-bounded generic
+/// function body using an *operator* (not just a trait method call) on its
+/// bounded type parameter. Once `Checker::instantiate_fn_inner` substitutes
+/// the concrete type argument, `a + b` reaches `try_operator_overload_call`
+/// resolved exactly as a hand-written `a.add(b)` on that concrete type would
+/// be -- this is what actually closes the operator-overloading half of the
+/// trait-bounded-generics ceiling.
+#[test]
+fn accepts_operator_used_inside_trait_bounded_generic_body() {
+    let src = format!(
+        "{}{}",
+        OP_OVERLOAD_ADD_SRC,
+        "fn total<T: Add>(a: T, b: T) -> T:\n    return a + b\n\nfn main():\n    let c = total(Point(x = 1, y = 2), Point(x = 3, y = 4))\n"
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    Driver::check(&module).expect("an operator used on a trait-bounded generic type parameter should type-check");
+}
+
+/// A struct with no `Add` impl at all keeps hitting the pre-existing
+/// "not supported" error for `+` -- overloading must never make an
+/// unrelated, non-overloaded struct's arithmetic silently accepted.
+#[test]
+fn rejects_struct_add_without_impl() {
+    let src = "struct Point:\n    x: i32\n\nfn main():\n    let a = Point(x = 1)\n    let b = Point(x = 2)\n    let c = a + b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("`+` on a struct with no `Add` impl should still be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("`+` is not supported")), "{:?}", errs);
+}
+
+/// The right-hand operand's type is checked against the overloaded method's
+/// real parameter type, through the same `check_call_args` an ordinary
+/// method call gets -- a mismatched type (`i32` where `Point` is expected)
+/// is a clean, located argument-type error, not a silent success.
+#[test]
+fn rejects_operator_overload_with_mismatched_rhs_type() {
+    let src = format!("{}{}", OP_OVERLOAD_ADD_SRC, "fn main():\n    let a = Point(x = 1, y = 2)\n    let c = a + 5\n");
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("`+` with a mismatched right-hand operand type should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("argument 1 expected type") && d.message.contains("Point")), "{:?}", errs);
+}
+
+/// Only the *left* operand's type ever selects an overload -- there is no
+/// right-hand/`impl Add<Point> for i32`-style dispatch, so `5 + point` still
+/// hits `i32`'s own (numeric-only) arithmetic legality check, not `Point`'s
+/// `Add` impl.
+#[test]
+fn rejects_operator_overload_dispatch_from_right_hand_operand() {
+    let src = format!("{}{}", OP_OVERLOAD_ADD_SRC, "fn main():\n    let a = Point(x = 1, y = 2)\n    let c = 5 + a\n");
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("`+` dispatched from the right-hand struct operand should still be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("not supported")), "{:?}", errs);
+}
+
+/// Unary `-` on a struct with no `Neg` impl gets a clear, dedicated error --
+/// and must *not* silently succeed via `Sub`'s new operator-overload branch
+/// even if the same struct happens to implement `Add`/`Sub` (`try_neg_overload_call`
+/// is entirely independent of the binary-`-` overload path; see
+/// `Expr::Unary`'s own `UnOp::Neg` arm doc comment for why routing this case
+/// through `infer_binop_ty(Sub, ...)` would be a real codegen-mismatch bug).
+#[test]
+fn rejects_unary_neg_on_struct_without_neg_impl() {
+    let src = format!("{}{}", OP_OVERLOAD_ADD_SRC, "fn main():\n    let a = Point(x = 1, y = 2)\n    let b = -a\n");
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("unary `-` on a struct implementing `Add` (but not `Neg`) should still be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("unary `-` is not supported") && d.message.contains("Neg")), "{:?}", errs);
+}
+
+/// An overloaded comparison operator's backing method must return `bool` --
+/// a trait declaring (unusually) a non-`bool` return for `lt` is a clean,
+/// dedicated error naming the trait/method/operator, not a confusing
+/// downstream "if condition must be bool" cascade.
+#[test]
+fn rejects_ord_method_returning_non_bool() {
+    let src = "trait Ord:\n    fn lt(self, rhs: Self) -> i32\n\nstruct Point:\n    x: i32\n\nimpl Ord for Point:\n    fn lt(self, rhs: Point) -> i32:\n        return self.x - rhs.x\n\nfn main():\n    let a = Point(x = 1)\n    let b = Point(x = 2)\n    if a < b:\n        println(\"lt\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("an `Ord` method returning non-`bool` should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("must return `bool`") && d.message.contains("Ord") && d.message.contains("<")), "{:?}", errs);
+    assert!(!errs.iter().any(|d| d.message.contains("if condition")), "should not cascade a second diagnostic: {:?}", errs);
+}
+
+/// A trait method signature written with `Self` (`fn add(self, rhs: Self) ->
+/// Self`) parses into an ordinary `Type::Named("Self")` -- `Self` is just a
+/// plain identifier at the grammar level, resolved to anything meaningful
+/// only later, by the checker's `trait_sig_context`-gated special case in
+/// `resolve_type`.
+#[test]
+fn parses_trait_method_signature_with_self_type() {
+    let src = "trait Add:\n    fn add(self, rhs: Self) -> Self\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Trait(t) = &module.items[0] else { panic!("expected a trait") };
+    assert_eq!(t.methods[0].ret, Some(Type::Named("Self".into())));
+    assert_eq!(t.methods[0].params[1].ty, Some(Type::Named("Self".into())));
+}
+
+/// `Self` in a trait's own declared signature is substituted with the
+/// concrete implementing type before `check_impl_satisfies_trait` compares
+/// it against the impl's provided signature -- an impl that (correctly, the
+/// only way it's spellable) writes the concrete type name in place of `Self`
+/// must not be rejected as a mismatch against the trait's own literal `Self`
+/// token.
+#[test]
+fn accepts_impl_matching_trait_self_type_substitution() {
+    let src = format!("{}{}", OP_OVERLOAD_ADD_SRC, "fn main():\n    println(\"ok\")\n");
+    let module = Driver::parse(&src).expect("should parse");
+    Driver::check(&module).expect("an impl whose concrete types faithfully substitute the trait's `Self` should type-check");
+}
+
+/// The converse: an impl whose parameter type does *not* match the trait's
+/// `Self`-declared type (once substituted) is still correctly rejected --
+/// `subst_self_type` must actually compare against the substituted type, not
+/// accidentally always pass.
+#[test]
+fn rejects_impl_mismatching_trait_self_type_substitution() {
+    let src = "trait Add:\n    fn add(self, rhs: Self) -> Self\n\nstruct Point:\n    x: i32\n\nstruct Other:\n    z: i32\n\nimpl Add for Point:\n    fn add(self, rhs: Other) -> Point:\n        return Point(x = self.x + rhs.z)\n\nfn main():\n    println(\"unreachable\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("an impl parameter type disagreeing with the trait's substituted `Self` should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("has type") && d.message.contains("Other") && d.message.contains("Point")), "{:?}", errs);
+}
+
+/// Codegen shape: `a + b` on a struct implementing `Add` lowers to an
+/// ordinary `call` to the mangled `{Struct}__{method}` function -- the exact
+/// same shape a hand-written `a.add(b)` method call gets (see
+/// `Codegen::emit_call_expr`'s `TypedExpr::Field` branch), since
+/// `try_operator_overload_call` desugars into that same `TypedExpr::Call`
+/// shape at type-check time rather than adding any new codegen path.
+#[test]
+fn codegen_operator_overload_add_dispatches_to_method_call() {
+    let src = format!("{}{}", OP_OVERLOAD_ADD_SRC, "fn main() -> i32:\n    let a = Point(x = 1, y = 2)\n    let b = Point(x = 3, y = 4)\n    let c = a + b\n    return c.x\n");
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("define %Point @Point__add("), "{}", ir);
+    let main_body = extract_fn_body(&ir, "define i32 @main(");
+    assert!(main_body.contains("call %Point @Point__add("), "{}", main_body);
+}
+
+/// Codegen shape for `!=`: desugars to a `call` to the same `eq` method
+/// `==` uses, followed by a boolean negation (`xor i1 ..., true`) -- not a
+/// separately-generated method or a second codegen path.
+#[test]
+fn codegen_operator_overload_ne_desugars_to_negated_eq_call() {
+    let src = format!("{}{}", OP_OVERLOAD_EQ_SRC, "fn main():\n    let a = Point(x = 1, y = 2)\n    let b = Point(x = 3, y = 4)\n    println(f\"{a != b}\")\n");
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let main_body = extract_fn_body(&ir, "define i32 @main(");
+    assert!(main_body.contains("call i1 @Point__eq("), "{}", main_body);
+    assert!(main_body.contains("xor i1"), "{}", main_body);
+}
+
+/// Full runtime coverage for `+`/`Add`: the mangled `Point__add` method
+/// actually runs and produces the right field values through a real
+/// clang-compiled executable.
+#[test]
+fn runtime_operator_overload_add_end_to_end() {
+    let src = format!("{}{}", OP_OVERLOAD_ADD_SRC, "fn main():\n    let a = Point(x = 1, y = 2)\n    let b = Point(x = 3, y = 4)\n    let c = a + b\n    println(f\"{c.x} {c.y}\")\n");
+    let output = compile_and_run("op_overload_add", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "4 6", "{}", stdout);
+}
+
+/// Full runtime coverage for `==`/`!=`/`Eq`, including a `false` case for
+/// each so the test can't pass by an accidentally-always-true lowering.
+#[test]
+fn runtime_operator_overload_eq_and_ne_end_to_end() {
+    let src = format!(
+        "{}{}",
+        OP_OVERLOAD_EQ_SRC,
+        "fn main():\n    let a = Point(x = 1, y = 2)\n    let b = Point(x = 1, y = 2)\n    let c = Point(x = 9, y = 9)\n    println(f\"{a == b} {a == c} {a != b} {a != c}\")\n"
+    );
+    let output = compile_and_run("op_overload_eq_ne", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "true false false true", "{}", stdout);
+}
+
+/// Full runtime coverage for all four `Ord`-backed comparison operators.
+#[test]
+fn runtime_operator_overload_ord_end_to_end() {
+    let src = format!(
+        "{}{}",
+        OP_OVERLOAD_ORD_SRC,
+        "fn main():\n    let a = Point(x = 1)\n    let b = Point(x = 2)\n    println(f\"{a < b} {a > b} {a <= a} {a >= a} {b <= a} {b >= a}\")\n"
+    );
+    let output = compile_and_run("op_overload_ord", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "true false true true false true", "{}", stdout);
+}
+
+/// Full runtime coverage for unary `-`/`Neg`.
+#[test]
+fn runtime_neg_overload_end_to_end() {
+    let src = format!("{}{}", OP_OVERLOAD_NEG_SRC, "fn main():\n    let a = Point(x = 3, y = -5)\n    let b = -a\n    println(f\"{b.x} {b.y}\")\n");
+    let output = compile_and_run("neg_overload", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "-3 5", "{}", stdout);
+}
+
+/// Full runtime coverage tying the feature back to its motivating case: a
+/// trait-bounded generic function using `+` on its bounded type parameter,
+/// instantiated against a real struct, actually runs correctly end to end.
+#[test]
+fn runtime_operator_used_inside_trait_bounded_generic_body_end_to_end() {
+    let src = format!(
+        "{}{}",
+        OP_OVERLOAD_ADD_SRC,
+        "fn total<T: Add>(a: T, b: T) -> T:\n    return a + b\n\nfn main():\n    let c = total(Point(x = 1, y = 2), Point(x = 3, y = 4))\n    println(f\"{c.x} {c.y}\")\n"
+    );
+    let output = compile_and_run("op_overload_in_trait_bound_generic", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "4 6", "{}", stdout);
+}
+
+/// Full end-to-end runtime coverage via the committed example: a `Vec2`-like
+/// `Point` implementing `Add`/`Sub`/`Eq`/`Neg`, plus a trait-bounded generic
+/// summing function, all through a real clang-compiled executable rather
+/// than just `compile_and_run`'s temp-file round trip -- mirrors
+/// `runtime_trait_bounded_generics_end_to_end`'s committed-example
+/// convention.
+#[test]
+fn runtime_operator_overloading_example_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/operator_overloading.exe").output().expect("failed to execute operator_overloading.exe");
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("sum: 4, 6"), "{}", stdout);
+    assert!(stdout.contains("diff: -2, -2"), "{}", stdout);
+    assert!(stdout.contains("neg: -1, -2"), "{}", stdout);
+    assert!(stdout.contains("eq: true"), "{}", stdout);
+    assert!(stdout.contains("ne: true"), "{}", stdout);
+    assert!(stdout.contains("lt: true"), "{}", stdout);
+    assert!(stdout.contains("total: 6, 9"), "{}", stdout);
+}
+
 // ===== comparison-operator type checking =====================================
 
 /// Comparing two `GenRef<T>` values with `==` must be rejected by the
@@ -16663,12 +17007,18 @@ fn rejects_unary_negation_of_a_str_value() {
     assert!(diags.iter().any(|d| d.message.contains("`-` is not supported between") && d.message.contains("Str")), "{:?}", diags);
 }
 
+/// Unlike `str` above, a struct operand now gets its own dedicated message
+/// (rather than falling through to `infer_binop_ty`'s generic "not supported
+/// between" phrasing) pointing at the `Neg` trait -- added alongside operator
+/// overloading, see `Expr::Unary`'s own `UnOp::Neg` arm doc comment for why a
+/// struct is special-cased out of `infer_binop_ty(Sub, ...)` entirely rather
+/// than reusing that same check.
 #[test]
 fn rejects_unary_negation_of_a_struct_value() {
     let src = "struct Point:\n    x: i32\nfn main():\n    let p = Point(1)\n    let neg = -p\n    println(f\"{neg.x}\")\n";
     let module = Driver::parse(src).expect("should parse");
     let diags = Driver::check(&module).expect_err("negating a struct should be a type error");
-    assert!(diags.iter().any(|d| d.message.contains("`-` is not supported between")), "{:?}", diags);
+    assert!(diags.iter().any(|d| d.message.contains("unary `-` is not supported") && d.message.contains("Neg")), "{:?}", diags);
 }
 
 /// `Codegen::emit_unary`'s `Neg` case built its `0` operand for `0 - x` via
