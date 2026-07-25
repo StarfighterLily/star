@@ -23,6 +23,8 @@ mod fixed;
 mod flags;
 mod font;
 mod geometry;
+mod hash;
+mod hashtable;
 mod list;
 mod map;
 mod net;
@@ -189,6 +191,10 @@ pub struct Codegen {
     /// type reuses one generated function instead of each emitting a
     /// duplicate `define`.
     eq_fns: std::collections::HashMap<String, String>,
+    /// Same purpose as `eq_fns`, keyed the same way, for the generated
+    /// `hash_<mangled>` structural-hash function a `Map<K,_>`/`Set<T>` key/
+    /// element type needs (see `crate::codegen::hash`).
+    hash_fns: std::collections::HashMap<String, String>,
     /// Per-struct decorator lists, parallel to `struct_field_types`/
     /// `struct_fields` (same declaration order, populated alongside them by
     /// `register_struct`) -- the piece `reflect_get_fn_name`/
@@ -318,6 +324,7 @@ impl Codegen {
             map_release_thunks: std::collections::HashMap::new(),
             table_release_thunks: std::collections::HashMap::new(),
             eq_fns: std::collections::HashMap::new(),
+            hash_fns: std::collections::HashMap::new(),
             struct_field_decorators: std::collections::HashMap::new(),
             struct_field_mut: std::collections::HashMap::new(),
             reflect_get_fns: std::collections::HashMap::new(),
@@ -684,6 +691,16 @@ impl Codegen {
         self.line("@sym.data = global i8** null");
         self.line("@sym.len = global i64 0");
         self.line("@sym.cap = global i64 0");
+        // Hash index accelerating `Symbol(s)`'s string -> id lookup (see
+        // `crate::codegen::symbol`'s doc comment): a plain open-addressing
+        // table of `i64` ids into `@sym.data` (`-1` = empty slot, no
+        // tombstones -- interning never removes an entry, so a slot once
+        // filled never needs to become probe-terminating-unsafe to clear).
+        // Rebuilt from scratch off `@sym.data`/`@sym.len` on every grow
+        // (see `Codegen::emit_symbol_intern`), so it carries no ownership of
+        // its own and needs no release thunk.
+        self.line("@sym.tbl.ids = global i64* null");
+        self.line("@sym.tbl.cap = global i64 0");
         // Binary semaphore guarding every read/mutation of the three globals
         // above -- unlike `List<T>`/`Map<K,V>`, whose backing buffers are
         // per-value and therefore already disjoint across `par`/`swarm`

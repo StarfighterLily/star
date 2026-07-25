@@ -465,14 +465,13 @@ composed entirely of such fields (recursively). Payload-carrying enums,
 `GenRef<T>`, `List<T>`, `Map<K,V>`, `Set<T>`, closures, and `ptr` are not
 supported as key/element types today, and are rejected at compile time.
 
-There is no hashing/bucketing yet: `insert`/`get`/`remove`/`contains` are all
-`O(n)` in the current size, comparing against each stored key/element with a
-generated structural-equality function rather than a hash table. This is a
-deliberate first-cut scope decision (see `docs/design.md`) that fully
-supports arbitrary hashable key/element types today, including nested
-structs, without needing a hash function at all -- a real hash table is a
-purely internal follow-up optimization that would not change any of the
-syntax or semantics documented above.
+`insert`/`get`/`remove`/`contains` are backed by a real open-addressing hash
+table (average `O(1)`), keyed by a generated structural-hash function paired
+with the structural-equality function used to confirm a probe match -- this
+is a purely internal implementation detail with no effect on the syntax or
+semantics documented above. Element/key order was never guaranteed and still
+isn't: `remove` marks a slot as removed in place rather than preserving
+insertion order.
 
 ---
 

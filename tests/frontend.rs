@@ -6154,6 +6154,409 @@ fn rejects_set_remove_on_non_mut_field_even_through_mut_self() {
     assert!(errs.iter().any(|d| d.message.contains("field `values` is not mutable")), "{:?}", errs);
 }
 
+// ===== Map<K,V>/Set<T> hash-table backing (todo.md P0 #3) ==================
+//
+// `Map`/`Set` used to be a plain linear scan (`crate::codegen::eq`'s
+// structural-equality function, `O(n)` per operation); they're now a real
+// open-addressing hash table (`crate::codegen::hash`/`hashtable`) with
+// growth and tombstone-based removal. These tests target exactly the
+// behavior that scan-based implementation couldn't get wrong but a hash
+// table can: growth/rehashing correctness at scale, tombstone-slot reuse
+// after `remove`, structural-hash agreement with structural equality for
+// aggregate key types, and the `cap == 0` (never-grown) edge case.
+
+/// Codegen-shape companion to `codegen_map_generates_str_eq_fn_using_strcmp`:
+/// a `Map<str,i32>` now also generates a structural-hash function for its
+/// key type, not just the structural-equality one.
+#[test]
+fn codegen_map_generates_hash_str_fn_for_str_key() {
+    let src = "fn t(mut m: Map<str, i32>):\n    m.insert(\"k\", 1)\n    m.get(\"k\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("define i64 @hash_str("), "{}", ir);
+}
+
+/// `Set<T>`'s equivalent of the test above.
+#[test]
+fn codegen_set_generates_hash_fn_for_element_type() {
+    let module = Driver::parse("fn t(mut s: Set<i32>):\n    s.insert(1)\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("define i64 @hash_i32("), "{}", ir);
+}
+
+/// `Map<i32,i32>` through 300 keys' worth of churn: 200 inserts (forcing
+/// several grows past the initial `cap = 8`), a full correctness pass over
+/// every inserted key via `get`, two definite misses, removing every even
+/// key (creating 100 tombstones), re-checking both the removed and
+/// remaining halves, then inserting 100 *new* keys -- which must reuse the
+/// tombstoned slots (and/or trigger another grow/rehash) rather than losing
+/// or duplicating anything -- followed by one final full-range correctness
+/// pass. A linear-scan implementation could never observe a growth or
+/// tombstone bug; this is squarely the coverage a hash table needs that the
+/// old implementation didn't.
+#[test]
+fn runtime_map_hash_table_growth_tombstone_reuse_and_correctness_end_to_end() {
+    let src = concat!(
+        "fn extract(o: Option<i32>) -> i32:\n",
+        "    match o:\n",
+        "        Option::Some(v) -> v\n",
+        "        Option::None -> -999999\n",
+        "\n",
+        "fn main():\n",
+        "    let mut m: Map<i32, i32> = Map<i32, i32>()\n",
+        "    for i in 0..200:\n",
+        "        m.insert(i, i * 7)\n",
+        "    println(f\"len_after_insert={m.len()}\")\n",
+        "\n",
+        "    let mut all_correct = true\n",
+        "    for i in 0..200:\n",
+        "        if extract(m.get(i)) != i * 7:\n",
+        "            all_correct = false\n",
+        "    println(f\"all_correct={all_correct}\")\n",
+        "\n",
+        "    println(f\"contains_300={m.contains(300)}\")\n",
+        "    println(f\"contains_neg1={m.contains(-1)}\")\n",
+        "\n",
+        "    let mut removed_correct = true\n",
+        "    for i in 0..200:\n",
+        "        if i % 2 == 0:\n",
+        "            if extract(m.remove(i)) != i * 7:\n",
+        "                removed_correct = false\n",
+        "    println(f\"removed_correct={removed_correct}\")\n",
+        "    println(f\"len_after_remove={m.len()}\")\n",
+        "\n",
+        "    let mut post_remove_correct = true\n",
+        "    for i in 0..200:\n",
+        "        if i % 2 == 0:\n",
+        "            if m.contains(i):\n",
+        "                post_remove_correct = false\n",
+        "        else:\n",
+        "            if extract(m.get(i)) != i * 7:\n",
+        "                post_remove_correct = false\n",
+        "    println(f\"post_remove_correct={post_remove_correct}\")\n",
+        "\n",
+        "    for i in 200..300:\n",
+        "        m.insert(i, i * 7)\n",
+        "    println(f\"len_after_refill={m.len()}\")\n",
+        "\n",
+        "    let mut final_correct = true\n",
+        "    for i in 0..300:\n",
+        "        if i < 200 and i % 2 == 0:\n",
+        "            if m.contains(i):\n",
+        "                final_correct = false\n",
+        "        else:\n",
+        "            if extract(m.get(i)) != i * 7:\n",
+        "                final_correct = false\n",
+        "    println(f\"final_correct={final_correct}\")\n",
+    );
+    let output = compile_and_run("map_hash_growth_tombstone", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "len_after_insert=200",
+            "all_correct=true",
+            "contains_300=false",
+            "contains_neg1=false",
+            "removed_correct=true",
+            "len_after_remove=100",
+            "post_remove_correct=true",
+            "len_after_refill=200",
+            "final_correct=true",
+        ],
+        "{}",
+        stdout
+    );
+}
+
+/// `Set<i32>`'s equivalent of the `Map` growth/tombstone-reuse stress test
+/// above: 150 inserts, a duplicate-insert pass (must report `false`/not grow
+/// `len`), removing every multiple of 3, re-checking both halves, refilling
+/// with 70 new elements, and a final full-range check.
+#[test]
+fn runtime_set_hash_table_growth_and_tombstone_reuse_correctness_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let mut s: Set<i32> = Set<i32>()\n",
+        "    for i in 0..150:\n",
+        "        s.insert(i)\n",
+        "    println(f\"len_after_insert={s.len()}\")\n",
+        "\n",
+        "    let mut all_present = true\n",
+        "    for i in 0..150:\n",
+        "        if !s.contains(i):\n",
+        "            all_present = false\n",
+        "    println(f\"all_present={all_present}\")\n",
+        "\n",
+        "    let mut dup_rejected = true\n",
+        "    for i in 0..150:\n",
+        "        if s.insert(i):\n",
+        "            dup_rejected = false\n",
+        "    println(f\"dup_rejected={dup_rejected}\")\n",
+        "    println(f\"len_after_dup_inserts={s.len()}\")\n",
+        "\n",
+        "    let mut removed_ok = true\n",
+        "    for i in 0..150:\n",
+        "        if i % 3 == 0:\n",
+        "            if !s.remove(i):\n",
+        "                removed_ok = false\n",
+        "    println(f\"removed_ok={removed_ok}\")\n",
+        "    println(f\"len_after_remove={s.len()}\")\n",
+        "\n",
+        "    let mut post_remove_ok = true\n",
+        "    for i in 0..150:\n",
+        "        if i % 3 == 0:\n",
+        "            if s.contains(i):\n",
+        "                post_remove_ok = false\n",
+        "        else:\n",
+        "            if !s.contains(i):\n",
+        "                post_remove_ok = false\n",
+        "    println(f\"post_remove_ok={post_remove_ok}\")\n",
+        "\n",
+        "    for i in 150..220:\n",
+        "        s.insert(i)\n",
+        "    println(f\"len_after_refill={s.len()}\")\n",
+        "\n",
+        "    let mut final_ok = true\n",
+        "    for i in 0..220:\n",
+        "        if i < 150 and i % 3 == 0:\n",
+        "            if s.contains(i):\n",
+        "                final_ok = false\n",
+        "        else:\n",
+        "            if !s.contains(i):\n",
+        "                final_ok = false\n",
+        "    println(f\"final_ok={final_ok}\")\n",
+    );
+    let output = compile_and_run("set_hash_growth_tombstone", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "len_after_insert=150",
+            "all_present=true",
+            "dup_rejected=true",
+            "len_after_dup_inserts=150",
+            "removed_ok=true",
+            "len_after_remove=100",
+            "post_remove_ok=true",
+            "len_after_refill=170",
+            "final_ok=true",
+        ],
+        "{}",
+        stdout
+    );
+}
+
+/// A `Set<Point>` (a two-field struct key, `crate::codegen::hash`'s
+/// `Ty::Named` recursion) inserted with 100 distinct values must end up with
+/// `len == 100` -- if the structural hash function disagreed with the
+/// structural equality function on any pair (e.g. an unmixed/truncated field
+/// hash colliding two genuinely different points into the same probe chain
+/// *and* the equality check being buggy enough to still treat them as equal
+/// -- a real class of hash/eq-disagreement bug this test would catch even
+/// though it wouldn't reliably catch a mere hash collision alone, since
+/// open addressing already handles same-bucket-different-key correctly by
+/// design). Also checks duplicate-insert dedup and both a near-miss and a
+/// far-miss `contains` query.
+#[test]
+fn runtime_set_struct_key_distinct_values_do_not_collide_end_to_end() {
+    let src = concat!(
+        "struct Point:\n",
+        "    x: i32\n",
+        "    y: i32\n",
+        "\n",
+        "fn main():\n",
+        "    let mut s: Set<Point> = Set<Point>()\n",
+        "    for i in 0..100:\n",
+        "        s.insert(Point(x = i, y = i * 2))\n",
+        "    println(f\"len={s.len()}\")\n",
+        "\n",
+        "    s.insert(Point(x = 0, y = 0))\n",
+        "    s.insert(Point(x = 50, y = 100))\n",
+        "    println(f\"len_after_dup_inserts={s.len()}\")\n",
+        "\n",
+        "    let mut all_present = true\n",
+        "    for i in 0..100:\n",
+        "        if !s.contains(Point(x = i, y = i * 2)):\n",
+        "            all_present = false\n",
+        "    println(f\"all_present={all_present}\")\n",
+        "\n",
+        "    println(f\"contains_near_miss={s.contains(Point(x = 50, y = 99))}\")\n",
+        "    println(f\"contains_far_miss={s.contains(Point(x = 500, y = 1000))}\")\n",
+    );
+    let output = compile_and_run("set_struct_key_no_collide", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "len=100",
+            "len_after_dup_inserts=100",
+            "all_present=true",
+            "contains_near_miss=false",
+            "contains_far_miss=false",
+        ],
+        "{}",
+        stdout
+    );
+}
+
+/// `Map<str,str>` growth/removal/refill correctness -- the RC-bearing-key-
+/// and-value variant of the `i32` stress test above, exercising the
+/// generated release thunk's/CoW-clone's/grow-rehash's walk over the
+/// `states` array for a type where a missed or double release would be a
+/// real leak or use-after-free rather than just a wrong integer.
+#[test]
+fn runtime_map_str_key_and_value_growth_correctness_end_to_end() {
+    let src = concat!(
+        "fn extract(o: Option<str>) -> str:\n",
+        "    match o:\n",
+        "        Option::Some(v) -> v\n",
+        "        Option::None -> \"MISSING\"\n",
+        "\n",
+        "fn main():\n",
+        "    let mut m: Map<str, str> = Map<str, str>()\n",
+        "    for i in 0..150:\n",
+        "        m.insert(f\"k{i}\", f\"v{i}\")\n",
+        "    println(f\"len_after_insert={m.len()}\")\n",
+        "\n",
+        "    let mut all_correct = true\n",
+        "    for i in 0..150:\n",
+        "        if extract(m.get(f\"k{i}\")) != f\"v{i}\":\n",
+        "            all_correct = false\n",
+        "    println(f\"all_correct={all_correct}\")\n",
+        "\n",
+        "    let mut removed_correct = true\n",
+        "    for i in 0..150:\n",
+        "        if i % 3 == 0:\n",
+        "            if extract(m.remove(f\"k{i}\")) != f\"v{i}\":\n",
+        "                removed_correct = false\n",
+        "    println(f\"removed_correct={removed_correct}\")\n",
+        "    println(f\"len_after_remove={m.len()}\")\n",
+        "\n",
+        "    for i in 150..220:\n",
+        "        m.insert(f\"k{i}\", f\"v{i}\")\n",
+        "    println(f\"len_after_refill={m.len()}\")\n",
+        "\n",
+        "    let mut final_correct = true\n",
+        "    for i in 0..220:\n",
+        "        if i < 150 and i % 3 == 0:\n",
+        "            if m.contains(f\"k{i}\"):\n",
+        "                final_correct = false\n",
+        "        else:\n",
+        "            if extract(m.get(f\"k{i}\")) != f\"v{i}\":\n",
+        "                final_correct = false\n",
+        "    println(f\"final_correct={final_correct}\")\n",
+    );
+    let output = compile_and_run("map_str_growth_correctness", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "len_after_insert=150",
+            "all_correct=true",
+            "removed_correct=true",
+            "len_after_remove=100",
+            "len_after_refill=170",
+            "final_correct=true",
+        ],
+        "{}",
+        stdout
+    );
+}
+
+/// `contains`/`remove` on a `Map`/`Set` that has *never* had anything
+/// inserted (`cap == 0`, the `null`-object empty representation -- see
+/// `crate::codegen::map`/`set`'s module doc comments) must not crash: probe
+/// helpers compute `mask = cap - 1` unconditionally, and with `cap == 0`
+/// that's `-1` (all bits set) -- safe only because the probe loop's own
+/// `i < cap` bound (`cap == 0`) skips every body iteration that would
+/// otherwise dereference the (null) `states`/`keys` pointers.
+#[test]
+fn runtime_map_and_set_remove_and_contains_on_never_inserted_do_not_crash_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let mut m: Map<i32, i32> = Map<i32, i32>()\n",
+        "    println(f\"map_contains={m.contains(5)}\")\n",
+        "    match m.remove(5):\n",
+        "        Option::Some(v) -> println(f\"map_removed_some={v}\")\n",
+        "        Option::None -> println(\"map_removed_none\")\n",
+        "    println(f\"map_len={m.len()}\")\n",
+        "\n",
+        "    let mut s: Set<i32> = Set<i32>()\n",
+        "    println(f\"set_contains={s.contains(5)}\")\n",
+        "    println(f\"set_removed={s.remove(5)}\")\n",
+        "    println(f\"set_len={s.len()}\")\n",
+    );
+    let output = compile_and_run("map_set_empty_no_crash", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["map_contains=false", "map_removed_none", "map_len=0", "set_contains=false", "set_removed=false", "set_len=0",],
+        "{}",
+        stdout
+    );
+}
+
+/// `Symbol`'s intern hash index (`@sym.tbl.ids`, `crate::codegen::symbol`)
+/// through enough distinct strings (300) to force several grows/rebuilds:
+/// every id must come out sequential (`0..300`, matching insertion order,
+/// since every string here is unique -- no dedup ever kicks in) *and*
+/// re-interning the exact same 300 strings afterward -- once the index has
+/// been rebuilt from scratch multiple times -- must still recover the exact
+/// same ids rather than minting duplicates. Also spot-checks `symbol_name`'s
+/// reverse lookup still agrees after the index (but not the append-only
+/// `@sym.data` log it's built from) has been through several grow/rebuild
+/// cycles.
+#[test]
+fn runtime_symbol_intern_hash_index_growth_still_dedups_end_to_end() {
+    let src = concat!(
+        "fn main():\n",
+        "    let mut ids: List<i64> = List<i64>()\n",
+        "    let mut i = 0\n",
+        "    while i < 300:\n",
+        "        let sym = Symbol(f\"sym{i}\")\n",
+        "        ids.push(sym as i64)\n",
+        "        i += 1\n",
+        "\n",
+        "    let mut sequential_ok = true\n",
+        "    let mut j = 0\n",
+        "    while j < 300:\n",
+        "        if ids[j] != j as i64:\n",
+        "            sequential_ok = false\n",
+        "        j += 1\n",
+        "    println(f\"sequential_ok={sequential_ok}\")\n",
+        "\n",
+        "    let mut redup_ok = true\n",
+        "    let mut k = 0\n",
+        "    while k < 300:\n",
+        "        let sym2 = Symbol(f\"sym{k}\")\n",
+        "        if (sym2 as i64) != ids[k]:\n",
+        "            redup_ok = false\n",
+        "        k += 1\n",
+        "    println(f\"redup_ok={redup_ok}\")\n",
+        "\n",
+        "    let last_id = 299 as i64\n",
+        "    println(f\"name_last={symbol_name(last_id as Symbol)}\")\n",
+    );
+    let output = compile_and_run("symbol_hash_index_growth", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["sequential_ok=true", "redup_ok=true", "name_last=sym299",], "{}", stdout);
+}
+
 // ===== List<T> copy-on-write ownership (todo.md's memory-ownership fix) ===
 
 /// The use-after-free `todo.md` originally flagged, "confirmed empirically":
