@@ -51,7 +51,15 @@ programs, biggest lever first within each tier.
    actual `par_analysis.rs` check is a single-loop-only capture-mutation
    rule. Either document the real (narrower, still-sound) guarantee
    accurately, or extend the analysis to actually match the pitch — but stop
-   letting the docs promise a scheduler that doesn't exist.
+   letting the docs promise a scheduler that doesn't exist. -- Done: added
+   `system`/`parallel` (`src/types/system_analysis.rs`,
+   `src/codegen/system.rs`) — named systems declare an explicit per-arena
+   read/write access list, and a `parallel:` block runs a set of them
+   concurrently on the existing `par`/`swarm` worker pool after the checker
+   proves no two listed systems hold a conflicting (>= 1 mutable) lock on
+   the same arena, rejecting the block at compile time otherwise. See
+   `docs/language_reference.md`'s "Cross-System Scheduling" section and
+   `examples/parallel_systems.star`.
 
 ## P2 — Real but lower-blast-radius feature gaps
 

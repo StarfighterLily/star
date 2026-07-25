@@ -57,6 +57,27 @@ pub enum TypedItem {
     /// (see `crate::ast::ExternFnDecl`). `codegen` lowers this to a bare
     /// `declare` rather than a `define` (see `Codegen::emit`).
     ExternFn(TypedFnSig),
+    /// A checked `system` declaration -- see [`TypedSystemDef`].
+    System(TypedSystemDef),
+}
+
+/// A type-checked `system Name(mut ArenaA, ArenaB): <body>` declaration --
+/// see [`crate::ast::SystemDecl`]. `accesses` is `(arena_name, is_mutable)`
+/// pairs, resolved straight off the raw AST's `SystemAccess` list (nothing
+/// to type-check there beyond "does this arena exist," which
+/// `Checker::check_system` does before producing this). Consulted both by
+/// `crate::types::system_analysis` (to check the body only touches these
+/// arenas, respecting mutability) and by `Codegen::emit_system` (which
+/// compiles `body` into the same `i32(i8*)`-shaped function
+/// `Codegen::emit_par_stmt`'s per-callsite chunk workers use, so a
+/// `parallel:` block can dispatch it through the unmodified `par`/`swarm`
+/// worker pool).
+#[derive(Clone, Debug)]
+pub struct TypedSystemDef {
+    pub name: String,
+    pub accesses: Vec<(String, bool)>,
+    pub body: TypedBlock,
+    pub span: Span,
 }
 
 /// A type-checked enum declaration.
@@ -216,6 +237,13 @@ pub enum TypedStmt {
         index: TypedExpr,
         span: Span,
     },
+    /// `parallel: SystemA() SystemB() ...` - see
+    /// [`crate::ast::Stmt::Parallel`]. `systems` is just the resolved list
+    /// of system names (already validated to exist and to hold no
+    /// conflicting locks by `Checker::check_parallel_stmt` -- codegen only
+    /// needs the names to dispatch each one's already-compiled `@sys.Name`
+    /// function to the worker pool).
+    Parallel { systems: Vec<String>, span: Span },
 }
 
 /// A type-checked f-string component.

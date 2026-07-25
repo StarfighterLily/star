@@ -31,7 +31,7 @@ use super::*;
 /// other pure builtin here (concurrently misusing the *same* handle from
 /// two threads is a real but narrower hazard, no different in kind from any
 /// other shared `ptr` a `par` body could already be handed).
-fn is_banned_sdl_builtin_in_par(name: &str) -> bool {
+pub(super) fn is_banned_sdl_builtin_in_par(name: &str) -> bool {
     matches!(
         name,
         "window_create"
@@ -179,6 +179,20 @@ impl Checker {
                 // the same arena's `gen` global.
                 self.error(
                     "`despawn` cannot be used inside a par/swarm body (concurrent generation bumps are not disjoint across threads)",
+                    *span,
+                );
+            }
+            // A `par`/`swarm` body already runs on every worker thread at
+            // once; dispatching a `parallel:` block from inside one would
+            // try to fan a *second* set of jobs out to the same pool each
+            // worker is itself already occupying a slot in -- see
+            // `codegen::par_pool`'s header comment on why nested dispatch
+            // needs its own reentrancy handling, which only exists for a
+            // nested `par`/`swarm` today, not a nested `parallel:`.
+            TypedStmt::Parallel { span, .. } => {
+                self.error(
+                    "`parallel:` cannot be used inside a par/swarm body (it would dispatch a second set of jobs \
+                     to the same worker pool this body is already running on)",
                     *span,
                 );
             }

@@ -352,6 +352,7 @@ fn item_top_level_name(item: &Item) -> Option<&str> {
         Item::Sequence(s) => Some(&s.name),
         Item::Enum(e) => Some(&e.name),
         Item::Const(c) => Some(&c.name),
+        Item::System(s) => Some(&s.name),
         Item::Impl(_) | Item::Import(_) | Item::ExternFn(_) => None,
     }
 }
@@ -597,6 +598,16 @@ fn rename_item(item: &Item, names: &HashMap<String, String>) -> Item {
         // Passed through unchanged -- see `collect_names`'s `Item::ExternFn`
         // exclusion for why the C symbol name is never mangled.
         Item::ExternFn(e) => Item::ExternFn(e.clone()),
+        Item::System(s) => Item::System(SystemDecl {
+            name: mangled(&s.name, names),
+            accesses: s
+                .accesses
+                .iter()
+                .map(|acc| SystemAccess { arena: mangled(&acc.arena, names), mutable: acc.mutable, span: acc.span })
+                .collect(),
+            body: rename_block(&s.body, names, &HashSet::new()),
+            span: s.span,
+        }),
     }
 }
 
@@ -756,6 +767,10 @@ fn rename_stmt(stmt: &Stmt, names: &HashMap<String, String>, shadowed: &mut Hash
         Stmt::Despawn { arena, index, span } => {
             Stmt::Despawn { arena: mangled(arena, names), index: rename_expr(index, names, shadowed), span: *span }
         }
+        Stmt::Parallel { systems, span } => Stmt::Parallel {
+            systems: systems.iter().map(|(name, name_span)| (mangled(name, names), *name_span)).collect(),
+            span: *span,
+        },
     }
 }
 

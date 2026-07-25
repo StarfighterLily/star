@@ -8,13 +8,15 @@
 //! each area of analysis has its own `impl Checker` block in a sibling
 //! submodule: `hir` (the typed tree `Checker::check` produces), `stmt`
 //! (statement checking), `expr` (expression inference), `par_analysis`
-//! (the `par`/`swarm` disjoint-mutation proof), and `frame_analysis` (the
-//! `frame:` escape analysis).
+//! (the `par`/`swarm` disjoint-mutation proof), `frame_analysis` (the
+//! `frame:` escape analysis), and `system_analysis` (the `system`/
+//! `parallel` arena-access and cross-system lock-conflict proof).
 
 mod expr;
 mod frame_analysis;
 mod hir;
 mod par_analysis;
+mod system_analysis;
 mod stmt;
 
 pub use hir::*;
@@ -1437,6 +1439,15 @@ pub struct Checker {
     /// nested -- closing the "move the `spawn` one level into a helper
     /// function" hole in the textual-ban approach.
     unsafe_par_fns: HashSet<String>,
+    /// `system` name -> its declared `(arena_name, is_mutable)` access list,
+    /// registered up front (alongside `arenas`/`functions`) so a
+    /// `parallel:` block anywhere in the module can look up a system
+    /// regardless of whether its `Item::System` textually appears before or
+    /// after the block referencing it. Consulted by
+    /// `crate::types::system_analysis` both to check a system's own body
+    /// only touches its declared arenas and to run the cross-system
+    /// lock-conflict check for a `Stmt::Parallel` block.
+    systems: HashMap<String, Vec<(String, bool)>>,
     /// The enclosing function/method's declared return type, used to
     /// type-check `return` statements (§1.3's hole: previously `return`'s
     /// value was never compared against the function's declared return
@@ -1508,6 +1519,7 @@ impl Checker {
             loop_depth: 0,
             mut_vars: HashSet::new(),
             unsafe_par_fns: HashSet::new(),
+            systems: HashMap::new(),
             current_ret_ty: None,
             extern_fn_names_seen: HashSet::new(),
             mono_depth: 0,
@@ -1840,6 +1852,30 @@ impl Checker {
                 // Resolved (and stripped) by `crate::modules` before the
                 // checker ever runs; never present past this point.
                 Item::Import(_) => {}
+                // Registered here (alongside `arenas`/`functions`) so a
+                // `parallel:` block anywhere in the module can look a system
+                // up regardless of declaration order. Arena *existence* is
+                // deliberately not validated here -- an arena declared later
+                // in this same pass-1 loop wouldn't be in `self.arenas` yet;
+                // that check happens in `check_system` instead, once this
+                // whole pass has finished and every arena is registered.
+                Item::System(s) => {
+                    if self.systems.contains_key(&s.name) {
+                        self.error(format!("the system `{}` is declared more than once", s.name), s.span);
+                    }
+                    let mut accesses = Vec::new();
+                    let mut seen_arenas = HashSet::new();
+                    for acc in &s.accesses {
+                        if !seen_arenas.insert(acc.arena.clone()) {
+                            self.error(
+                                format!("system `{}` declares arena `{}` more than once", s.name, acc.arena),
+                                acc.span,
+                            );
+                        }
+                        accesses.push((acc.arena.clone(), acc.mutable));
+                    }
+                    self.systems.insert(s.name.clone(), accesses);
+                }
             }
         }
 
@@ -2009,6 +2045,10 @@ impl Checker {
             // before this per-item loop runs) into a literal substituted
             // directly at every reference site -- nothing left to emit.
             Item::Const(_) => None,
+            Item::System(s) => {
+                let checked = self.check_system(s)?;
+                Some(TypedItem::System(checked))
+            }
         }
     }
 
@@ -3943,6 +3983,10 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
         Stmt::Despawn { arena, index, span } => {
             Stmt::Despawn { arena: arena.clone(), index: subst_expr(index, subst), span: *span }
         }
+        // No `Type` nodes inside a `parallel:` block (its entries are just
+        // system names) -- nothing for a generic-function-body
+        // monomorphization pass to substitute.
+        Stmt::Parallel { systems, span } => Stmt::Parallel { systems: systems.clone(), span: *span },
     }
 }
 
@@ -4231,6 +4275,15 @@ fn scan_stmt_for_par_hazards(stmt: &Stmt, hazard: &mut bool, called: &mut HashSe
         Stmt::Despawn { index, .. } => {
             *hazard = true;
             scan_expr_for_par_hazards(index, hazard, called);
+        }
+        // Dispatching a `parallel:` block fans a second set of jobs out to
+        // the same worker pool -- exactly as much a hazard, transitively
+        // through a called function, as `frame:`/`each` above (calling a
+        // helper that contains one from inside a `par`/`swarm` body would
+        // try to dispatch into the pool while every worker is itself
+        // already occupying a slot in it).
+        Stmt::Parallel { .. } => {
+            *hazard = true;
         }
     }
 }

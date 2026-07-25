@@ -5,7 +5,7 @@ The Abstraction: Replaces manual thread pools and mutexes with explicit, ECS-map
 
 Safety & Pragmatism: Proving disjoint memory access statically essentially brushes up against the halting problem. Therefore, safety is guaranteed through strict, compiler-enforced read/write declarations.
 
-Compile-Time Locks: The compiler simply forbids a swarm loop if another system has requested a mutable lock on the same component array in the current tick.
+Compile-Time Locks: The compiler simply forbids a swarm loop if another system has requested a mutable lock on the same component array in the current tick. (Implemented -- see `docs/language_reference.md`'s "Cross-System Scheduling (`system`/`parallel`)" section: named `system`s declare which arenas they read/write, a `parallel:` block runs a set of them concurrently on the `par`/`swarm` worker pool, and the compiler rejects the block if two listed systems declare a conflicting, >= 1 mutable, lock on the same arena.)
 
 2. Tick-Aware Coroutines (sequence)
 Standard OS-level async/await is designed for I/O network operations and is highly detrimental to a deterministic, tick-based game loop. Star introduces the sequence keyword, tailored specifically for multi-frame gameplay logic.

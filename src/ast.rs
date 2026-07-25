@@ -53,6 +53,38 @@ pub enum Item {
     /// reference (`crate::types::Checker::resolve_const`), so codegen never
     /// sees an `Item::Const` at all.
     Const(ConstDecl),
+    /// `system Name(mut ArenaA, ArenaB): <body>` - a named, arena-scoped
+    /// procedure with an explicit read/write access declaration, meant to
+    /// be run (possibly concurrently with other systems) from a
+    /// `Stmt::Parallel` block. See [`SystemDecl`].
+    System(SystemDecl),
+}
+
+/// One arena named in a `system`'s access-declaration list: `mut Name` for
+/// read-write access, bare `Name` for read-only. See [`SystemDecl`].
+#[derive(Clone, Debug)]
+pub struct SystemAccess {
+    pub arena: String,
+    pub mutable: bool,
+    pub span: Span,
+}
+
+/// `system Name(mut ArenaA, ArenaB): <body>` - see [`Item::System`].
+///
+/// Unlike `fn`, a system takes no parameters and returns nothing: it only
+/// ever touches global arena state, and its whole point is the explicit
+/// `accesses` list, which the checker (`crate::types::system_analysis`)
+/// enforces the body never reads/writes an arena outside of -- and never
+/// mutates one declared read-only. A `Stmt::Parallel` block lists systems by
+/// name and is rejected at compile time if two listed systems both declare
+/// a conflicting (>= 1 mutable) access to the same arena, which is what
+/// actually makes running them concurrently on the worker pool sound.
+#[derive(Clone, Debug)]
+pub struct SystemDecl {
+    pub name: String,
+    pub accesses: Vec<SystemAccess>,
+    pub body: Block,
+    pub span: Span,
 }
 
 /// `const NAME: Type = <constant expr>` - see [`Item::Const`]. `value` is
@@ -416,6 +448,19 @@ pub enum Stmt {
     Despawn {
         arena: String,
         index: Expr,
+        span: Span,
+    },
+    /// `parallel: SystemA() SystemB() ...` - runs the listed `system`s
+    /// concurrently on the `par`/`swarm` worker-thread pool. Each entry is a
+    /// bare system name plus the span of its `Name()` call (for
+    /// diagnostics); systems take no arguments, so nothing beyond the name
+    /// is parsed. The checker proves the listed systems' declared arena
+    /// accesses don't conflict (see [`crate::types::system_analysis`])
+    /// before this is allowed to dispatch for real -- this is the literal
+    /// "compile-time lock" `docs/features.md` describes. Cannot be nested
+    /// inside a `system`/`par`/`swarm` body (see that same module).
+    Parallel {
+        systems: Vec<(String, Span)>,
         span: Span,
     },
 }

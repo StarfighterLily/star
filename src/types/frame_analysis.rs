@@ -216,6 +216,12 @@ impl Checker {
                 }
             }
             TypedStmt::Despawn { .. } => {}
+            // Names top-level `system`s (checked, and frame-escape-analyzed
+            // if relevant, entirely separately via `check_system` -- a
+            // system has no enclosing scope to inherit frame-local pointers
+            // from in the first place, and its own `frame:` blocks are
+            // banned outright by `system_analysis`). Nothing to walk here.
+            TypedStmt::Parallel { .. } => {}
         }
     }
 }

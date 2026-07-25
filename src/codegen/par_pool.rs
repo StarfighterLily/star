@@ -40,7 +40,7 @@ use super::Codegen;
 /// Fixed pool size, matching the number of chunks a dispatch always splits
 /// an arena's live range into (see `emit_par_dispatch`'s pooled-path chunk
 /// math, unchanged from the old per-call design).
-const NUM_WORKERS: u32 = 4;
+pub(super) const NUM_WORKERS: u32 = 4;
 
 impl Codegen {
     /// Emit the pool's one-time static machinery (globals, the generic

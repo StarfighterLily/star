@@ -37,6 +37,7 @@ mod sdl;
 mod set;
 mod stmt;
 mod symbol;
+mod system;
 mod table;
 mod time;
 mod vector_math;
@@ -450,6 +451,7 @@ impl Codegen {
                     for m in &blk.methods { self.emit_fn(m, Some(&blk.type_name)); }
                 }
                 TypedItem::Fn(f) => self.emit_fn(f, None),
+                TypedItem::System(s) => self.emit_system(s),
                 _ => {}
             }
         }

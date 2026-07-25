@@ -666,6 +666,9 @@ impl Codegen {
             TypedStmt::Despawn { arena, index, .. } => {
                 self.emit_despawn_stmt(arena, index);
             }
+            TypedStmt::Parallel { systems, .. } => {
+                self.emit_parallel_stmt(systems);
+            }
         }
     }
 

@@ -7,7 +7,7 @@ Star is a game programming language with Pythonic-Rust syntax, featuring unique 
 **Key Design Principles:**
 - **Syntax**: Python-style indentation, Rust-style type inference, pattern matching, and immutability-by-default
 - **Memory**: Three-tier model — `frame` bump allocators for ephemeral data, spatial `arena`s for level-scoped state, and generational references for cross-arena communication
-- **Concurrency**: `swarm`/`par` for safe parallel ECS iteration; `sequence` for tick-aware coroutines
+- **Concurrency**: `swarm`/`par` for safe parallel ECS iteration, `system`/`parallel` for compiler-checked cross-system scheduling; `sequence` for tick-aware coroutines
 - **Math**: Native `vec2`/`vec3`/`vec4`/`mat4` types with GLSL-style swizzling
 
 ---
@@ -730,6 +730,119 @@ fn reclaim_dead_particles():
 
 ---
 
+### Cross-System Scheduling (`system`/`parallel`)
+
+A single `par`/`swarm` loop only proves its *own* iterations are disjoint;
+separate `par`/`swarm` statements never run concurrently with each other --
+each dispatch fans out to the worker pool and fully joins before the next
+statement runs. `system`/`parallel` is the layer above that: it lets you run
+*multiple* independent procedures concurrently on that same worker pool, with
+the compiler proving up front that they don't race:
+
+```star
+struct Enemy:
+    mut hp: i32
+
+struct Particle:
+    mut life: i32
+
+arena Enemies: Enemy
+arena Particles: Particle
+
+# Declares mutable access to `Enemies` only -- may freely `par`/`swarm`/
+# `each`/`spawn`/`despawn` it, but touching any other arena is a compile
+# error.
+system UpdateEnemies(mut Enemies):
+    par e in Enemies:
+        e.hp -= 1
+
+# Declares mutable access to `Particles` only -- disjoint from
+# `UpdateEnemies`'s `mut Enemies`, so the compiler can prove these two
+# systems are safe to run at the same time.
+system UpdateParticles(mut Particles):
+    par p in Particles:
+        p.life -= 1
+
+fn main():
+    spawn Enemies(10)
+    spawn Particles(5)
+
+    # Dispatches both systems to the worker pool concurrently. Had they
+    # declared a conflicting (>= 1 mutable) lock on the same arena, this
+    # would be a compile-time error instead -- the literal "compile-time
+    # lock" this feature is named for.
+    parallel:
+        UpdateEnemies()
+        UpdateParticles()
+```
+
+**Declaring a system:** `system Name(mut ArenaA, ArenaB): <body>` lists
+every arena the body touches, `mut` for read-write, bare for read-only. This
+is strictly enforced:
+
+- Referencing an arena the system didn't declare (via `par`/`swarm`/`each`/
+  `spawn`/`despawn`) is a compile error.
+- `spawn`/`despawn`, and any `par` loop, always require `mut` on their
+  arena.
+- `each` may use a read-only-declared arena, but the loop then may not
+  mutate its loop variable (or any of its fields) -- a read-only system pass
+  (logging, computing a read-only aggregate, ...) over data another system
+  might concurrently also be reading.
+- Writing through a `GenRef` index (`g[0].hp -= 1`) is not supported inside
+  a system body yet, regardless of declared access -- a `GenRef` only
+  carries its pointee *type*, not which specific arena it targets, so there
+  is no sound way to attribute the write to one of the declared accesses.
+  Reading through a `GenRef` index is unrestricted.
+- Calling another `fn`/method from inside a system body is not supported
+  yet -- inline the logic directly in the system. (A closure literal
+  defined *and* invoked entirely within the same system body is fine: since
+  a system takes no parameters and has no enclosing scope to capture from,
+  its statements are exactly as inspectable as the rest of the body.)
+- `frame:` and any SDL drawing/window/input builtin are banned unconditionally
+  inside a system body, for the same reason they're banned inside `par`/
+  `swarm` (see above): both touch process-global shared state that a
+  concurrently-running sibling system could race on.
+
+**The `parallel:` block:** lists the systems to run concurrently, by name
+with empty parens (systems take no arguments):
+
+```star
+parallel:
+    SystemA()
+    SystemB()
+```
+
+Before letting this dispatch for real, the compiler checks:
+
+- Every listed name is a declared system, listed at most once.
+- At most 4 systems (the worker pool's fixed size) are listed.
+- No two listed systems declare a conflicting access to the same arena --
+  i.e. both declare it, and at least one declares it `mut`. Two systems that
+  both declare the *same* arena read-only is fine (concurrent reads never
+  race); anything else is the "compile-time lock" error:
+
+  ```
+  error: systems `A` and `B` both request a lock on arena `Enemies` in the
+  same tick -- at least one is mutable, so they cannot run concurrently in
+  one `parallel:` block
+  ```
+
+`parallel:` cannot be nested inside a `system`/`par`/`swarm` body: a system
+already runs on a worker-pool thread once dispatched, so a nested
+`parallel:` would try to fan a second set of jobs out to the same pool every
+worker is itself already occupying a slot in. A `par`/`swarm` loop nested
+*inside* a system's own body still works exactly as it does anywhere else --
+once that system is running on a pool-worker thread, a nested `par`/`swarm`
+automatically takes the same serial-fallback path an ordinary nested
+`par`-inside-`par` already takes (see "Parallel Iteration" above), so it
+never tries to dispatch onto a pool it's already part of. One caveat worth
+knowing: two concurrently-running systems that each hit their own inner
+`par`/`swarm` loop will serialize against each other on that fallback's
+single shared lock, even if their arenas don't conflict -- correctness-safe,
+just not maximally parallel.
+
+---
+
 ### Tick-Aware Coroutines (`sequence`)
 
 Sequences provide coroutines bound to frame ticks:
@@ -1188,6 +1301,7 @@ The `examples/` directory contains working demonstrations:
 | `player.star` | Basic structs, traits, match, f-strings |
 | `spawn.star` | Arena population and iteration |
 | `swarm.star` | Parallel iteration |
+| `parallel_systems.star` | Cross-system compile-time locks (`system`/`parallel`) |
 | `each_index_despawn.star` | Conditionally reclaiming arena slots during a scan (`each item, idx in ...`) |
 | `arena_capacity_configurable.star` | Overriding an arena's default capacity (`arena Name: Type = N`) |
 | `frame_budget_configurable.star` | Overriding a `frame:` block's default byte budget (`frame(N):`) |

@@ -75,6 +75,15 @@ pub enum TokenKind {
     Yield,
     Spawn,
     Despawn,
+    /// `system Name(mut ArenaA, ArenaB): <body>` - declares a named,
+    /// arena-scoped procedure with an explicit read/write access list, see
+    /// [`crate::ast::Item::System`].
+    System,
+    /// `parallel: SystemA() SystemB() ...` - runs the listed systems
+    /// concurrently on the `par`/`swarm` worker pool, after the checker
+    /// proves their declared arena accesses don't conflict. See
+    /// [`crate::ast::Stmt::Parallel`].
+    Parallel,
 
     // Punctuation & operators.
     Colon,
@@ -166,6 +175,8 @@ impl TokenKind {
             TokenKind::Par => "'par'".into(),
             TokenKind::Each => "'each'".into(),
             TokenKind::Sequence => "'sequence'".into(),
+            TokenKind::System => "'system'".into(),
+            TokenKind::Parallel => "'parallel'".into(),
             TokenKind::Yield => "'yield'".into(),
             TokenKind::Spawn => "'spawn'".into(),
             TokenKind::Despawn => "'despawn'".into(),
@@ -890,6 +901,8 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "par" => TokenKind::Par,
         "each" => TokenKind::Each,
         "sequence" => TokenKind::Sequence,
+        "system" => TokenKind::System,
+        "parallel" => TokenKind::Parallel,
         "yield" => TokenKind::Yield,
         "spawn" => TokenKind::Spawn,
         "despawn" => TokenKind::Despawn,

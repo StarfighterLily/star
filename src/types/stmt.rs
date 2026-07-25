@@ -330,6 +330,7 @@ impl Checker {
             }
             Stmt::Spawn { arena, args, arg_names, span } => self.check_spawn_stmt(arena, args, arg_names, vars, *span),
             Stmt::Despawn { arena, index, span } => self.check_despawn_stmt(arena, index, vars, *span),
+            Stmt::Parallel { systems, span } => self.check_parallel_stmt(systems, *span),
         })
     }
 

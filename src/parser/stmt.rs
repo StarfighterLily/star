@@ -1,6 +1,7 @@
 //! Block and statement grammar.
 
 use crate::ast::*;
+use crate::diagnostics::Span;
 use crate::lexer::TokenKind;
 
 use super::Parser;
@@ -72,6 +73,7 @@ impl Parser {
             TokenKind::Each => self.parse_each_stmt(),
             TokenKind::Spawn => self.parse_spawn_stmt(),
             TokenKind::Despawn => self.parse_despawn_stmt(),
+            TokenKind::Parallel => self.parse_parallel_stmt(),
             _ => {
                 // Either an assignment or a bare expression.
                 let expr = self.parse_expr()?;
@@ -147,6 +149,45 @@ impl Parser {
         let body = self.parse_block()?;
         let span = start.to(self.prev_span());
         Some(Stmt::Par { var, arena, body, span })
+    }
+
+    /// Parse `parallel: SystemA() SystemB() ...`, one bare `Name()` call per
+    /// line -- mirrors `parse_block_inner`'s `Newline`/`Indent`/loop-until-
+    /// `Dedent`/`Dedent` shape, but each "statement" is just a system name
+    /// (systems take no arguments, so there's nothing to parse between the
+    /// parens). The listed names are resolved against the checker's system
+    /// table later (`crate::types::system_analysis`), not here -- the
+    /// parser has no notion of what's been declared yet.
+    fn parse_parallel_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::Parallel)?;
+        self.expect(&TokenKind::Colon)?;
+        self.expect(&TokenKind::Newline)?;
+        self.expect(&TokenKind::Indent)?;
+        let mut systems = Vec::new();
+        while !self.at(&TokenKind::Dedent) && !self.at(&TokenKind::Eof) {
+            if let Some(entry) = self.parse_parallel_system_call() {
+                systems.push(entry);
+            } else {
+                self.recover_to_newline();
+            }
+            self.skip_newlines();
+        }
+        self.expect(&TokenKind::Dedent)?;
+        self.block_just_closed = true;
+        let span = start.to(self.prev_span());
+        Some(Stmt::Parallel { systems, span })
+    }
+
+    /// One `Name()` line inside a `parallel:` block -- a bare system name,
+    /// always with empty parens (systems take no arguments).
+    fn parse_parallel_system_call(&mut self) -> Option<(String, Span)> {
+        let name_span = self.peek_span();
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LParen)?;
+        self.expect(&TokenKind::RParen)?;
+        self.expect_line_end()?;
+        Some((name, name_span))
     }
 
     /// Parse `each item in ArenaName:` (optionally `each item, idx in

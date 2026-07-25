@@ -18,6 +18,7 @@ impl Parser {
             TokenKind::Import => self.parse_import().map(Item::Import),
             TokenKind::Extern => self.parse_extern_fn().map(Item::ExternFn),
             TokenKind::Const => self.parse_const().map(Item::Const),
+            TokenKind::System => self.parse_system().map(Item::System),
             TokenKind::At => {
                 let span = self.peek_span();
                 self.error("decorators are only supported on struct fields", span);
@@ -25,7 +26,7 @@ impl Parser {
             }
             _ => {
                 let span = self.peek_span();
-                self.error("expected a top-level item (struct, trait, impl, fn, arena, const)", span);
+                self.error("expected a top-level item (struct, trait, impl, fn, arena, const, system)", span);
                 None
             }
         }
@@ -116,6 +117,34 @@ impl Parser {
         self.expect_line_end()?;
         let span = start.to(self.prev_span());
         Some(ArenaDecl { name, ty, capacity, span })
+    }
+
+    /// `system Name(mut ArenaA, ArenaB): <body>` -- a named, arena-scoped
+    /// procedure meant to be invoked (possibly concurrently with others)
+    /// from a `parallel:` block. The access list mirrors a parameter list's
+    /// surface syntax (`mut Name` vs bare `Name`) but each entry is just an
+    /// arena name, not a typed binding -- see `SystemAccess`.
+    fn parse_system(&mut self) -> Option<SystemDecl> {
+        let start = self.peek_span();
+        self.expect(&TokenKind::System)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LParen)?;
+        let mut accesses = Vec::new();
+        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+            let acc_start = self.peek_span();
+            let mutable = self.eat(&TokenKind::Mut);
+            let arena = self.expect_ident()?;
+            let acc_span = acc_start.to(self.prev_span());
+            accesses.push(SystemAccess { arena, mutable, span: acc_span });
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RParen)?;
+        self.expect(&TokenKind::Colon)?;
+        let body = self.parse_block()?;
+        let span = start.to(self.prev_span());
+        Some(SystemDecl { name, accesses, body, span })
     }
 
     /// `const NAME: Type = <expr>` -- a top-level named constant (§2.5 of

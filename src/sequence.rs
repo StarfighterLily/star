@@ -544,6 +544,10 @@ fn rewrite_stmt(stmt: &Stmt, hoist: &HashSet<String>) -> Stmt {
         Stmt::Despawn { arena, index, span } => {
             Stmt::Despawn { arena: arena.clone(), index: rewrite_expr(index, hoist), span: *span }
         }
+        // `parallel:` only ever names top-level `system`s, never a hoisted
+        // sequence-local variable, so there's nothing here for this rewrite
+        // pass to touch.
+        Stmt::Parallel { systems, span } => Stmt::Parallel { systems: systems.clone(), span: *span },
     }
 }
 
@@ -740,6 +744,8 @@ fn find_forward_ref_stmt(stmt: &Stmt, undeclared: &HashSet<String>) -> Option<(S
         }
         Stmt::Spawn { args, .. } => args.iter().find_map(|a| find_forward_ref_expr(a, undeclared)),
         Stmt::Despawn { index, .. } => find_forward_ref_expr(index, undeclared),
+        // Names a top-level `system`, never a hoisted sequence-local.
+        Stmt::Parallel { .. } => None,
     }
 }
 
