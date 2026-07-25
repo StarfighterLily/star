@@ -89,13 +89,42 @@ impl Parser {
         }
     }
 
+    /// `frame:` or `frame(<byte-budget>):` -- the parenthesized literal
+    /// overrides the shared bump allocator's default byte budget for this
+    /// block (see `Stmt::Frame::budget`'s doc comment). Mirrors
+    /// `Parser::parse_arena`'s `= <capacity>` grammar: the budget must be a
+    /// bare positive integer literal, not an arbitrary expression, since it
+    /// sizes a bounds check at codegen time and has to be known without
+    /// evaluating anything.
     fn parse_frame_stmt(&mut self) -> Option<Stmt> {
         let start = self.peek_span();
         self.expect(&TokenKind::Frame)?;
+        let budget = if self.eat(&TokenKind::LParen) {
+            let budget_span = self.peek_span();
+            let n = match self.peek_kind() {
+                TokenKind::Int(n) => {
+                    self.advance();
+                    if n <= 0 {
+                        self.error(format!("`frame` budget must be a positive integer literal, found `{}`", n), budget_span);
+                        None
+                    } else {
+                        Some(n as u64)
+                    }
+                }
+                other => {
+                    self.error(format!("expected an integer literal `frame` byte budget, found {}", other.describe()), budget_span);
+                    return None;
+                }
+            };
+            self.expect(&TokenKind::RParen)?;
+            n
+        } else {
+            None
+        };
         self.expect(&TokenKind::Colon)?;
         let body = self.parse_block()?;
         let span = start.to(self.prev_span());
-        Some(Stmt::Frame { body, span })
+        Some(Stmt::Frame { budget, body, span })
     }
 
     fn parse_yield_stmt(&mut self) -> Option<Stmt> {

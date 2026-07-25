@@ -88,6 +88,16 @@ pub struct Codegen {
     methods: std::collections::HashMap<String, (String, bool)>,
     errors: Vec<Diagnostic>,
     in_frame: bool,
+    /// The byte budget of the innermost enclosing `frame:` block currently
+    /// being emitted (`TypedStmt::Frame::budget`, resolved by the checker
+    /// from an optional `frame(N):` literal -- see `Checker::check_stmt`'s
+    /// `Stmt::Frame` arm). Only meaningful while `in_frame` is true; saved
+    /// and restored around each `emit_frame_body` call exactly like
+    /// `in_frame` itself, so nested `frame:` blocks with different budgets
+    /// each enforce their own bound. `emit_frame_alloc`'s bounds check
+    /// compares the running offset against this per-block value, not the
+    /// physical buffer's fixed capacity (`Self::FRAME_BUF_SIZE`).
+    frame_budget: u64,
     /// True while emitting `main`'s body. `main` is always forced to lower
     /// to `i32 @main(...)` regardless of its declared return type (see
     /// `emit_fn`'s `is_main` special case) -- a bare `return` (no value)
@@ -143,11 +153,14 @@ pub struct Codegen {
     /// Without this, a `frame:` block's bump allocator only reclaims space
     /// once, when the *whole* `frame:` block exits -- not once per loop
     /// iteration -- so any loop inside a `frame:` block that `let`-binds a
-    /// struct-typed local exhausts the fixed 4096-byte buffer after only a
-    /// few hundred iterations, even though every one of those structs is
-    /// long dead by the time the next iteration starts (confirmed live in
+    /// struct-typed local exhausts that block's budget (4096 bytes by
+    /// default, or whatever `frame(N):` configured -- see
+    /// `crate::types::DEFAULT_FRAME_BUDGET`) after only a few hundred
+    /// iterations, even though every one of those structs is long dead by
+    /// the time the next iteration starts (confirmed live in
     /// `projects/snake`, `NOTES.md` section 1.2: a 768-iteration loop over
-    /// an 8-byte `Cell` blew the cap at iteration ~170).
+    /// an 8-byte `Cell` blew the (then-unconfigurable) cap at iteration
+    /// ~170).
     loop_stack: Vec<(String, String, usize, Option<String>)>,
     /// Stack of scope frames, one per currently-open lexical block (function
     /// body, closure body, `if`/`while`/`for`/`frame` body, `match` arm
@@ -282,9 +295,26 @@ pub struct Codegen {
 }
 
 impl Codegen {
-    /// Fixed byte capacity of the `frame:` bump allocator's backing buffer
-    /// (`@frame.buf`). See `emit_frame_alloc_bytes`.
-    const FRAME_BUF_SIZE: u64 = 4096;
+    /// Physical byte capacity of the single, shared `frame:` bump allocator
+    /// backing buffer (`@frame.buf`) -- always `crate::types::MAX_FRAME_BUDGET`,
+    /// regardless of what any individual `frame:` block actually requests
+    /// (see `Codegen::frame_budget` for the per-block bounds check that
+    /// enforces each block's own smaller configured budget against this
+    /// shared buffer). Every `frame:` block in a program shares this one
+    /// physical global rather than getting its own (unlike arena, which is a
+    /// named top-level declaration and so naturally gets a per-name backing
+    /// array -- `frame:` is a bare, unnamed statement that can appear
+    /// anywhere, including nested inside a closure literal), so sizing it
+    /// per-program to only the largest budget actually requested would need
+    /// an exhaustive module-wide scan of every `frame:` statement reachable
+    /// from anywhere -- including arbitrarily deep inside closure literals
+    /// stored in lists/struct fields/call arguments -- to stay sound. Fixing
+    /// the buffer at the maximum *allowed* size instead sidesteps that
+    /// entirely at negligible real cost: this is a `.bss`-resident global
+    /// (zero-initialized), so its declared size never touches the
+    /// executable file and costs no physical memory until a page inside it
+    /// is actually written.
+    const FRAME_BUF_SIZE: u64 = crate::types::MAX_FRAME_BUDGET;
 
     /// Resolved element capacity of arena `name`'s backing array and its
     /// parallel generation/free-list arrays (`TypedArenaDecl::capacity`, set
@@ -310,6 +340,7 @@ impl Codegen {
             methods: std::collections::HashMap::new(),
             errors: Vec::new(),
             in_frame: false,
+            frame_budget: crate::types::DEFAULT_FRAME_BUDGET,
             in_main: false,
             pending_top: Vec::new(),
             arena_by_elem: Vec::new(),
@@ -644,7 +675,7 @@ impl Codegen {
         // raising the bar to a still-reachable number.
         self.line("%GenRef = type { i32, i64 }");
         self.line("");
-        self.line("@frame.buf = global [4096 x i8] zeroinitializer");
+        self.line(&format!("@frame.buf = global [{} x i8] zeroinitializer", Self::FRAME_BUF_SIZE));
         self.line("@frame.off = global i64 0");
         self.line("");
         // `args()` builtin -- see `crate::codegen::list::emit_args`. A

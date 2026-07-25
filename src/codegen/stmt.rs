@@ -35,7 +35,7 @@ impl Codegen {
         }
         match last {
             TypedStmt::Expr(e) => Some(self.emit_expr(e)),
-            TypedStmt::Frame { body, .. } => self.emit_frame_body(body),
+            TypedStmt::Frame { budget, body, .. } => self.emit_frame_body(*budget, body),
             // Only take the value-producing (phi-join) path when *both*
             // arms actually bottom out in a trailing value -- exactly
             // `Checker::trailing_value_ty`'s own condition for recognizing
@@ -145,23 +145,32 @@ impl Codegen {
     /// Bump-allocate `size` bytes from the `frame:` scope's backing buffer
     /// (`@frame.buf`), returning an `i8*` to the claimed region. This is the
     /// bounds check a bump allocator needs and previously had none of: if
-    /// the allocation would advance `@frame.off` past `FRAME_BUF_SIZE`, the
-    /// process aborts with a diagnostic message instead of silently
-    /// producing an out-of-bounds `getelementptr` that segfaults or
-    /// corrupts whatever global data happens to sit right after the buffer.
+    /// the allocation would advance `@frame.off` past the innermost
+    /// enclosing `frame:` block's own configured budget (`self.frame_budget`
+    /// -- not the physical buffer's fixed capacity, `Self::FRAME_BUF_SIZE`;
+    /// see that field's doc comment for how the two differ), the process
+    /// aborts with a diagnostic message instead of silently producing an
+    /// out-of-bounds `getelementptr` that segfaults or corrupts whatever
+    /// global data happens to sit right after the buffer.
     fn emit_frame_alloc(&mut self, size: &str) -> String {
+        let budget = self.frame_budget;
         let off = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @frame.off", off));
         let new_off = self.tmp_name();
         self.line(&format!("  {} = add i64 {}, {}", new_off, off, size));
         let overflow = self.tmp_name();
-        self.line(&format!("  {} = icmp ugt i64 {}, {}", overflow, new_off, Self::FRAME_BUF_SIZE));
+        self.line(&format!("  {} = icmp ugt i64 {}, {}", overflow, new_off, budget));
         let fail_label = self.block_label("frame_alloc_fail");
         let ok_label = self.block_label("frame_alloc_ok");
         self.line(&format!("  br i1 {}, label %{}, label %{}", overflow, fail_label, ok_label));
 
         self.open_block(&fail_label);
-        let msg = "star runtime error: a `frame:` block exceeded its 4096-byte capacity\n";
+        // `budget` is a compile-time constant for this block (resolved by
+        // the checker, see `TypedStmt::Frame::budget`'s doc comment), so --
+        // exactly like `emit_arena_decl`'s own overflow-warning message --
+        // it's baked directly into the message text rather than formatted
+        // at runtime.
+        let msg = format!("star runtime error: a `frame:` block exceeded its {}-byte capacity\n", budget);
         let g = self.global_name();
         let escaped = msg.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
         self.global_defs.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", g, msg.len() + 1, escaped));
@@ -174,7 +183,10 @@ impl Codegen {
         self.open_block(&ok_label);
         self.line(&format!("  store i64 {}, i64* @frame.off", new_off));
         let base = self.tmp_name();
-        self.line(&format!("  {} = getelementptr inbounds [4096 x i8], [4096 x i8]* @frame.buf, i64 0, i64 0", base));
+        self.line(&format!(
+            "  {} = getelementptr inbounds [{} x i8], [{} x i8]* @frame.buf, i64 0, i64 0",
+            base, Self::FRAME_BUF_SIZE, Self::FRAME_BUF_SIZE
+        ));
         let byte_ptr = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", byte_ptr, base, off));
         byte_ptr
@@ -197,9 +209,11 @@ impl Codegen {
     /// leaves behind is irrelevant once control has left the function (and,
     /// for `break`/`continue`, the enclosing loop's own frame scope, if any,
     /// still restores its own offset on its own exit path).
-    fn emit_frame_body(&mut self, body: &TypedBlock) -> Option<String> {
+    fn emit_frame_body(&mut self, budget: u64, body: &TypedBlock) -> Option<String> {
         let was_in_frame = self.in_frame;
+        let was_budget = self.frame_budget;
         self.in_frame = true;
+        self.frame_budget = budget;
         let saved_off = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @frame.off", saved_off));
         self.push_scope();
@@ -210,6 +224,7 @@ impl Codegen {
             self.line(&format!("  store i64 {}, i64* @frame.off", saved_off));
         }
         self.in_frame = was_in_frame;
+        self.frame_budget = was_budget;
         val
     }
 
@@ -519,7 +534,7 @@ impl Codegen {
                     self.open_block(&end_label);
                 }
             }
-            TypedStmt::Frame { body, .. } => { self.emit_frame_body(body); }
+            TypedStmt::Frame { budget, body, .. } => { self.emit_frame_body(*budget, body); }
             TypedStmt::While { cond, then_block, else_block, .. } => {
                 // If this loop is lexically inside a `frame:` block, snapshot
                 // `@frame.off` *before* the loop's first iteration -- every

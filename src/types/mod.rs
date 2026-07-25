@@ -39,6 +39,24 @@ pub const DEFAULT_ARENA_CAPACITY: u64 = 1024;
 /// near the `i32` ceiling.
 pub const MAX_ARENA_CAPACITY: u64 = 1_000_000;
 
+/// Default byte budget for a `frame:` block that doesn't specify one
+/// (`frame:`, no trailing `(N)`) -- the exact fixed value every `frame:`
+/// block used before per-block budgets existed.
+pub const DEFAULT_FRAME_BUDGET: u64 = 4096;
+
+/// Upper bound on an explicit `frame(N):` byte budget. Every `frame:` block
+/// in a program shares one physical backing buffer (`@frame.buf`, a single
+/// `.bss`-resident global -- see `Codegen::FRAME_BUF_SIZE`'s doc comment for
+/// why that buffer is always allocated at this fixed maximum size rather
+/// than a tighter, program-specific one), so this bound exists purely to
+/// keep a typo'd budget (`frame(999999999999):`) from reserving an
+/// unreasonable amount of address space rather than to protect any
+/// narrower-width field the way `MAX_ARENA_CAPACITY` protects `GenRef`'s
+/// `i32` slot index. 16 MiB is far beyond any per-tick scratch allocation a
+/// real game needs (the doc's own flagship A*-pathfinding example that
+/// motivated this feature needs a few hundred KiB at most).
+pub const MAX_FRAME_BUDGET: u64 = 16 * 1024 * 1024;
+
 /// A resolved type.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ty {
@@ -3904,7 +3922,7 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
         },
         Stmt::Break { span } => Stmt::Break { span: *span },
         Stmt::Continue { span } => Stmt::Continue { span: *span },
-        Stmt::Frame { body, span } => Stmt::Frame { body: subst_block(body, subst), span: *span },
+        Stmt::Frame { budget, body, span } => Stmt::Frame { budget: *budget, body: subst_block(body, subst), span: *span },
         Stmt::Par { var, arena, body, span } => {
             Stmt::Par { var: var.clone(), arena: arena.clone(), body: subst_block(body, subst), span: *span }
         }

@@ -580,6 +580,25 @@ fn calculate_path(start_x: i32) -> i32:
 
 **Safety:** The compiler enforces escape analysis to prevent frame pointers from escaping to longer-lived storage.
 
+**Budget:** Every `frame:` block shares one bump-allocator buffer with a
+default budget of 4096 bytes — easy to exceed once a block allocates more
+than a handful of small structs (a grid of path-finding nodes, for
+instance). Override it per block with `frame(N):`, where `N` is a positive
+integer literal byte count:
+
+```star
+fn calculate_path(start_x: i32) -> i32:
+    frame(65536):
+        # This block's own allocations are bounds-checked against 65536
+        # bytes instead of the 4096-byte default.
+        ...
+```
+
+If a block's allocations would exceed its budget (the default, or an
+explicit override), the program aborts at runtime with a diagnostic message
+naming the exceeded budget, rather than corrupting memory. See "Frame
+Limitations" below for the maximum allowed override.
+
 #### 2. Spatial Arenas
 
 Arenas are first-class citizens for long-lived state:
@@ -1144,6 +1163,20 @@ fn astar(start: Point, goal: Point) -> List<Point>:
   runtime only once per arena (naming that arena's actual configured
   capacity) rather than repeating the warning on every further overflow
 
+### Frame Limitations
+
+- Default budget of 4096 bytes per `frame:` block, overridable per block
+  with `frame(N):` (an integer literal byte count), up to a hard ceiling of
+  16,777,216 bytes (16 MiB)
+- Every `frame:` block in a program shares one physical backing buffer
+  (sized to the 16 MiB ceiling regardless of what any individual block
+  requests, since it's a zero-initialized global with no runtime cost until
+  actually touched); each block's own bounds check still only allows it to
+  use up to its own configured (or default) budget
+- Allocating past a block's budget aborts the process immediately with a
+  diagnostic message naming that block's actual configured budget, instead
+  of silently corrupting memory
+
 ---
 
 ## Examples Directory
@@ -1157,6 +1190,7 @@ The `examples/` directory contains working demonstrations:
 | `swarm.star` | Parallel iteration |
 | `each_index_despawn.star` | Conditionally reclaiming arena slots during a scan (`each item, idx in ...`) |
 | `arena_capacity_configurable.star` | Overriding an arena's default capacity (`arena Name: Type = N`) |
+| `frame_budget_configurable.star` | Overriding a `frame:` block's default byte budget (`frame(N):`) |
 | `sequence.star` | Coroutines |
 | `vecmath.star` | Vector math and swizzling |
 | `math_builtins.star` | Built-in math functions |

@@ -346,8 +346,15 @@ pub enum Stmt {
     /// `continue` - skips to the next iteration of the innermost enclosing
     /// `while`/`for` loop.
     Continue { span: Span },
-    /// `frame: <block>` - temporal allocation scope that resets at end of tick.
+    /// `frame: <block>` - temporal allocation scope that resets at end of
+    /// tick. `frame(4096):` overrides the default byte budget of the shared
+    /// bump allocator backing it -- see
+    /// [`crate::types::DEFAULT_FRAME_BUDGET`]/[`crate::types::MAX_FRAME_BUDGET`],
+    /// mirroring [`ArenaDecl::capacity`]'s `= N` override.
     Frame {
+        /// `None` means the default budget applies; resolved to a concrete
+        /// value in `crate::types::hir::TypedStmt::Frame::budget` either way.
+        budget: Option<u64>,
         body: Block,
         span: Span,
     },

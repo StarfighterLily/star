@@ -1,10 +1,10 @@
-# Regression check for the frame bump-allocator capacity bounds check
-# (LANGUAGE_ANALYSIS.md §3.1): a bare `frame:` block (no `(N)` override) gets
-# the default 4096-byte budget, and a `frame:` block that allocates more than
-# its own budget must abort loudly with a diagnostic message instead of
-# segfaulting or silently corrupting whatever global data happens to sit
-# right after the buffer. 70 `Mat4` fields (64 bytes each) is 4480 bytes --
-# comfortably past the default 4096-byte budget in a single allocation.
+# `frame(N):` overrides the default 4096-byte budget of the shared `frame:`
+# bump allocator (todo.md P1 #5: "the hardcoded 4096-byte cap is easy to
+# blow with unremarkable code ... there's currently no way to size it to the
+# actual workload"). This is the exact same 4480-byte single allocation that
+# `examples/frame_overflow.star` proves aborts under the un-overridden
+# 4096-byte default -- here it succeeds cleanly because this block raises
+# its own budget to 8192 bytes.
 struct Big:
     m0: Mat4
     m1: Mat4
@@ -81,6 +81,6 @@ fn identity() -> Mat4:
     Mat4(Vec4(1, 0, 0, 0), Vec4(0, 1, 0, 0), Vec4(0, 0, 1, 0), Vec4(0, 0, 0, 1))
 
 fn main():
-    frame:
+    frame(8192):
         let m = Big(identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity(), identity())
-        print("should not reach here: frame allocator did not abort on overflow")
+        print("configured budget covered the same allocation the default cannot")

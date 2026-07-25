@@ -174,7 +174,11 @@ pub enum TypedStmt {
     Break { span: Span },
     /// `continue` - see [`crate::ast::Stmt::Continue`].
     Continue { span: Span },
+    /// `budget` is always resolved to a concrete value here (defaulted from
+    /// `crate::types::DEFAULT_FRAME_BUDGET` when the source didn't specify
+    /// one) -- see `Checker::check_stmt`'s `Stmt::Frame` arm.
     Frame {
+        budget: u64,
         body: TypedBlock,
         span: Span,
     },

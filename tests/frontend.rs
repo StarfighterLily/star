@@ -231,8 +231,11 @@ fn codegen_frame_alloc_uses_bump_allocator() {
     assert!(ir.contains("load i64, i64* @frame.off"), "frame offset should be loaded");
     // Frame offset should be stored (for O(1) deallocation)
     assert!(ir.contains("store i64"), "offset should be stored");
-    // Should get buffer address for calculations
-    assert!(ir.contains("getelementptr inbounds [4096 x i8]"), "buffer address should be computed");
+    // Should get buffer address for calculations -- the physical buffer is
+    // always sized to `crate::types::MAX_FRAME_BUDGET` (16 MiB), not the
+    // 4096-byte *default per-block budget* this un-overridden `frame:`
+    // block happens to use (see `Codegen::FRAME_BUF_SIZE`'s doc comment).
+    assert!(ir.contains("getelementptr inbounds [16777216 x i8]"), "buffer address should be computed");
 }
 
 /// Structs inside frame blocks use frame allocator, not stack allocation.
@@ -7170,6 +7173,186 @@ fn codegen_frame_alloc_includes_capacity_check() {
     let ir = Driver::codegen(&typed).expect("should codegen");
     assert!(ir.contains("icmp ugt i64"), "should compare the new offset against the buffer capacity: {}", ir);
     assert!(ir.contains("call void @exit(i32 1)"), "should abort on overflow: {}", ir);
+}
+
+// --- `frame(N):` makes the bump-allocator budget configurable, mirroring
+// the fix already done for arena capacity (`arena Name: Type = N`) --------
+
+/// `frame(N):` parses to `Stmt::Frame` with `budget: Some(N)`; a bare
+/// `frame:` (already covered by `parses_frame_stmt`) parses to `budget:
+/// None` -- resolved to the default only later, by the checker.
+#[test]
+fn parses_frame_stmt_with_budget() {
+    let src = "fn test():\n    frame(8192):\n        let x = 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Frame { budget, body, .. } = &f.body.stmts[0] else { panic!("expected Frame") };
+    assert_eq!(*budget, Some(8192));
+    assert_eq!(body.stmts.len(), 1);
+}
+
+/// A bare `frame:` (no override) parses with `budget: None` -- the
+/// counterpart to `parses_frame_stmt_with_budget` above, pinning that the
+/// new optional grammar doesn't change the no-override parse shape.
+#[test]
+fn parses_frame_stmt_without_budget_is_none() {
+    let src = "fn test():\n    frame:\n        let x = 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected fn") };
+    let Stmt::Frame { budget, .. } = &f.body.stmts[0] else { panic!("expected Frame") };
+    assert_eq!(*budget, None);
+}
+
+/// `frame(N):` rejects a non-positive budget literal outright at parse
+/// time, mirroring `parses_arena_rejects_non_positive_capacity` -- there's
+/// no such thing as a zero- or negative-byte frame budget.
+#[test]
+fn parses_frame_rejects_non_positive_budget() {
+    let src = "fn test():\n    frame(0):\n        let x = 1\n";
+    assert!(Driver::parse(src).is_err(), "`frame(0):` must be rejected at parse time");
+}
+
+/// `frame(N):` rejects a non-integer-literal budget (an arbitrary
+/// expression), mirroring the same rule for `arena Name: Type = N`: the
+/// budget has to be known without evaluating anything, since it sizes a
+/// codegen-time bounds check.
+#[test]
+fn parses_frame_rejects_non_integer_budget() {
+    let src = "fn test():\n    let n = 4096\n    frame(n):\n        let x = 1\n";
+    assert!(Driver::parse(src).is_err(), "`frame(n):` (an identifier, not a literal) must be rejected at parse time");
+}
+
+/// `frame(N):` rejects a budget above `crate::types::MAX_FRAME_BUDGET` at
+/// check time, mirroring `checks_arena_capacity_above_max_is_rejected`.
+#[test]
+fn checks_frame_budget_above_max_is_rejected() {
+    let src = "fn test():\n    frame(20000000):\n        let x = 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_err(), "a `frame` budget above MAX_FRAME_BUDGET must be rejected");
+}
+
+/// A `frame(N):` budget within bounds must check cleanly -- the positive
+/// counterpart to `checks_frame_budget_above_max_is_rejected`.
+#[test]
+fn checks_frame_budget_within_max_is_accepted() {
+    let src = "fn test():\n    frame(1000000):\n        let x = 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "a `frame` budget within MAX_FRAME_BUDGET must be accepted");
+}
+
+/// The physical `@frame.buf` backing buffer is always sized to
+/// `crate::types::MAX_FRAME_BUDGET` (16 MiB) regardless of what any
+/// individual `frame:` block in the program requests -- see
+/// `Codegen::FRAME_BUF_SIZE`'s doc comment for why a single shared,
+/// worst-case-sized buffer is used instead of a program-specific tight fit.
+#[test]
+fn codegen_frame_buffer_is_sized_to_the_fixed_maximum() {
+    let src = "fn test():\n    frame:\n        let x = 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(
+        ir.contains("@frame.buf = global [16777216 x i8] zeroinitializer"),
+        "the shared frame buffer should always be allocated at the 16 MiB maximum: {}",
+        ir
+    );
+}
+
+/// The bounds check inside a `frame(N):` block's own bump-allocator codegen
+/// compares against that block's *own* configured budget, not the physical
+/// buffer's fixed 16 MiB capacity -- i.e. `frame(64):` still aborts after 64
+/// bytes even though the shared buffer underneath it is far larger.
+#[test]
+fn codegen_frame_alloc_bounds_check_uses_configured_budget_not_buffer_size() {
+    let src = "struct Point:\n    x: i32\n    y: i32\n\nfn test():\n    frame(64):\n        let p = Point(1, 2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let icmp_line = ir.lines().find(|l| l.contains("icmp ugt i64")).unwrap_or_else(|| panic!("no `icmp ugt i64` bounds check found: {}", ir));
+    assert!(
+        icmp_line.trim_end().ends_with(", 64"),
+        "the bounds check should compare against this block's own 64-byte budget, not the buffer's 16 MiB capacity: {}",
+        icmp_line
+    );
+    assert!(!ir.contains("exceeded its 4096-byte capacity"), "the abort message must name this block's own budget, not the old default: {}", ir);
+    assert!(ir.contains("exceeded its 64-byte capacity"), "the abort message should name the configured 64-byte budget: {}", ir);
+}
+
+/// End-to-end: the exact allocation `examples/frame_overflow.star` proves
+/// aborts under the un-overridden 4096-byte default succeeds cleanly when
+/// its enclosing `frame:` block raises its own budget with `frame(N):`.
+/// This is the actual motivating case from todo.md/ASSESSMENT.md -- a
+/// program that needs more than 4096 bytes of per-tick scratch space
+/// (path-finding nodes, a modest fixed-size grid, ...) no longer has to
+/// restructure its allocations around a hardcoded ceiling.
+#[test]
+fn runtime_frame_budget_override_allows_a_larger_allocation_end_to_end() {
+    let src = "struct Big:\n    a: [i32; 1200]\n\nfn main():\n    frame(8192):\n        let b = Big([0; 1200])\n        println(f\"{b.a[0]}\")\n";
+    let output = compile_and_run("frame_budget_override_allows_larger_allocation", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "0", "the program should run to completion under the raised budget: {}", stdout);
+}
+
+/// The same allocation as the previous test, but wrapped in a bare `frame:`
+/// (no override) instead -- proving the *default* budget is still 4096
+/// bytes and this exact 4800-byte allocation (`[i32; 1200]`) still aborts
+/// without an explicit override, so the previous test's success is really
+/// due to the override and not some unrelated change in default behavior.
+#[test]
+fn runtime_frame_default_budget_still_aborts_on_the_same_allocation_end_to_end() {
+    let src = "struct Big:\n    a: [i32; 1200]\n\nfn main():\n    frame:\n        let b = Big([0; 1200])\n        println(f\"{b.a[0]}\")\n";
+    let output = compile_and_run("frame_default_budget_still_aborts", src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("exceeded its 4096-byte capacity"), "should still abort under the un-overridden default: {}", stdout);
+    assert_eq!(output.status.code(), Some(1));
+}
+
+/// The overflow-abort message names *this block's own* configured budget,
+/// not the old hardcoded 4096 -- the direct counterpart to
+/// `runtime_configurable_arena_capacity_overflow_warns_with_actual_capacity_end_to_end`.
+#[test]
+fn runtime_frame_budget_override_abort_message_names_configured_budget_end_to_end() {
+    let src = "struct Pair:\n    a: i32\n    b: i32\n\nfn main():\n    frame(16):\n        let p1 = Pair(1, 2)\n        let p2 = Pair(3, 4)\n        let p3 = Pair(5, 6)\n        println(f\"{p3.a}\")\n";
+    let output = compile_and_run("frame_budget_override_abort_names_configured_budget", src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("exceeded its 16-byte capacity"), "the abort message should name this block's own configured 16-byte budget: {}", stdout);
+    assert!(!stdout.contains("4096"), "the abort message must not mention the unrelated default: {}", stdout);
+    assert_eq!(output.status.code(), Some(1));
+}
+
+/// Nested `frame:` blocks with *different* budgets each enforce their own
+/// bound independently, and the outer block's budget is correctly restored
+/// once the inner block exits (mirroring how `in_frame` itself is
+/// saved/restored around `emit_frame_body`): an outer `frame(4096):` first
+/// makes a small allocation, then a nested `frame(65536):` block makes a
+/// large allocation that would have aborted under the outer block's own
+/// budget (proving the inner budget, not the outer one, is what's actually
+/// enforced inside it), and after the inner block exits, the outer block's
+/// own 4096-byte budget is enforced again -- a further allocation back in
+/// the outer scope that only fits because the inner block's bytes were
+/// never charged against the outer budget in the first place.
+#[test]
+fn runtime_nested_frame_blocks_enforce_independent_budgets_end_to_end() {
+    let src = concat!(
+        "struct Small:\n",
+        "    x: i32\n",
+        "struct Grid:\n",
+        "    cells: [i32; 8000]\n",
+        "fn main():\n",
+        "    frame(4096):\n",
+        "        let s1 = Small(1)\n",
+        "        frame(65536):\n",
+        "            let g = Grid([7; 8000])\n",
+        "            println(f\"{g.cells[0]}\")\n",
+        "        let s2 = Small(2)\n",
+        "        println(f\"{s1.x + s2.x}\")\n",
+    );
+    let output = compile_and_run("nested_frame_blocks_independent_budgets", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim_end().lines().collect();
+    assert_eq!(lines, vec!["7", "3"], "both the inner large allocation and the outer post-inner allocation should succeed: {}", stdout);
 }
 
 // ===== per-iteration `frame:` reclaim inside a loop (`NOTES.md` 1.2) ======

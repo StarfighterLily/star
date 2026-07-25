@@ -222,9 +222,27 @@ impl Checker {
                 }
                 TypedStmt::Continue { span: *span }
             }
-            Stmt::Frame { body, span } => {
+            Stmt::Frame { budget, body, span } => {
+                // The parser already rejected a non-positive literal (see
+                // `Parser::parse_frame_stmt`); only the upper bound needs
+                // checking here, mirroring `Item::Arena`'s own capacity
+                // check. An out-of-range budget still resolves to a valid
+                // (clamped) value rather than abandoning the block, so the
+                // rest of this program's diagnostics stay meaningful
+                // instead of cascading from one bad literal.
+                let resolved_budget = match budget {
+                    Some(n) if *n > MAX_FRAME_BUDGET => {
+                        self.error(
+                            format!("`frame` budget {} exceeds the maximum of {} bytes", n, MAX_FRAME_BUDGET),
+                            *span,
+                        );
+                        MAX_FRAME_BUDGET
+                    }
+                    Some(n) => *n,
+                    None => DEFAULT_FRAME_BUDGET,
+                };
                 let body_typed = self.check_block_inner(body, &mut vars.clone());
-                TypedStmt::Frame { body: body_typed, span: *span }
+                TypedStmt::Frame { budget: resolved_budget, body: body_typed, span: *span }
             }
             Stmt::Par { var, arena, body, span } => {
                 let elem_ty = match self.arenas.get(arena) {

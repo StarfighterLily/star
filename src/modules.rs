@@ -726,7 +726,7 @@ fn rename_stmt(stmt: &Stmt, names: &HashMap<String, String>, shadowed: &mut Hash
         }
         Stmt::Break { span } => Stmt::Break { span: *span },
         Stmt::Continue { span } => Stmt::Continue { span: *span },
-        Stmt::Frame { body, span } => Stmt::Frame { body: rename_block(body, names, shadowed), span: *span },
+        Stmt::Frame { budget, body, span } => Stmt::Frame { budget: *budget, body: rename_block(body, names, shadowed), span: *span },
         Stmt::Par { var, arena, body, span } => {
             let mut body_shadow = shadowed.clone();
             body_shadow.insert(var.clone());

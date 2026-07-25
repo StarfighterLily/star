@@ -516,7 +516,7 @@ fn rewrite_stmt(stmt: &Stmt, hoist: &HashSet<String>) -> Stmt {
         }
         Stmt::Break { span } => Stmt::Break { span: *span },
         Stmt::Continue { span } => Stmt::Continue { span: *span },
-        Stmt::Frame { body, span } => Stmt::Frame { body: rewrite_block(body, hoist), span: *span },
+        Stmt::Frame { budget, body, span } => Stmt::Frame { budget: *budget, body: rewrite_block(body, hoist), span: *span },
         Stmt::Par { var, arena, body, span } => {
             Stmt::Par { var: var.clone(), arena: arena.clone(), body: rewrite_block(body, hoist), span: *span }
         }
