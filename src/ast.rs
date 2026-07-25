@@ -130,6 +130,22 @@ pub struct ImportDecl {
     pub span: Span,
 }
 
+/// A generic type parameter, e.g. the `T` or `T: Speaker` in `<T, U,
+/// T: Speaker>`. `bounds` names zero or more traits `T` is required to
+/// implement (`T: A + B` -> `bounds: ["A", "B"]`) -- see
+/// [`crate::types::Checker::check_type_bounds`], which rejects a
+/// monomorphization whose concrete type argument doesn't implement every
+/// named bound, and lets a generic function/method body call a bound
+/// trait's methods (or, once monomorphized against a concrete type
+/// argument, any operator that concrete type itself supports) without a
+/// separate ceiling on what a plain, unbounded `T` allows -- see this
+/// project's `todo.md` "Trait-bounded generics" entry.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypeParam {
+    pub name: String,
+    pub bounds: Vec<String>,
+}
+
 /// An enum declaration: `enum Name:` followed by one variant per indented
 /// line, each either a bare name (fieldless) or `Name(field: Type, ...)`.
 /// `type_params` holds `<T, U, ...>` for a generic enum (empty otherwise);
@@ -137,7 +153,7 @@ pub struct ImportDecl {
 #[derive(Clone, Debug)]
 pub struct EnumDef {
     pub name: String,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypeParam>,
     pub variants: Vec<EnumVariantDef>,
     pub span: Span,
 }
@@ -172,7 +188,7 @@ pub struct SequenceDef {
 #[derive(Clone, Debug)]
 pub struct StructDef {
     pub name: String,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypeParam>,
     pub fields: Vec<FieldDef>,
     pub span: Span,
 }
@@ -211,7 +227,7 @@ pub struct ImplBlock {
     /// `StructDef::type_params`; see `crate::types::Checker`'s
     /// `generic_impls`/`instantiate_impl_methods` for how these are bound to
     /// concrete types alongside the struct's own monomorphization.
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypeParam>,
     pub methods: Vec<FnDef>,
     pub span: Span,
 }
@@ -220,11 +236,13 @@ pub struct ImplBlock {
 /// `type_params` holds `<T, U, ...>` for a generic function (empty
 /// otherwise); its type parameters are solved by unifying each argument's
 /// inferred type against the corresponding (possibly parameterized) declared
-/// parameter type at each call site -- see `Checker::instantiate_fn`.
+/// parameter type at each call site -- see `Checker::instantiate_fn`. Each
+/// type parameter may carry trait bounds (`<T: Speaker>`), enforced at that
+/// same call site by `Checker::check_type_bounds`.
 #[derive(Clone, Debug)]
 pub struct FnSig {
     pub name: String,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub ret: Option<Type>,
     pub span: Span,

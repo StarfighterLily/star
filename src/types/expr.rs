@@ -1541,9 +1541,9 @@ impl Checker {
         }
         let mut type_args = Vec::new();
         for tp in &template.sig.type_params {
-            match subst.get(tp) {
+            match subst.get(&tp.name) {
                 Some(t) => type_args.push(t.clone()),
-                None => self.error(format!("cannot infer type parameter `{}` of `{}` from its arguments", tp, name), span),
+                None => self.error(format!("cannot infer type parameter `{}` of `{}` from its arguments", tp.name, name), span),
             }
         }
         if template.sig.params.len() != arg_exprs.len() {
@@ -1553,6 +1553,16 @@ impl Checker {
             );
         }
         if type_args.len() != template.sig.type_params.len() {
+            return TypedExpr::Error(Ty::Named("infer_error".into()));
+        }
+        // Trait-bound enforcement (`fn f<T: Trait>(...)`): reject a call
+        // whose inferred type argument doesn't implement every bound its
+        // corresponding type parameter declares, before instantiating the
+        // template body against it -- skipping the instantiation on failure
+        // avoids cascading a second, more confusing diagnostic from
+        // type-checking the substituted body against an already-known-bad
+        // argument (see `check_type_bounds`'s doc comment).
+        if !self.check_type_bounds("function", name, &template.sig.type_params, &type_args, span) {
             return TypedExpr::Error(Ty::Named("infer_error".into()));
         }
         let mangled = self.instantiate_fn(name, &type_args);
@@ -1575,6 +1585,9 @@ impl Checker {
             span,
         );
         let Some(concrete_args) = concrete_args else { return TypedExpr::Error(Ty::Named("infer_error".into())) };
+        if !self.check_type_bounds("struct", name, &template.type_params, &concrete_args, span) {
+            return TypedExpr::Error(Ty::Named("infer_error".into()));
+        }
         let mangled = self.instantiate_struct(name, &concrete_args);
         let fields = self.structs.get(&mangled).map(|s| s.fields.clone()).unwrap_or_default();
         if arg_exprs.len() != fields.len() {
@@ -1611,6 +1624,9 @@ impl Checker {
             span,
         );
         let Some(concrete_args) = concrete_args else { return TypedExpr::Error(Ty::Named("infer_error".into())) };
+        if !self.check_type_bounds("enum", enum_name, &template.type_params, &concrete_args, span) {
+            return TypedExpr::Error(Ty::Named("infer_error".into()));
+        }
         if vdef.fields.len() != arg_exprs.len() {
             self.error(
                 format!("`{}::{}(..)` expects {} argument(s), found {}", enum_name, variant, vdef.fields.len(), arg_exprs.len()),
@@ -1646,7 +1662,7 @@ impl Checker {
         &mut self,
         template_name: &str,
         type_args: &[Type],
-        type_params: &[String],
+        type_params: &[TypeParam],
         field_tys: impl Iterator<Item = &'a Type>,
         arg_exprs: &[TypedExpr],
         span: Span,
@@ -1681,10 +1697,10 @@ impl Checker {
         }
         let mut out = Vec::new();
         for tp in type_params {
-            match subst.get(tp) {
+            match subst.get(&tp.name) {
                 Some(t) => out.push(t.clone()),
                 None => self.error(
-                    format!("cannot infer type argument `{}` for `{}` -- use an explicit `{}<...>`", tp, template_name, template_name),
+                    format!("cannot infer type argument `{}` for `{}` -- use an explicit `{}<...>`", tp.name, template_name, template_name),
                     span,
                 ),
             }

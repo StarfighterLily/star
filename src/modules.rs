@@ -469,6 +469,20 @@ fn mangled(name: &str, names: &HashMap<String, String>) -> String {
     names.get(name).cloned().unwrap_or_else(|| name.to_string())
 }
 
+/// Rename a `<T, U: Trait, ...>` type-parameter list's trait bounds -- a
+/// bound (`Speaker` in `T: Speaker`) names a top-level trait declaration, so
+/// it needs the same `alias__`-mangling as any other cross-item reference
+/// (mirrors `rename_type`'s `Type::Named` arm). The parameter *names*
+/// themselves (`T`) are never mangled: they're not top-level declarations at
+/// all (`collect_names` never registers one), so `mangled("T", names)` would
+/// already no-op there, but skipping it entirely keeps this obviously
+/// correct rather than relying on that absence.
+fn rename_type_params(tps: &[TypeParam], names: &HashMap<String, String>) -> Vec<TypeParam> {
+    tps.iter()
+        .map(|tp| TypeParam { name: tp.name.clone(), bounds: tp.bounds.iter().map(|b| mangled(b, names)).collect() })
+        .collect()
+}
+
 /// Rename every top-level declaration in `module` (and every reference to
 /// one within it) according to `names` (a map from each declaration's
 /// current name to its new one, e.g. from [`collect_names`]'s `alias__name`
@@ -531,7 +545,7 @@ fn rename_item(item: &Item, names: &HashMap<String, String>) -> Item {
     match item {
         Item::Struct(s) => Item::Struct(StructDef {
             name: mangled(&s.name, names),
-            type_params: s.type_params.clone(),
+            type_params: rename_type_params(&s.type_params, names),
             fields: s.fields.iter().map(|f| rename_field(f, names)).collect(),
             span: s.span,
         }),
@@ -543,7 +557,7 @@ fn rename_item(item: &Item, names: &HashMap<String, String>) -> Item {
         Item::Impl(blk) => Item::Impl(ImplBlock {
             trait_name: blk.trait_name.as_ref().map(|n| mangled(n, names)),
             type_name: mangled(&blk.type_name, names),
-            type_params: blk.type_params.clone(),
+            type_params: rename_type_params(&blk.type_params, names),
             // Method names are reached via `.method(...)` field syntax, not
             // as bare identifiers, so they're never mangled -- only their
             // bodies/signatures need renaming for references to *other*
@@ -570,7 +584,7 @@ fn rename_item(item: &Item, names: &HashMap<String, String>) -> Item {
         }
         Item::Enum(e) => Item::Enum(EnumDef {
             name: mangled(&e.name, names),
-            type_params: e.type_params.clone(),
+            type_params: rename_type_params(&e.type_params, names),
             variants: e
                 .variants
                 .iter()
@@ -650,7 +664,7 @@ fn rename_fn_sig(sig: &FnSig, names: &HashMap<String, String>) -> FnSig {
         // Trait method signatures declare a method name, not a top-level
         // symbol; never mangled (mirrors `rename_fn`'s `mangle_name: false`).
         name: sig.name.clone(),
-        type_params: sig.type_params.clone(),
+        type_params: rename_type_params(&sig.type_params, names),
         params: sig.params.iter().map(|p| rename_param(p, names)).collect(),
         ret: sig.ret.as_ref().map(|t| rename_type(t, names)),
         span: sig.span,
@@ -663,7 +677,7 @@ fn rename_fn(f: &FnDef, names: &HashMap<String, String>, mangle_own_name: bool) 
     FnDef {
         sig: FnSig {
             name: if mangle_own_name { mangled(&f.sig.name, names) } else { f.sig.name.clone() },
-            type_params: f.sig.type_params.clone(),
+            type_params: rename_type_params(&f.sig.type_params, names),
             params: f.sig.params.iter().map(|p| rename_param(p, names)).collect(),
             ret: f.sig.ret.as_ref().map(|t| rename_type(t, names)),
             span: f.sig.span,

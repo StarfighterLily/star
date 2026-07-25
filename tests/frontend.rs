@@ -4,7 +4,7 @@
 //! the canonical example, guarding against regressions in tokenization,
 //! indentation handling, and parsing.
 
-use star::ast::{BinOp, Expr, Item, Stmt, Type, UnOp};
+use star::ast::{BinOp, Expr, Item, Stmt, Type, TypeParam, UnOp};
 use star::driver::Driver;
 use star::lexer::TokenKind;
 use star::types::{Ty, TypedExpr, TypedItem, TypedStmt};
@@ -4438,7 +4438,7 @@ fn parses_generic_struct_type_params() {
     let src = "struct Pair<A, B>:\n    first: A\n    second: B\n";
     let module = Driver::parse(src).expect("should parse");
     let Item::Struct(def) = &module.items[0] else { panic!("expected a struct") };
-    assert_eq!(def.type_params, vec!["A".to_string(), "B".to_string()]);
+    assert_eq!(def.type_params, vec![TypeParam { name: "A".into(), bounds: vec![] }, TypeParam { name: "B".into(), bounds: vec![] }]);
     assert_eq!(def.fields[0].ty, Type::Named("A".into()));
 }
 
@@ -4448,7 +4448,7 @@ fn parses_generic_enum_type_params() {
     let src = "enum Option<T>:\n    None\n    Some(value: T)\n";
     let module = Driver::parse(src).expect("should parse");
     let Item::Enum(EnumDef { type_params, variants, .. }) = &module.items[0] else { panic!("expected an enum") };
-    assert_eq!(type_params, &vec!["T".to_string()]);
+    assert_eq!(type_params, &vec![TypeParam { name: "T".into(), bounds: vec![] }]);
     assert_eq!(variants[1].fields[0].ty, Type::Named("T".into()));
 }
 
@@ -4458,7 +4458,7 @@ fn parses_generic_fn_type_params() {
     let src = "fn identity<T>(x: T) -> T:\n    return x\n";
     let module = Driver::parse(src).expect("should parse");
     let Item::Fn(f) = &module.items[0] else { panic!("expected a fn") };
-    assert_eq!(f.sig.type_params, vec!["T".to_string()]);
+    assert_eq!(f.sig.type_params, vec![TypeParam { name: "T".into(), bounds: vec![] }]);
 }
 
 /// Parse an explicit turbofish on a generic struct literal: `Box<i32>(value = 5)`.
@@ -4733,7 +4733,7 @@ fn parses_impl_type_params_on_generic_struct() {
     let module = Driver::parse(src).expect("should parse");
     let Item::Impl(blk) = &module.items[1] else { panic!("expected an impl block, got {:?}", module.items[1]) };
     assert_eq!(blk.type_name, "Box");
-    assert_eq!(blk.type_params, vec!["T".to_string()]);
+    assert_eq!(blk.type_params, vec![TypeParam { name: "T".into(), bounds: vec![] }]);
 }
 
 /// A trait impl on a generic struct also parses `<...>` after the type name,
@@ -4746,7 +4746,7 @@ fn parses_impl_type_params_on_generic_struct_trait_impl() {
     let Item::Impl(blk) = &module.items[2] else { panic!("expected an impl block, got {:?}", module.items[2]) };
     assert_eq!(blk.trait_name.as_deref(), Some("Describable"));
     assert_eq!(blk.type_name, "Box");
-    assert_eq!(blk.type_params, vec!["T".to_string()]);
+    assert_eq!(blk.type_params, vec![TypeParam { name: "T".into(), bounds: vec![] }]);
 }
 
 /// `impl Box:` (no `<...>`) against a struct that *is* generic
@@ -11952,6 +11952,340 @@ fn runtime_generic_fn_call_with_consistent_type_parameter_end_to_end() {
     assert!(output.status.success(), "{:?}", output.status);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim_end(), "5", "{}", stdout);
+}
+
+// ===== trait-bounded generics (`todo.md` P2 #7) =============================
+//
+// `fn f<T: SomeTrait>(x: T)`: before this, a generic function's type
+// parameter list (`FnSig`/`StructDef`/`EnumDef`/`ImplBlock::type_params`)
+// was a bare `Vec<String>` of names with no bound syntax at all -- writing
+// `T: SomeTrait` was a hard parse error. `TypeParam { name, bounds }`
+// (`src/ast.rs`) adds the grammar; `Checker::check_type_bounds`
+// (`src/types/mod.rs`), consulted from every call/construction site that
+// infers a generic template's concrete type arguments
+// (`infer_generic_call`/`infer_generic_struct_lit`/`infer_generic_enum_variant`,
+// `src/types/expr.rs`), rejects a monomorphization whose concrete type
+// argument doesn't implement every bound its type parameter declares --
+// checked nominally (an actual `impl Trait for X:` block must exist,
+// registered into `Checker::trait_impls` during pass 1), not structurally:
+// a type with a same-named, same-shaped method but no matching `impl` block
+// does not satisfy a bound naming that trait.
+
+const TRAIT_BOUND_SPEAKER_SRC: &str = "trait Speaker:\n    fn speak(self) -> i32\n\nstruct Dog:\n    volume: i32\n\nimpl Speaker for Dog:\n    fn speak(self) -> i32:\n        return self.volume\n\n";
+
+const TRAIT_BOUND_SPEAKER_AND_NAMED_SRC: &str = "trait Speaker:\n    fn speak(self) -> i32\n\ntrait Named:\n    fn name(self) -> i32\n\nstruct Dog:\n    volume: i32\n\nimpl Speaker for Dog:\n    fn speak(self) -> i32:\n        return self.volume\n\nimpl Named for Dog:\n    fn name(self) -> i32:\n        return 1\n\nstruct Cat:\n    pitch: i32\n\nimpl Speaker for Cat:\n    fn speak(self) -> i32:\n        return self.pitch\n\n";
+
+/// A single trait bound (`T: Speaker`) parses into `TypeParam::bounds`.
+#[test]
+fn parses_generic_fn_type_param_with_single_trait_bound() {
+    let src = "fn f<T: Speaker>(x: T) -> i32:\n    return 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected a fn") };
+    assert_eq!(f.sig.type_params, vec![TypeParam { name: "T".into(), bounds: vec!["Speaker".into()] }]);
+}
+
+/// Multiple `+`-separated bounds (`T: Speaker + Named`) all parse into the
+/// same type parameter's `bounds` list, in declaration order.
+#[test]
+fn parses_generic_fn_type_param_with_multiple_trait_bounds() {
+    let src = "fn f<T: Speaker + Named>(x: T) -> i32:\n    return 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected a fn") };
+    assert_eq!(f.sig.type_params, vec![TypeParam { name: "T".into(), bounds: vec!["Speaker".into(), "Named".into()] }]);
+}
+
+/// A generic struct's own type parameter can also carry a trait bound
+/// (`struct Cage<T: Speaker>:`), parsed via the same `parse_opt_type_params`
+/// path `fn`'s type parameters use.
+#[test]
+fn parses_generic_struct_type_param_with_trait_bound() {
+    let src = "struct Cage<T: Speaker>:\n    occupant: T\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Struct(s) = &module.items[0] else { panic!("expected a struct") };
+    assert_eq!(s.type_params, vec![TypeParam { name: "T".into(), bounds: vec!["Speaker".into()] }]);
+}
+
+/// Bounded and unbounded type parameters can appear side by side in the same
+/// `<...>` list (`<T: Speaker, U>`) -- a bound is per-parameter, not
+/// all-or-nothing for the whole list.
+#[test]
+fn parses_mixed_bounded_and_unbounded_type_params() {
+    let src = "fn f<T: Speaker, U>(x: T, y: U) -> i32:\n    return 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[0] else { panic!("expected a fn") };
+    assert_eq!(
+        f.sig.type_params,
+        vec![TypeParam { name: "T".into(), bounds: vec!["Speaker".into()] }, TypeParam { name: "U".into(), bounds: Vec::new() }]
+    );
+}
+
+/// A generic function whose body calls a trait method on its bounded type
+/// parameter, called with a type that *does* implement that trait, type-checks
+/// cleanly -- the trait-bound ceiling `todo.md` names being lifted.
+#[test]
+fn accepts_generic_fn_calling_trait_method_on_bounded_type_param() {
+    let src = format!("{}{}", TRAIT_BOUND_SPEAKER_SRC, "fn announce<T: Speaker>(x: T) -> i32:\n    return x.speak()\n\nfn main():\n    announce(Dog(volume = 3))\n");
+    let module = Driver::parse(&src).expect("should parse");
+    Driver::check(&module).expect("a bounded generic fn called with a type implementing the bound should type-check");
+}
+
+/// The core rejection case: calling a `T: Speaker`-bounded generic function
+/// with a type that does not implement `Speaker` (a bare `i32`, which can
+/// never implement any trait -- `impl` is struct-only in this language) is a
+/// clean, located type error naming the offending type, the bound, and the
+/// generic function -- not a raw "no method" error surfacing from deep
+/// inside the substituted body.
+#[test]
+fn rejects_generic_fn_call_violating_trait_bound() {
+    let src = format!("{}{}", TRAIT_BOUND_SPEAKER_SRC, "fn announce<T: Speaker>(x: T) -> i32:\n    return x.speak()\n\nfn main():\n    announce(5)\n");
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("a generic call whose type argument doesn't implement the bound trait should be rejected")
+    };
+    assert!(
+        errs.iter().any(|d| d.message.contains("does not satisfy the trait bound") && d.message.contains("Speaker") && d.message.contains("announce")),
+        "{:?}", errs
+    );
+    // And no cascading "no field/method `speak`" diagnostic from also
+    // type-checking the (substituted) body against the bad argument --
+    // `check_type_bounds` returning `false` short-circuits the instantiation
+    // entirely, see its own doc comment.
+    assert!(!errs.iter().any(|d| d.message.contains("speak")), "should not cascade a second diagnostic: {:?}", errs);
+}
+
+/// A struct with a same-named, same-shaped *inherent* method (no `impl
+/// Speaker for Robot:` at all) does not satisfy a `T: Speaker` bound --
+/// trait bounds are nominal, not structural, even though plain (unbounded)
+/// generic monomorphization elsewhere in this checker is fully duck-typed.
+#[test]
+fn rejects_generic_fn_call_with_structurally_matching_but_not_nominally_implementing_type() {
+    let src = format!(
+        "{}{}",
+        TRAIT_BOUND_SPEAKER_SRC,
+        "struct Robot:\n    id: i32\n\nimpl Robot:\n    fn speak(self) -> i32:\n        return self.id\n\nfn announce<T: Speaker>(x: T) -> i32:\n    return x.speak()\n\nfn main():\n    announce(Robot(id = 1))\n"
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("a structurally-matching but not nominally-trait-implementing type should still violate the bound")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("does not satisfy the trait bound") && d.message.contains("Speaker")), "{:?}", errs);
+}
+
+/// Same rejection, reached through generic struct construction
+/// (`resolve_generic_ctor_args`/`infer_generic_struct_lit` share the same
+/// `check_type_bounds` call as the generic-fn-call path).
+#[test]
+fn rejects_generic_struct_ctor_violating_trait_bound() {
+    let src = format!(
+        "{}{}",
+        TRAIT_BOUND_SPEAKER_SRC,
+        "struct Cage<T: Speaker>:\n    occupant: T\n\nfn main():\n    Cage(occupant = 5)\n"
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("a generic struct literal whose type argument doesn't implement the bound trait should be rejected")
+    };
+    assert!(
+        errs.iter().any(|d| d.message.contains("does not satisfy the trait bound") && d.message.contains("Speaker") && d.message.contains("Cage")),
+        "{:?}", errs
+    );
+}
+
+/// Same rejection again, reached through generic enum-variant construction
+/// (`infer_generic_enum_variant` shares the same `check_type_bounds` call).
+#[test]
+fn rejects_generic_enum_variant_ctor_violating_trait_bound() {
+    let src = format!(
+        "{}{}",
+        TRAIT_BOUND_SPEAKER_SRC,
+        "enum Boxed<T: Speaker>:\n    Wrapped(value: T)\n\nfn main():\n    Boxed::Wrapped(5)\n"
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("a generic enum variant construction whose type argument doesn't implement the bound trait should be rejected")
+    };
+    assert!(
+        errs.iter().any(|d| d.message.contains("does not satisfy the trait bound") && d.message.contains("Speaker") && d.message.contains("Boxed")),
+        "{:?}", errs
+    );
+}
+
+/// Multiple bounds (`T: Speaker + Named`) are checked independently -- a
+/// type implementing only one of the two named traits is rejected with a
+/// diagnostic naming specifically the one it's missing, not the one it
+/// already satisfies.
+#[test]
+fn rejects_generic_fn_call_missing_one_of_multiple_trait_bounds() {
+    let src = format!(
+        "{}{}",
+        TRAIT_BOUND_SPEAKER_AND_NAMED_SRC,
+        "fn introduce<T: Speaker + Named>(x: T) -> i32:\n    return x.speak()\n\nfn main():\n    introduce(Cat(pitch = 2))\n"
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("Cat implements Speaker but not Named, so a T: Speaker + Named bound should reject it")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("does not satisfy the trait bound") && d.message.contains("Named")), "{:?}", errs);
+    assert!(!errs.iter().any(|d| d.message.contains("trait bound `T: Speaker`")), "should not also complain about the bound Cat already satisfies: {:?}", errs);
+}
+
+/// A type implementing *every* bound in a multi-bound list type-checks
+/// cleanly and can call methods from each named trait.
+#[test]
+fn accepts_generic_fn_calling_methods_from_multiple_trait_bounds() {
+    let src = format!(
+        "{}{}",
+        TRAIT_BOUND_SPEAKER_AND_NAMED_SRC,
+        "fn introduce<T: Speaker + Named>(x: T) -> i32:\n    return x.speak() + x.name()\n\nfn main():\n    introduce(Dog(volume = 3))\n"
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    Driver::check(&module).expect("a type implementing every named bound should type-check");
+}
+
+/// A bound naming a trait that doesn't exist at all is a clean, dedicated
+/// diagnostic (not a panic, not silently treated as always-satisfied) --
+/// checked lazily at the same call-site point as bound satisfaction itself,
+/// consistent with this checker's "a generic template is never checked on
+/// its own, only its instantiations are" design (see `types/mod.rs`'s
+/// "Generics: monomorphization support" module doc comment).
+#[test]
+fn rejects_generic_fn_call_with_bound_naming_undefined_trait() {
+    let src = "fn f<T: Nonexistent>(x: T) -> i32:\n    return 0\nfn main():\n    f(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(errs) = Driver::check(&module) else {
+        panic!("a bound naming an undefined trait should be rejected")
+    };
+    assert!(errs.iter().any(|d| d.message.contains("undefined trait") && d.message.contains("Nonexistent")), "{:?}", errs);
+}
+
+/// An `impl Trait for GenericStruct<A, B>:` block implements the trait for
+/// *every* instantiation of that struct, not just one -- `trait_impls` is
+/// keyed by the template name (`"Pair"`), not any one mangled instantiation
+/// (`"Pair__i32__str"`), consulted via `mono_struct_of`. Two different
+/// instantiations of the same generic struct both satisfy a bound naming
+/// that trait.
+#[test]
+fn trait_bound_satisfied_via_generic_struct_impl_covers_every_instantiation() {
+    let src = "trait Describable:\n    fn describe(self) -> i32\n\nstruct Pair<A, B>:\n    first: A\n    second: B\n\nimpl Describable for Pair<A, B>:\n    fn describe(self) -> i32:\n        return 1\n\nfn report<T: Describable>(x: T) -> i32:\n    return x.describe()\n\nfn main():\n    report(Pair(first = 1, second = 2))\n    report(Pair(first = \"a\", second = 1.5))\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("every instantiation of a generic struct with a trait impl should satisfy a bound naming that trait");
+}
+
+/// A plain, unbounded type parameter (`<T>`, no `: Trait`) is completely
+/// unaffected by bound checking -- it still accepts any concrete type at
+/// all, exactly as before this feature existed. Guards `check_type_bounds`
+/// (an empty `bounds` list short-circuits its inner loop to a no-op) against
+/// accidentally becoming a blanket "every generic call must implement
+/// something" gate.
+#[test]
+fn unbounded_type_param_still_accepts_any_concrete_type() {
+    let src = "fn identity<T>(x: T) -> T:\n    return x\nfn main():\n    identity(5)\n    identity(\"hi\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("an unbounded type parameter must keep accepting any concrete type");
+}
+
+/// Codegen for a trait-bounded generic function call: the monomorphized
+/// body's `x.speak()` call dispatches to the concrete type's own trait-impl
+/// method (`Dog__speak`, mangled the same way any inherent or trait method
+/// is -- see `src/codegen/mod.rs`'s `"{}__{}"` method-name mangling), inside
+/// the generic function's own mangled instantiation (`announce__Dog`).
+#[test]
+fn codegen_generic_fn_with_trait_bound_dispatches_to_correct_impl_method() {
+    let src = format!("{}{}", TRAIT_BOUND_SPEAKER_SRC, "fn announce<T: Speaker>(x: T) -> i32:\n    return x.speak()\n\nfn main() -> i32:\n    announce(Dog(volume = 3))\n");
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("define i32 @announce__Dog("), "{}", ir);
+    assert!(ir.contains("define i32 @Dog__speak("), "{}", ir);
+    assert!(ir.contains("call i32 @Dog__speak("), "{}", ir);
+}
+
+/// Full end-to-end runtime coverage for the feature: `examples/trait_bounded_generics.exe`
+/// exercises a single trait bound calling a trait method (`announce<T: Speaker>`),
+/// a multi-bound function calling methods from two different traits
+/// (`introduce<T: Speaker + Named>`), and a trait-bounded generic struct
+/// (`Cage<T: Speaker>`) whose method calls a trait method on its own bounded
+/// field -- through a real clang-compiled executable, not just the checker.
+#[test]
+fn runtime_trait_bounded_generics_end_to_end() {
+    use std::process::Command;
+
+    let output = Command::new("examples/trait_bounded_generics.exe").output().expect("failed to execute trait_bounded_generics.exe");
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("dog: Woof"), "single trait bound calling a trait method: {}", stdout);
+    assert!(stdout.contains("cat: Meow"), "single trait bound instantiated at a second, unrelated implementing type: {}", stdout);
+    assert!(stdout.contains("intro: Rex says Woof"), "multi-bound fn calling methods from two different traits: {}", stdout);
+    assert!(stdout.contains("caged: Woof"), "trait-bounded generic struct method calling a trait method on its own bounded field: {}", stdout);
+}
+
+/// Inline (non-committed-example) runtime coverage for the rejection path
+/// mirrored above at the checker level -- proves the diagnostic is real
+/// `star check`-visible behavior via `Driver::check`, not just an artifact
+/// of how these particular unit tests call the checker directly.
+#[test]
+fn runtime_generic_fn_call_satisfying_trait_bound_end_to_end() {
+    let src = format!("{}{}", TRAIT_BOUND_SPEAKER_SRC, "fn announce<T: Speaker>(x: T) -> i32:\n    return x.speak()\n\nfn main():\n    let v = announce(Dog(volume = 9))\n    println(f\"{v}\")\n");
+    let output = compile_and_run("trait_bound_satisfied", &src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "9", "{}", stdout);
+}
+
+/// A trait bound declared in one module is still correctly resolved (and
+/// enforced) against an `impl` in another module reached through an import
+/// alias -- `crate::modules::rename_type_params` mangles a bound's trait
+/// name (`Speaker` -> `lib__Speaker`) the same way every other cross-module
+/// reference is mangled, so `Checker::trait_impls`/`Checker::traits` (both
+/// populated from the already-renamed, already-merged module) agree with
+/// what the bound itself names. Before that fix, a bound's trait name was
+/// cloned verbatim by every `rename_*` helper, so an imported bound would
+/// name the trait's *original* (un-mangled) name while `self.traits` only
+/// ever registered the mangled one -- silently failing every such bound
+/// with "undefined trait" regardless of whether the referenced type
+/// actually implemented it.
+#[test]
+fn cross_module_generic_fn_trait_bound_resolves_through_import_alias_end_to_end() {
+    let dir = test_scratch_dir("cross_module_generic_fn_trait_bound_resolves_through_import_alias_end_to_end");
+    write_test_file(
+        &dir, "lib.star",
+        "trait Speaker:\n    fn speak(self) -> i32\n\nstruct Dog:\n    volume: i32\n\nimpl Speaker for Dog:\n    fn speak(self) -> i32:\n        return self.volume\n\nfn announce<T: Speaker>(x: T) -> i32:\n    return x.speak()\n",
+    );
+    let main_path = write_test_file(
+        &dir, "main.star",
+        "import \"lib.star\" as lib\n\nfn main():\n    let v = lib::announce(lib::Dog(volume = 12))\n    println(f\"{v}\")\n",
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Same cross-module setup, but the call site's type argument does *not*
+/// implement the imported trait -- the bound violation must still be
+/// reported (not silently accepted because the mangled names failed to
+/// line up, which would be the failure mode of the bug described in
+/// `cross_module_generic_fn_trait_bound_resolves_through_import_alias_end_to_end`'s
+/// doc comment going the other, worse way).
+#[test]
+fn cross_module_generic_fn_trait_bound_violation_still_rejected_end_to_end() {
+    let dir = test_scratch_dir("cross_module_generic_fn_trait_bound_violation_still_rejected_end_to_end");
+    write_test_file(
+        &dir, "lib.star",
+        "trait Speaker:\n    fn speak(self) -> i32\n\nfn announce<T: Speaker>(x: T) -> i32:\n    return x.speak()\n",
+    );
+    let main_path = write_test_file(
+        &dir, "main.star",
+        "import \"lib.star\" as lib\n\nfn main():\n    let v = lib::announce(5)\n    println(f\"{v}\")\n",
+    );
+
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(!compilation.is_ok(), "a cross-module bound violation should still be rejected");
+    let rendered = compilation.render_diagnostics();
+    assert!(rendered.contains("does not satisfy the trait bound"), "{}", rendered);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ===== impl Trait completeness ===============================================

@@ -333,6 +333,61 @@ fn unwrap_or<T>(o: Option<T>, default: T) -> T:
         Option::None -> return default
 ```
 
+### Trait-Bounded Generics
+
+A generic type parameter may declare that it's required to implement one or
+more traits (`T: Trait1 + Trait2`), so a generic function/struct/enum's body
+can call a trait method on it, not just move/store/return it:
+
+```star
+trait Speaker:
+    fn speak(self) -> i32
+
+struct Dog:
+    volume: i32
+
+impl Speaker for Dog:
+    fn speak(self) -> i32:
+        return self.volume
+
+fn announce<T: Speaker>(x: T) -> i32:
+    return x.speak()
+
+# Multiple bounds, `+`-separated, are checked independently -- the body may
+# call methods required by any of them.
+fn introduce<T: Speaker + Named>(x: T) -> i32:
+    return x.speak()
+```
+
+A call/construction site whose concrete type argument doesn't implement
+every bound its type parameter declares is a compile-time error naming the
+type, the bound, and the generic function/struct/enum -- not a raw "no
+method" error surfacing from deep inside the generic body once it's
+monomorphized against that type:
+
+```star
+announce(5)
+# error: `Int` does not satisfy the trait bound `T: Speaker` required by
+# function `announce`
+```
+
+A bound is checked **nominally**, not structurally: a type with a
+same-named, same-shaped method but no matching `impl Trait for Type:` block
+does not satisfy a bound naming that trait, even though this compiler's
+plain (unbounded) generics are otherwise fully duck-typed (a generic
+template is only ever checked once monomorphized against a call site's real
+concrete type -- see "Generics" above). An `impl Trait for GenericStruct<A,
+B>:` block satisfies the bound for *every* instantiation of that struct, not
+just one specific `A`/`B` pairing.
+
+A generic **struct**/**enum**'s own type parameters may carry bounds the
+same way (`struct Cage<T: Speaker>: occupant: T`), checked at construction.
+Only `fn`, `struct`, and `enum` type parameters have their bounds enforced
+today; an `impl<T: Trait>`/trait-method type parameter's bounds parse but
+aren't separately checked (in practice this is rarely a gap: an impl
+block's own type parameters are already bound to whatever concrete type its
+owning struct's construction site already checked).
+
 ### `?`-propagation
 
 A postfix `?` on an `Option<T>`/`Result<T, E>` expression unwraps the

@@ -211,15 +211,32 @@ impl Parser {
         Some(EnumDef { name, type_params, variants, span })
     }
 
-    /// Parse an optional `<T, U, ...>` type-parameter list following a
-    /// `struct`/`enum`/`fn` name, returning an empty list when absent.
-    fn parse_opt_type_params(&mut self) -> Option<Vec<String>> {
+    /// Parse an optional `<T, U: Trait, V: TraitA + TraitB, ...>`
+    /// type-parameter list following a `struct`/`enum`/`impl`/`fn` name,
+    /// returning an empty list when absent. Each parameter may optionally
+    /// declare one or more `+`-separated trait bounds after a `:` -- see
+    /// `TypeParam`. Only `fn`'s type parameters (both free functions and
+    /// impl/trait methods, which share this same parse path via
+    /// `parse_fn_sig`) currently have their bounds enforced by the checker
+    /// (`Checker::check_type_bounds`); a `struct`/`enum`/`impl` type
+    /// parameter's bounds are parsed and stored uniformly for grammar
+    /// consistency, and enforced the same way at their own monomorphization
+    /// sites.
+    fn parse_opt_type_params(&mut self) -> Option<Vec<TypeParam>> {
         if !self.eat(&TokenKind::Lt) {
             return Some(Vec::new());
         }
         let mut params = Vec::new();
         while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {
-            params.push(self.expect_ident()?);
+            let name = self.expect_ident()?;
+            let mut bounds = Vec::new();
+            if self.eat(&TokenKind::Colon) {
+                bounds.push(self.expect_ident()?);
+                while self.eat(&TokenKind::Plus) {
+                    bounds.push(self.expect_ident()?);
+                }
+            }
+            params.push(TypeParam { name, bounds });
             if !self.eat(&TokenKind::Comma) {
                 break;
             }

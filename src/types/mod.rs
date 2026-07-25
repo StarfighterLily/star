@@ -634,11 +634,28 @@ impl Ty {
 /// register them into `generic_enums` before any user code is scanned. See
 /// that call site's doc comment for why this makes them true compiler
 /// builtins rather than user-space library code.
+/// A bare, unbounded type parameter -- shorthand for the common case used
+/// throughout this module's synthesized builtin generic declarations, none
+/// of which need a trait bound on their own `T`/`E`.
+fn unbounded_tp(name: &str) -> TypeParam {
+    TypeParam { name: name.into(), bounds: Vec::new() }
+}
+
+/// Render a type-parameter list back to its declaration-site source shape
+/// (`T, U: Trait`) for diagnostics that quote a generic template's own
+/// `<...>` list.
+fn join_type_params(tps: &[TypeParam]) -> String {
+    tps.iter()
+        .map(|tp| if tp.bounds.is_empty() { tp.name.clone() } else { format!("{}: {}", tp.name, tp.bounds.join(" + ")) })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn builtin_generic_enums() -> Vec<EnumDef> {
     vec![
         EnumDef {
             name: "Option".into(),
-            type_params: vec!["T".into()],
+            type_params: vec![unbounded_tp("T")],
             variants: vec![
                 EnumVariantDef { name: "None".into(), fields: Vec::new(), span: Span::dummy() },
                 EnumVariantDef {
@@ -651,7 +668,7 @@ fn builtin_generic_enums() -> Vec<EnumDef> {
         },
         EnumDef {
             name: "Result".into(),
-            type_params: vec!["T".into(), "E".into()],
+            type_params: vec![unbounded_tp("T"), unbounded_tp("E")],
             variants: vec![
                 EnumVariantDef {
                     name: "Ok".into(),
@@ -1373,6 +1390,19 @@ pub struct Checker {
     /// assume the call's syntactic shape alone tells them whether to skip a
     /// `self` argument (see `check_call_args`'s call sites).
     methods: HashMap<String, (Vec<Ty>, Option<Ty>, bool)>,
+    /// Which traits a given struct implements, for trait-bound checking
+    /// (`fn f<T: Speaker>(x: T)` -- see `check_type_bounds`). Keyed by a
+    /// *non-generic* struct's own name (`"Dog"`) for an ordinary `impl
+    /// Speaker for Dog:`, or by a generic struct's template name (`"Pair"`,
+    /// never a mangled instantiation like `"Pair__i32__str"`) for `impl
+    /// Speaker for Pair<A, B>:` -- the latter means the trait is implemented
+    /// for *every* instantiation of `Pair`, matching `ty_implements_trait`'s
+    /// own lookup, which resolves a monomorphized struct name back to its
+    /// template via `mono_struct_of` before consulting this map. Populated
+    /// during pass 1 alongside `methods`/`generic_impls`, from every `impl
+    /// Trait for ...:` block regardless of declaration order relative to the
+    /// generic function/struct/enum that later names the trait as a bound.
+    trait_impls: HashMap<String, HashSet<String>>,
     /// Generic struct/enum/fn templates -- declarations with a non-empty
     /// `type_params` list, kept separate from `structs`/`enums`/`functions`
     /// since they have no concrete layout of their own until instantiated
@@ -1507,6 +1537,7 @@ impl Checker {
             functions: HashMap::new(),
             consts: HashMap::new(),
             methods: HashMap::new(),
+            trait_impls: HashMap::new(),
             generic_structs: HashMap::new(),
             generic_impls: HashMap::new(),
             generic_enums: HashMap::new(),
@@ -1791,10 +1822,10 @@ impl Checker {
                                 format!(
                                     "`impl {}<{}>` declares {} type parameter(s), but `struct {}<{}>` declares {}",
                                     blk.type_name,
-                                    blk.type_params.join(", "),
+                                    join_type_params(&blk.type_params),
                                     blk.type_params.len(),
                                     blk.type_name,
-                                    template.type_params.join(", "),
+                                    join_type_params(&template.type_params),
                                     template.type_params.len(),
                                 ),
                                 blk.span,
@@ -1805,7 +1836,7 @@ impl Checker {
                             self.error(
                                 format!(
                                     "`impl {}<{}>` names type parameters, but `{}` is not a generic struct -- write `impl {}:` instead",
-                                    blk.type_name, blk.type_params.join(", "), blk.type_name, blk.type_name
+                                    blk.type_name, join_type_params(&blk.type_params), blk.type_name, blk.type_name
                                 ),
                                 blk.span,
                             );
@@ -1813,6 +1844,9 @@ impl Checker {
                         None => {
                             self.error(format!("undefined type `{}`", blk.type_name), blk.span);
                         }
+                    }
+                    if let Some(trait_name) = &blk.trait_name {
+                        self.trait_impls.entry(blk.type_name.clone()).or_default().insert(trait_name.clone());
                     }
                     self.generic_impls.entry(blk.type_name.clone()).or_default().push(blk.clone());
                 }
@@ -1831,7 +1865,7 @@ impl Checker {
                                 blk.type_name,
                                 blk.type_name,
                                 blk.type_name,
-                                self.generic_structs[&blk.type_name].type_params.join(", "),
+                                join_type_params(&self.generic_structs[&blk.type_name].type_params),
                             ),
                             blk.span,
                         );
@@ -1845,6 +1879,9 @@ impl Checker {
                         let has_self = m.sig.params.first().map(|p| p.is_self).unwrap_or(false);
                         let key = format!("{}#{}", blk.type_name, m.sig.name);
                         self.methods.insert(key, (param_tys, ret_ty, has_self));
+                    }
+                    if let Some(trait_name) = &blk.trait_name {
+                        self.trait_impls.entry(blk.type_name.clone()).or_default().insert(trait_name.clone());
                     }
                 }
                 // Desugared away above; never present past this point.
@@ -2347,6 +2384,65 @@ impl Checker {
         }
         stack.pop();
         state.insert(name.to_string(), 2);
+    }
+
+    /// True if `ty` implements `trait_name` -- i.e. some `impl trait_name for
+    /// X:` block was registered for it in `trait_impls` during pass 1. Only
+    /// `Ty::Named` (a struct) can ever satisfy a bound: `impl` is restricted
+    /// to structs everywhere else in this checker (see `check_impl`'s own
+    /// `self.structs.contains_key` gate), so a scalar/enum/collection type
+    /// argument can never implement any trait and always fails a bound. A
+    /// monomorphized generic struct (`Pair__i32__str`) is resolved back to
+    /// its template name (`Pair`) via `mono_struct_of` first, since `impl
+    /// Trait for Pair<A, B>:` is registered under the template name, not any
+    /// one particular instantiation -- see `trait_impls`'s own doc comment.
+    fn ty_implements_trait(&self, ty: &Ty, trait_name: &str) -> bool {
+        let Ty::Named(name) = ty else { return false };
+        let key = self.mono_struct_of.get(name).map(|(template, _)| template.as_str()).unwrap_or(name.as_str());
+        self.trait_impls.get(key).is_some_and(|traits| traits.contains(trait_name))
+    }
+
+    /// Verify every trait bound a generic template's type parameters declare
+    /// (`fn f<T: Speaker>(x: T)`, `struct Pair<A: Eq, B>: ...`) is satisfied
+    /// by the corresponding concrete type argument about to be substituted
+    /// in, reporting one error per unsatisfied (or undefined) bound at
+    /// `span` -- the call/construction site, so the diagnostic lands exactly
+    /// where the offending type argument was chosen, not buried inside the
+    /// template's own (substituted) body. `kind`/`template_name` name the
+    /// generic declaration for the message (`"function"`/`"greet"`).
+    /// Returns `false` if any bound was violated, so the caller can skip
+    /// instantiating (and therefore type-checking the body of) a template
+    /// against inputs already known to be invalid -- without this, `f(5)`
+    /// above would additionally cascade a confusing "no field `speak` on
+    /// type `Int`" from checking `x.speak()` against the substituted body,
+    /// on top of the real "does not satisfy trait bound" diagnostic.
+    fn check_type_bounds(&mut self, kind: &str, template_name: &str, type_params: &[TypeParam], args: &[Ty], span: Span) -> bool {
+        let mut ok = true;
+        for (tp, arg) in type_params.iter().zip(args.iter()) {
+            if Self::is_placeholder_ty(arg) {
+                // An error was already reported for whatever expression
+                // produced this argument -- don't cascade a second one.
+                continue;
+            }
+            for bound in &tp.bounds {
+                if !self.traits.contains_key(bound) {
+                    ok = false;
+                    self.error(format!("undefined trait `{}` in bound `{}: {}`", bound, tp.name, bound), span);
+                    continue;
+                }
+                if !self.ty_implements_trait(arg, bound) {
+                    ok = false;
+                    self.error(
+                        format!(
+                            "`{:?}` does not satisfy the trait bound `{}: {}` required by {} `{}`",
+                            arg, tp.name, bound, kind, template_name
+                        ),
+                        span,
+                    );
+                }
+            }
+        }
+        ok
     }
 
     /// Report a checker error for each method `impl trait_name for
@@ -3092,7 +3188,7 @@ impl Checker {
                 Span::dummy(),
             );
         }
-        let subst: HashMap<String, Type> = template.type_params.iter().cloned().zip(args.iter().map(ty_to_type)).collect();
+        let subst: HashMap<String, Type> = template.type_params.iter().map(|tp| tp.name.clone()).zip(args.iter().map(ty_to_type)).collect();
         let fields: Vec<FieldDef> = template.fields.iter().map(|f| FieldDef {
             is_mut: f.is_mut,
             name: f.name.clone(),
@@ -3140,7 +3236,7 @@ impl Checker {
             // span, so this substitution is safe to build unconditionally
             // even if that count happened to disagree (`zip` just silently
             // drops the longer side's tail rather than panicking).
-            let subst: HashMap<String, Type> = blk.type_params.iter().cloned().zip(args.iter().map(ty_to_type)).collect();
+            let subst: HashMap<String, Type> = blk.type_params.iter().map(|tp| tp.name.clone()).zip(args.iter().map(ty_to_type)).collect();
             let concrete_methods: Vec<FnDef> = blk.methods.iter().map(|m| FnDef {
                 sig: FnSig {
                     name: m.sig.name.clone(),
@@ -3215,7 +3311,7 @@ impl Checker {
                 Span::dummy(),
             );
         }
-        let subst: HashMap<String, Type> = template.type_params.iter().cloned().zip(args.iter().map(ty_to_type)).collect();
+        let subst: HashMap<String, Type> = template.type_params.iter().map(|tp| tp.name.clone()).zip(args.iter().map(ty_to_type)).collect();
         let variants: Vec<EnumVariantDef> = template.variants.iter().map(|v| EnumVariantDef {
             name: v.name.clone(),
             fields: v.fields.iter().map(|f| EnumFieldDef { name: f.name.clone(), ty: subst_type(&f.ty, &subst) }).collect(),
@@ -3264,7 +3360,7 @@ impl Checker {
             self.error(format!("undefined generic function `{}`", template_name), Span::dummy());
             return mangled;
         };
-        let subst: HashMap<String, Type> = template.sig.type_params.iter().cloned().zip(args.iter().map(ty_to_type)).collect();
+        let subst: HashMap<String, Type> = template.sig.type_params.iter().map(|tp| tp.name.clone()).zip(args.iter().map(ty_to_type)).collect();
         let sig = FnSig {
             name: mangled.clone(),
             type_params: Vec::new(),
@@ -3311,9 +3407,9 @@ impl Checker {
     /// already a placeholder from an earlier error) so the caller can report
     /// a single, located diagnostic instead of silently keeping the first
     /// guess.
-    fn unify_ty(&self, param_ty: &Type, arg_ty: &Ty, type_params: &[String], subst: &mut HashMap<String, Ty>, conflicts: &mut Vec<(String, Ty, Ty)>) {
+    fn unify_ty(&self, param_ty: &Type, arg_ty: &Ty, type_params: &[TypeParam], subst: &mut HashMap<String, Ty>, conflicts: &mut Vec<(String, Ty, Ty)>) {
         match param_ty {
-            Type::Named(n) if type_params.iter().any(|p| p == n) => {
+            Type::Named(n) if type_params.iter().any(|p| &p.name == n) => {
                 if Self::is_placeholder_ty(arg_ty) {
                     return;
                 }
