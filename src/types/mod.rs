@@ -494,6 +494,36 @@ impl Ty {
         }
     }
 
+    /// True for types with no defined `print`/f-string interpolation
+    /// format. `Codegen::emit_print_like`'s specifier table gives every
+    /// scalar-ish type (numbers, `bool`, `char`, `str`, the bare-int
+    /// nominal wrappers, fieldless enums, vector/matrix aggregates) its own
+    /// `%d`/`%f`/`%s`/... hole, and gives the pointer-backed collection
+    /// types (`List`/`Map`/`Set`/`Table`/`Palette`/`Bytes`/`Ptr`, every one
+    /// a bare `i8*`) a deliberate `%p` address print -- both are safe,
+    /// well-defined `printf` calls. The types named here are neither: they
+    /// lower to an LLVM aggregate passed *by value* (a literal struct, a
+    /// fixed-size array, a `{ i8*, i8* }` fat pointer, or `%GenRef`/a
+    /// nominal `%Name` struct -- see `Codegen::llvm_ty`), so tagging one as
+    /// a vararg `%p` pointer is a C-ABI type mismatch: `printf` reads a
+    /// pointer-sized value off the varargs slot that's actually raw
+    /// aggregate data, producing a plausible-looking but meaningless
+    /// address instead of a crash or diagnostic -- the exact
+    /// fieldless-enum-prints-as-garbage-hex bug class
+    /// (`projects/snake/NOTES.md` section 1.5) `Ty::Enum`'s own `%s` arm
+    /// fixed, just never audited for these. Checked in `Checker::infer_expr`'s
+    /// `Expr::FStr` arm so this is a clean compile-time diagnostic instead
+    /// of a silent wrong `printf` call; `Codegen::emit_print_like`'s
+    /// specifier match is exhaustive (no wildcard arm) specifically so a
+    /// future `Ty` variant that isn't classified on either side of this
+    /// split fails to *compile*, not just fails a test.
+    pub fn is_fstring_unprintable(&self) -> bool {
+        matches!(
+            self,
+            Ty::Named(_) | Ty::GenRef(_) | Ty::Handle(_) | Ty::Tuple(_) | Ty::Array(_, _) | Ty::Ring(_, _) | Ty::Closure(_, _)
+        )
+    }
+
     /// The component count of a builtin vector type, or `None` for anything else.
     pub fn vec_arity(&self) -> Option<u8> {
         match self {

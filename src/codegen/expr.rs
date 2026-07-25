@@ -1435,7 +1435,18 @@ impl Codegen {
                                     let variant_str = self.emit_enum_variant_name(enum_name, &bare_val);
                                     call_args.push(format!("i8* {}", variant_str));
                                 }
-                                _ => {
+                                // A bare `i8*` object pointer (RC'd or, for
+                                // `Ptr`, opaque foreign) -- see each type's
+                                // own `Ty` doc comment, and
+                                // `emit_print_like`'s mirror-image arm in
+                                // `builtins.rs`. `%p` is ABI-safe here (a
+                                // genuine pointer vararg); this deliberately
+                                // prints the raw address, same "opaque
+                                // handle" debug convention `Ty::Ptr` already
+                                // established -- there's no recursive
+                                // per-element/per-field formatter to print
+                                // the actual contents.
+                                Ty::Palette | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Table(_) | Ty::Bytes | Ty::Ptr => {
                                     fmt_str.push_str("%p");
                                     // Same reasoning as the `Str` arm above:
                                     // this hole only prints `bare_val`'s raw
@@ -1443,12 +1454,35 @@ impl Codegen {
                                     // around, so whatever `emit_expr(e)` left
                                     // us owning must be released -- generalized
                                     // to any RC-bearing type (`List`/`Map`/
-                                    // `Set`/`Closure`/struct/payload enum) via
+                                    // `Set`/struct/payload enum) via
                                     // `emit_release_bare`, since (unlike
                                     // `Str`) there's no single flat pointer to
                                     // release directly here.
                                     self.emit_release_bare(&bare_val, &ty);
                                     call_args.push(format!("i8* {}", bare_val));
+                                }
+                                // Struct/tuple/array/`Ring`/closure/`GenRef`/
+                                // `Handle` values are rejected before codegen
+                                // by `Checker::infer_expr`'s `Expr::FStr` arm
+                                // (see `Ty::is_fstring_unprintable`'s doc
+                                // comment) -- each lowers to an LLVM
+                                // aggregate passed *by value*, so tagging one
+                                // as a vararg `%p` pointer would be a C-ABI
+                                // type mismatch, mirroring
+                                // `emit_print_like`'s identical fix in
+                                // `builtins.rs`. No wildcard arm on this
+                                // match either, for the same reason.
+                                Ty::Named(_) | Ty::GenRef(_) | Ty::Handle(_) | Ty::Tuple(_) | Ty::Array(_, _) | Ty::Ring(_, _) | Ty::Closure(..) => {
+                                    unreachable!("f-string interpolation of {:?} should have been rejected by the checker", ty);
+                                }
+                                // Never actually reached as `ty`: filtered
+                                // out (vector/matrix aggregates) or
+                                // substituted away (`Fixed`) earlier in this
+                                // same arm -- see the matching comment on
+                                // `emit_print_like`'s mirror-image match in
+                                // `builtins.rs`.
+                                Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat2 | Ty::Mat3 | Ty::Mat4 | Ty::Quat | Ty::Color | Ty::Fixed(_, _) => {
+                                    unreachable!("{:?} is filtered out before this match is ever reached", ty);
                                 }
                             }
                         }

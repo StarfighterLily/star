@@ -77,6 +77,25 @@ impl Checker {
                         FStrExpr::Literal(lit) => typed_parts.push(TypedFStrExpr::Literal(lit.clone())),
                         FStrExpr::Expr(e) => {
                             let typed = self.infer_expr(e, vars)?;
+                            // See `Ty::is_fstring_unprintable`'s doc comment:
+                            // a struct/tuple/array/`Ring`/closure/`GenRef`/
+                            // `Handle` value has no defined print format --
+                            // it lowers to an LLVM aggregate passed by
+                            // value, so letting it reach
+                            // `Codegen::emit_print_like`'s catch-all would
+                            // silently emit a C-ABI-mismatched `printf` call
+                            // (garbage output, not a crash) instead of this
+                            // clean diagnostic.
+                            let ty = typed.clone().into_ty();
+                            if ty.is_fstring_unprintable() {
+                                self.error(
+                                    format!(
+                                        "cannot interpolate a `{:?}` value into an f-string -- no print format is defined for structs, tuples, arrays, `Ring`, closures, `GenRef`, or `Handle`; print individual fields/elements instead",
+                                        ty
+                                    ),
+                                    typed.span(),
+                                );
+                            }
                             typed_parts.push(TypedFStrExpr::Expr(Box::new(typed)));
                         }
                     }

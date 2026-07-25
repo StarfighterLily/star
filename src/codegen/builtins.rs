@@ -117,7 +117,51 @@ impl Codegen {
                             // vector/matrix type just above, never ported to
                             // plain user `enum`s).
                             Ty::Enum(_) => { fmt_str.push_str("%s"); }
-                            _ => { fmt_str.push_str("%p"); }
+                            // A bare `i8*` object pointer (RC'd or, for
+                            // `Ptr`, opaque foreign) -- see each type's own
+                            // `Ty` doc comment. `%p` is ABI-safe here: the
+                            // vararg genuinely *is* a pointer, unlike the
+                            // aggregate-by-value types in the arm below.
+                            // There's no dedicated "print the contents"
+                            // format for any of these (that would need a
+                            // recursive per-element/per-field formatter this
+                            // compiler doesn't have) -- this deliberately
+                            // prints the raw address instead, the same
+                            // "opaque handle" debug convention `Ty::Ptr`
+                            // already established.
+                            Ty::Palette | Ty::List(_) | Ty::Map(..) | Ty::Set(_) | Ty::Table(_) | Ty::Bytes | Ty::Ptr => {
+                                fmt_str.push_str("%p");
+                            }
+                            // Struct/tuple/array/`Ring`/closure/`GenRef`/
+                            // `Handle` values are rejected before codegen by
+                            // `Checker::infer_expr`'s `Expr::FStr` arm (see
+                            // `Ty::is_fstring_unprintable`'s doc comment) --
+                            // each lowers to an LLVM aggregate passed *by
+                            // value* (`%Name`/`{ .. }`/`[N x T]`/`%GenRef`/
+                            // `{ i8*, i8* }`, see `Codegen::llvm_ty`), so
+                            // tagging one as a vararg `%p` pointer would be a
+                            // C-ABI type mismatch -- the exact
+                            // fieldless-enum-prints-as-garbage-hex bug class
+                            // `Ty::Enum`'s own `%s` arm above fixed. No
+                            // wildcard arm on this match at all: a future
+                            // `Ty` variant that isn't sorted into one of the
+                            // two buckets above fails to compile here rather
+                            // than silently falling through to `%p`.
+                            Ty::Named(_) | Ty::GenRef(_) | Ty::Handle(_) | Ty::Tuple(_) | Ty::Array(_, _) | Ty::Ring(_, _) | Ty::Closure(..) => {
+                                unreachable!("f-string interpolation of {:?} should have been rejected by the checker", ty);
+                            }
+                            // Never actually reached as `ty`: the vector/
+                            // matrix aggregates are filtered out (and lowered
+                            // through `emit_agg_fstring_lanes` instead) by the
+                            // `is_vec()`/`is_mat()` `continue` above, and
+                            // `Fixed` is substituted for `Ty::F64` just above
+                            // this match -- both listed here only so this
+                            // match has no wildcard arm (see the comment on
+                            // the aggregate-value arm above for why that
+                            // matters).
+                            Ty::Vec2 | Ty::Vec3 | Ty::Vec4 | Ty::Mat2 | Ty::Mat3 | Ty::Mat4 | Ty::Quat | Ty::Color | Ty::Fixed(_, _) => {
+                                unreachable!("{:?} is filtered out before this match is ever reached", ty);
+                            }
                         }
                         // `emit_expr` may return either a bare register
                         // or one already tagged with its LLVM type

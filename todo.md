@@ -15,14 +15,15 @@ programs, biggest lever first within each tier.
    documented convention) before it reaches a `phi`/merge site. This is the
    single highest-leverage fix — it closes an entire *class* of bug the
    hand-rolled textual-IR approach will otherwise keep re-discovering one
-   feature at a time.
+   feature at a time. -- Done: See previous work below for details.
 2. **Audit every f-string/`print`-family format-specifier table for missing
    type arms.** The fieldless-enum-prints-as-garbage-hex bug (silent wrong
    output, no crash, no diagnostic) is the worst bug class this project has
    shipped, and it was only caught by a human reading console output. Write
    an exhaustive test that round-trips every `Ty` variant through `print`/
    f-string interpolation and fails loudly on any silent fallthrough to a
-   catch-all specifier, so the next new type can't ship this bug again.
+   catch-all specifier, so the next new type can't ship this bug again. --
+   Done: See previous work below for details.
 3. **Give `Map`/`Set`/`Symbol` real hash-table backing.** Currently O(n) on
    every operation, which directly contradicts the "AAA entity counts"
    framing used to justify `Symbol` in the first place. This is a purely
@@ -73,7 +74,7 @@ programs, biggest lever first within each tier.
     (`.clinerules/workflows/todo`), so the only durable record of *why* a
     decision was made lives in scattered doc prose and `git log -p`. Keep a
     real `CHANGELOG.md` (append-only) even if `todo.md` itself stays a
-    living scratchpad.
+    living scratchpad. -- Done: `.\changelog` now acts as the long-term storage for implementation documentation.
 12. **Give the checker/codegen binop-dispatch pattern a real abstraction
     before it grows further.** Every new scalar-ish type (`Wrapping`,
     `Fixed`, `Symbol`, `Color32`, `Tick`/`Duration`/`Instant`, `BitField`,
@@ -113,3 +114,13 @@ Driver::codegen_verified now wraps the call to ir_check::verify in catch_unwind:
 The generated IR is no longer discarded when verification fails — IrVerification { ir, errors, warnings } always carries the IR text. star build now writes the .ll file even on a verifier rejection (so a false positive isn't a dead end), and star emit llvm — the actual debugging tool — always prints the IR regardless of verifier findings.
 Added star build --skip-ir-verify as an explicit escape hatch to let clang have the final word when the verifier is wrong.
 Driver::codegen's signature (used by ~200 existing tests) is untouched — it's now a thin wrapper over codegen_verified.
+
+Audited every f-string/print-family format-specifier table (todo.md P0 #2), directly targeting the fieldless-enum-prints-as-garbage-hex bug class. Found there are actually two independently-implemented specifier tables — println(f"...")'s direct-argument path (Codegen::emit_print_like, builtins.rs) and the general f-string-as-str-value path (TypedExpr::FStr, expr.rs) — each with its own `_ => %p` catch-all and its own history of missing arms.
+
+Reproduced a new, worse instance of the bug class live: interpolating a struct/tuple/array/GenRef/Handle/closure/Ring value into an f-string compiled clean and ran clean, silently printing a garbage address (`println(f"point={p}")` for a two-i32-field struct printed `0000000000000001`) instead of erroring — worse than the enum case because these seven types lower to an LLVM aggregate passed *by value* (`%Name`/`{..}`/`[N x T]`/`%GenRef`/`{i8*,i8*}`), so tagging one as a vararg `%p` pointer is a real C-ABI mismatch, not just an unhelpful address.
+
+Fixed two ways:
+- Added `Ty::is_fstring_unprintable` (types/mod.rs) classifying `Named`/`GenRef`/`Handle`/`Tuple`/`Array`/`Ring`/`Closure` as having no defined print format; `Checker::infer_expr`'s `Expr::FStr` arm (types/expr.rs) now rejects interpolating one with a clean "cannot interpolate a `Ty` value into an f-string" diagnostic instead of letting it reach codegen.
+- Made both codegen specifier matches exhaustive — removed the `_ => %p` wildcard entirely from both `emit_print_like` (builtins.rs) and `TypedExpr::FStr` (expr.rs), replacing it with explicit arms: the seven pointer-backed types (`List`/`Map`/`Set`/`Table`/`Palette`/`Bytes`/`Ptr`, all a bare `i8*`) keep `%p` as a deliberate, ABI-safe "print the address" arm; the seven aggregate-by-value types get `unreachable!()` (defense-in-depth — the checker should already have rejected them); the vector/matrix/`Fixed` types get `unreachable!()` too (they're filtered/substituted earlier in the same function). With no wildcard arm left, a future `Ty` variant that isn't sorted into one of these buckets now fails to *compile*, not just fails a test — the strongest form of "the next new type can't ship this bug again."
+
+Added 4 new tests (tests/frontend.rs): two exhaustive round-trip tests (one per format-specifier table) covering all 32 printable `Ty` variants' exact expected output in one pass each, one smoke test confirming the 7 pointer-backed types still compile/run/print without crashing, and one confirming all 7 previously-silently-broken aggregate types now produce a clean diagnostic instead of miscompiled IR. Repurposed one obsolete pre-existing test (`codegen_println_fstring_interpolating_struct_releases_borrowed_reference`, which asserted RC-release behavior for a now-rejected pattern) into a checker-diagnostic test. Full suite (1335 tests) passes.
