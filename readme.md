@@ -37,6 +37,12 @@ star emit ast <file>    # Dump the parsed AST
 star emit llvm <file>   # Dump the generated LLVM IR
 ```
 
+`<file>` may also be a directory containing a `star.toml` manifest (see
+below) -- `check`/`build`/`emit` then operate on the manifest's declared
+`entry` file. Every subcommand also accepts `-I`/`--search-path <dir>`
+(repeatable) to add an `import` search directory, and honors a `STAR_PATH`
+environment variable (a `PATH`-style list) the same way.
+
 ### Example
 
 ```bash
@@ -48,7 +54,17 @@ star build examples/player.star
 
 # Inspect the generated IR
 star emit llvm examples/player.star
+
+# Build a manifest-rooted project by directory instead of by file
+star build projects/snake -L sdl/lib/x64 -l SDL2 -o projects/snake/snake.exe
 ```
+
+### Project manifests
+
+A `star.toml` in a directory marks it as a project root and lets `import`
+resolve against a configured search path instead of only hand-written
+relative paths -- see [docs/language_reference.md](docs/language_reference.md)'s
+"Project manifests" section for the full format.
 
 ## Project Status
 

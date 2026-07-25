@@ -6,11 +6,12 @@
 //! - `star build <file>`  — full pipeline to native executable via LLVM IR.
 //! - `star emit <file>`   — dump tokens or the AST for debugging.
 
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use star::driver::Driver;
+use star::driver::{Driver, ResolvedInput};
 
 #[derive(Parser)]
 #[command(name = "star", version, about = "The Star game programming language compiler")]
@@ -19,17 +20,40 @@ struct Cli {
     command: Command,
 }
 
+/// Extra `import` search directories shared by every subcommand that
+/// resolves imports (`check`/`build`/`emit llvm`) -- factored out with
+/// `#[command(flatten)]` so `-I`/`--search-path`'s help text and behavior
+/// can't drift between them.
+#[derive(clap::Args)]
+struct SearchPathArgs {
+    /// Add a directory `import "path"` should search when it isn't found
+    /// relative to the importing file itself (like a C compiler's `-I` for
+    /// `#include "..."`). Repeatable; searched in the order given, after the
+    /// importing file's own directory and before anything a discovered
+    /// `star.toml`'s `[paths] search` contributes. The `STAR_PATH`
+    /// environment variable (a `;`/`:`-separated list, like `PATH`) is
+    /// consulted the same way, after every `-I` given here.
+    #[arg(short = 'I', long = "search-path")]
+    search_paths: Vec<String>,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Lex, parse, and type-check a source file.
     Check {
-        /// Path to a `.star` source file.
+        /// Path to a `.star` source file, or a directory containing a
+        /// `star.toml` manifest (see `crate::manifest`).
         file: String,
+        #[command(flatten)]
+        search: SearchPathArgs,
     },
     /// Compile a source file to a native executable.
     Build {
-        /// Path to a `.star` source file.
+        /// Path to a `.star` source file, or a directory containing a
+        /// `star.toml` manifest (see `crate::manifest`).
         file: String,
+        #[command(flatten)]
+        search: SearchPathArgs,
         /// Output executable path (default: <file>.exe).
         #[arg(short, long)]
         output: Option<String>,
@@ -73,8 +97,11 @@ enum Command {
         /// What to emit.
         #[arg(value_enum)]
         what: EmitKind,
-        /// Path to a `.star` source file.
+        /// Path to a `.star` source file, or a directory containing a
+        /// `star.toml` manifest (see `crate::manifest`).
         file: String,
+        #[command(flatten)]
+        search: SearchPathArgs,
     },
 }
 
@@ -125,21 +152,58 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> ExitCode {
     match cli.command {
-        Command::Check { file } => cmd_check(&file),
-        Command::Build { file, output, opt_level, release, libs, lib_paths, skip_ir_verify } => {
-            cmd_build(&file, output.as_deref(), opt_level, release, &libs, &lib_paths, skip_ir_verify)
+        Command::Check { file, search } => cmd_check(&file, &search),
+        Command::Build { file, search, output, opt_level, release, libs, lib_paths, skip_ir_verify } => {
+            cmd_build(&file, &search, output.as_deref(), opt_level, release, &libs, &lib_paths, skip_ir_verify)
         }
-        Command::Emit { what, file } => cmd_emit(what, &file),
+        Command::Emit { what, file, search } => cmd_emit(what, &file, &search),
+    }
+}
+
+/// The full ordered search-path list `-I`/`--search-path` and `STAR_PATH`
+/// contribute for one compile (before `star::driver::resolve_input` folds
+/// in whatever a discovered `star.toml` adds -- see `SearchPathArgs`'s doc
+/// comment for the complete ordering story).
+fn collect_search_paths(search: &SearchPathArgs) -> Vec<PathBuf> {
+    collect_search_paths_from(&search.search_paths, std::env::var_os("STAR_PATH").as_deref())
+}
+
+/// `collect_search_paths`'s logic, parameterized over the `STAR_PATH` value
+/// so it can be exercised on a synthetic value without touching the
+/// process's real environment -- mirrors `find_clang_on`'s own reason for
+/// taking `path_var` as a parameter (see the `tests` module below).
+fn collect_search_paths_from(cli_paths: &[String], star_path_var: Option<&OsStr>) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = cli_paths.iter().map(PathBuf::from).collect();
+    if let Some(var) = star_path_var {
+        paths.extend(std::env::split_paths(var));
+    }
+    paths
+}
+
+/// Resolve a CLI `file` argument (plus its `-I`/`STAR_PATH` search paths)
+/// via `star::driver::resolve_input`, printing a clean error and returning
+/// `None` on failure (an unrecognized directory argument, or a malformed
+/// `star.toml`) rather than making every `cmd_*` function duplicate that
+/// error-formatting.
+fn resolve_entry(file: &str, search: &SearchPathArgs) -> Option<ResolvedInput> {
+    let extra = collect_search_paths(search);
+    match star::driver::resolve_input(Path::new(file), &extra) {
+        Ok(resolved) => Some(resolved),
+        Err(e) => {
+            eprintln!("error: {}", e);
+            None
+        }
     }
 }
 
 /// Run the front-end and print diagnostics.
-fn cmd_check(file: &str) -> ExitCode {
-    let driver = Driver::new(file);
+fn cmd_check(file: &str, search: &SearchPathArgs) -> ExitCode {
+    let Some(resolved) = resolve_entry(file, search) else { return ExitCode::FAILURE };
+    let driver = Driver::with_search_paths(&resolved.entry, resolved.search_paths);
     match driver.compile() {
         Ok(compilation) => {
             if compilation.is_ok() {
-                println!("ok: {} parsed and type-checked successfully", file);
+                println!("ok: {} parsed and type-checked successfully", resolved.entry.display());
                 ExitCode::SUCCESS
             } else {
                 eprint!("{}", compilation.render_diagnostics());
@@ -147,7 +211,7 @@ fn cmd_check(file: &str) -> ExitCode {
             }
         }
         Err(e) => {
-            eprintln!("error: could not read {}: {}", file, e);
+            eprintln!("error: could not read {}: {}", resolved.entry.display(), e);
             ExitCode::FAILURE
         }
     }
@@ -173,12 +237,23 @@ fn link_args(libs: &[String], lib_paths: &[String]) -> Vec<String> {
 }
 
 /// Full pipeline: parse, type-check, emit LLVM IR, compile with clang.
-fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, release: bool, libs: &[String], lib_paths: &[String], skip_ir_verify: bool) -> ExitCode {
-    let driver = Driver::new(file);
+#[allow(clippy::too_many_arguments)]
+fn cmd_build(
+    file: &str,
+    search: &SearchPathArgs,
+    output: Option<&str>,
+    opt_level: u8,
+    release: bool,
+    libs: &[String],
+    lib_paths: &[String],
+    skip_ir_verify: bool,
+) -> ExitCode {
+    let Some(resolved) = resolve_entry(file, search) else { return ExitCode::FAILURE };
+    let driver = Driver::with_search_paths(&resolved.entry, resolved.search_paths);
     let compilation = match driver.compile() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("error: could not read {}: {}", file, e);
+            eprintln!("error: could not read {}: {}", resolved.entry.display(), e);
             return ExitCode::FAILURE;
         }
     };
@@ -210,7 +285,7 @@ fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, release: bool, lib
     // verifier flagging real, working IR -- isn't a dead end: the offending
     // `.ll` is on disk either way, for a manual `clang` run or a bug report,
     // whether or not this function goes on to refuse the build over it.
-    let src_path = Path::new(file);
+    let src_path = resolved.entry.as_path();
     let ll_path = src_path.with_extension("ll");
     if let Err(e) = std::fs::write(&ll_path, &verification.ir) {
         eprintln!("error: could not write {}: {}", ll_path.display(), e);
@@ -288,7 +363,7 @@ fn find_clang_on(path_var: Option<&std::ffi::OsStr>) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{emit_llvm_ir_verified, find_clang_on, link_args, opt_flag};
+    use super::{collect_search_paths_from, emit_llvm_ir_verified, find_clang_on, link_args, opt_flag};
 
     /// `star emit llvm` on a file with an `import` must resolve it exactly
     /// like `star check`/`star build` do (both go through `Driver::compile`,
@@ -309,13 +384,49 @@ mod tests {
         std::fs::write(&main_path, "import \"lib.star\" as lib\nfn main() -> i32:\n    return lib::helper()\n").expect("write main.star");
 
         let source = std::fs::read_to_string(&main_path).unwrap();
-        let v = emit_llvm_ir_verified(main_path.to_str().unwrap(), &source).expect("should resolve the import and codegen cleanly");
+        let v = emit_llvm_ir_verified(&main_path, &[], &source).expect("should resolve the import and codegen cleanly");
         assert!(v.errors.is_empty(), "expected no IR-verifier errors, got: {:?}", v.errors.iter().map(|d| &d.message).collect::<Vec<_>>());
         let ir = v.ir;
         assert!(ir.contains("define i32 @lib__helper("), "expected the imported fn to be mangled and defined: {}", ir);
         assert!(ir.contains("call i32 @lib__helper()"), "expected main to call the mangled imported fn: {}", ir);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// With no `-I` flags and no `STAR_PATH` set, the search-path list is
+    /// empty -- the common case (no manifest, no explicit search paths at
+    /// all) must not grow the list.
+    #[test]
+    fn collect_search_paths_from_empty_when_nothing_given() {
+        assert!(collect_search_paths_from(&[], None).is_empty());
+    }
+
+    /// Every `-I`/`--search-path` flag becomes one `PathBuf`, in the order
+    /// given.
+    #[test]
+    fn collect_search_paths_from_includes_every_cli_flag_in_order() {
+        let cli = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(collect_search_paths_from(&cli, None), vec![std::path::PathBuf::from("a"), std::path::PathBuf::from("b")]);
+    }
+
+    /// `STAR_PATH` is parsed as a `PATH`-style list (semicolon-separated on
+    /// Windows) and appended *after* every `-I` flag.
+    #[test]
+    fn collect_search_paths_from_appends_star_path_entries_after_cli_flags() {
+        let cli = vec!["cli_dir".to_string()];
+        let joined = std::env::join_paths(["env_dir_1", "env_dir_2"]).unwrap();
+        assert_eq!(
+            collect_search_paths_from(&cli, Some(joined.as_os_str())),
+            vec![std::path::PathBuf::from("cli_dir"), std::path::PathBuf::from("env_dir_1"), std::path::PathBuf::from("env_dir_2")]
+        );
+    }
+
+    /// `STAR_PATH` alone (no `-I` flags at all) still contributes its
+    /// entries -- the two sources are independent, neither gates the other.
+    #[test]
+    fn collect_search_paths_from_honors_star_path_with_no_cli_flags() {
+        let joined = std::env::join_paths(["only_env_dir"]).unwrap();
+        assert_eq!(collect_search_paths_from(&[], Some(joined.as_os_str())), vec![std::path::PathBuf::from("only_env_dir")]);
     }
 
     /// `star build` with no flags at all defaults to `-O2` -- previously
@@ -409,11 +520,12 @@ mod tests {
 }
 
 /// Emit tokens, AST, or LLVM IR for debugging.
-fn cmd_emit(what: EmitKind, file: &str) -> ExitCode {
-    let source = match std::fs::read_to_string(file) {
+fn cmd_emit(what: EmitKind, file: &str, search: &SearchPathArgs) -> ExitCode {
+    let Some(resolved) = resolve_entry(file, search) else { return ExitCode::FAILURE };
+    let source = match std::fs::read_to_string(&resolved.entry) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("error: could not read {}: {}", file, e);
+            eprintln!("error: could not read {}: {}", resolved.entry.display(), e);
             return ExitCode::FAILURE;
         }
     };
@@ -452,7 +564,7 @@ fn cmd_emit(what: EmitKind, file: &str) -> ExitCode {
         // `crate::ir_check` was happy with it. Verifier findings still
         // print (to stderr, so they don't get piped along with the IR
         // itself) and still fail the exit code on an `Error`-severity one.
-        EmitKind::Llvm => match emit_llvm_ir_verified(file, &source) {
+        EmitKind::Llvm => match emit_llvm_ir_verified(&resolved.entry, &resolved.search_paths, &source) {
             Ok(v) => {
                 for w in &v.warnings {
                     eprintln!("warning: {}", w.message);
@@ -491,9 +603,13 @@ fn cmd_emit(what: EmitKind, file: &str) -> ExitCode {
 /// IR, or an error", since `cmd_emit`'s `EmitKind::Llvm` branch -- an
 /// explicitly debugging-oriented command -- wants to print the IR text
 /// regardless of whether the verifier was happy with it.
-fn emit_llvm_ir_verified(file: &str, source: &str) -> Result<star::driver::IrVerification, Vec<star::diagnostics::Diagnostic>> {
+fn emit_llvm_ir_verified(
+    entry: &Path,
+    search_paths: &[PathBuf],
+    source: &str,
+) -> Result<star::driver::IrVerification, Vec<star::diagnostics::Diagnostic>> {
     let module = Driver::parse(source)?;
-    let (module, _imported_files) = star::modules::resolve(module, Path::new(file))?;
+    let (module, _imported_files) = star::modules::resolve_with_search_paths(module, entry, search_paths)?;
     let mut checker = star::types::Checker::new();
     let typed = checker.check(&module)?;
     Driver::codegen_verified(&typed)

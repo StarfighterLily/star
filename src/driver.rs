@@ -106,11 +106,25 @@ impl Compilation {
 /// Drives the compiler pipeline for one file.
 pub struct Driver {
     path: PathBuf,
+    /// Extra directories `import` resolution should search beyond the
+    /// importing file's own directory -- see [`resolve_input`] and
+    /// `crate::modules::resolve_with_search_paths`. Empty for every caller
+    /// that just wants the original relative-path-only behavior (the vast
+    /// majority of this crate's own tests, via [`Driver::new`]).
+    search_paths: Vec<PathBuf>,
 }
 
 impl Driver {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self { path: path.into(), search_paths: Vec::new() }
+    }
+
+    /// Like [`Driver::new`], but `import` resolution also searches
+    /// `search_paths` (in order) for any import that isn't found relative
+    /// to its importing file -- see [`resolve_input`], which builds this
+    /// list from CLI `-I`/`STAR_PATH` and a discovered `star.toml`.
+    pub fn with_search_paths(path: impl Into<PathBuf>, search_paths: Vec<PathBuf>) -> Self {
+        Self { path: path.into(), search_paths }
     }
 
     /// Read the source file from disk.
@@ -147,7 +161,7 @@ impl Driver {
         // checker ever has to think about more than one file.
         let mut imported_files = Vec::new();
         let module = match module {
-            Some(m) => match crate::modules::resolve(m, &self.path) {
+            Some(m) => match crate::modules::resolve_with_search_paths(m, &self.path, &self.search_paths) {
                 Ok((resolved, files)) => {
                     imported_files = files;
                     Some(resolved)
@@ -261,4 +275,73 @@ impl Driver {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// What a CLI `file` argument (`star build <file>`, `star check <file>`,
+/// ...) actually resolves to once a directory-plus-manifest argument and
+/// explicit `-I`/`STAR_PATH` search paths are folded in -- see
+/// [`resolve_input`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedInput {
+    /// The concrete `.star` file to feed to [`Driver::new`]/
+    /// [`Driver::with_search_paths`].
+    pub entry: PathBuf,
+    /// The full ordered search-path list to pass to
+    /// [`Driver::with_search_paths`].
+    pub search_paths: Vec<PathBuf>,
+    /// The project root a `star.toml` was found at, if any (whether given
+    /// directly as `file` or discovered by walking up from it) -- exposed
+    /// mainly so a caller can print it in a diagnostic; resolution itself
+    /// only needs `entry`/`search_paths`.
+    pub manifest_root: Option<PathBuf>,
+}
+
+/// Turn a CLI-supplied `file` argument plus explicit search paths (`-I`/
+/// `STAR_PATH`, already parsed into `PathBuf`s by the caller) into a
+/// concrete entry file and the full ordered search-path list
+/// `crate::modules::resolve_with_search_paths` should consult.
+///
+/// Two shapes of `file` are supported:
+/// - A **directory**: it must directly contain `crate::manifest::
+///   MANIFEST_FILE_NAME` (`star.toml`) -- an explicit directory argument is
+///   an explicit claim that it's a project root, so this deliberately does
+///   *not* fall back to walking further up looking for one (unlike the file
+///   case below), which would silently build a different project than the
+///   one named on the command line. The manifest's own `entry` (default
+///   `crate::manifest::DEFAULT_ENTRY`) becomes [`ResolvedInput::entry`], and
+///   its declared search dirs plus its own directory are appended after
+///   `extra_search_paths`.
+/// - A **file** (including one that doesn't exist yet -- the read failure
+///   surfaces later, exactly like every existing single-file caller before
+///   this function existed): used verbatim as `entry`, so every pre-
+///   existing caller's behavior is unchanged bit-for-bit when no manifest is
+///   involved. `star.toml` is then looked up by walking up from the file's
+///   own directory (`crate::manifest::discover`) purely to *augment* the
+///   search path list -- if none is found, `search_paths` is just
+///   `extra_search_paths` unchanged.
+///
+/// Either way, `extra_search_paths` always comes first in the returned
+/// list, ahead of anything the manifest contributes -- an explicit `-I`/
+/// `STAR_PATH` entry should win over a same-named file the project's own
+/// manifest would otherwise have resolved to.
+pub fn resolve_input(file: &Path, extra_search_paths: &[PathBuf]) -> Result<ResolvedInput, String> {
+    if file.is_dir() {
+        let loaded = crate::manifest::load_from_dir(file)?.ok_or_else(|| {
+            format!("`{}` is a directory but contains no `{}`", file.display(), crate::manifest::MANIFEST_FILE_NAME)
+        })?;
+        let mut search_paths = extra_search_paths.to_vec();
+        search_paths.extend(loaded.search_paths());
+        return Ok(ResolvedInput { entry: loaded.entry_path(), search_paths, manifest_root: Some(loaded.root) });
+    }
+
+    let start_dir = file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let mut search_paths = extra_search_paths.to_vec();
+    let manifest_root = match crate::manifest::discover(start_dir)? {
+        Some(loaded) => {
+            search_paths.extend(loaded.search_paths());
+            Some(loaded.root)
+        }
+        None => None,
+    };
+    Ok(ResolvedInput { entry: file.to_path_buf(), search_paths, manifest_root })
 }

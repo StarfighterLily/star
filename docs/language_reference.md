@@ -502,6 +502,59 @@ let p = geo::Point(3, 4)
 let area = geo::area(geo::Shape::Circle(2))
 ```
 
+`import` resolves its path in two steps:
+
+1. **Relative to the importing file's own directory.** Two files sitting
+   next to each other can always import one another this way, regardless of
+   any search path configuration -- this is the only resolution step that
+   existed before search paths were added, and it's tried first so it can
+   never be shadowed by a same-named file reachable some other way.
+2. If that fails, **each configured search-path directory, in order**,
+   first match wins. Search paths come from (in priority order): `-I`/
+   `--search-path` on the command line (repeatable), the `STAR_PATH`
+   environment variable (a `PATH`-style, `;`/`:`-separated list), and a
+   discovered `star.toml` manifest's `[paths] search` entries plus the
+   manifest's own directory (see below).
+
+If an import isn't found anywhere, the error lists every location that was
+actually tried.
+
+### Project manifests (`star.toml`)
+
+A directory can be marked as a project root by placing a `star.toml` file in
+it:
+
+```toml
+[package]
+name = "snake"          # cosmetic today
+version = "0.1.0"        # optional
+entry = "main.star"      # optional, defaults to "main.star"
+
+[paths]
+search = ["src", "vendor"]   # extra import search directories,
+                               # relative to this file's own directory
+```
+
+Both sections and every key are optional -- an empty `star.toml` is legal,
+useful purely to mark a directory as a project root. With a manifest in
+place:
+
+- `star build`/`star check`/`star emit <kind>` can be pointed at the
+  **directory** instead of a specific file: `star build projects/snake`
+  builds whatever `[package] entry` names (or `main.star`).
+- Every file in the project can `import` from the manifest's own directory
+  (and any `[paths] search` subdirectory) without needing a hand-written
+  relative path back up to it -- this is what closes the "no project root,
+  no search path, no package identity" gap a hand-threaded-relative-path-only
+  import system has once a project grows past a handful of files sitting in
+  one flat directory.
+
+A `star.toml` also gets picked up automatically when compiling a single file
+directly (`star build src/main.star`): the compiler walks up from the file's
+own directory looking for one, and if found, folds its search paths in
+purely additively -- every pre-existing single-file, no-manifest workflow is
+unaffected either way.
+
 ---
 
 ## Game-Specific Features

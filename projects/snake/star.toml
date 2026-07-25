@@ -1,0 +1,9 @@
+# Minimal project manifest -- see `src/manifest.rs` (todo.md P1 #4). Marks
+# this directory as the project root and names the entry point, so `star
+# build`/`star check`/`star emit` can be pointed at the directory itself
+# instead of `projects/snake/main.star` by hand.
+
+[package]
+name = "snake"
+version = "0.1.0"
+entry = "main.star"

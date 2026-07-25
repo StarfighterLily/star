@@ -3643,6 +3643,361 @@ fn resolve_reports_missing_import_file() {
     assert!(err.iter().any(|d| d.message.contains("cannot import")), "{:?}", err);
 }
 
+// ===== `star::modules::resolve_with_search_paths` (todo.md P1 #4: module
+// search-path resolution) ===================================================
+
+/// An `import` that doesn't exist relative to the importing file's own
+/// directory, but does exist in a configured search-path directory,
+/// resolves through that directory instead of failing.
+#[test]
+fn resolve_with_search_paths_finds_import_in_a_search_directory() {
+    let dir = test_scratch_dir("resolve_with_search_paths_finds_import_in_a_search_directory");
+    let lib_dir = dir.join("libs");
+    write_test_file(&lib_dir, "geo.star", "fn dot(a: i32, b: i32) -> i32:\n    return a * b\n");
+    let main_path = write_test_file(&dir, "main.star", "import \"geo.star\" as geo\nfn main() -> i32:\n    return geo::dot(2, 3)\n");
+
+    let module = Driver::parse(&std::fs::read_to_string(&main_path).unwrap()).expect("should parse");
+    let search_paths = vec![lib_dir.clone()];
+    let (resolved, _files) =
+        star::modules::resolve_with_search_paths(module, &main_path, &search_paths).expect("should resolve via search path");
+    assert!(resolved.items.iter().any(|i| matches!(i, Item::Fn(f) if f.sig.name == "geo__dot")));
+
+    let typed = Driver::check(&resolved).expect("should type-check");
+    Driver::codegen(&typed).expect("should codegen");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The plain 2-argument `resolve` (no search paths at all) must not find an
+/// import that only exists in some directory elsewhere on disk -- a
+/// regression guard that adding search-path support didn't change
+/// `resolve`'s existing relative-only behavior for the hundreds of callers
+/// that never pass one.
+#[test]
+fn resolve_without_search_paths_still_only_looks_relative_to_the_importing_file() {
+    let dir = test_scratch_dir("resolve_without_search_paths_still_only_looks_relative_to_the_importing_file");
+    let lib_dir = dir.join("libs");
+    write_test_file(&lib_dir, "geo.star", "fn dot(a: i32, b: i32) -> i32:\n    return a * b\n");
+    let main_path = write_test_file(&dir, "main.star", "import \"geo.star\" as geo\nfn main() -> i32:\n    return geo::dot(2, 3)\n");
+
+    let module = Driver::parse(&std::fs::read_to_string(&main_path).unwrap()).expect("should parse");
+    let err = star::modules::resolve(module, &main_path).expect_err("should not find geo.star without a search path");
+    assert!(err.iter().any(|d| d.message.contains("cannot import")), "{:?}", err);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A file sitting right next to the importing file always wins over a
+/// same-named file reachable through a search path -- relative resolution
+/// is tried first, exactly like a C compiler's `#include "foo.h"` checking
+/// the including file's own directory before any `-I` path.
+#[test]
+fn resolve_with_search_paths_prefers_relative_file_over_search_path_match() {
+    let dir = test_scratch_dir("resolve_with_search_paths_prefers_relative_file_over_search_path_match");
+    let lib_dir = dir.join("libs");
+    write_test_file(&dir, "geo.star", "fn which() -> i32:\n    return 1\n");
+    write_test_file(&lib_dir, "geo.star", "fn which() -> i32:\n    return 2\n");
+    let main_path = write_test_file(&dir, "main.star", "import \"geo.star\" as geo\nfn main() -> i32:\n    return geo::which()\n");
+
+    let module = Driver::parse(&std::fs::read_to_string(&main_path).unwrap()).expect("should parse");
+    let search_paths = vec![lib_dir.clone()];
+    let (resolved, _files) =
+        star::modules::resolve_with_search_paths(module, &main_path, &search_paths).expect("should resolve");
+    let Item::Fn(f) = resolved.items.iter().find(|i| matches!(i, Item::Fn(f) if f.sig.name == "geo__which")).unwrap() else {
+        unreachable!()
+    };
+    let Stmt::Return { value: Some(Expr::Int(n, _)), .. } = &f.body.stmts[0] else { panic!("expected return of an int literal") };
+    assert_eq!(*n, 1, "the relative-to-the-importing-file geo.star should win, not the one from the search path");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// With more than one search path configured, the first one (in the order
+/// given) that actually contains the file wins -- mirrors how a linker/
+/// compiler resolves `-I`/`-L` directories left-to-right.
+#[test]
+fn resolve_with_search_paths_first_matching_directory_wins() {
+    let dir = test_scratch_dir("resolve_with_search_paths_first_matching_directory_wins");
+    let first = dir.join("first");
+    let second = dir.join("second");
+    write_test_file(&first, "geo.star", "fn which() -> i32:\n    return 10\n");
+    write_test_file(&second, "geo.star", "fn which() -> i32:\n    return 20\n");
+    let main_path = write_test_file(&dir, "main.star", "import \"geo.star\" as geo\nfn main() -> i32:\n    return geo::which()\n");
+
+    let module = Driver::parse(&std::fs::read_to_string(&main_path).unwrap()).expect("should parse");
+    let search_paths = vec![first.clone(), second.clone()];
+    let (resolved, _files) =
+        star::modules::resolve_with_search_paths(module, &main_path, &search_paths).expect("should resolve");
+    let Item::Fn(f) = resolved.items.iter().find(|i| matches!(i, Item::Fn(f) if f.sig.name == "geo__which")).unwrap() else {
+        unreachable!()
+    };
+    let Stmt::Return { value: Some(Expr::Int(n, _)), .. } = &f.body.stmts[0] else { panic!("expected return of an int literal") };
+    assert_eq!(*n, 10, "the first search path directory containing the file should win");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A search path that exists but doesn't contain the requested file is
+/// skipped in favor of a later one that does -- the search doesn't stop (or
+/// error) at the first directory tried, only at the first directory that
+/// actually resolves the import.
+#[test]
+fn resolve_with_search_paths_skips_non_matching_directories() {
+    let dir = test_scratch_dir("resolve_with_search_paths_skips_non_matching_directories");
+    let empty_dir = dir.join("empty");
+    let real_dir = dir.join("real");
+    std::fs::create_dir_all(&empty_dir).unwrap();
+    write_test_file(&real_dir, "geo.star", "fn which() -> i32:\n    return 42\n");
+    let main_path = write_test_file(&dir, "main.star", "import \"geo.star\" as geo\nfn main() -> i32:\n    return geo::which()\n");
+
+    let module = Driver::parse(&std::fs::read_to_string(&main_path).unwrap()).expect("should parse");
+    let search_paths = vec![empty_dir.clone(), real_dir.clone()];
+    let (resolved, _files) =
+        star::modules::resolve_with_search_paths(module, &main_path, &search_paths).expect("should resolve via the second directory");
+    assert!(resolved.items.iter().any(|i| matches!(i, Item::Fn(f) if f.sig.name == "geo__which")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// When an import can't be found anywhere (not relative to the importing
+/// file, not in any search path), the error message lists every location
+/// actually tried -- much friendlier than a bare "file not found" for a
+/// project with several search directories configured.
+#[test]
+fn resolve_with_search_paths_missing_import_error_lists_every_location_tried() {
+    let dir = test_scratch_dir("resolve_with_search_paths_missing_import_error_lists_every_location_tried");
+    let first = dir.join("first");
+    let second = dir.join("second");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    let main_path = write_test_file(&dir, "main.star", "import \"nope.star\" as x\nfn main():\n    return\n");
+
+    let module = Driver::parse(&std::fs::read_to_string(&main_path).unwrap()).expect("should parse");
+    let search_paths = vec![first.clone(), second.clone()];
+    let err =
+        star::modules::resolve_with_search_paths(module, &main_path, &search_paths).expect_err("should fail to resolve");
+    let msg = &err[0].message;
+    assert!(msg.contains("cannot import"), "{msg}");
+    assert!(msg.contains(&dir.join("nope.star").display().to_string()), "{msg}");
+    assert!(msg.contains(&first.join("nope.star").display().to_string()), "{msg}");
+    assert!(msg.contains(&second.join("nope.star").display().to_string()), "{msg}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Search paths propagate through recursive import resolution: a file
+/// that's itself only reachable via a search path can, in turn, import
+/// another file that's *also* only reachable via a search path -- the
+/// `search_paths` slice threaded through `resolve_inner`'s recursive call
+/// doesn't get dropped or reset one level down.
+#[test]
+fn resolve_with_search_paths_propagates_into_nested_imports() {
+    let dir = test_scratch_dir("resolve_with_search_paths_propagates_into_nested_imports");
+    let lib_dir = dir.join("libs");
+    write_test_file(&lib_dir, "base.star", "fn base_val() -> i32:\n    return 7\n");
+    write_test_file(&lib_dir, "mid.star", "import \"base.star\" as base\nfn mid_val() -> i32:\n    return base::base_val() * 2\n");
+    let main_path = write_test_file(&dir, "main.star", "import \"mid.star\" as mid\nfn main() -> i32:\n    return mid::mid_val()\n");
+
+    let module = Driver::parse(&std::fs::read_to_string(&main_path).unwrap()).expect("should parse");
+    let search_paths = vec![lib_dir.clone()];
+    let (resolved, _files) =
+        star::modules::resolve_with_search_paths(module, &main_path, &search_paths).expect("should resolve both levels via the search path");
+    assert!(resolved.items.iter().any(|i| matches!(i, Item::Fn(f) if f.sig.name == "mid__base__base_val")));
+    let typed = Driver::check(&resolved).expect("should type-check");
+    Driver::codegen(&typed).expect("should codegen");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Runtime test: an import resolved purely through a search path (no
+/// relative path from `main.star` to the library at all) builds, links, and
+/// runs correctly end to end -- not just type-checks/codegens.
+#[test]
+fn runtime_import_resolved_via_search_path_end_to_end() {
+    let dir = test_scratch_dir("runtime_import_resolved_via_search_path_end_to_end");
+    let lib_dir = dir.join("vendor");
+    write_test_file(&lib_dir, "mathlib.star", "fn square(x: i32) -> i32:\n    return x * x\n");
+    let main_path = write_test_file(
+        &dir,
+        "main.star",
+        "import \"mathlib.star\" as m\nfn main():\n    println(f\"{m::square(9)}\")\n",
+    );
+
+    let driver = Driver::with_search_paths(&main_path, vec![lib_dir.clone()]);
+    let compilation = driver.compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+
+    let exe = std::env::temp_dir().join("star_test_import_resolved_via_search_path.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "81");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ===== `star::manifest`/`star::driver::resolve_input` (star.toml + the
+// CLI-level directory/-I/STAR_PATH plumbing around search-path resolution)
+// ===========================================================================
+
+fn manifest_test_scratch_dir(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join("star_manifest_driver_tests").join(name)
+}
+
+/// A plain file argument with no `star.toml` anywhere in its ancestry
+/// resolves to itself, unmodified, with `search_paths` equal to exactly
+/// whatever `extra_search_paths` the caller passed in -- the no-manifest
+/// case must be a no-op beyond that, so every pre-existing single-file
+/// caller sees identical behavior to before this feature existed.
+#[test]
+fn resolve_input_file_with_no_manifest_is_unmodified_plus_extra_search_paths() {
+    let dir = manifest_test_scratch_dir("resolve_input_file_with_no_manifest_is_unmodified_plus_extra_search_paths");
+    let main_path = write_test_file(&dir, "main.star", "fn main():\n    return\n");
+    let extra = vec![std::path::PathBuf::from("some/extra/dir")];
+
+    let resolved = star::driver::resolve_input(&main_path, &extra).expect("should resolve");
+    assert_eq!(resolved.entry, main_path);
+    assert_eq!(resolved.search_paths, extra);
+    assert_eq!(resolved.manifest_root, None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A file argument whose directory (or an ancestor of it) contains a
+/// `star.toml` gets that manifest's search paths folded in automatically,
+/// purely additively -- `extra_search_paths` (CLI `-I`/`STAR_PATH`) still
+/// come first, then the manifest's own `[paths] search` entries, then the
+/// manifest's own root directory.
+#[test]
+fn resolve_input_file_auto_discovers_ancestor_manifest_and_appends_its_search_paths() {
+    let root = manifest_test_scratch_dir("resolve_input_file_auto_discovers_ancestor_manifest_and_appends_its_search_paths");
+    write_test_file(&root, star::manifest::MANIFEST_FILE_NAME, "[package]\nname = \"proj\"\n[paths]\nsearch = [\"vendor\"]\n");
+    let main_path = write_test_file(&root.join("src"), "main.star", "fn main():\n    return\n");
+    let extra = vec![std::path::PathBuf::from("explicit")];
+
+    let resolved = star::driver::resolve_input(&main_path, &extra).expect("should resolve");
+    assert_eq!(resolved.entry, main_path, "an explicit file argument is used verbatim, never replaced by the manifest's entry");
+    assert_eq!(resolved.search_paths, vec![std::path::PathBuf::from("explicit"), root.join("vendor"), root.clone()]);
+    assert_eq!(resolved.manifest_root, Some(root.clone()));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A directory argument containing a `star.toml` resolves to that
+/// manifest's declared `entry` (not a hardcoded `main.star`), with its
+/// search paths appended after `extra_search_paths`.
+#[test]
+fn resolve_input_directory_with_manifest_uses_declared_entry_and_search_paths() {
+    let root = manifest_test_scratch_dir("resolve_input_directory_with_manifest_uses_declared_entry_and_search_paths");
+    write_test_file(&root, star::manifest::MANIFEST_FILE_NAME, "[package]\nentry = \"start.star\"\n[paths]\nsearch = [\"src\"]\n");
+    write_test_file(&root, "start.star", "fn main():\n    return\n");
+
+    let resolved = star::driver::resolve_input(&root, &[]).expect("should resolve");
+    assert_eq!(resolved.entry, root.join("start.star"));
+    assert_eq!(resolved.search_paths, vec![root.join("src"), root.clone()]);
+    assert_eq!(resolved.manifest_root, Some(root.clone()));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A directory argument with no manifest's `entry` declared falls back to
+/// `crate::manifest::DEFAULT_ENTRY` (`main.star`).
+#[test]
+fn resolve_input_directory_with_manifest_defaults_entry_to_main_star() {
+    let root = manifest_test_scratch_dir("resolve_input_directory_with_manifest_defaults_entry_to_main_star");
+    write_test_file(&root, star::manifest::MANIFEST_FILE_NAME, "[package]\nname = \"proj\"\n");
+
+    let resolved = star::driver::resolve_input(&root, &[]).expect("should resolve");
+    assert_eq!(resolved.entry, root.join("main.star"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A directory argument with *no* `star.toml` directly inside it is a clean
+/// error -- and, unlike the file-argument case, does not fall back to
+/// walking further up looking for one: an explicit directory argument is an
+/// explicit claim that it's the project root.
+#[test]
+fn resolve_input_directory_without_manifest_is_a_clean_error() {
+    let root = manifest_test_scratch_dir("resolve_input_directory_without_manifest_is_a_clean_error");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let err = star::driver::resolve_input(&root, &[]).expect_err("a directory with no star.toml should be an error");
+    assert!(err.contains("star.toml"), "{err}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A directory argument whose manifest is only present in a *parent*
+/// directory (not directly inside the given directory) is still an error --
+/// pins the "no ancestor walk for an explicit directory argument" contract
+/// `resolve_input_directory_without_manifest_is_a_clean_error` names.
+#[test]
+fn resolve_input_directory_does_not_fall_back_to_an_ancestor_manifest() {
+    let root = manifest_test_scratch_dir("resolve_input_directory_does_not_fall_back_to_an_ancestor_manifest");
+    let nested = root.join("nested");
+    write_test_file(&root, star::manifest::MANIFEST_FILE_NAME, "[package]\nname = \"parent\"\n");
+    std::fs::create_dir_all(&nested).unwrap();
+
+    let err = star::driver::resolve_input(&nested, &[]).expect_err("should not find the parent's manifest");
+    assert!(err.contains("star.toml"), "{err}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A malformed `star.toml` (parse error) surfaces as a clean `Err` from
+/// `resolve_input` rather than a panic, whether reached via a directory
+/// argument or auto-discovery from a file argument.
+#[test]
+fn resolve_input_reports_a_malformed_manifest_as_a_clean_error() {
+    let root = manifest_test_scratch_dir("resolve_input_reports_a_malformed_manifest_as_a_clean_error");
+    write_test_file(&root, star::manifest::MANIFEST_FILE_NAME, "this is not valid star.toml\n");
+
+    let dir_err = star::driver::resolve_input(&root, &[]).expect_err("malformed manifest via directory arg should error");
+    assert!(dir_err.contains("star.toml"), "{dir_err}");
+
+    let main_path = write_test_file(&root, "main.star", "fn main():\n    return\n");
+    let file_err = star::driver::resolve_input(&main_path, &[]).expect_err("malformed manifest via ancestor discovery should error");
+    assert!(file_err.contains("star.toml"), "{file_err}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// End-to-end runtime test: a directory argument with a `star.toml`
+/// declaring `[paths] search = ["src"]` builds, links, and runs correctly
+/// through the exact same `resolve_input` -> `Driver::with_search_paths` ->
+/// `compile` -> `codegen` pipeline `cmd_build`/`cmd_check` drive -- proving
+/// the manifest-driven path works for a real multi-file layout, not just a
+/// single flat directory of files.
+#[test]
+fn runtime_directory_argument_with_manifest_and_src_layout_end_to_end() {
+    let root = manifest_test_scratch_dir("runtime_directory_argument_with_manifest_and_src_layout_end_to_end");
+    write_test_file(&root, star::manifest::MANIFEST_FILE_NAME, "[package]\nname = \"proj\"\nentry = \"main.star\"\n[paths]\nsearch = [\"src\"]\n");
+    write_test_file(&root.join("src"), "geo.star", "fn dot(a: i32, b: i32) -> i32:\n    return a * b\n");
+    write_test_file(
+        &root,
+        "main.star",
+        "import \"geo.star\" as geo\nfn main():\n    println(f\"{geo::dot(6, 7)}\")\n",
+    );
+
+    let resolved = star::driver::resolve_input(&root, &[]).expect("should resolve the directory argument");
+    let driver = Driver::with_search_paths(&resolved.entry, resolved.search_paths);
+    let compilation = driver.compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+
+    let exe = std::env::temp_dir().join("star_test_directory_argument_with_manifest.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "42");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Runtime test: `examples/modules_main.exe` exercises `import "path" as
 /// alias` end to end -- a qualified struct literal, a qualified
 /// free-function call, and a qualified payload enum variant construction

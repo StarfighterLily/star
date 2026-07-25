@@ -10,6 +10,7 @@ pub mod diagnostics;
 pub mod driver;
 pub mod ir_check;
 pub mod lexer;
+pub mod manifest;
 pub mod modules;
 pub mod parser;
 pub mod sequence;

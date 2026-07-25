@@ -14,6 +14,13 @@
 //! definition it refers to are simply the same plain identifier -- neither
 //! stage needs to know modules exist.
 //!
+//! An `import "path"` is resolved relative to the importing file's own
+//! directory first, then (via [`resolve_with_search_paths`]) against a
+//! configured list of search-path directories -- see
+//! `candidate_import_paths` and `crate::manifest`, which is how a `-I`/
+//! `STAR_PATH`/`star.toml`-declared search path actually reaches here from
+//! the CLI (`crate::driver::resolve_input`).
+//!
 //! Imports are resolved recursively (an imported file may itself import
 //! other files), with a cycle guard over canonicalized paths. Nested imports
 //! are transitively reachable: if module `a` imports `b`, which imports `c`,
@@ -143,6 +150,20 @@ type CallId = u64;
 /// dependency) collapses to one set of top-level declarations instead of
 /// producing mutually-incompatible duplicates.
 pub fn resolve(module: Module, root_path: &Path) -> Result<(Module, Vec<(String, String)>), Vec<Diagnostic>> {
+    resolve_with_search_paths(module, root_path, &[])
+}
+
+/// Like [`resolve`], but an `import "path"` that doesn't exist relative to
+/// its importing file's own directory also gets tried, in order, against
+/// each directory in `search_paths` before being reported as missing --
+/// see the module-level doc comment's "search path" framing and
+/// `crate::driver::resolve_input`, which builds this list from `-I`/
+/// `STAR_PATH` and a discovered `star.toml`'s `[paths] search`.
+pub fn resolve_with_search_paths(
+    module: Module,
+    root_path: &Path,
+    search_paths: &[PathBuf],
+) -> Result<(Module, Vec<(String, String)>), Vec<Diagnostic>> {
     let mut loading = HashSet::new();
     // Best-effort: if the root file exists on disk, seed the cycle guard
     // with its own canonical path so an import chain that loops back to the
@@ -157,9 +178,32 @@ pub fn resolve(module: Module, root_path: &Path) -> Result<(Module, Vec<(String,
     let base_dir = root_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
     let mut files = Vec::new();
     let mut call_counter: CallId = 0;
-    let (resolved, provenance) =
-        resolve_inner(module, &base_dir, root_canonical.as_deref(), &mut loading, &mut files, 0, &mut call_counter)?;
+    let (resolved, provenance) = resolve_inner(
+        module,
+        &base_dir,
+        root_canonical.as_deref(),
+        &mut loading,
+        &mut files,
+        0,
+        &mut call_counter,
+        search_paths,
+    )?;
     Ok((dedupe_by_origin(resolved, &provenance), files))
+}
+
+/// Every filesystem location `resolve_inner` will try, in priority order,
+/// to satisfy `import "import_path"` from a file whose own directory is
+/// `base_dir`: relative to `base_dir` first (so a plain relative import
+/// between two files sitting next to each other always means exactly that,
+/// regardless of what search paths happen to be configured), then each
+/// `search_paths` entry in turn -- mirroring how a C compiler resolves
+/// `#include "foo.h"` against `-I` directories only after the including
+/// file's own directory comes up empty.
+fn candidate_import_paths(import_path: &str, base_dir: &Path, search_paths: &[PathBuf]) -> Vec<PathBuf> {
+    std::iter::once(base_dir.to_path_buf())
+        .chain(search_paths.iter().cloned())
+        .map(|dir| dir.join(import_path))
+        .collect()
 }
 
 /// Resolve every `import` in `module`, returning the flattened module
@@ -180,6 +224,7 @@ fn resolve_inner(
     files: &mut Vec<(String, String)>,
     depth: u32,
     call_counter: &mut CallId,
+    search_paths: &[PathBuf],
 ) -> Result<(Module, ItemProvenance), Vec<Diagnostic>> {
     // This call frame's own identity -- see [`ItemProvenance`]'s doc comment
     // for why every direct declaration below is tagged with it.
@@ -199,12 +244,13 @@ fn resolve_inner(
                         decl.span,
                     )]);
                 }
-                let resolved_path = base_dir.join(&decl.path);
-                let canonical = match resolved_path.canonicalize() {
-                    Ok(p) => p,
-                    Err(e) => {
+                let candidates = candidate_import_paths(&decl.path, base_dir, search_paths);
+                let canonical = match candidates.iter().find_map(|c| c.canonicalize().ok()) {
+                    Some(p) => p,
+                    None => {
+                        let tried = candidates.iter().map(|c| format!("  - {}", c.display())).collect::<Vec<_>>().join("\n");
                         return Err(vec![Diagnostic::error(
-                            format!("cannot import `{}`: {}", decl.path, e),
+                            format!("cannot import `{}`: not found; tried:\n{}", decl.path, tried),
                             decl.span,
                         )]);
                     }
@@ -215,7 +261,7 @@ fn resolve_inner(
                         decl.span,
                     )]);
                 }
-                let source = match std::fs::read_to_string(&resolved_path) {
+                let source = match std::fs::read_to_string(&canonical) {
                     Ok(s) => s,
                     Err(e) => {
                         return Err(vec![Diagnostic::error(
@@ -247,8 +293,16 @@ fn resolve_inner(
                 // (see the module-level doc comment on the reach limit this
                 // implies).
                 let child_base = canonical.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-                let (resolved_child, child_provenance) =
-                    match resolve_inner(imported, &child_base, Some(&canonical), loading, files, depth + 1, call_counter) {
+                let (resolved_child, child_provenance) = match resolve_inner(
+                    imported,
+                    &child_base,
+                    Some(&canonical),
+                    loading,
+                    files,
+                    depth + 1,
+                    call_counter,
+                    search_paths,
+                ) {
                         Ok(m) => m,
                         Err(diags) => {
                             // Re-anchor on this level's own (meaningful) span
