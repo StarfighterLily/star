@@ -1367,6 +1367,70 @@ window's current (drawn, not-yet-presented) framebuffer via
 `SDL_RenderReadPixels` — the only way to observe what a drawing builtin
 actually drew; every other SDL drawing builtin here is write-only.
 
+### Proportional Text Rendering (System / Bundled Fonts)
+
+Closes `todo.md` P2 #9: the bitmap font above is fine for a debug HUD or
+score counter, not for shippable UI text (fixed-width, uppercase-only, no
+real glyph shapes). `font_load_system(window, family, size) -> ptr` and
+`font_load_ttf(window, path, size) -> ptr` render real, proportional,
+antialiased glyphs (upper *and* lower case) by binding directly to Windows'
+own GDI font engine — `font_load_system` loads an already-installed font by
+family name (`"Segoe UI"`, `"Consolas"`, ...), `font_load_ttf` loads a
+`.ttf`/`.otf` file a game bundles with itself, so its text keeps the same
+look regardless of what's installed on the player's machine. Neither
+vendors a new binary dependency (no `SDL_ttf`/`libfreetype`) and neither
+hand-rolls TrueType glyph rasterization — gdi32.dll ships with every
+Windows install and already does that work (with real hinting/
+antialiasing/kerning); this floor only drives it and copies the result into
+an SDL texture. `size` is a pixel height, clamped to `>= 1`.
+
+```star
+fn main():
+    let w = window_create("My Game", 640, 480)
+    let f = font_load_system(w, "Segoe UI", 24)
+    if is_null(f):
+        println("font_load_system failed")
+        return
+    clear_screen(w, Color32(20, 20, 30, 255))
+    draw_text_ttf(w, f, "Score: 0", 8, 8, Color32(255, 255, 255, 255))
+    present(w)
+    font_ttf_free(f)
+    window_destroy(w)
+```
+
+Both loaders take `window` up front (unlike `font_load`'s window-independent
+handle): the rasterized glyph atlas becomes a real `SDL_Texture`, and an SDL
+texture is inherently owned by one `SDL_Renderer` — a font loaded this way
+can only be drawn against the window it was loaded for. `null` on failure
+(checked with `is_null`): a missing/unreadable file, a file that isn't a
+recognizable `sfnt` font, or a downstream GDI/SDL resource-acquisition
+failure. Free a loaded handle with `font_ttf_free` — distinct from
+`font_free`, since a `font_load_system`/`font_load_ttf` handle is a
+different shape (an atlas texture + metrics table) than a bitmap-font
+buffer, and the two are not interchangeable.
+
+`draw_text_ttf(window, font, text, x, y, color)` draws `text` starting at
+`(x, y)`, tinted with `color`; `\n` starts a new line. `measure_text_ttf(font,
+text) -> (int, int)` returns the `(width, height)` in pixels `draw_text_ttf`
+would occupy, without drawing anything. Unlike the bitmap font, there is no
+`scale` parameter — pick the pixel size once, at load time. Every codepoint
+in the printable-ASCII range (`' '..='~'`) renders as a real, distinct glyph
+(no lowercase folding); a codepoint outside that range (including a custom
+font's own missing glyphs) draws as nothing but still advances the cursor by
+the space character's own width, so text after it stays aligned.
+
+#### Limitations
+
+- Printable ASCII only (`' '..='~'`, 95 codepoints) — no Unicode/extended
+  Latin/CJK/emoji glyph coverage.
+- No kerning between the atlas's independently-measured glyphs (GDI applies
+  its own kerning *within* one `TextOutA` call, but each glyph here is drawn
+  as its own single-character call during rasterization).
+- `font_load_system`/`font_load_ttf`/`font_ttf_free`/`draw_text_ttf` all
+  touch the shared `SDL_Renderer*` and so — like `draw_text`/`get_pixel` —
+  cannot be called from inside a `par`/`swarm` body; `measure_text_ttf` can.
+- Windows-only, like this entire compiler's target — GDI is a Win32 API.
+
 ### Audio Playback / Gamepad Input
 
 Closes `todo.md` #8, "Audio playback and gamepad input" — the last

@@ -51,6 +51,17 @@ use super::*;
 /// reads `SDL_NumJoysticks`, the same shared-subsystem state `window_create`
 /// touches. All banned for the same "this proof has no visibility into
 /// C-library-owned shared state" reason as every other builtin here.
+///
+/// `font_load_system`/`font_load_ttf`/`font_ttf_free`/`draw_text_ttf`
+/// (`crate::codegen::system_font`) all join the ban list too, unlike
+/// `font_load`/`font_free`/`default_font`/`measure_text`'s own carve-out
+/// (see above): every one of the four calls `SDL_GetRenderer` and then
+/// `SDL_CreateTexture`/`SDL_DestroyTexture`/`SDL_RenderCopy` against that
+/// *shared* renderer (rasterizing the atlas or drawing/destroying it),
+/// unlike a bitmap-font handle's own independent `malloc`'d buffer.
+/// `measure_text_ttf` is the one exception that *does* stay unbanned --
+/// it only reads a font handle's own already-rasterized metrics table, no
+/// SDL call at all, exactly like `measure_text`.
 pub(super) fn is_banned_sdl_builtin_in_par(name: &str) -> bool {
     matches!(
         name,
@@ -79,6 +90,10 @@ pub(super) fn is_banned_sdl_builtin_in_par(name: &str) -> bool {
             | "gamepad_button_down"
             | "gamepad_axis"
             | "gamepad_attached"
+            | "font_load_system"
+            | "font_load_ttf"
+            | "font_ttf_free"
+            | "draw_text_ttf"
     )
 }
 

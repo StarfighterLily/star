@@ -80,7 +80,7 @@ programs, biggest lever first within each tier.
 9. **A proportional/lowercase-aware text renderer**, or a documented,
    supported path to bind `SDL_ttf` for anything beyond a debug HUD. The
    current 5x7 uppercase-only bitmap font is fine for a score counter, not
-   for shippable UI text.
+   for shippable UI text. -- Done: See previous work below for details.
 10. **General place-projection into `Table<T>`** (`table[i].field = v`),
     closing the one documented gap in that type's method surface. -- Done:
     See previous work below for details.
@@ -108,6 +108,155 @@ programs, biggest lever first within each tier.
     barrier if outside contribution is ever a goal.
 
 # Previous work:
+
+Implemented proportional, real-glyph-shaped text rendering (todo.md P2 #9),
+closing the gap `crate::codegen::font`'s own doc comment already flagged:
+the hand-authored 5x7 bitmap font ("fine for a score counter, not for
+shippable UI text") was the *entire* text-rendering surface, with no path
+to real proportional/lowercase/antialiased glyphs.
+
+Chose neither of `todo.md`'s two originally-named options -- vendoring
+`SDL_ttf` (a second binary DLL dependency plus its own transitive
+`libfreetype` dependency, the exact tradeoff `font.rs`'s bitmap font was
+built specifically to dodge) or hand-rolling a TrueType outline
+rasterizer (`glyf`/`loca` quadratic-bezier parsing, scanline coverage
+antialiasing, entirely as hand-emitted LLVM IR text -- what
+`stb_truetype.h` needs ~5000 careful lines of C for, and not something
+realistically deliverable correctly as strung-together `self.line(&format!
+(...))` calls). Instead bound directly to Windows GDI's own font engine:
+this compiler's only target is `x86_64-w64-windows-gnu`, so gdi32.dll ships
+with every Windows install already, needing no new vendored DLL, and it
+already does the hard work (real TrueType/OpenType parsing, hinting,
+antialiasing, kerning) behind a flat, easy-to-`declare`-and-`call` C ABI --
+this floor only has to drive it and copy its rasterized output into an SDL
+texture.
+
+New `src/codegen/system_font.rs`, five new builtins, entirely additive
+alongside the existing bitmap-font builtins (untouched, still the
+zero-setup debug-HUD option):
+
+- `font_load_system(window, family, size) -> ptr` loads an already-
+  installed system font by family name (`"Segoe UI"`, `"Consolas"`, ...) --
+  literally "loading system fonts", the feature's own stated end goal.
+- `font_load_ttf(window, path, size) -> ptr` loads a bundled `.ttf`/`.otf`
+  file instead, so a game's text keeps a consistent look regardless of
+  what's installed on the player's machine. GDI has no "open a font by
+  file path" entry point, only "select an installed face by name", so this
+  privately registers the file (`AddFontResourceExA`, `FR_PRIVATE` --
+  invisible system-wide, undone by `RemoveFontResourceExA` once
+  rasterization finishes) and hand-parses just enough of the file's own
+  `sfnt` table directory and `name` table (a small, bounded, fixed-format
+  big-endian binary parse -- table-directory scan for the `name` tag, then
+  a `name`-table record scan preferring the Windows/en-US platform/
+  language/nameID=1 record, falling back to any nameID=1 record, with a
+  UTF-16BE-to-ASCII narrow conversion) to recover a usable family name --
+  no different in kind from `font_load`'s/`crate::codegen::audio`'s own
+  hand-rolled fixed-format header parsing, just a bigger format.
+- `font_ttf_free(font)` destroys the atlas texture and frees the handle.
+- `draw_text_ttf(window, font, text, x, y, color)` / `measure_text_ttf(font,
+  text) -> (int, int)` mirror `draw_text`/`measure_text`'s own `\n`-as-
+  line-break convention, but need no `scale` parameter (a real font's pixel
+  size is chosen once, at load time) and no lowercase-folding (the atlas
+  already has real, distinct lowercase glyph shapes).
+
+Rasterization (`emit_rasterize_font`, shared by both loaders once they have
+a real `HFONT`): renders the fixed printable-ASCII range (`' '..='~'`, 95
+glyphs) once into one horizontal atlas via `GetTextExtentPoint32A`
+(per-glyph proportional advance width) and `TextOutA`
+(`SetBkMode(TRANSPARENT)`, white `SetTextColor`, `ANTIALIASED_QUALITY` --
+deliberately *not* `CLEARTYPE_QUALITY`, whose per-subpixel RGB fringing
+would break the next step's assumption) into a `CreateDIBSection` bitmap
+zeroed to black first. White-glyph-on-black is a coverage trick: the
+resulting pixel's equal R=G=B value *is* that pixel's antialiased glyph
+coverage. A follow-up pass rewrites each pixel from `(cov, cov, cov, 0)` to
+`(255, 255, 255, cov)` -- exactly `SDL_PIXELFORMAT_ARGB8888`'s own expected
+little-endian byte layout, so only the alpha byte of each pixel ever needs
+touching. The atlas becomes a real `SDL_Texture`
+(`SDL_TEXTUREACCESS_STATIC`, `SDL_BLENDMODE_BLEND`) via one
+`SDL_UpdateTexture` call; every GDI object is deleted immediately
+afterward. `draw_text_ttf` tints the shared atlas texture per call via
+`SDL_SetTextureColorMod`/`SDL_SetTextureAlphaMod` before `SDL_RenderCopy`
+per glyph. Both loaders take `window` up front (unlike `font_load`'s
+window-independent handle) since the atlas becomes a real `SDL_Texture`,
+inherently owned by one `SDL_Renderer` -- re-derived from `window` exactly
+like every other drawing builtin in `crate::codegen::sdl`.
+
+`Ty::Ptr` reused as the opaque handle again (a 772-byte `malloc`'d, RC-
+header-free buffer: `[i8* sdl_texture][i32 line_height][i32 x 95 glyph_x]
+[i32 x 95 glyph_w]`), same convention as every other opaque handle in this
+codegen. A codepoint outside the atlas's range draws as nothing but still
+advances by glyph 0's (space's) own real width, so text after it stays
+aligned -- the same "stays aligned, doesn't drift" convention
+`crate::codegen::font` already established for its own out-of-range case.
+
+Wired through the same five places every existing SDL/GDI-adjacent builtin
+already threads through (`src/types/mod.rs` return types +
+`RESERVED_RUNTIME_SYMBOLS`, `src/types/expr.rs` arity/type checks,
+`src/codegen/mod.rs`'s new `system_font` submodule + every new GDI/SDL
+`declare`, `src/codegen/expr.rs` call dispatch), plus
+`src/types/par_analysis.rs`: `font_load_system`/`font_load_ttf`/
+`font_ttf_free`/`draw_text_ttf` all touch the shared `SDL_Renderer*`
+(rasterizing into it or drawing/destroying a texture against it) and so
+join the same ban list `draw_text`/`get_pixel` are already in;
+`measure_text_ttf` only reads a font handle's own already-rasterized
+metrics table, no SDL call at all, and stays usable inside a `par`/`swarm`
+body exactly like `measure_text`. Needs `-l gdi32` at build time (on top of
+the existing `-L sdl/lib/x64 -l SDL2`) -- confirmed by a real link failure
+with it omitted (undefined `CreateCompatibleDC`/etc. symbols), documented
+in `docs/language_reference.md`'s new "Proportional Text Rendering (System
+/ Bundled Fonts)" section alongside the loaders' Windows-only/ASCII-only/
+no-cross-glyph-kerning limitations. Added `examples/system_fonts.star`
+(with committed `.ll`/`.exe`).
+
+Three real bugs caught and fixed during end-to-end validation (a genuine
+`star build` + `clang` + run round trip against real system/bundled fonts,
+not just type-checking): (1) a `phi` in `font_load_system` referencing a
+stale predecessor label (`ok_label`) instead of the block `emit_rasterize_
+font` actually falls through from (`self.current_label`, since
+rasterization opens several basic blocks of its own) -- caught immediately
+by this compiler's own IR verifier (`src/ir_check.rs`, todo.md P0 #1)
+refusing to hand the malformed IR to `clang` at all, exactly the safety net
+it exists for; (2) `emit_read_u32be`'s big-endian byte composition silently
+dropped the first byte's `<< 24` shift, so `sfnt` table tag comparisons
+never matched and `font_load_ttf` always failed to find the `name` table --
+caught by testing against a real `arial.ttf` and tracing the failure with
+temporary instrumentation, not visible from the IR shape alone; (3) glyph
+cells were originally packed edge-to-edge in the atlas with zero gap
+between them (`glyph_x[idx+1] = glyph_x[idx] + glyph_w[idx]`, exactly
+GDI's own advance-width cursor) -- but a glyph's antialiased *ink* can
+overhang past its advance box even for an ordinary upright font (the
+curved right edge of `n`/`g` is the common case), and `TextOutA` in
+`TRANSPARENT` mode never clears what's already in the DIB, so one glyph's
+overhang silently persisted into the *next* glyph's own atlas column,
+invisible until that next glyph's `src_rect` sampled it back out as a
+stray pixel glued to the wrong character. Only caught visually (an actual
+build/run of `examples/system_fonts.star`, not any automated test --
+"Star Engine" at 32px showed a fragment stuck near `n`/`g`/`i`), since
+every existing pixel-coverage test only asked "is *any* pixel lit in this
+region", never "is a lit pixel where it has no business being." Fixed with
+`GLYPH_PAD` (3px dead space reserved after each glyph's own column before
+the next one starts, `crate::codegen::system_font`) -- glyph_w/layout
+metrics are untouched, only where each glyph's ink is *stored* in the
+atlas moves.
+
+Added 25 new tests to `tests/frontend.rs`: checker arity/argument-type
+tests for all five builtins (including confirming `font_load_system`/
+`font_load_ttf`'s shared checker arm still picks the right argument label,
+`family` vs `path`, per builtin name); a `par`/`swarm`-ban regression test
+covering all four renderer-touching builtins plus a `measure_text_ttf`-
+stays-usable positive sibling test; a codegen-shape test confirming
+`font_load_system` emits `CreateFontA`/`SDL_CreateTexture` and
+`draw_text_ttf` emits `SDL_RenderCopy`; and runtime end-to-end tests
+(against real "Segoe UI" and `C:\Windows\Fonts\arial.ttf`, the same "single
+Windows dev machine" assumption this project's whole build story already
+makes) covering `font_load_system`/`font_load_ttf` real success with real
+rendered coverage (read back via `get_pixel` over the whole measured text
+region, not one hand-picked pixel), a missing-file and a truncated-file
+load both returning `null`, `font_ttf_free`'s null-out-caller-binding and
+null-handle-abort behavior, `draw_text_ttf`/`measure_text_ttf`'s null-
+handle aborts, `\n` genuinely increasing measured height, and an out-of-
+range codepoint measuring identically to a real space character. Full
+suite (1506 tests) passes.
 
 Implemented general place-projection into `Table<T>` (todo.md P2 #10),
 closing the one gap `docs/design.md`'s `Table<T>` write-up documented in its

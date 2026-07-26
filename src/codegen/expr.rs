@@ -643,6 +643,13 @@ impl Codegen {
                     Some("draw_text") => { self.emit_draw_text(args); "%undef".into() }
                     Some("measure_text") => self.emit_measure_text(args),
                     Some("get_pixel") => self.emit_get_pixel(args),
+                    // Proportional GDI-backed text rendering (`todo.md` P2
+                    // #9) -- see `crate::codegen::system_font`.
+                    Some("font_load_system") => self.emit_font_load_system(args),
+                    Some("font_load_ttf") => self.emit_font_load_ttf(args),
+                    Some("font_ttf_free") => { self.emit_font_ttf_free(args); "%undef".into() }
+                    Some("draw_text_ttf") => { self.emit_draw_text_ttf(args); "%undef".into() }
+                    Some("measure_text_ttf") => self.emit_measure_text_ttf(args),
                     // Audio playback / gamepad input builtins (`todo.md` #8)
                     // -- see `crate::codegen::audio`/`crate::codegen::gamepad`.
                     Some("sound_load") => self.emit_sound_load(args),

@@ -2658,6 +2658,58 @@ impl Checker {
                     }
                 }
             }
+            // Proportional GDI-backed text rendering -- see
+            // `crate::codegen::system_font`.
+            "font_load_system" | "font_load_ttf" => {
+                let label = if name == "font_load_system" { "family" } else { "path" };
+                if arity_ok(3, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`{}` argument 1 (window) expected `ptr`, found `{:?}`", name, arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Str) {
+                        self.error(format!("`{}` argument 2 ({}) expected `str`, found `{:?}`", name, label, arg_tys[1]), span);
+                    }
+                    if !tys_eq(&arg_tys[2], &Ty::Int) {
+                        self.error(format!("`{}` argument 3 (size) expected `int`, found `{:?}`", name, arg_tys[2]), span);
+                    }
+                }
+            }
+            "font_ttf_free" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                    self.error(format!("`font_ttf_free` expects a `ptr` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "draw_text_ttf" => {
+                if arity_ok(6, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`draw_text_ttf` argument 1 (window) expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Ptr) {
+                        self.error(format!("`draw_text_ttf` argument 2 (font) expected `ptr`, found `{:?}`", arg_tys[1]), span);
+                    }
+                    if !tys_eq(&arg_tys[2], &Ty::Str) {
+                        self.error(format!("`draw_text_ttf` argument 3 (text) expected `str`, found `{:?}`", arg_tys[2]), span);
+                    }
+                    for (i, t) in arg_tys[3..5].iter().enumerate() {
+                        if !tys_eq(t, &Ty::Int) {
+                            self.error(format!("`draw_text_ttf` argument {} expected `int`, found `{:?}`", i + 4, t), span);
+                        }
+                    }
+                    if !tys_eq(&arg_tys[5], &Ty::Color32) {
+                        self.error(format!("`draw_text_ttf` argument 6 (color) expected `Color32`, found `{:?}`", arg_tys[5]), span);
+                    }
+                }
+            }
+            "measure_text_ttf" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`measure_text_ttf` argument 1 (font) expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Str) {
+                        self.error(format!("`measure_text_ttf` argument 2 (text) expected `str`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
             // Audio playback / gamepad input builtins (`todo.md` #8) -- see
             // `crate::codegen::audio`/`crate::codegen::gamepad`.
             "sound_load" => {

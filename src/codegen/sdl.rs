@@ -84,7 +84,7 @@ impl Codegen {
     /// exact `r | g<<8 | b<<16 | a<<24` layout `emit_color32_channel`
     /// (`crate::codegen::geometry`) already established, just truncated to
     /// `i8` (SDL's `Uint8`) instead of widened back to `i32`.
-    fn emit_color32_rgba8(&mut self, arg: &TypedExpr) -> (String, String, String, String) {
+    pub(super) fn emit_color32_rgba8(&mut self, arg: &TypedExpr) -> (String, String, String, String) {
         let val = self.emit_expr(arg);
         let packed = self.untag(&val, &Ty::Color32);
         let mut channels = Vec::with_capacity(4);

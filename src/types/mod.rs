@@ -964,6 +964,15 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "font_free" | "draw_text" => Some(Ty::Named("unknown".into())),
         "measure_text" => Some(Ty::Tuple(vec![Ty::Int, Ty::Int])),
         "get_pixel" => Some(Ty::Color32),
+        // Proportional, real-glyph-shaped text rendering via Windows GDI --
+        // see `crate::codegen::system_font` (`todo.md` P2 #9). Distinct
+        // builtins/handle space from `font_load`/`draw_text` above (a
+        // bitmap-font `ptr` and a GDI-atlas `ptr` are not interchangeable).
+        // `font_load_system`/`font_load_ttf` reuse `Ty::Ptr` as the opaque
+        // handle, null on failure, same convention as `font_load`.
+        "font_load_system" | "font_load_ttf" => Some(Ty::Ptr),
+        "font_ttf_free" | "draw_text_ttf" => Some(Ty::Named("unknown".into())),
+        "measure_text_ttf" => Some(Ty::Tuple(vec![Ty::Int, Ty::Int])),
         // `todo.md` #8 "Audio playback and gamepad input" -- see
         // `crate::codegen::audio`. `sound_load` reuses `Ty::Ptr` as an
         // opaque handle exactly like `window_create`/`font_load` (null on
@@ -1370,6 +1379,13 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     // `crate::codegen::gamepad`.
     "SDL_NumJoysticks", "SDL_JoystickOpen", "SDL_JoystickClose", "SDL_JoystickUpdate",
     "SDL_JoystickGetButton", "SDL_JoystickGetAxis", "SDL_JoystickGetAttached",
+    // `font_load_system`/.../`measure_text_ttf` builtins -- see
+    // `crate::codegen::system_font`.
+    "CreateCompatibleDC", "CreateFontA", "SelectObject", "DeleteObject", "DeleteDC",
+    "SetBkMode", "SetTextColor", "GetTextExtentPoint32A", "GetTextMetricsA",
+    "CreateDIBSection", "TextOutA", "AddFontResourceExA", "RemoveFontResourceExA",
+    "SDL_CreateTexture", "SDL_UpdateTexture", "SDL_SetTextureBlendMode",
+    "SDL_SetTextureColorMod", "SDL_SetTextureAlphaMod", "SDL_RenderCopy", "SDL_DestroyTexture",
 ];
 
 /// The error type for type checking.

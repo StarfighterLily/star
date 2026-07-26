@@ -40,6 +40,7 @@ mod set;
 mod stmt;
 mod symbol;
 mod system;
+mod system_font;
 mod table;
 mod time;
 mod vector_math;
@@ -618,6 +619,34 @@ impl Codegen {
         self.line("declare i8 @SDL_JoystickGetButton(i8*, i32)");
         self.line("declare i16 @SDL_JoystickGetAxis(i8*, i32)");
         self.line("declare i32 @SDL_JoystickGetAttached(i8*)");
+        // `font_load_system`/`font_load_ttf`/`font_ttf_free`/
+        // `draw_text_ttf`/`measure_text_ttf` builtins (`todo.md` P2 #9) --
+        // see `crate::codegen::system_font`. gdi32 isn't part of this
+        // target's implicitly-linked default libraries, so a Star program
+        // calling any of these needs `-l gdi32` passed explicitly at build
+        // time (mirroring `tcp_*`'s own `-l ws2_32` requirement).
+        self.line("declare i8* @CreateCompatibleDC(i8*)");
+        self.line("declare i8* @CreateFontA(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i8*)");
+        self.line("declare i8* @SelectObject(i8*, i8*)");
+        self.line("declare i32 @DeleteObject(i8*)");
+        self.line("declare i32 @DeleteDC(i8*)");
+        self.line("declare i32 @SetBkMode(i8*, i32)");
+        self.line("declare i32 @SetTextColor(i8*, i32)");
+        self.line("declare i32 @GetTextExtentPoint32A(i8*, i8*, i32, i8*)");
+        self.line("declare i32 @GetTextMetricsA(i8*, i8*)");
+        self.line("declare i8* @CreateDIBSection(i8*, i8*, i32, i8**, i8*, i32)");
+        self.line("declare i32 @TextOutA(i8*, i32, i32, i8*, i32)");
+        self.line("declare i32 @AddFontResourceExA(i8*, i32, i8*)");
+        self.line("declare i32 @RemoveFontResourceExA(i8*, i32, i8*)");
+        // The rasterized glyph atlas is drawn as an ordinary SDL texture --
+        // see `crate::codegen::system_font::emit_rasterize_font`.
+        self.line("declare i8* @SDL_CreateTexture(i8*, i32, i32, i32, i32)");
+        self.line("declare i32 @SDL_UpdateTexture(i8*, i8*, i8*, i32)");
+        self.line("declare i32 @SDL_SetTextureBlendMode(i8*, i32)");
+        self.line("declare i32 @SDL_SetTextureColorMod(i8*, i8, i8, i8)");
+        self.line("declare i32 @SDL_SetTextureAlphaMod(i8*, i8)");
+        self.line("declare i32 @SDL_RenderCopy(i8*, i8*, i8*, i8*)");
+        self.line("declare void @SDL_DestroyTexture(i8*)");
         self.line("declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)");
         self.line("declare i32 @WaitForSingleObject(i8*, i32)");
         self.line("declare i32 @CloseHandle(i8*)");
