@@ -2778,33 +2778,25 @@ impl Checker {
                     if !tys_eq(&arg_tys[2], &want) {
                         self.error(format!("`{}` argument 3 expected `{:?}`, found `{:?}`", name, want, arg_tys[2]), span);
                     }
-                    // `Checker::writes_through_table_index` (consulted by
-                    // `check_mut_receiver` below too) only flags a *chain*
-                    // bottoming out at a `TableIndex` (`t[i].field`) --
-                    // `check_mut_receiver`'s own `matches!` guard was written
-                    // for a method-call receiver, which is never a *bare*
-                    // `TableIndex` itself for any legitimate reason
-                    // (`t[i].method()` reaching that shape is a pre-existing,
-                    // out-of-scope gap this fix doesn't try to close). But
-                    // argument 1 here legitimately *can* be a bare `t[i]`
-                    // (`reflect_set_i32(t[i], "score", 1)`), which
-                    // `check_mut_receiver` alone would silently let through:
-                    // `emit_place`'s `TableIndex` fallback materializes a
-                    // *disconnected* copy of the element (a `Table<T>`'s
-                    // fields live in independent column buffers with no
-                    // single addressable struct to project into), so the
-                    // write would silently vanish instead of erroring or
-                    // taking effect -- the exact `table[i].field = v` hazard
-                    // `Checker::writes_through_table_index` exists to catch,
-                    // just reached through this builtin instead of a plain
-                    // assignment. Checked explicitly (unconditionally, not
-                    // gated by `check_mut_receiver`'s outer-node-kind guard)
-                    // before falling through to the ordinary mut-binding
-                    // check.
+                    // Unlike a `Field`/method-call-receiver chain rooted at a
+                    // `Table<T>` index (`t[i].field = v`, `t[i].tags.push(v)`
+                    // -- both genuinely supported now, see `Ty::Table`'s doc
+                    // comment), `reflect_set_*` mutates its *whole* argument-1
+                    // struct value by runtime field-name lookup, not a single
+                    // compile-time-known field -- there is no single
+                    // contiguous address for a whole table element to hand
+                    // out (`t[i]`'s fields live in independent column
+                    // buffers), so `emit_place`'s generic fallback would
+                    // materialize a *disconnected* copy and the write would
+                    // silently vanish instead of erroring or taking effect.
+                    // Checked explicitly, before falling through to the
+                    // ordinary mut-binding check, since `check_mut_receiver`
+                    // alone no longer flags this shape (it only ever guarded
+                    // the now-supported `Field`/`TupleIndex`/... chains).
                     if Self::writes_through_table_index(&args[0]) {
                         self.error(
                             format!(
-                                "cannot call `{}(..)` on a `Table<T>` index -- a table element's fields live in independent columns with no addressable storage of their own; assign or read the whole element instead (`table[i] = ...`)",
+                                "cannot call `{}(..)` on a `Table<T>` index -- a table element's fields live in independent columns with no single addressable struct to mutate as a whole; assign or read the whole element instead (`table[i] = ...`)",
                                 name
                             ),
                             span,

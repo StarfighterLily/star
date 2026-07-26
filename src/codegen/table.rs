@@ -17,21 +17,26 @@
 //! from (or decomposing it into) every column at index `i` via
 //! `getelementptr`/`load`/`store` into a scratch `%Struct` alloca -- the same
 //! shape `Codegen::emit_expr`'s `StructLit` arm already uses to construct an
-//! ordinary struct literal. There is deliberately no dedicated
-//! `Codegen::emit_place` support for projecting a single field through a
-//! table index (`table[i].field = v`): unlike `List<T>`'s element (one
-//! contiguous value at one address), a `Table<T>` element's fields live at
-//! independent addresses in independent columns, so `emit_place`'s generic
-//! `Field`-base resolution (which assumes a single base pointer to GEP a
-//! field offset out of) cannot address it without inventing a new place
-//! representation. Rather than let `table[i].field = v` fall into
-//! `emit_place`'s generic fallback and silently target a disconnected
-//! temporary instead of the real column, `Checker::writes_through_table_index`
-//! rejects it (and any mutating collection-method call reached the same way,
-//! e.g. `table[i].tags.push(x)`) at type-check time with a diagnostic --
-//! `crate::codegen` never actually sees one reach this module. `table[i].field`
-//! (a *read*) still works correctly, since materializing a temporary copy to
-//! read a field out of is exactly what an ordinary value read does anyway.
+//! ordinary struct literal.
+//!
+//! `table[i].field = v` (and any deeper chain rooted at one, e.g.
+//! `table[i].nested.x = v`, `table[i].tags.push(v)`, `table[i].cells[j] =
+//! v`) is also supported, via `emit_table_field_place` -- unlike `List<T>`'s
+//! element (one contiguous value at one address), a `Table<T>` element's
+//! fields live at independent addresses in independent columns, so
+//! `emit_place`'s generic `Field`-base resolution (which assumes a single
+//! base pointer to GEP a field offset out of) cannot address it directly.
+//! Rather than invent a generic "table element" place representation,
+//! `Codegen::emit_place`'s `Field` arm special-cases a `TableIndex` base
+//! directly and calls `emit_table_field_place`, which knows which column to
+//! address without ever materializing the whole element -- the pointer it
+//! hands back addresses that field's own live storage (a slot in the
+//! relevant column buffer, CoW-uniqued exactly like every other mutating
+//! table operation), so every existing place-consumer (`Field`'s own
+//! recursive case for a nested struct field, `ListIndex`/`ArrayIndex`/
+//! `RingIndex`'s place helpers, `List`/`Map`/`Set`'s own `_fields_mut`
+//! helpers for a collection-typed field) composes with it for free, with no
+//! `Table`-specific code anywhere else.
 
 use crate::types::{TableMethod, Ty, TypedExpr};
 
@@ -696,5 +701,142 @@ impl Codegen {
                 format!("{} {}", struct_llvm, reg)
             }
         }
+    }
+
+    /// Shared bounds-check scaffold for addressing `table[idx].field`'s own
+    /// column slot -- factored out so both `emit_table_field_place` (hands
+    /// back a *place*, for a further access like `table[i].nested.x = v`/
+    /// `table[i].tags.push(v)`) and `store_table_field` (a direct, no-leak
+    /// field write, `table[i].field = v`) share the identical CoW-unique-
+    /// then-bounds-check setup instead of duplicating it. Mirrors
+    /// `crate::codegen::arena`'s `open_genref_write_check` exactly: leaves
+    /// `ok_label` open with `elem_ptr` (a real pointer into the column at
+    /// row `idx`) valid for the caller to finish (ending in `br label
+    /// %{end_label}`); the caller must then `open_block(&oob_label)`,
+    /// handle the out-of-bounds case, jump to `end_label`, and finally
+    /// `open_block(&end_label)` itself. Returns `(elem_ptr, field_ty,
+    /// ok_label, oob_label, end_label)`.
+    fn open_table_field_write_check(&mut self, base: &TypedExpr, index: &TypedExpr, elem_ty: &Ty, field: &str) -> (String, Ty, String, String, String) {
+        let Ty::Named(struct_name) = elem_ty else { unreachable!("Table<T> element type must be Ty::Named") };
+        let struct_name = struct_name.clone();
+        let field_idx = self.field_index(elem_ty, field) as usize;
+        let fields = self.table_field_types(&struct_name);
+        let fty = fields[field_idx].clone();
+        let f_llvm = self.llvm_ty(&fty);
+
+        // Read columns/len *after* evaluating nothing else first -- mirrors
+        // every other table place/method helper's "resolve columns fresh,
+        // right before use" discipline; `table_fields_mut` itself evaluates
+        // `base` (CoW-uniquing it) before we ever touch `index`, so a nested
+        // mutation of this same table inside `index` (e.g.
+        // `t[t.pop().hp].name = "x"`) still observes a fresh, post-mutation
+        // `len`/column set below.
+        let (cols, len, _len_field, _cap_field, _col_fields) = self.table_fields_mut(base, &struct_name);
+
+        let idx_val = self.emit_expr(index);
+        let idx_bare = self.untag(&idx_val, &Ty::Int);
+        let idx64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", idx64, idx_bare));
+
+        let in_bounds = self.tmp_name();
+        self.line(&format!("  {} = icmp ult i64 {}, {}", in_bounds, idx64, len));
+        let ok_label = self.block_label("table_field_write_ok");
+        let oob_label = self.block_label("table_field_write_oob");
+        let end_label = self.block_label("table_field_write_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", in_bounds, ok_label, oob_label));
+
+        self.open_block(&ok_label);
+        let elem_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 {}", elem_ptr, f_llvm, f_llvm, cols[field_idx], idx64));
+
+        (elem_ptr, fty, ok_label, oob_label, end_label)
+    }
+
+    /// Place resolution for `table[idx].field` when it's itself the base of
+    /// a further access (`table[idx].tags.push(x)`, `table[idx].nested.x =
+    /// v`, ...). Returns a real pointer directly into `field`'s own column
+    /// buffer at row `idx` -- called from `Codegen::emit_place`'s `Field`
+    /// arm whenever that field's base is a `TableIndex`, bypassing the
+    /// generic single-pointer `Field` GEP logic entirely (there is no
+    /// single pointer to a whole table element to hand it -- see this
+    /// module's own doc comment). The *direct* single-level write
+    /// (`table[idx].field = v`) is instead routed through the dedicated,
+    /// leak-safe `store_table_field` below -- see its own doc comment for
+    /// why a bare place-then-generic-store isn't safe for that shape.
+    ///
+    /// Only ever reached via `emit_place` (the write path) -- unlike
+    /// `Field`'s own recursive arm (shared by both `emit_place` and
+    /// `emit_read_place`), `emit_read_place`'s `Field` arm has no
+    /// `TableIndex` special case of its own, so a pure read
+    /// (`println(table[i].name)`) never reaches this function and never
+    /// pays for a CoW clone it doesn't need -- exactly mirroring
+    /// `emit_list_index_place` (write-only, clones) versus
+    /// `emit_list_index_read_place` (read-only, clone-free) in
+    /// `crate::codegen::list`.
+    ///
+    /// An out-of-bounds index yields a pointer to a fresh, zeroed,
+    /// disconnected alloca (mirrors `emit_list_index_place`'s identical
+    /// out-of-bounds convention): nothing is written into the real table,
+    /// and any read back through the returned pointer sees a well-defined
+    /// zero value rather than uninitialized memory. A *write* through this
+    /// particular dummy (reached only via further chaining, e.g.
+    /// `table[oob].tags.push(v)`) can still orphan `v`'s ownership on that
+    /// path -- a narrower version of the same hazard `store_table_field`
+    /// closes for the direct one-field-deep case, left open here since
+    /// fixing it in general would need every place-consuming call site
+    /// (`list_fields_mut`, `array_index_ptr`, ...) to distinguish "real"
+    /// from "disconnected dummy" storage, which none of their sibling
+    /// `List`/`Array`/`Ring` in-bounds-index-place counterparts do either.
+    pub(super) fn emit_table_field_place(&mut self, base: &TypedExpr, index: &TypedExpr, elem_ty: &Ty, field: &str) -> String {
+        let (elem_ptr, fty, ok_label, oob_label, end_label) = self.open_table_field_write_check(base, index, elem_ty, field);
+        let f_llvm = self.llvm_ty(&fty);
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&oob_label);
+        let dummy = self.tmp_name();
+        self.line(&format!("  {} = alloca {}", dummy, f_llvm));
+        // `zero_value_rc`, not `zero_value` -- see `emit_table_index`'s
+        // identical fix's doc comment: a bare `zero_value(&Ty::Str)` null
+        // disguised as `str` segfaults the moment a chained access off this
+        // dummy slot (e.g. `table[oob].name.len()`) reads through it.
+        let zero = self.zero_value_rc(&fty);
+        self.line(&format!("  store {} {}, {}* {}", f_llvm, zero, f_llvm, dummy));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
+        let result = self.tmp_name();
+        self.line(&format!("  {} = phi {}* [ {}, %{} ], [ {}, %{} ]", result, f_llvm, elem_ptr, ok_label, dummy, oob_label));
+        result
+    }
+
+    /// Direct, leak-safe field write through a table index (`table[idx].field
+    /// = v`) -- unlike routing through `emit_table_field_place` and then the
+    /// generic `Codegen::store_target`'s release-then-store pattern (which
+    /// assumes the resolved pointer is always real, persistent storage),
+    /// this bounds-checks and branches itself so an out-of-bounds row
+    /// releases `val` (already computed and retained/owned by the caller)
+    /// instead of storing it into a disconnected dummy that nothing would
+    /// ever read or release again -- the exact leak
+    /// `crate::codegen::arena::store_genref_field` closes for the identical
+    /// `GenRef<T>` shape, and `store_table_index`/`store_list_index` close
+    /// for their own whole-element out-of-bounds writes. Mirrors
+    /// `open_genref_write_check`'s call-site shape exactly.
+    pub(super) fn store_table_field(&mut self, base: &TypedExpr, index: &TypedExpr, elem_ty: &Ty, field: &str, val: &str) {
+        let (elem_ptr, fty, _ok_label, oob_label, end_label) = self.open_table_field_write_check(base, index, elem_ty, field);
+        let f_llvm = self.llvm_ty(&fty);
+        let clean_val = self.untag(val, &fty);
+        self.emit_release_at(&elem_ptr, &fty);
+        self.line(&format!("  store {} {}, {}* {}", f_llvm, clean_val, f_llvm, elem_ptr));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&oob_label);
+        // Same reasoning as `store_genref_field`/`store_table_index`'s own
+        // out-of-bounds branch: release the already-untagged `clean_val`,
+        // not the possibly-tagged `val`, to avoid double-tagging the
+        // `emit_release_bare` call.
+        self.emit_release_bare(&clean_val, &fty);
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
     }
 }

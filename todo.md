@@ -82,7 +82,8 @@ programs, biggest lever first within each tier.
    current 5x7 uppercase-only bitmap font is fine for a score counter, not
    for shippable UI text.
 10. **General place-projection into `Table<T>`** (`table[i].field = v`),
-    closing the one documented gap in that type's method surface.
+    closing the one documented gap in that type's method surface. -- Done:
+    See previous work below for details.
 
 ## P3 — Process / maintainability (won't block a single feature, but compounds)
 
@@ -107,6 +108,76 @@ programs, biggest lever first within each tier.
     barrier if outside contribution is ever a goal.
 
 # Previous work:
+
+Implemented general place-projection into `Table<T>` (todo.md P2 #10),
+closing the one gap `docs/design.md`'s `Table<T>` write-up documented in its
+own method surface: `table[i].field = v` (and any deeper chain rooted at
+one -- `table[i].nested.x = v`, `table[i].tags.push(v)`, `table[i].cells[j]
+= v`) previously type-checked cleanly under no rejection at all before this
+round's `Checker::writes_through_table_index` existed, then (once that
+checker-level guard was added) was rejected outright at type-check time
+with a diagnostic pointing at the whole-element write instead. Both were
+symptoms of the same root cause: unlike `List<T>`/`Array`/`Ring<T,N>`,
+whose elements each live at one contiguous address, a `Table<T>` element's
+fields live in independent per-column buffers, so `Codegen::emit_place`'s
+generic `Field` arm (which GEPs a field offset out of a single base
+pointer) had nothing valid to address.
+
+- `src/codegen/table.rs`: new `Codegen::emit_table_field_place` (a *place*,
+  for a further access like `table[i].nested.x = v`/`table[i].tags.push(v)`)
+  and `Codegen::store_table_field` (a direct, single-level `table[i].field
+  = v` write), both built on a shared `open_table_field_write_check` scaffold
+  that CoW-uniques the table (mirroring every other mutating table
+  operation) and bounds-checks the row before handing back a real pointer
+  directly into the accessed field's own column at that row -- never
+  materializing the whole element the way `emit_table_index`/
+  `store_table_index` do. `emit_table_field_place`'s out-of-bounds branch
+  still hands back a disconnected, zeroed dummy (mirroring
+  `emit_list_index_place`'s identical convention), but `store_table_field`
+  bounds-checks and branches itself so an out-of-bounds row *releases* the
+  already-owned RHS value instead of orphaning it into that dummy -- the
+  same leak class `crate::codegen::arena::store_genref_field` already
+  closed for the identical `GenRef<T>` shape (found and fixed in this round
+  before it ever shipped, confirmed via a real Working-Set-sampling leak
+  test that would have failed without it).
+- `src/codegen/mod.rs`: `Codegen::emit_place`'s `Field` arm now special-cases
+  a `TableIndex` base, calling `emit_table_field_place` directly instead of
+  its generic single-base-pointer GEP logic -- every other place-consuming
+  call site (`Field`'s own recursive arm for a nested struct field,
+  `list_fields_mut`/`array_index_ptr`/`emit_ring_index_place` for a
+  collection- or array-typed field, mutating collection-method receivers)
+  composes with the real pointer this hands back for free, with no
+  `Table`-specific code needed anywhere else in the compiler.
+  `src/codegen/stmt.rs`'s `store_target`'s own `Field` arm gained the
+  identical `TableIndex`-base special case (routing to `store_table_field`
+  instead), since it resolves its target's storage independently rather
+  than delegating to `emit_place`.
+- `src/types/mod.rs`/`src/types/stmt.rs`: `Checker::writes_through_table_index`
+  no longer rejects `Stmt::Assign` targets or mutating collection-method
+  receivers reached through a table index -- it's narrowed to its one
+  remaining real gap, a *bare* table index passed somewhere a place is
+  needed with no field projection yet applied (`reflect_set_i32(table[i],
+  "field", v)`, which mutates a whole struct by runtime field name and
+  still has no single contiguous address to target). Every pre-existing
+  gate this bypassed nothing: `mut`-root gating (`assign_root_name`'s
+  already-recursive `TableIndex` arm) and per-field `mut` gating
+  (`field_is_mut`) both still apply unchanged, confirmed by dedicated
+  regression tests.
+- `docs/design.md`'s `Table<T>` write-up and `Ty::Table`'s own doc comment
+  (`src/types/mod.rs`) updated to describe the closed gap instead of the
+  accepted one.
+- Added 15 new tests to `tests/frontend.rs` (and converted 7 pre-existing
+  rejection tests into end-to-end runtime tests proving the write actually
+  reaches the table, not just that it type-checks): single-field and
+  nested-field writes, a mutating `List<T>`-field method call
+  (`table[i].tags.push(x)`), a `List`/`Array`-field indexed one level
+  further (plain and compound-assignment), copy-on-write correctness
+  (a field write through one binding must not affect an aliased binding
+  sharing the same table), row independence (writing one row's field must
+  not disturb a neighboring row's own columns), `mut`-root and per-field
+  `mut` gating regressions, `par`/`swarm` body-local-vs-captured coverage
+  (mirroring the pre-existing whole-element-write coverage), and the
+  out-of-bounds-write leak regression above. Full suite (1482 tests) passes.
 
 Implemented audio playback and gamepad input (todo.md P2 #8), the last of
 the long-deferred, honestly-labeled "game programming language" gaps

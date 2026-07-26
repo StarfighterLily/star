@@ -275,17 +275,18 @@ pub enum Ty {
     /// `crate::codegen::table` -- just with `N` parallel data buffers
     /// (growing/shrinking in lockstep) instead of one. `table[i]`/
     /// `table[i] = v` read/write the whole element, reassembling it from (or
-    /// decomposing it into) every column at index `i`; there is no
-    /// dedicated `Codegen::emit_place` support for projecting a single
-    /// field through a table index -- a single field's storage in this
-    /// layout is a real, independently addressable column slot, but reaching
-    /// it correctly would need its own dedicated place path, left for a
-    /// future round; in the meantime `Checker::writes_through_table_index`
-    /// rejects `table[i].field = v` (and any mutating collection-method call
-    /// reached the same way) at type-check time rather than let it silently
-    /// target a disconnected temporary, the naive fallback's behavior (and
-    /// still what happens for any other rvalue struct base with no
-    /// addressable storage of its own).
+    /// decomposing it into) every column at index `i`. `table[i].field = v`
+    /// (and any deeper chain rooted at one -- `table[i].nested.x = v`,
+    /// `table[i].tags.push(v)`, `table[i].cells[j] = v`) is also supported,
+    /// via `Codegen::emit_table_field_place`: a single field's storage in
+    /// this layout is a real, independently addressable column slot, so
+    /// `Codegen::emit_place`'s `Field` arm special-cases a `TableIndex` base
+    /// to address it directly, without ever materializing the whole
+    /// element. A *bare* `table[i]` passed somewhere a place is needed
+    /// without an immediate `.field` projection (e.g. as a `reflect_set_*`
+    /// argument) is a narrower, still-open gap -- `Checker::
+    /// writes_through_table_index` still rejects that shape, since there is
+    /// no single contiguous address for a whole table element to hand out.
     Table(Box<Ty>),
     /// A generation-checked resource handle: `Handle<T>`. Nominally distinct
     /// from `Ty::GenRef` (so a function expecting `Handle<Texture>` rejects
@@ -3674,34 +3675,26 @@ impl Checker {
         }
     }
 
-    /// Whether `target`, if used as a place (an assignment target or a
-    /// mutating method-call receiver), would ultimately resolve through
-    /// `Codegen::emit_place`'s generic rvalue fallback because a `Table<T>`
-    /// index sits somewhere in its unbroken `Field`/`TupleIndex` projection
-    /// chain -- see `Ty::Table`'s doc comment: a table element's fields live
-    /// in independent columns, not one contiguous address, so there is no
-    /// real place to project a field out of, and a write through that
-    /// fallback's disconnected alloca silently vanishes. Only `Field`/
-    /// `TupleIndex`/`ListIndex`/`ArrayIndex`/`RingIndex` hops are all peeled
-    /// through (mirroring `assign_root_name`'s recursion) -- `Ident` (or
-    /// anything else with genuine, independently-addressable storage of its
-    /// own that never bottoms out at a `TableIndex`) is unaffected, so
-    /// `list[i].some_table[j]` (a real `List<Table<T>>` element) is still
-    /// correctly left alone. But a `ListIndex`/`ArrayIndex`/`RingIndex`
-    /// *itself* only has real addressable storage when its own `base` does
-    /// -- `t[i].tags[j] = v` (`tags: List<i32>` a field of a `Table<T>`
-    /// element) first reads `t[i].tags` through exactly the same
-    /// disconnected-temporary fallback as `t[i].tags = v` before indexing
-    /// into *that*, so the write is just as silently lost. Previously these
-    /// three index kinds were treated as unconditionally "real storage" and
-    /// never recursed into, letting `t[i].tags[j] = v`,
-    /// `t[i].cells[j] = v` (an array field), and `t[i].tags[j] += v` all
-    /// silently no-op instead of being rejected -- confirmed via a real
-    /// `star build`+run where the write compiled cleanly, ran to exit 0,
-    /// and printed the pre-write value. Callers only invoke this once
-    /// `target`/`base` is already known to be one of these five kinds (a
-    /// bare `table[i] = v` -- the one supported whole-element write -- must
-    /// not be rejected).
+    /// Whether a `Table<T>` index sits anywhere in `target`'s unbroken
+    /// `Field`/`TupleIndex`/`ListIndex`/`ArrayIndex`/`RingIndex` projection
+    /// chain (including `target` itself being a bare `TableIndex`).
+    ///
+    /// `Codegen::emit_place`'s `Field` arm now special-cases a `TableIndex`
+    /// base directly (`Codegen::emit_table_field_place`, see `Ty::Table`'s
+    /// doc comment), addressing the real column slot for `t[i].field = v`
+    /// and any deeper chain rooted at one (`t[i].tags.push(v)`, `t[i].nested.x
+    /// = v`, ...) -- so `Stmt::Assign` and `check_mut_receiver` no longer
+    /// consult this function at all for those shapes. Its one remaining
+    /// caller is the `reflect_set_*` argument check below, which still needs
+    /// it: those builtins take a *whole struct value* as their target
+    /// (rather than a single named field, resolved at compile time, the way
+    /// `Field`/method-receiver dispatch is), and there is no single
+    /// contiguous address for a whole table element to hand out regardless
+    /// of how it's reached -- `reflect_set_i32(t[i], ...)` and
+    /// `reflect_set_i32(t[i].nested, ...)` are both still rejected here, the
+    /// latter slightly more conservatively than it strictly needs to be
+    /// (that one path, unlike ordinary assignment, doesn't distinguish "a
+    /// bare table index" from "a field reached through one").
     fn writes_through_table_index(target: &TypedExpr) -> bool {
         match target {
             TypedExpr::TableIndex { .. } => true,
@@ -3723,19 +3716,19 @@ impl Checker {
     /// anywhere on `m`, the exact gap `docs/design.md`'s "mut is required to
     /// change state" rule exists to close for a plain assignment.
     fn check_mut_receiver(&mut self, base: &TypedExpr, method: &str, span: Span) {
-        if matches!(
-            base,
-            TypedExpr::Field { .. } | TypedExpr::TupleIndex { .. } | TypedExpr::ListIndex { .. } | TypedExpr::ArrayIndex { .. } | TypedExpr::RingIndex { .. }
-        ) && Self::writes_through_table_index(base)
-        {
-            self.error(
-                format!(
-                    "cannot call `{}(..)` through a `Table<T>` index -- a table element's fields live in independent columns with no addressable storage of their own; assign or read the whole element instead (`table[i] = ...`)",
-                    method
-                ),
-                span,
-            );
-        }
+        // A receiver reached through a `Table<T>` index (`t[i].tags.push(x)`)
+        // used to be rejected here: `Codegen::emit_place` had no way to
+        // address a single field's storage through a table index, so the
+        // mutation would silently target a disconnected temporary. Now that
+        // `emit_place`'s `Field` arm special-cases a `TableIndex` base
+        // (`Codegen::emit_table_field_place`), this receiver resolves to the
+        // real column slot exactly like any other place, so no rejection is
+        // needed here -- see `Ty::Table`'s doc comment. (A receiver that is
+        // itself a *bare* `TableIndex`, e.g. `t[i].push(x)` where `T` itself
+        // were somehow `List`-shaped, can't arise: `Table<T>`'s element type
+        // is always a plain struct, never a `List`/`Map`/`Set`, so this
+        // function's callers -- all `List`/`Map`/`Set` method checks -- never
+        // see a bare `TableIndex` as `base` in the first place.)
         if let Some(root) = Self::assign_root_name(base) {
             if !self.mut_vars.contains(root) {
                 let subject = if root == "self" { "self".to_string() } else { format!("`{}`", root) };

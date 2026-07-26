@@ -15076,6 +15076,62 @@ fn main():
     assert!(diags.iter().any(|d| d.message.contains("cannot be proven disjoint across threads")), "{:?}", diags);
 }
 
+/// `table[i].field = v` (a field projected *through* a table index, todo.md
+/// P2 #10) on a body-local `Table<T>` must type-check inside a `par`/
+/// `swarm` body exactly like the whole-element write above --
+/// `root_ident`'s `Field`/`TableIndex` recursion (mirrored by
+/// `walk_par_assign_target`) already finds the same root binding regardless
+/// of how many `Field` hops sit between the assignment target and the
+/// `TableIndex`, so this needed no separate `par_analysis.rs` wiring once
+/// the write itself became supported.
+#[test]
+fn accepts_table_field_write_through_index_on_body_local_table_inside_par_body() {
+    let src = r#"struct Enemy:
+    mut hp: i32
+
+struct Item:
+    mut hp: i32
+
+arena Enemies: Enemy
+
+fn main():
+    par e in Enemies:
+        let mut t: Table<Item> = Table<Item>()
+        t.push(Item(hp = 1))
+        t[0].hp = 2
+        e.hp = t[0].hp
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    assert!(Driver::check(&module).is_ok(), "writing a field through a body-local Table<T>'s index inside par/swarm should type-check cleanly: {:?}", Driver::check(&module).err());
+}
+
+/// Same fix, the captured-table control: `table[i].field = v` on a
+/// *captured* (outer-scope) `Table<T>` must still be rejected inside a
+/// `par`/`swarm` body, exactly like the whole-element write's own control
+/// above -- the field-projection fix must not weaken this into an
+/// unconditionally-accepted write.
+#[test]
+fn rejects_table_field_write_through_index_on_captured_table_inside_par_body() {
+    let src = r#"struct Enemy:
+    mut hp: i32
+
+struct Item:
+    mut hp: i32
+
+arena Enemies: Enemy
+
+fn main():
+    let mut t: Table<Item> = Table<Item>()
+    t.push(Item(hp = 1))
+    par e in Enemies:
+        t[0].hp = 2
+        e.hp = t[0].hp
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("writing a field through a captured Table<T>'s index inside par/swarm should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("cannot be proven disjoint across threads")), "{:?}", diags);
+}
+
 /// Same `root_ident` gap as `Table<T>` above, but for `List<T>`: `root_ident`
 /// had `ArrayIndex`/`RingIndex`/`TableIndex` arms but no `ListIndex` one, so
 /// `xs[0] = v` on a `List<T>` declared and only ever touched inside the loop
@@ -15226,23 +15282,28 @@ fn runtime_table_stress_end_to_end() {
     assert!(!stdout.contains("unexpected empty pop"), "a pop paired with a preceding push should never see the zero value: {}", stdout);
 }
 
-// ===== Bugfix: `table[i].field = v` (and any mutating collection-method
-// ===== call reached the same way, e.g. `table[i].tags.push(x)`) previously
-// ===== type-checked cleanly and then silently no-op'd at runtime --
-// ===== `Codegen::emit_place` has no arm for `TypedExpr::TableIndex`, so a
-// ===== `Field`/`TupleIndex` chain rooted there fell into the generic rvalue
-// ===== fallback (materialize a disconnected copy, GEP/mutate *that*
-// ===== instead of the real column). `Checker::writes_through_table_index`
-// ===== now rejects this shape outright at type-check time, mirroring the
-// ===== existing `str`-index-assignment rejection just above it in
-// ===== `Checker::check_stmt`'s `Stmt::Assign` arm. `table[i] = v` (the
-// ===== whole element) and `table[i].field` (a *read*) are both unaffected. =
+// ===== `table[i].field = v` (and any mutating collection-method call
+// ===== reached the same way, e.g. `table[i].tags.push(x)`) -- todo.md P2
+// ===== #10, "General place-projection into `Table<T>`". Previously
+// ===== rejected outright at type-check time (`Checker::
+// ===== writes_through_table_index`): `Codegen::emit_place` had no arm for
+// ===== `TypedExpr::TableIndex`, so a `Field`/`TupleIndex`/`ListIndex`/
+// ===== `ArrayIndex`/`RingIndex` chain rooted there fell into the generic
+// ===== rvalue fallback (materialize a disconnected copy, GEP/mutate *that*
+// ===== instead of the real column). Now `emit_place`'s `Field` arm
+// ===== special-cases a `TableIndex` base directly
+// ===== (`Codegen::emit_table_field_place`, `crate::codegen::table`),
+// ===== addressing the real column slot without ever materializing the
+// ===== whole element -- so every one of these shapes both type-checks
+// ===== *and* actually mutates the table now, verified end to end below
+// ===== rather than just asserting a rejection diagnostic. `table[i] = v`
+// ===== (the whole element) and `table[i].field` (a *read*) were already
+// ===== supported and remain unaffected. =====================================
 
 /// `table[i].field = v`: a single field written through a table index must
-/// be rejected at type-check time instead of silently vanishing into a
-/// disconnected temporary at runtime.
+/// actually mutate the table's own storage, not a disconnected temporary.
 #[test]
-fn rejects_assignment_to_field_through_table_index() {
+fn runtime_table_field_assignment_through_index_end_to_end() {
     let src = r#"struct Enemy:
     mut hp: i32
 
@@ -15252,17 +15313,18 @@ fn main():
     e[0].hp = 99
     println(f"{e[0].hp}")
 "#;
-    let module = Driver::parse(src).expect("should parse");
-    let Err(diags) = Driver::check(&module) else { panic!("assigning into a field through a Table<T> index must be a type error, not a silent runtime no-op") };
-    assert!(diags.iter().any(|d| d.message.contains("Table<T>") && d.message.contains("independent columns")), "{:?}", diags);
+    let output = compile_and_run("table_field_assignment_through_index", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "99");
 }
 
-/// Same rejection, one level deeper: `table[i].nested.field = v` must also
-/// be caught, not just the immediate `table[i].field = v` shape -- the
-/// underlying hazard (`emit_place`'s generic fallback) applies at any
-/// `Field`/`TupleIndex` nesting depth above a `TableIndex` base.
+/// Same fix, one level deeper: `table[i].nested.field = v` must also reach
+/// the real column, not just the immediate `table[i].field = v` shape --
+/// `emit_place`'s `Field` arm recurses through the nested struct's own
+/// offset once the outer `Field` hands back a real pointer into the
+/// `nested` column.
 #[test]
-fn rejects_assignment_to_nested_field_through_table_index() {
+fn runtime_table_nested_field_assignment_through_index_end_to_end() {
     let src = r#"struct Pos:
     mut x: i32
 
@@ -15275,17 +15337,18 @@ fn main():
     e[0].pos.x = 99
     println(f"{e[0].pos.x}")
 "#;
-    let module = Driver::parse(src).expect("should parse");
-    let Err(diags) = Driver::check(&module) else { panic!("assigning into a nested field through a Table<T> index must be a type error") };
-    assert!(diags.iter().any(|d| d.message.contains("Table<T>") && d.message.contains("independent columns")), "{:?}", diags);
+    let output = compile_and_run("table_nested_field_assignment_through_index", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "99");
 }
 
 /// A mutating collection-method call on a field reached through a table
-/// index (`table[i].tags.push(x)`) is exactly as unsound as a direct field
-/// assignment -- the receiver resolves through the same `emit_place`
-/// fallback -- so it must be rejected the same way, not just plain `=`.
+/// index (`table[i].tags.push(x)`) composes for free through the same fix:
+/// `List::push`'s own `list_fields_mut` resolves the receiver's storage via
+/// `emit_place`, which now hands back the real column slot instead of a
+/// disconnected copy.
 #[test]
-fn rejects_push_on_list_field_through_table_index() {
+fn runtime_table_list_field_push_through_index_end_to_end() {
     let src = r#"struct Enemy:
     mut tags: List<str>
 
@@ -15294,10 +15357,107 @@ fn main():
     e.push(Enemy(tags = List<str>()))
     e[0].tags.push("x")
     println(f"{e[0].tags.len()}")
+    println(f"{e[0].tags[0]}")
+"#;
+    let output = compile_and_run("table_list_field_push_through_index", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["1", "x"], "{}", stdout);
+}
+
+/// Copy-on-write correctness: `table[i].field = v` must trigger the same
+/// CoW clone every other mutating table operation does (`table_fields_mut`
+/// -> `emit_table_ensure_unique`) -- a field write reached through a table
+/// index is a genuinely new call site into that machinery (previously only
+/// exercised by `push`/`pop`/whole-element write), so a shared table must
+/// not observe another binding's field-level mutation.
+#[test]
+fn runtime_table_field_write_triggers_cow_does_not_affect_aliased_binding_end_to_end() {
+    let src = r#"struct Enemy:
+    mut hp: i32
+
+fn main():
+    let mut a = Table<Enemy>()
+    a.push(Enemy(hp = 1))
+    let mut b = a
+    b[0].hp = 99
+    println(f"{a[0].hp}")
+    println(f"{b[0].hp}")
+"#;
+    let output = compile_and_run("table_field_write_cow_aliasing", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["1", "99"], "b's field write must not leak into a's own copy: {}", stdout);
+}
+
+/// Column independence: writing `table[i].field = v` for one row must not
+/// disturb any other row's own columns -- each row's slot is addressed by
+/// its own index into the shared column buffer, so this guards against an
+/// off-by-one in `emit_table_field_place`/`store_table_field`'s index
+/// arithmetic bleeding into a neighboring row.
+#[test]
+fn runtime_table_field_write_does_not_disturb_other_rows_end_to_end() {
+    let src = r#"struct Enemy:
+    mut hp: i32
+    mut name: str
+
+fn main():
+    let mut e = Table<Enemy>()
+    e.push(Enemy(hp = 1, name = "a"))
+    e.push(Enemy(hp = 2, name = "b"))
+    e.push(Enemy(hp = 3, name = "c"))
+    e[1].hp = 200
+    e[1].name = "z"
+    println(f"{e[0].hp} {e[0].name}")
+    println(f"{e[1].hp} {e[1].name}")
+    println(f"{e[2].hp} {e[2].name}")
+"#;
+    let output = compile_and_run("table_field_write_row_independence", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["1 a", "200 z", "3 c"], "{}", stdout);
+}
+
+/// `mut` is still required on the table binding itself: `table[i].field = v`
+/// must be rejected on a non-`mut` variable exactly like every other write
+/// path (`Checker::assign_root_name`'s `TableIndex` arm recurses to find
+/// the root binding regardless of how deep the `Field` projection goes) --
+/// removing the old blanket `writes_through_table_index` rejection must not
+/// have accidentally bypassed this separate, still-active gate.
+#[test]
+fn rejects_table_field_assignment_through_index_without_mut() {
+    let src = r#"struct Enemy:
+    mut hp: i32
+
+fn main():
+    let e = Table<Enemy>()
+    e[0].hp = 99
 "#;
     let module = Driver::parse(src).expect("should parse");
-    let Err(diags) = Driver::check(&module) else { panic!("push on a List<T> field reached through a Table<T> index must be a type error") };
-    assert!(diags.iter().any(|d| d.message.contains("Table<T>") && d.message.contains("independent columns")), "{:?}", diags);
+    let Err(diags) = Driver::check(&module) else { panic!("table[i].field = v on a non-mut table binding should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("was not declared `mut`")), "{:?}", diags);
+}
+
+/// A struct field can independently be non-`mut` even when the table
+/// binding itself is `mut` -- `table[i].field = v` must still respect
+/// `Checker::field_is_mut`'s per-field gate, matching `Stmt::Assign`'s
+/// existing `s.field = v` behavior for an ordinary (non-table) struct.
+#[test]
+fn rejects_table_field_assignment_through_index_on_non_mut_field() {
+    let src = r#"struct Enemy:
+    hp: i32
+
+fn main():
+    let mut e = Table<Enemy>()
+    e.push(Enemy(hp = 1))
+    e[0].hp = 99
+"#;
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("assigning a non-mut field through a table index should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("is not mutable")), "{:?}", diags);
 }
 
 /// The fix must not overreach: `table[i] = v` (the whole element, the one
@@ -15358,24 +15518,26 @@ fn main():
     assert!(Driver::check(&module).is_ok(), "table[j] = v must still type-check even when the table itself is reached through a list index: {:?}", Driver::check(&module).err());
 }
 
-/// The rejection isn't limited to plain `=`: a compound assignment
+/// The fix isn't limited to plain `=`: a compound assignment
 /// (`table[i].field += v`) reaches `Stmt::Assign` exactly the same way (the
-/// target/op/value are inferred once for every assignment operator), so it
-/// must be rejected too, not just the plain-`=` shape exercised above.
+/// target/op/value are inferred once for every assignment operator, and
+/// `load_target`/`store_target` both resolve through the same real column
+/// pointer), so it must actually mutate the table too, not just the
+/// plain-`=` shape exercised above.
 #[test]
-fn rejects_compound_assignment_to_field_through_table_index() {
+fn runtime_table_compound_assignment_to_field_through_index_end_to_end() {
     let src = r#"struct Enemy:
     mut hp: i32
 
 fn main():
     let mut e = Table<Enemy>()
     e.push(Enemy(hp = 1))
-    e[0].hp += 1
+    e[0].hp += 41
     println(f"{e[0].hp}")
 "#;
-    let module = Driver::parse(src).expect("should parse");
-    let Err(diags) = Driver::check(&module) else { panic!("compound-assigning into a field through a Table<T> index must be a type error") };
-    assert!(diags.iter().any(|d| d.message.contains("Table<T>") && d.message.contains("independent columns")), "{:?}", diags);
+    let output = compile_and_run("table_compound_assignment_to_field_through_index", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
 }
 
 // ===== `RingMethod`/`RingIndex` par/swarm-disjointness coverage: mirrors the
@@ -16676,6 +16838,22 @@ fn runtime_table_out_of_bounds_write_does_not_leak_end_to_end() {
     assert_no_leak("table_oob_write_leak", src, 25 * 1024 * 1024);
 }
 
+/// Same bug class, one field deep (todo.md P2 #10's new
+/// `table[i].field = v` write path): `store_table_field`'s dedicated
+/// bounds-check-and-branch (`crate::codegen::table`) must release an
+/// out-of-bounds row's already-owned RHS value instead of storing it into
+/// `emit_table_field_place`'s disconnected dummy alloca, which nothing else
+/// ever reads or releases -- the exact leak `store_genref_field`/
+/// `store_table_index`/`store_list_index` already close for their own
+/// out-of-bounds write paths, now needed for this newly-supported one too.
+#[test]
+fn runtime_table_field_out_of_bounds_write_does_not_leak_end_to_end() {
+    let src = "struct Item:\n    mut name: str\n\nfn main():\n    let mut t: Table<Item> = Table<Item>()\n    t.push(Item(name = \"seed\"))\n    \
+               let mut i: i32 = 0\n    while i < 2000000:\n        t[999].name = concat(\"x\", \"y\")\n        i += 1\n    \
+               println(f\"done name={t[0].name}\")\n";
+    assert_no_leak("table_field_oob_write_leak", src, 25 * 1024 * 1024);
+}
+
 // ===== `Wrapping<T>` / `Fixed<Bits, Frac>` (docs/design.md §2) =============
 
 /// `Wrapping<u8>` silently wraps 250 + 10 -> 4, unlike a plain `u8` (which
@@ -17268,56 +17446,54 @@ fn sequence_yield_in_if_condition_reports_dedicated_diagnostic() {
 }
 
 /// `t[i].tags[j] = v` (a `List<i32>` field of a `Table<T>` element, indexed
-/// one level further) previously silently no-op'd instead of being
-/// rejected: `Checker::writes_through_table_index` only peeled through
-/// `Field`/`TupleIndex` on its way to a `TableIndex` root, never
-/// `ListIndex`/`ArrayIndex`/`RingIndex` -- so a `ListIndex` sitting directly
-/// beneath a `Field` chain rooted at a `TableIndex` was treated as "real
-/// addressable storage" (correct for `list[i].some_table[j]`, wrong here,
-/// since `t[i].tags` is itself already a disconnected temporary from
-/// `emit_place`'s generic fallback). Confirmed via a real `star build`+run
-/// where `t[0].tags[0] = 99` compiled cleanly, ran to exit 0, and printed
-/// the pre-write value `1` instead of `99`.
+/// one level further) must actually reach the real column: `emit_place`'s
+/// `ListIndex` arm (`emit_list_index_place`) resolves the list's own `i8*`
+/// slot via `self.emit_place(base)`, where `base` is `t[i].tags` -- since
+/// that now resolves (via `emit_table_field_place`) to a real pointer into
+/// the `tags` column at row `i` rather than a disconnected copy, the CoW
+/// clone-and-write happens on the genuine backing storage, and the mutation
+/// is observable afterward.
 #[test]
-fn rejects_write_through_table_index_field_list_index_chain() {
+fn runtime_table_field_list_index_write_through_index_end_to_end() {
     let src = "struct Row:\n    mut tags: List<i32>\n\nfn main():\n    \
                let mut t: Table<Row> = Table<Row>()\n    t.push(Row(tags = [1, 2, 3]))\n    \
                t[0].tags[0] = 99\n    println(f\"{t[0].tags[0]}\")\n";
-    let module = Driver::parse(src).expect("should parse");
-    let errs = Driver::check(&module).expect_err("t[i].tags[j] = v must be rejected, not silently no-op");
-    assert!(errs.iter().any(|d| d.message.contains("Table<T>") && d.message.contains("independent columns")), "{:?}", errs);
+    let output = compile_and_run("table_field_list_index_write_through_index", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "99");
 }
 
-/// Same bug, an array field (`[i32; N]`) instead of a `List<i32>` one --
-/// `writes_through_table_index`'s missing `ArrayIndex` arm.
+/// Same fix, an array field (`[i32; N]`) instead of a `List<i32>` one --
+/// `emit_array_index_place` resolves its base pointer via `self.emit_place(base)`
+/// too, composing with `emit_table_field_place` the same way.
 #[test]
-fn rejects_write_through_table_index_field_array_index_chain() {
+fn runtime_table_field_array_index_write_through_index_end_to_end() {
     let src = "struct Row:\n    mut cells: [i32; 4]\n\nfn main():\n    \
                let mut t: Table<Row> = Table<Row>()\n    t.push(Row(cells = [0; 4]))\n    \
                t[0].cells[0] = 999\n    println(f\"{t[0].cells[0]}\")\n";
-    let module = Driver::parse(src).expect("should parse");
-    let errs = Driver::check(&module).expect_err("t[i].cells[j] = v must be rejected, not silently no-op");
-    assert!(errs.iter().any(|d| d.message.contains("Table<T>") && d.message.contains("independent columns")), "{:?}", errs);
+    let output = compile_and_run("table_field_array_index_write_through_index", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "999");
 }
 
-/// Same bug, a compound assignment (`+=`) through the same chain --
+/// Same fix, a compound assignment (`+=`) through the same chain --
 /// `Stmt::Assign` handles every `AssignOp` through the identical
-/// `target_typed` check, so this needed the same widened guard.
+/// `target_typed`/`load_target`/`store_target` codegen, so this needed no
+/// separate wiring once the plain-`=` shape worked.
 #[test]
-fn rejects_compound_assign_through_table_index_field_list_index_chain() {
+fn runtime_table_compound_assign_through_table_index_field_list_index_chain_end_to_end() {
     let src = "struct Row:\n    mut tags: List<i32>\n\nfn main():\n    \
                let mut t: Table<Row> = Table<Row>()\n    t.push(Row(tags = [1, 2, 3]))\n    \
                t[0].tags[0] += 100\n    println(f\"{t[0].tags[0]}\")\n";
-    let module = Driver::parse(src).expect("should parse");
-    let errs = Driver::check(&module).expect_err("t[i].tags[j] += v must be rejected, not silently no-op");
-    assert!(errs.iter().any(|d| d.message.contains("Table<T>") && d.message.contains("independent columns")), "{:?}", errs);
+    let output = compile_and_run("table_compound_assign_through_table_index_field_list_index_chain", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "101");
 }
 
 /// Control for the three fixes above: the whole-element write
-/// `table[i] = v` (the one genuinely supported `Table<T>` mutation path)
-/// must remain accepted -- guards against the widened
-/// `writes_through_table_index` recursion over-rejecting a bare
-/// `TableIndex` target.
+/// `table[i] = v` (the one genuinely supported `Table<T>` mutation path
+/// before this round) must remain accepted -- guards against the new
+/// `emit_place`/`emit_table_field_place` wiring somehow overreaching.
 #[test]
 fn runtime_table_whole_element_write_still_works_end_to_end() {
     let src = "struct Row:\n    mut tags: List<i32>\n\nfn main():\n    \
@@ -24907,10 +25083,14 @@ fn runtime_bool_equality_end_to_end() {
 // closed itself before they ever shipped, not pre-existing bugs: without
 // the `mut` gate, `reflect_set_i32` could silently mutate a field the rest
 // of the language treats as immutable after construction; without the
-// `Table<T>` guard, `emit_place`'s documented disconnected-copy fallback for
-// a `TableIndex` base would make the write silently vanish, the exact
-// `table[i].field = v` hazard `Checker::writes_through_table_index` exists
-// to catch elsewhere, just newly reachable through this builtin.
+// `Table<T>` guard, `emit_place`'s generic disconnected-copy fallback for a
+// *bare* `TableIndex` base (still the only unaddressable shape --
+// `table[i].field = v` itself is genuinely supported since todo.md P2 #10,
+// see the `runtime_table_field_assignment_through_index_end_to_end` family
+// above) would make the write silently vanish -- `reflect_set_i32(t[i],
+// ...)` mutates its *whole* argument-1 struct by runtime field-name lookup,
+// which still has no single contiguous address to target through a
+// `Table<T>` index, unlike a single compile-time-known field.
 
 /// `reflect_get_i32`/`_f32`/`_bool` resolve to their respective scalar type
 /// through the checker, with no `fn` declaration of their own to consult

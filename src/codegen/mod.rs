@@ -1567,6 +1567,22 @@ impl Codegen {
                 self.line(&format!("  {} = load {}*, {}** {}", reg, struct_ty, struct_ty, ptr));
                 reg
             }
+            // `table[idx].field` (as the base of a further access, or as a
+            // write target itself): a `Table<T>` element has no single
+            // contiguous storage to hand `base_ptr` below (see
+            // `crate::codegen::table`'s module doc comment), so this is
+            // special-cased directly rather than recursing through the
+            // generic `base_ptr = emit_place(base)` path -- `emit_table_field_place`
+            // knows which column to address without ever materializing the
+            // whole element. Once that real pointer comes back, any further
+            // nesting (`table[i].nested.x`, `table[i].tags[j]`, ...)
+            // composes for free through this same `Field` arm and every
+            // other place helper's own generic `base_ptr = emit_place(base)`
+            // recursion.
+            TypedExpr::Field { base, field, .. } if matches!(base.as_ref(), TypedExpr::TableIndex { .. }) => {
+                let TypedExpr::TableIndex { base: table_base, index, ty: elem_ty, .. } = base.as_ref() else { unreachable!() };
+                self.emit_table_field_place(table_base, index, elem_ty, field)
+            }
             TypedExpr::Field { base, field, .. } => {
                 let base_ptr = self.emit_place(base);
                 let gep = self.tmp_name();
@@ -1600,21 +1616,19 @@ impl Codegen {
                 let Ty::Ring(_, count) = self.expr_ty(base) else { unreachable!("RingIndex base must be Ty::Ring") };
                 self.emit_ring_index_place(base, index, ty, count)
             }
-            // `TypedExpr::TableIndex` is deliberately *not* matched here: a
-            // `Table<T>` element has no single contiguous storage location
-            // to hand out a real pointer into (its fields live in separate
-            // columns -- see `Ty::Table`'s doc comment), so it falls through
-            // to the generic fallback below, which materializes it (via
-            // `emit_expr`, reassembling every column) into a fresh,
-            // disconnected alloca. Correct for a *read* through it
-            // (`table[i].field`, an argument, ...); a *write* through that
-            // pointer (`table[i].field = v`, or a mutating collection method
-            // reached the same way) would silently target the disconnected
-            // copy instead of the real column, so `Checker::
-            // writes_through_table_index` rejects those at type-check time
-            // instead -- this fallback never actually sees one for a write
-            // (see `store_table_index` for the one write path -- `table[i] =
-            // v` -- that *is* supported).
+            // `TypedExpr::TableIndex` on its own (not as a `Field` base --
+            // that's the special case above this match arm) is still *not*
+            // matched here: a `Table<T>` element has no single contiguous
+            // storage location to hand out a real pointer into (its fields
+            // live in separate columns -- see `Ty::Table`'s doc comment), so
+            // a bare `table[i]` used as a place (e.g. an argument, or the
+            // *whole-element* write `table[i] = v`, handled separately by
+            // `store_table_index` from `Stmt::Assign`'s own codegen -- never
+            // through this function) falls through to the generic fallback
+            // below, which materializes it (via `emit_expr`, reassembling
+            // every column) into a fresh, disconnected alloca -- correct
+            // for a read, and a whole-element write never reaches this
+            // fallback at all.
             TypedExpr::GenRefIndex { base, ty, span, .. } => self.emit_genref_index_place(base, ty, *span),
             // Any other expression (e.g. chaining a field access directly
             // onto a struct returned *by value*) has no existing storage to

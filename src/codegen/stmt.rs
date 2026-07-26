@@ -835,6 +835,17 @@ impl Codegen {
                     self.store_genref_field(genref_base, elem_ty, field, ty, val, *span);
                     return;
                 }
+                // `table[idx].field = v`: routed through the dedicated,
+                // leak-safe `store_table_field` rather than the generic
+                // `emit_place(base)` GEP-and-store below -- that generic
+                // path can't release `val` on an out-of-bounds row (whose
+                // place resolution hands back a disconnected dummy), the
+                // exact same leak class `store_genref_field` above closes
+                // for `GenRef<T>`. See `store_table_field`'s own doc comment.
+                if let TypedExpr::TableIndex { base: table_base, index, ty: elem_ty, .. } = base.as_ref() {
+                    self.store_table_field(table_base, index, elem_ty, field, val);
+                    return;
+                }
                 let base_ptr = self.emit_place(base);
                 let gep = self.tmp_name();
                 let bty = self.llvm_ty(&self.expr_ty(base));
