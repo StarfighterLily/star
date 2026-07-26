@@ -13,6 +13,7 @@
 
 mod arena;
 mod array;
+mod audio;
 mod bitfield;
 mod builtins;
 mod closure;
@@ -22,6 +23,7 @@ mod file_io;
 mod fixed;
 mod flags;
 mod font;
+mod gamepad;
 mod geometry;
 mod hash;
 mod hashtable;
@@ -255,6 +257,13 @@ pub struct Codegen {
     /// program with more than one `par`/`swarm` statement -- see
     /// `par_pool::ensure_par_pool_emitted`.
     par_pool_emitted: bool,
+    /// True once the audio subsystem's one-time static machinery (the
+    /// fixed-size channel table globals and `@star.audio.mix_callback`) has
+    /// been pushed to `pending_top` -- mirrors `par_pool_emitted` exactly
+    /// (see that field's doc comment), guarding against re-emitting it for a
+    /// program that calls more than one of `sound_play`/`music_play`/
+    /// `music_stop`/`sound_stop_all`/`sound_free`. See `crate::codegen::audio`.
+    audio_pool_emitted: bool,
     /// Names of every `extern "C" fn` declared in the module, populated
     /// before any function body is emitted (see `emit`). Consulted by
     /// `TypedExpr::Call` codegen (`expr.rs`) to route a call through
@@ -364,6 +373,7 @@ impl Codegen {
             reflect_has_field_fns: std::collections::HashMap::new(),
             reflect_name_consts: std::collections::HashMap::new(),
             par_pool_emitted: false,
+            audio_pool_emitted: false,
             extern_fns: std::collections::HashSet::new(),
             generic_instantiations: std::collections::HashMap::new(),
             default_font_global: None,
@@ -583,6 +593,31 @@ impl Codegen {
         // for anything wanting to sample its own rendered framebuffer
         // (color-picking, simple collision-by-pixel, ...).
         self.line("declare i32 @SDL_RenderReadPixels(i8*, i8*, i32, i8*, i32)");
+        // `sound_load`/`sound_free`/`sound_play`/`music_play`/`music_stop`/
+        // `sound_stop_all` builtins (`todo.md` #8 "Audio playback and
+        // gamepad input") -- see `crate::codegen::audio`. WAV files are
+        // parsed by hand from a plain `fopen`/`fread` buffer (mirroring
+        // `font_load`'s own approach, see `crate::codegen::font`) rather
+        // than through SDL's own `SDL_LoadWAV_RW`, so SDL is only needed
+        // here for the output audio device and its own additive-mixing
+        // helper.
+        self.line("declare i32 @SDL_OpenAudioDevice(i8*, i32, i8*, i8*, i32)");
+        self.line("declare void @SDL_PauseAudioDevice(i32, i32)");
+        self.line("declare void @SDL_MixAudioFormat(i8*, i8*, i16, i32, i32)");
+        // `gamepad_count`/`gamepad_open`/`gamepad_close`/`gamepad_button_down`/
+        // `gamepad_axis`/`gamepad_attached` builtins -- see
+        // `crate::codegen::gamepad`. Bound to SDL2's lower-level
+        // `SDL_Joystick` API (raw numbered buttons/axes) rather than
+        // `SDL_GameController` (a fixed Xbox-style button/axis layout that
+        // needs an external mapping database to recognize most real
+        // hardware) -- see that module's own doc comment for the tradeoff.
+        self.line("declare i32 @SDL_NumJoysticks()");
+        self.line("declare i8* @SDL_JoystickOpen(i32)");
+        self.line("declare void @SDL_JoystickClose(i8*)");
+        self.line("declare void @SDL_JoystickUpdate()");
+        self.line("declare i8 @SDL_JoystickGetButton(i8*, i32)");
+        self.line("declare i16 @SDL_JoystickGetAxis(i8*, i32)");
+        self.line("declare i32 @SDL_JoystickGetAttached(i8*)");
         self.line("declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)");
         self.line("declare i32 @WaitForSingleObject(i8*, i32)");
         self.line("declare i32 @CloseHandle(i8*)");

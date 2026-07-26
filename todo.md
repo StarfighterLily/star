@@ -75,7 +75,8 @@ programs, biggest lever first within each tier.
    an operator on its bounded type parameter, not just call a trait method.
 8. **Audio playback and gamepad input.** Long-deferred, explicitly and
    honestly labeled as such — but "game programming language" without audio
-   is a real, user-visible hole, not a nice-to-have.
+   is a real, user-visible hole, not a nice-to-have. -- Done: See previous
+   work below for details.
 9. **A proportional/lowercase-aware text renderer**, or a documented,
    supported path to bind `SDL_ttf` for anything beyond a debug HUD. The
    current 5x7 uppercase-only bitmap font is fine for a score counter, not
@@ -106,6 +107,131 @@ programs, biggest lever first within each tier.
     barrier if outside contribution is ever a goal.
 
 # Previous work:
+
+Implemented audio playback and gamepad input (todo.md P2 #8), the last of
+the long-deferred, honestly-labeled "game programming language" gaps
+`ASSESSMENT.md`'s "The Bad" section called out by name ("no game ships
+without audio, and controller input matters a lot for the genres this
+language's memory model is obviously aimed at").
+
+**Audio** (`src/codegen/audio.rs`, new): `sound_load(path) -> ptr` parses a
+WAV file entirely by hand over a plain `fopen`/`fread` buffer -- mirroring
+`font_load`'s own approach (`src/codegen/font.rs`) -- rather than going
+through SDL's `SDL_LoadWAV_RW`/`SDL_AudioSpec`, so a program that only loads
+sounds needs no SDL call at all. Only the canonical minimal-header shape is
+accepted (16-bit/44100Hz/stereo PCM, `fmt ` chunk immediately followed by
+`data`, the layout Audacity/`sox`/`ffmpeg -f wav` already produce by
+default) -- every RIFF/WAVE/fmt/data tag and format field is checked against
+a fixed offset, and anything else (wrong sample rate, wrong bit depth, wrong
+channel count, extra chunks before `data`, or a truncated file) fails to
+load, returning `null` (checked with `is_null`, same convention as
+`window_create`/`file_open`) rather than being resampled or misread.
+`sound_free` releases both the loaded byte buffer and the handle wrapper.
+
+Playback is a small hand-rolled additive mixer, not a bare `SDL_QueueAudio`
+FIFO: a fixed 16-slot channel table (four parallel globals -- base pointer,
+byte length, playback position, loop flag -- plus a playing-flags array),
+channel 0 reserved for looping "music" (`music_play`/`music_stop`), the
+other 15 one-shot "sound effects" (`sound_play`, which scans for the first
+free slot and silently drops the request if all 15 are busy -- a documented
+fixed-voice-count floor cut, not a queue). `sound_stop_all()` stops
+everything at once. `@star.audio.mix_callback` -- a hand-written LLVM IR
+function emitted once per program (`ensure_audio_pool_emitted`, mirroring
+`par_pool::ensure_par_pool_emitted`'s own guarded-emit-once shape exactly)
+and registered as the real `SDL_AudioSpec.callback` -- zeros the requested
+output buffer then additively mixes every currently-playing channel's
+remaining samples into it via `SDL_MixAudioFormat` (which already does the
+signed-16-bit saturating add, so this floor never hand-rolls clipping
+math). Every loaded sound and the shared output device share one fixed
+canonical format, so the mixer never resamples or converts at mix time.
+`ensure_audio_device` lazily opens the shared device (guarded by
+`@star.audio.device`, unlike `window_create`'s own "call `SDL_Init` every
+time" convention -- audio has exactly one shared mixer device for the whole
+program, not one instance per call) with `allowed_changes = 0`, so a
+mismatched actual device format fails cleanly instead of silently desyncing
+every channel's fixed-format assumption.
+
+Concurrency is deliberately informal, and documented as such: the
+channel-table globals are unguarded (no lock), read on SDL's own dedicated
+audio-callback thread and written by whichever thread calls
+`sound_play`/`music_play`/`music_stop`/`sound_stop_all`/`sound_free`.
+Correctness leans on `emit_channel_start` always writing a channel's
+`playing` flag *last* (the mixer checks `playing` *first*, so it never
+observes a half-updated channel) plus x86/x64's own strong store ordering --
+this compiler's only target. This is exactly why those five builtins (plus
+every `gamepad_*` builtin below) were added to
+`crate::types::par_analysis::is_banned_sdl_builtin_in_par`
+(`src/types/par_analysis.rs`): concurrent *writers* to this same unlocked
+table from multiple `par`/`swarm` worker threads is a real, unguarded race
+the single-writer assumption doesn't cover. `sound_load` itself is *not*
+banned, for the same reason `font_load` isn't -- it only touches its own
+independently `malloc`'d buffer.
+
+**Gamepad** (`src/codegen/gamepad.rs`, new): bound to SDL2's lower-level
+`SDL_Joystick` API (raw, numbered buttons/axes) rather than
+`SDL_GameController` -- the latter only recognizes a device as a "game
+controller" at all if its exact USB vendor/product ID is present in SDL's
+mapping database (normally loaded from an external `gamecontrollerdb.txt`
+this floor doesn't bundle or fetch), so a real, physically-connected pad
+would otherwise be invisible to it even though `SDL_Joystick` sees it fine.
+`gamepad_count() -> int`/`gamepad_open(index) -> ptr` both call
+`SDL_Init(SDL_INIT_JOYSTICK)` every time, mirroring `window_create`'s own
+ref-counted-by-SDL `SDL_Init` convention; `gamepad_open` returns `null` on
+an out-of-range index or unplugged device, checked with `is_null`.
+`gamepad_button_down`/`gamepad_axis`/`gamepad_attached` all call
+`SDL_JoystickUpdate` first -- unlike `key_down`/`mouse_x`/`mouse_y`, which
+piggyback on `window_should_close`'s own event-queue drain, a gamepad-only
+program with no window at all needs its own input pump.
+`gamepad_axis` returns SDL's raw, unnormalized `-32768..32767` range
+(sign-extended from `Sint16`), matching `mouse_x`/`mouse_y`'s own "raw
+coordinates, no unit conversion" convention. `gamepad_attached` lets a game
+detect a mid-session unplug explicitly, rather than only observing every
+button/axis silently reading back as "not pressed"/`0` forever after (SDL's
+own documented, never-crashing, never-signaling behavior for a stale
+handle).
+
+Wired through the same five places every existing SDL builtin already
+threads through: `src/types/mod.rs` (return types + `RESERVED_RUNTIME_SYMBOLS`),
+`src/types/expr.rs` (arity/argument-type checks), `src/codegen/mod.rs`
+(the new `audio`/`gamepad` submodules, a new `Codegen::audio_pool_emitted`
+field mirroring `par_pool_emitted`, and every new SDL/CRT `declare`),
+`src/codegen/expr.rs` (call dispatch), and `src/types/par_analysis.rs` (the
+ban list above). `docs/language_reference.md` gained a new "Audio Playback
+/ Gamepad Input" section (with a documented "Limitations" list: no format
+conversion, no volume/panning, a looping channel's restart can lag by up to
+one callback buffer, 15 fixed one-shot channels with no queueing/stealing,
+no controller-mapping database). Added `examples/audio.star`/
+`examples/gamepad.star` plus a committed short WAV asset
+(`examples/assets/beep.wav`, 0.25s/44100Hz/stereo/16-bit, generated with a
+throwaway script, not hand-authored) that both the audio example and every
+"real file" audio test load.
+
+Added 37 new tests to `tests/frontend.rs`: checker tests covering every new
+builtin's return type, arity, and argument-type validation (both accept and
+reject cases); two `par`/`swarm`-ban regression tests (one per module) plus
+a positive `sound_load`-stays-usable-inside-`par` sibling test, matching
+`rejects_draw_text_and_get_pixel_inside_par_body`'s established shape;
+codegen-shape tests confirming `sound_load` never calls into SDL at all,
+`sound_play`/`music_play` pull in the channel-table globals and mixer
+machinery, `music_play` targets channel `0` with its loop flag set (unlike
+`sound_play`'s scanned free slot), the mixer's one-time machinery is
+genuinely emitted exactly once regardless of call count, and
+`gamepad_button_down`/`gamepad_axis`/`gamepad_count`/`gamepad_open` emit the
+right `SDL_JoystickUpdate`/`SDL_JoystickGetButton`/`SDL_JoystickGetAxis`/
+`SDL_Init(SDL_INIT_JOYSTICK)` calls; and runtime end-to-end tests under
+`SDL_AUDIODRIVER=dummy`/`SDL_VIDEODRIVER=dummy` covering a real WAV load-
+then-free cycle, a missing-file load returning `null`, all four
+non-canonical WAV shapes (wrong rate/bits/channels/truncated) being
+rejected, `sound_free` aborting on a null handle, a full
+play/loop/layer/stop/free sequence running end to end with no crash, and --
+the real proof `gamepad_*` reads live SDL state rather than just emitting
+plausible IR -- attaching a genuine SDL2 *virtual* joystick
+(`SDL_JoystickAttachVirtual`, no physical hardware needed) via a test-only
+`extern "C" fn` declared straight from the compiled `.star` program itself,
+then confirming `gamepad_open`/`gamepad_button_down`/`gamepad_axis`/
+`gamepad_attached` observe exactly the button/axis state
+`SDL_JoystickSetVirtualButton`/`SetVirtualAxis` set. Full suite (1480
+tests) passes.
 
 Made `frame:`'s bump-allocator budget configurable per block (todo.md P1 #5), mirroring the fix already done for arena capacity (`arena Name: Type = N`): the previously hardcoded 4096-byte cap on every `frame:` block's shared bump allocator is now overridable per block, closing the exact gap ASSESSMENT.md #4 named ("4096 bytes is easy to blow with unremarkable code ... the fixed ceiling itself remains a footgun with no compiler-facing way to size it to the workload").
 

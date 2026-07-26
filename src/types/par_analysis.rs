@@ -31,6 +31,26 @@ use super::*;
 /// other pure builtin here (concurrently misusing the *same* handle from
 /// two threads is a real but narrower hazard, no different in kind from any
 /// other shared `ptr` a `par` body could already be handed).
+///
+/// `sound_play`/`music_play`/`music_stop`/`sound_stop_all`/`sound_free` join
+/// the ban list for the same reason, but a narrower one: these mutate (or,
+/// for `sound_free`, conditionally scan-and-mutate) the fixed-size global
+/// channel-table arrays backing the shared audio mixer (see
+/// `crate::codegen::audio`) with no lock of any kind -- concurrent writers
+/// from multiple worker threads racing to claim the same free channel slot
+/// is a real, unguarded data race, not just an unprovable-disjointness
+/// conservatism. `sound_load` is deliberately *not* banned, for the same
+/// reason `font_load`/`font_free` aren't: it only touches its own
+/// independently `malloc`'d buffer, never the shared channel table.
+///
+/// `gamepad_open`/`gamepad_close` touch SDL's shared joystick-subsystem
+/// open/close state; `gamepad_button_down`/`gamepad_axis`/`gamepad_attached`
+/// call `SDL_JoystickUpdate` (a global input-state pump, exactly like
+/// `key_down`/`mouse_x`/`mouse_y`'s own reliance on the event queue) and read
+/// through a specific joystick's shared internal state; `gamepad_count`
+/// reads `SDL_NumJoysticks`, the same shared-subsystem state `window_create`
+/// touches. All banned for the same "this proof has no visibility into
+/// C-library-owned shared state" reason as every other builtin here.
 pub(super) fn is_banned_sdl_builtin_in_par(name: &str) -> bool {
     matches!(
         name,
@@ -48,6 +68,17 @@ pub(super) fn is_banned_sdl_builtin_in_par(name: &str) -> bool {
             | "mouse_button_down"
             | "draw_text"
             | "get_pixel"
+            | "sound_free"
+            | "sound_play"
+            | "music_play"
+            | "music_stop"
+            | "sound_stop_all"
+            | "gamepad_count"
+            | "gamepad_open"
+            | "gamepad_close"
+            | "gamepad_button_down"
+            | "gamepad_axis"
+            | "gamepad_attached"
     )
 }
 

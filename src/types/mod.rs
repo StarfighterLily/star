@@ -963,6 +963,26 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "font_free" | "draw_text" => Some(Ty::Named("unknown".into())),
         "measure_text" => Some(Ty::Tuple(vec![Ty::Int, Ty::Int])),
         "get_pixel" => Some(Ty::Color32),
+        // `todo.md` #8 "Audio playback and gamepad input" -- see
+        // `crate::codegen::audio`. `sound_load` reuses `Ty::Ptr` as an
+        // opaque handle exactly like `window_create`/`font_load` (null on
+        // failure, checked with `is_null`); `sound_free`/`sound_play`/
+        // `music_play`/`music_stop`/`sound_stop_all` return no useful value.
+        "sound_load" => Some(Ty::Ptr),
+        "sound_free" | "sound_play" | "music_play" | "music_stop" | "sound_stop_all" => {
+            Some(Ty::Named("unknown".into()))
+        }
+        // `gamepad_open` reuses `Ty::Ptr` as an opaque `SDL_Joystick*`
+        // handle (null on failure -- an unplugged/out-of-range index --
+        // same convention as every other handle-returning builtin here).
+        // `gamepad_axis`/`gamepad_count` return a raw `int` (an axis's
+        // native `-32768..32767` range, or a device count), matching
+        // `mouse_x`/`mouse_y`'s own "raw, unnormalized" convention rather
+        // than inventing a float range this floor doesn't otherwise need.
+        "gamepad_open" => Some(Ty::Ptr),
+        "gamepad_close" => Some(Ty::Named("unknown".into())),
+        "gamepad_button_down" | "gamepad_attached" => Some(Ty::Bool),
+        "gamepad_axis" | "gamepad_count" => Some(Ty::Int),
         // `todo.md` #7, "wire up reflection into an actual runtime feature":
         // read/write a struct's `@export`/`@tweakable` fields by a *runtime*
         // `str` name, the missing piece `src/codegen/reflect.rs`'s
@@ -1343,6 +1363,12 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     "SDL_Delay", "SDL_GetTicks",
     // `get_pixel` builtin -- see `crate::codegen::font`.
     "SDL_RenderReadPixels",
+    // `sound_load`/.../`sound_stop_all` builtins -- see `crate::codegen::audio`.
+    "SDL_OpenAudioDevice", "SDL_PauseAudioDevice", "SDL_MixAudioFormat",
+    // `gamepad_count`/.../`gamepad_attached` builtins -- see
+    // `crate::codegen::gamepad`.
+    "SDL_NumJoysticks", "SDL_JoystickOpen", "SDL_JoystickClose", "SDL_JoystickUpdate",
+    "SDL_JoystickGetButton", "SDL_JoystickGetAxis", "SDL_JoystickGetAttached",
 ];
 
 /// The error type for type checking.

@@ -1324,7 +1324,7 @@ fn main():
     window_destroy(w)
 ```
 
-Audio playback and gamepad input are still open (`todo.md` #4).
+Audio playback and gamepad input are covered in their own section below.
 
 ### Text Rendering / Font Loading
 
@@ -1366,6 +1366,96 @@ panel behind it. Both clamp `scale` to at least `1`.
 window's current (drawn, not-yet-presented) framebuffer via
 `SDL_RenderReadPixels` — the only way to observe what a drawing builtin
 actually drew; every other SDL drawing builtin here is write-only.
+
+### Audio Playback / Gamepad Input
+
+Closes `todo.md` #8, "Audio playback and gamepad input" — the last
+long-deferred gap between this language's "game programming language"
+framing and what it could actually do.
+
+**Audio.** `sound_load(path) -> ptr` reads a WAV file straight off disk with
+this compiler's own hand-rolled parser (`fopen`/`fread`, the same approach
+`font_load` already uses — no dependency on SDL's own WAV loader). Only the
+canonical, minimal-header shape is accepted: 16-bit, 44100Hz, stereo PCM,
+with the `fmt ` chunk immediately followed by `data` (what a plain export
+from Audacity, `sox`, or `ffmpeg -f wav` already produces) — anything else
+(a different sample rate/bit depth/channel count, or extra chunks before
+`data`) fails to load. `null` on any failure, checked with `is_null`, same
+convention as `window_create`/`file_open`. Free a loaded sound with
+`sound_free`.
+
+Playback is a small additive mixer with 16 fixed channels: channel 0 is
+reserved for looping "music" (`music_play`/`music_stop`); the other 15 are
+one-shot "sound effects" (`sound_play`, which finds the first free one — if
+all 15 are already busy, the new sound is silently dropped). Multiple
+sounds — including a one-shot effect layered on top of looping music — mix
+together for real, unlike a bare `SDL_QueueAudio` FIFO. `sound_stop_all()`
+stops everything at once (e.g. for a scene transition). The output device
+opens lazily on first use.
+
+```star
+fn main():
+    let jump = sound_load("assets/jump.wav")
+    let theme = sound_load("assets/theme.wav")
+    music_play(theme)
+    # ... later, once per jump:
+    sound_play(jump)
+    # ... on teardown:
+    sound_stop_all()
+    sound_free(jump)
+    sound_free(theme)
+```
+
+**Gamepad.** Bound to SDL2's lower-level `SDL_Joystick` API (raw, numbered
+buttons/axes) rather than `SDL_GameController` — the latter only recognizes
+a device at all if its exact hardware ID is present in a mapping database
+this floor doesn't bundle, so a real pad plugged in could otherwise be
+invisible to it. `gamepad_count() -> int` returns the number of connected
+joystick devices; `gamepad_open(index) -> ptr` opens one (`null` on failure,
+checked with `is_null`); `gamepad_close` releases it. `gamepad_button_down
+(pad, button) -> bool` and `gamepad_axis(pad, axis) -> int` read a raw,
+device-specific button/axis index — `gamepad_axis` returns SDL's own
+unnormalized `-32768..32767` range, matching `mouse_x`/`mouse_y`'s own "raw
+coordinates" convention. `gamepad_attached(pad) -> bool` detects a mid-session
+unplug explicitly.
+
+```star
+fn main():
+    if gamepad_count() == 0:
+        return
+    let pad = gamepad_open(0)
+    while gamepad_attached(pad):
+        if gamepad_button_down(pad, 0):
+            println("jump")
+        let steer = gamepad_axis(pad, 0)
+        delay(16)
+    gamepad_close(pad)
+```
+
+See `examples/audio.star`/`examples/gamepad.star` for complete programs.
+Building a program that calls any of these needs SDL2 linked explicitly,
+exactly like the windowing/graphics builtins above.
+
+#### Limitations
+
+- No format conversion: a WAV that isn't already 16-bit/44100Hz/stereo PCM
+  with a plain 44-byte header fails to load rather than being resampled.
+- No per-sound volume/panning control — every channel mixes at full volume.
+- A looping channel's restart takes effect on the next audio-callback tick,
+  not instantly at the exact sample its data runs out — for a very short
+  loop clip relative to the ~23ms default callback buffer, this can leave up
+  to one buffer's silence at the loop point.
+- `sound_play`'s 15 one-shot channels are a fixed ceiling; a 16th
+  simultaneous sound effect is silently dropped rather than queued or
+  stealing an already-playing channel.
+- No `SDL_GameController` mapping/rumble/haptics — `gamepad_axis`/
+  `gamepad_button_down` are raw, unlabeled indices, not a named `A`/`B`/
+  `LEFTX` layout.
+- `sound_play`/`music_play`/`music_stop`/`sound_stop_all`/`sound_free`/
+  `gamepad_count`/`gamepad_open`/`gamepad_close`/`gamepad_button_down`/
+  `gamepad_axis`/`gamepad_attached` are all banned inside a `par`/`swarm`
+  body, the same way the windowing/input builtins already are — see
+  "Sequential Arena Iteration" above.
 
 ### Sequential Animations
 

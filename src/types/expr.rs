@@ -2658,6 +2658,41 @@ impl Checker {
                     }
                 }
             }
+            // Audio playback / gamepad input builtins (`todo.md` #8) -- see
+            // `crate::codegen::audio`/`crate::codegen::gamepad`.
+            "sound_load" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Str) {
+                    self.error(format!("`sound_load` expects a `str` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "sound_free" | "sound_play" | "music_play" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                    self.error(format!("`{}` expects a `ptr` argument, found `{:?}`", name, arg_tys[0]), span);
+                }
+            }
+            "music_stop" | "sound_stop_all" | "gamepad_count" => {
+                arity_ok(0, self);
+            }
+            "gamepad_open" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Int) {
+                    self.error(format!("`gamepad_open` expects an `int` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "gamepad_close" | "gamepad_attached" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                    self.error(format!("`{}` expects a `ptr` argument, found `{:?}`", name, arg_tys[0]), span);
+                }
+            }
+            "gamepad_button_down" | "gamepad_axis" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`{}` argument 1 expected `ptr`, found `{:?}`", name, arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Int) {
+                        self.error(format!("`{}` argument 2 expected `int`, found `{:?}`", name, arg_tys[1]), span);
+                    }
+                }
+            }
             "str_contains" | "str_starts_with" | "str_ends_with" | "str_index_of" => {
                 if arity_ok(2, self) {
                     for (i, t) in arg_tys.iter().enumerate() {

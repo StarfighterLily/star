@@ -643,6 +643,20 @@ impl Codegen {
                     Some("draw_text") => { self.emit_draw_text(args); "%undef".into() }
                     Some("measure_text") => self.emit_measure_text(args),
                     Some("get_pixel") => self.emit_get_pixel(args),
+                    // Audio playback / gamepad input builtins (`todo.md` #8)
+                    // -- see `crate::codegen::audio`/`crate::codegen::gamepad`.
+                    Some("sound_load") => self.emit_sound_load(args),
+                    Some("sound_free") => { self.emit_sound_free(args); "%undef".into() }
+                    Some("sound_play") => { self.emit_sound_play(args); "%undef".into() }
+                    Some("music_play") => { self.emit_music_play(args); "%undef".into() }
+                    Some("music_stop") => { self.emit_music_stop(); "%undef".into() }
+                    Some("sound_stop_all") => { self.emit_sound_stop_all(); "%undef".into() }
+                    Some("gamepad_count") => self.emit_gamepad_count(),
+                    Some("gamepad_open") => self.emit_gamepad_open(args),
+                    Some("gamepad_close") => { self.emit_gamepad_close(args); "%undef".into() }
+                    Some("gamepad_button_down") => self.emit_gamepad_button_down(args),
+                    Some("gamepad_axis") => self.emit_gamepad_axis(args),
+                    Some("gamepad_attached") => self.emit_gamepad_attached(args),
                     // `todo.md` #7, "wire up reflection into an actual
                     // runtime feature" -- see `crate::codegen::reflect`.
                     Some("reflect_get_i32") => self.emit_reflect_get(args, &Ty::Int),
