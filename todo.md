@@ -106,9 +106,41 @@ programs, biggest lever first within each tier.
     today requires `cargo +stable-x86_64-pc-windows-gnu` plus a hand-
     maintained `vendor-libs` stub directory — a plain `cargo build` fails
     outright on the reference machine. Fine for a solo project; a real
-    barrier if outside contribution is ever a goal.
+    barrier if outside contribution is ever a goal. -- Done: See previous
+    work below for details.
 
 # Previous work:
+
+Fixed the Windows build story (todo.md P3 #13): plain `cargo build` (MSVC
+target) now works with zero extra configuration for any contributor --
+the hardcoded-absolute-path GNU-target link configuration (vendor-libs'
+stub archives plus LLVM-mingw's lib dir) was removed from the committed
+`.cargo/config.toml` entirely, which now only carries the portable
+`[env] RUST_MIN_STACK`. A `build.rs`-based replacement was tried first and
+rejected: `cargo:rustc-link-search`/`cargo:rustc-link-arg` from a crate's
+own build script only apply to that crate's own linked artifacts, not to
+dependencies' build scripts (confirmed by a real build -- `proc-macro2`/
+`quote`'s build scripts, linked for the same GNU target, failed with the
+exact `-lgcc_eh`/`-lgcc` link error the old rustflags existed to prevent).
+`target.<triple>.rustflags` has to come from a Cargo config source that
+applies target-wide, so the GNU-specific block now lives in each GNU-target
+user's own `%USERPROFILE%\.cargo\config.toml` (`~/.cargo/config.toml`
+elsewhere) -- machine-local, never committed, so it can point at that
+machine's own checkout location and LLVM-mingw install without touching
+the repo. readme.md's "Requirements" section documents the exact block to
+add, with the one-line reason MSVC doesn't need any of this: it links
+against the ambient MSVC CRT via `link.exe`, while the GNU target expects
+a mingw-w64 GCC-style runtime nothing in a stock Rust install provides.
+
+Two smaller, genuinely portable fixes landed alongside this: `find_clang_on`
+(used at `star build` runtime, unrelated to building star.exe itself)
+dropped its baked-in `E:\LLVM\bin\clang.exe` fallback for a `STAR_CLANG_PATH`
+env var, falling back further to a bare `clang`/`clang.exe` name (relying
+on the OS's own `PATH` search) rather than a personal absolute path shipping
+in the compiled binary; `vendor-libs/build_stubs.ps1` (the stub-archive
+regeneration script) got the same treatment via `$PSScriptRoot` and a
+parameter/env var for the LLVM bin dir, so it's no longer tied to one
+checkout location either.
 
 Implemented proportional, real-glyph-shaped text rendering (todo.md P2 #9),
 closing the gap `crate::codegen::font`'s own doc comment already flagged:

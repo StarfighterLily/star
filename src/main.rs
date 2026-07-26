@@ -339,16 +339,25 @@ fn cmd_build(
     }
 }
 
-/// Locate a `clang` executable: prefer one on `PATH`, falling back to the
-/// well-known LLVM install location the README documents.
+/// Locate a `clang` executable: prefer one on `PATH`, falling back to
+/// `STAR_CLANG_PATH` (see the README's "Requirements" section).
 fn find_clang() -> std::path::PathBuf {
-    find_clang_on(std::env::var_os("PATH").as_deref())
+    find_clang_on(std::env::var_os("PATH").as_deref(), std::env::var_os("STAR_CLANG_PATH"))
 }
 
-/// `find_clang`'s search logic, parameterized over the `PATH` value so it
-/// can be exercised on a synthetic directory list without touching the
-/// process's real environment (see the `tests` module below).
-fn find_clang_on(path_var: Option<&std::ffi::OsStr>) -> std::path::PathBuf {
+/// `find_clang`'s search logic, parameterized over `PATH` and
+/// `STAR_CLANG_PATH` so it can be exercised on synthetic values without
+/// touching the process's real environment (see the `tests` module below).
+///
+/// Preference order: a `clang`/`clang.exe` found on `PATH`, then
+/// `STAR_CLANG_PATH` (for a non-`PATH`-installed clang, e.g. LLVM-mingw's),
+/// then a bare executable name -- letting `Command::new` fall back to the
+/// OS's own `PATH` search and produce a normal "program not found" error,
+/// rather than baking a personal absolute path into the compiled binary.
+fn find_clang_on(
+    path_var: Option<&std::ffi::OsStr>,
+    star_clang_path: Option<std::ffi::OsString>,
+) -> std::path::PathBuf {
     let exe_name = if cfg!(windows) { "clang.exe" } else { "clang" };
     if let Some(paths) = path_var {
         for dir in std::env::split_paths(paths) {
@@ -358,7 +367,10 @@ fn find_clang_on(path_var: Option<&std::ffi::OsStr>) -> std::path::PathBuf {
             }
         }
     }
-    std::path::PathBuf::from(r"E:\LLVM\bin\clang.exe")
+    if let Some(path) = star_clang_path {
+        return std::path::PathBuf::from(path);
+    }
+    std::path::PathBuf::from(exe_name)
 }
 
 #[cfg(test)]
@@ -483,11 +495,10 @@ mod tests {
         assert_eq!(link_args(&libs, &lib_paths), vec![r"-LC:\SDL2\lib", "-lSDL2"]);
     }
 
-    /// A `clang`/`clang.exe` on `PATH` is preferred over the hardcoded
-    /// `E:\LLVM\bin\clang.exe` fallback -- the bug this guards against: the
-    /// old `cmd_build` hardcoded that path unconditionally, ignoring `PATH`
-    /// entirely (contradicting the README's "Clang on PATH (or at
-    /// `E:\LLVM\bin\clang.exe`)").
+    /// A `clang`/`clang.exe` on `PATH` is preferred over a `STAR_CLANG_PATH`
+    /// override -- the bug this guards against: `cmd_build` ignoring `PATH`
+    /// entirely in favor of a fallback, contradicting `STAR_CLANG_PATH`
+    /// being meant only as a fallback, not a hardcoded override.
     #[test]
     fn prefers_clang_on_path_over_hardcoded_fallback() {
         let dir = std::env::temp_dir().join("star_test_find_clang_on_path");
@@ -497,23 +508,44 @@ mod tests {
         std::fs::write(&clang_path, b"").unwrap();
 
         let path_var = std::env::join_paths([&dir]).unwrap();
-        let found = find_clang_on(Some(&path_var));
+        let found = find_clang_on(Some(&path_var), None);
         assert_eq!(found, clang_path);
 
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// With no `clang` anywhere on `PATH` (or no `PATH` at all), the search
-    /// falls back to the well-known LLVM install location rather than
-    /// failing outright.
+    /// With no `clang` on `PATH`, `STAR_CLANG_PATH` wins over the bare-name
+    /// fallback -- this is how a non-`PATH`-installed LLVM-mingw clang gets
+    /// picked up.
     #[test]
-    fn falls_back_to_hardcoded_path_when_not_on_path() {
+    fn falls_back_to_star_clang_path_env_var_when_not_on_path() {
+        let dir = std::env::temp_dir().join("star_test_find_clang_env_var");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path_var = std::env::join_paths([&dir]).unwrap();
+        let clang_path = std::ffi::OsString::from(r"C:\llvm-mingw\bin\clang.exe");
+
+        assert_eq!(
+            find_clang_on(Some(&path_var), Some(clang_path.clone())),
+            std::path::PathBuf::from(&clang_path)
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// With no `clang` anywhere on `PATH` (or no `PATH` at all) and no
+    /// `STAR_CLANG_PATH` override, the search falls back to a bare
+    /// executable name rather than a personal hardcoded install path --
+    /// `Command::new` then relies on the OS's own `PATH` search, giving a
+    /// normal "program not found" error if nothing is installed.
+    #[test]
+    fn falls_back_to_bare_exe_name_when_no_path_and_no_env_override() {
         let dir = std::env::temp_dir().join("star_test_find_clang_empty");
         std::fs::create_dir_all(&dir).unwrap();
         let path_var = std::env::join_paths([&dir]).unwrap();
+        let exe_name = if cfg!(windows) { "clang.exe" } else { "clang" };
 
-        assert_eq!(find_clang_on(Some(&path_var)), std::path::PathBuf::from(r"E:\LLVM\bin\clang.exe"));
-        assert_eq!(find_clang_on(None), std::path::PathBuf::from(r"E:\LLVM\bin\clang.exe"));
+        assert_eq!(find_clang_on(Some(&path_var), None), std::path::PathBuf::from(exe_name));
+        assert_eq!(find_clang_on(None, None), std::path::PathBuf::from(exe_name));
 
         std::fs::remove_dir_all(&dir).ok();
     }

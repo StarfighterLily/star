@@ -24,8 +24,22 @@ This approach avoids linking against LLVM development libraries directly, remove
 
 ### Requirements
 
-- **Rust toolchain** (edition 2024) for building the compiler.
-- **Clang/LLVM** on `PATH` (or at `E:\LLVM\bin\clang.exe`) for the back-end.
+- **Rust toolchain** (edition 2024) for building the compiler. Two supported paths:
+  - **Standard (MSVC) Rust — recommended.** `cargo build` works with no extra configuration; nothing GNU-specific below ever applies to this path.
+  - **GNU/mingw Rust (`x86_64-pc-windows-gnu`)**, for a machine without MSVC Build Tools installed. The GNU-ABI Windows target expects a mingw-w64 GCC-style static runtime (`libgcc_eh.a`/`libgcc.a`) that stock `rustup` Rust doesn't ship, whereas the MSVC target just links against the Windows SDK/`link.exe` every Rust-for-Windows install already has — hence this extra setup only on the GNU side:
+    1. Install [LLVM-mingw](https://github.com/mstorsjo/llvm-mingw) (it supplies compiler-rt/libunwind, which `vendor-libs/`'s stub archives are built to work against).
+    2. Add the block below to your **own** `%USERPROFILE%\.cargo\config.toml` (`~/.cargo/config.toml` on other platforms) — machine-local, not part of this repo, so it never needs to match anyone else's install layout. This has to be user-level rather than a per-project `build.rs`: the flags need to apply to *every* crate linked for this target, including dependencies' own build scripts (e.g. `proc-macro2`/`quote`), which a project-local build script can't reach.
+       ```toml
+       [target.x86_64-pc-windows-gnu]
+       rustflags = [
+           "-L", "<path to this checkout>/vendor-libs",
+           "-L", "<LLVM-mingw install>/x86_64-w64-mingw32/lib",
+           "-C", "link-arg=-fuse-ld=lld",
+           "-C", "link-arg=-lunwind",
+       ]
+       ```
+    3. Build/test with `cargo +stable-x86_64-pc-windows-gnu build` / `... test`.
+- **Clang/LLVM on `PATH`** for the back-end (`star build`'s `.ll` → `.exe` step; unrelated to which Rust toolchain built the compiler itself). If clang isn't on `PATH`, set `STAR_CLANG_PATH` to its full path — LLVM-mingw's own `clang.exe` works fine here too.
 
 ## Usage
 
@@ -76,3 +90,12 @@ The compiler front-end (lexer, parser, type checker, LLVM IR emitter) is functio
 cargo build
 cargo test
 cargo run -- check examples/player.star
+```
+
+Building for the GNU/mingw target instead (after the one-time user-level
+`.cargo/config.toml` setup in "Requirements" above):
+
+```bash
+cargo +stable-x86_64-pc-windows-gnu build
+cargo +stable-x86_64-pc-windows-gnu test
+```

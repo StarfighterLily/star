@@ -1,6 +1,26 @@
+<#
+.SYNOPSIS
+Regenerates the stub libgcc.a/libgcc_eh.a archives in this directory, which
+satisfy rustc's -lgcc_eh -lgcc when linking star for the
+x86_64-pc-windows-gnu target against LLVM-mingw. Portable across checkout
+location; the LLVM bin dir must still be supplied. See readme.md's
+"Requirements" section. These stubs are x86_64-pc-windows-gnu
+(COFF/mingw)-specific -- rerun this script for any other target triple.
+
+.PARAMETER LlvmBinDir
+Directory containing clang.exe/llvm-ar.exe (e.g. an LLVM-mingw install's
+bin dir). Defaults to $env:STAR_LLVM_BIN_DIR if set.
+#>
+param(
+    [string]$LlvmBinDir = $env:STAR_LLVM_BIN_DIR
+)
+
 $ErrorActionPreference = "Stop"
-$root = "E:\Coding\Rust\star\vendor-libs"
-$llvm = "E:\LLVM\bin"
+if (-not $LlvmBinDir) {
+    throw "LLVM bin dir not specified: pass -LlvmBinDir <dir> or set `$env:STAR_LLVM_BIN_DIR."
+}
+$root = $PSScriptRoot
+$llvm = $LlvmBinDir
 
 # Create an empty object file to act as a valid archive member.
 "x: .text" | Out-File -Encoding ascii "$root\empty.s"
