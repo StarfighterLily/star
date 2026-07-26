@@ -3164,51 +3164,18 @@ impl Checker {
                     }
                     return Ty::Bool;
                 }
-                // `Symbol == Symbol` / `!=` -- a single `i64` id comparison
-                // (see `Ty::Symbol`'s doc comment). No ordering: interning
-                // order is an implementation detail, not a meaningful sort.
-                if *lhs_ty == Ty::Symbol && *rhs_ty == Ty::Symbol {
-                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
-                        self.error("only `==`/`!=` are supported between `Symbol` values", span);
+                // `Symbol`/`BitField<N>`/`Flags<E>`/`Color32`/`PaletteIndex`
+                // == same type / `!=` -- a single opaque-width `icmp`, no
+                // ordering (none of these have a meaningful "less than") --
+                // see `Ty::eq_only_scalar_shape`'s doc comment for why this
+                // is one shared table instead of five hand-copied blocks.
+                if let Some((_, name)) = lhs_ty.eq_only_scalar_shape() {
+                    if lhs_ty == rhs_ty {
+                        if !matches!(op, BinOp::Eq | BinOp::Ne) {
+                            self.error(format!("only `==`/`!=` are supported between `{}` values", name), span);
+                        }
+                        return Ty::Bool;
                     }
-                    return Ty::Bool;
-                }
-                // `BitField<N> == BitField<N>` / `!=` -- a single `i{N}`
-                // bit-pattern comparison, no ordering (a packed register has
-                // no meaningful "less than") -- see `Ty::BitField`'s doc
-                // comment.
-                if matches!(lhs_ty, Ty::BitField(_)) && lhs_ty == rhs_ty {
-                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
-                        self.error("only `==`/`!=` are supported between `BitField<N>` values", span);
-                    }
-                    return Ty::Bool;
-                }
-                // `Flags<E> == Flags<E>` / `!=` -- a single `i64` mask
-                // comparison, same reasoning as `Ty::BitField` above -- see
-                // `Ty::Flags`'s doc comment.
-                if matches!(lhs_ty, Ty::Flags(_)) && lhs_ty == rhs_ty {
-                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
-                        self.error("only `==`/`!=` are supported between `Flags<E>` values", span);
-                    }
-                    return Ty::Bool;
-                }
-                // `Color32 == Color32` / `!=` -- a single `i32` pack
-                // comparison, same reasoning as `Ty::BitField` above -- see
-                // `Ty::Color32`'s doc comment.
-                if *lhs_ty == Ty::Color32 && *rhs_ty == Ty::Color32 {
-                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
-                        self.error("only `==`/`!=` are supported between `Color32` values", span);
-                    }
-                    return Ty::Bool;
-                }
-                // `PaletteIndex == PaletteIndex` / `!=` -- a single `u8`
-                // comparison, same reasoning as `Ty::BitField` above -- see
-                // `Ty::PaletteIndex`'s doc comment.
-                if *lhs_ty == Ty::PaletteIndex && *rhs_ty == Ty::PaletteIndex {
-                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
-                        self.error("only `==`/`!=` are supported between `PaletteIndex` values", span);
-                    }
-                    return Ty::Bool;
                 }
                 // A fieldless `enum`, a `struct` composed entirely of
                 // structurally-comparable fields (recursively), or a

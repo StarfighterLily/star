@@ -22017,6 +22017,156 @@ fn rejects_bitfield_arithmetic() {
     assert!(diags.iter().any(|d| d.message.contains("not supported")), "{:?}", diags);
 }
 
+// ===== todo.md P3 #12: shared `Ty::eq_only_scalar_shape` binop-dispatch =====
+//
+// `Symbol`/`BitField<N>`/`Flags<E>`/`Color32`/`PaletteIndex` all share one
+// underlying shape -- `==`/`!=` only, no ordering, no arithmetic, backed by a
+// single opaque-width `icmp` -- and used to each get their own hand-copied
+// `if` block in both `Checker::infer_binop_ty` and `Codegen::emit_binop`.
+// They're now driven by one shared `Ty::eq_only_scalar_shape` table instead.
+// `Symbol`/`Color32`/`BitField<N>` ordering/arithmetic rejection already had
+// coverage above; the tests below close the matching gap for `Flags<E>`/
+// `PaletteIndex` (previously untested), then add regression coverage aimed
+// specifically at the new shared table: a wrong-width mismatch between two
+// otherwise-eligible types must still fall through to the generic mismatch
+// diagnostic rather than being silently accepted or misreporting the wrong
+// type's name, and each type's `icmp` must use its own distinct bit width
+// rather than accidentally sharing another table entry's.
+
+/// A `Flags<E>` bitmask has no meaningful "less than" -- `<` must be
+/// rejected with the same located diagnostic `BitField<N>`/`Color32` already
+/// get, not silently accepted or a late codegen crash.
+#[test]
+fn rejects_flags_ordering_comparison() {
+    let src = "enum Dir:\n    Up\n    Down\n\n\
+               fn main():\n    let a: Flags<Dir> = Flags<Dir>()\n    let b: Flags<Dir> = Flags<Dir>()\n    let c = a < b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("`<` between Flags<E> values should be rejected");
+    assert!(diags.iter().any(|d| d.message.contains("only `==`/`!=` are supported between `Flags<E>` values")), "{:?}", diags);
+}
+
+/// `Flags<E>` isn't `is_numeric()` -- `+` must be rejected between two
+/// `Flags<E>` values with a located diagnostic (union/intersect/symmetric-
+/// difference go through `bit_or`/`bit_and`/`bit_xor` instead, never a raw
+/// operator).
+#[test]
+fn rejects_flags_arithmetic() {
+    let src = "enum Dir:\n    Up\n    Down\n\n\
+               fn main():\n    let a: Flags<Dir> = Flags<Dir>()\n    let b: Flags<Dir> = Flags<Dir>()\n    let c = a + b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("not supported")), "{:?}", diags);
+}
+
+/// A palette slot has no meaningful "less than" -- `<` must be rejected with
+/// the same located diagnostic `BitField<N>`/`Color32`/`Flags<E>` already
+/// get, not silently accepted or a late codegen crash.
+#[test]
+fn rejects_palette_index_ordering_comparison() {
+    let src = "fn main():\n    let a: PaletteIndex = PaletteIndex(1)\n    let b: PaletteIndex = PaletteIndex(2)\n    let c = a < b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("`<` between PaletteIndex values should be rejected");
+    assert!(diags.iter().any(|d| d.message.contains("only `==`/`!=` are supported between `PaletteIndex` values")), "{:?}", diags);
+}
+
+/// `PaletteIndex` isn't `is_numeric()` -- `+` must be rejected between two
+/// `PaletteIndex` values with a located diagnostic, not silently accepted or
+/// a late codegen crash.
+#[test]
+fn rejects_palette_index_arithmetic() {
+    let src = "fn main():\n    let a: PaletteIndex = PaletteIndex(1)\n    let b: PaletteIndex = PaletteIndex(2)\n    let c = a + b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("not supported")), "{:?}", diags);
+}
+
+/// Two `BitField<N>` values of *different* `N` must still be rejected as a
+/// plain type mismatch (`eq_only_scalar_shape`'s shared block gates on exact
+/// `lhs_ty == rhs_ty`, not merely "both sides are some `BitField`") -- must
+/// not silently compare across widths, and must not misreport the generic
+/// mismatch as the type-specific "only `==`/`!=` are supported between
+/// `BitField<N>` values" message (that message asserts both sides already
+/// share one width; a cross-width pair never reaches it).
+#[test]
+fn rejects_bitfield_equality_between_mismatched_widths() {
+    let src = "fn main():\n    let a: BitField<8> = BitField<8>(1 as u8)\n    let b: BitField<16> = BitField<16>(1 as u16)\n    let c = a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("BitField<8> == BitField<16> should be rejected");
+    assert!(diags.iter().any(|d| d.message.contains("not supported") && d.message.contains("BitField")), "{:?}", diags);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("only `==`/`!=` are supported between `BitField<N>` values")),
+        "a cross-width pair must hit the generic mismatch diagnostic, not the same-width-specific one: {:?}",
+        diags
+    );
+}
+
+/// Two *different* `eq_only_scalar_shape` types (`Symbol` vs `Color32`) must
+/// be rejected as a mismatch, not silently accepted -- the shared table's
+/// gate must key off both sides sharing the exact same `Ty`, not merely off
+/// either side individually being some eq-only-scalar type.
+#[test]
+fn rejects_equality_between_different_eq_only_scalar_types() {
+    let src = "fn main():\n    let a = Symbol(\"x\")\n    let b = Color32(1, 2, 3, 4)\n    let c = a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("Symbol == Color32 should be rejected");
+    assert!(diags.iter().any(|d| d.message.contains("not supported")), "{:?}", diags);
+}
+
+/// Codegen regression for the shared table itself: each `eq_only_scalar_shape`
+/// type must emit `icmp eq/ne` at *its own* bit width (`Symbol`/`Flags<E>` ->
+/// `i64`, a `BitField<16>` -> `i16` specifically (not `BitField`'s most
+/// common `i8`/`i32` test cases elsewhere, so a table entry that dropped the
+/// `N` and hardcoded a width would still be caught), `Color32` -> `i32`,
+/// `PaletteIndex` -> `i8`) -- a mis-keyed shared table (e.g. two entries'
+/// widths transposed) would still type-check cleanly and only show up here,
+/// at the IR shape level.
+#[test]
+fn codegen_eq_only_scalar_types_emit_correct_icmp_width_per_type() {
+    let src = "enum Dir:\n    Up\n    Down\n\n\
+               fn sym_eq(a: Symbol, b: Symbol) -> bool:\n    a == b\n\n\
+               fn bits_eq(a: BitField<16>, b: BitField<16>) -> bool:\n    a == b\n\n\
+               fn flags_eq(a: Flags<Dir>, b: Flags<Dir>) -> bool:\n    a == b\n\n\
+               fn color_eq(a: Color32, b: Color32) -> bool:\n    a == b\n\n\
+               fn pal_eq(a: PaletteIndex, b: PaletteIndex) -> bool:\n    a == b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+
+    let sym_ir = extract_fn_body(&ir, "define i1 @sym_eq(");
+    assert!(sym_ir.contains("icmp eq i64"), "Symbol should compare as i64: {}", sym_ir);
+
+    let bits_ir = extract_fn_body(&ir, "define i1 @bits_eq(");
+    assert!(bits_ir.contains("icmp eq i16"), "BitField<16> should compare as i16, not a hardcoded width: {}", bits_ir);
+
+    let flags_ir = extract_fn_body(&ir, "define i1 @flags_eq(");
+    assert!(flags_ir.contains("icmp eq i64"), "Flags<E> should compare as i64: {}", flags_ir);
+
+    let color_ir = extract_fn_body(&ir, "define i1 @color_eq(");
+    assert!(color_ir.contains("icmp eq i32"), "Color32 should compare as i32: {}", color_ir);
+
+    let pal_ir = extract_fn_body(&ir, "define i1 @pal_eq(");
+    assert!(pal_ir.contains("icmp eq i8"), "PaletteIndex should compare as i8: {}", pal_ir);
+}
+
+/// Runtime companion to the codegen-shape test above: `BitField<64>` (no
+/// dedicated equality coverage elsewhere in this file, whose 64-bit width
+/// otherwise-eligible `Symbol`/`Flags<E>` also happen to share) must still
+/// compare correctly end to end through the shared table, not just type-
+/// check and emit plausible-looking IR.
+#[test]
+fn runtime_bitfield_64_width_equality_end_to_end() {
+    let src = "fn main():\n    \
+               let a: BitField<64> = BitField<64>(5000000000)\n    \
+               let b: BitField<64> = BitField<64>(5000000000)\n    \
+               let c: BitField<64> = BitField<64>(2)\n    \
+               println(f\"{a == b}\")\n    println(f\"{a != c}\")\n";
+    let output = compile_and_run("bitfield_64_width_equality", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["true", "true"], "{}", stdout);
+}
+
 /// `BitField<N>(value)` only accepts an `int_shape()`-having source (see
 /// `Ty::BitField`'s doc comment) -- `Wrapping<T>` is deliberately excluded
 /// from `int_shape()` too (same "not a number" reasoning), so constructing a

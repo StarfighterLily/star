@@ -627,6 +627,31 @@ impl Ty {
             other => other.bit_shape(),
         }
     }
+
+    /// `Some((bit_width, display_name))` for every type whose *entire* legal
+    /// binary-operator surface is `==`/`!=` against an identical type, backed
+    /// by a single opaque `icmp eq/ne i{bit_width}` on the type's untagged
+    /// representation -- no ordering (none of these have a meaningful "less
+    /// than"), no arithmetic. `Symbol`, `BitField<N>`, `Flags<E>`, `Color32`,
+    /// and `PaletteIndex` are all this exact shape today, and used to each
+    /// get their own hand-copied `if`-block in both
+    /// `Checker::infer_binop_ty` and `Codegen::emit_binop`, differing only in
+    /// the width baked into the `icmp` and the type name in the error
+    /// message -- exactly the one-off-dispatch-arm-per-type growth
+    /// `todo.md`'s P3 #12 flagged. A future type of this same shape (another
+    /// packed-bits/interned-id wrapper) needs only one new match arm here;
+    /// anything with real arithmetic or ordering still needs its own
+    /// dedicated branch, same as `Ty::Wrapping`/`Ty::Fixed`/`Ty::Tick` today.
+    pub fn eq_only_scalar_shape(&self) -> Option<(u32, &'static str)> {
+        match self {
+            Ty::Symbol => Some((64, "Symbol")),
+            Ty::BitField(n) => Some((*n, "BitField<N>")),
+            Ty::Flags(_) => Some((64, "Flags<E>")),
+            Ty::Color32 => Some((32, "Color32")),
+            Ty::PaletteIndex => Some((8, "PaletteIndex")),
+            _ => None,
+        }
+    }
 }
 
 /// Synthesizes the `Option<T>`/`Result<T,E>` generic-enum templates as if

@@ -781,57 +781,24 @@ impl Codegen {
                 }
             };
         }
-        // `Symbol == Symbol` / `!=` -- a single `i64` id comparison, no
-        // `strcmp`/RC involved at all (unlike `str == str` just below) --
-        // see `Ty::Symbol`'s doc comment.
-        if matches!((lty, rty), (Ty::Symbol, Ty::Symbol)) {
-            return match op {
-                BinOp::Eq | BinOp::Ne => {
-                    let l = self.untag(lhs, &Ty::Symbol);
-                    let r = self.untag(rhs, &Ty::Symbol);
-                    let pred = if op == BinOp::Eq { "eq" } else { "ne" };
-                    let reg = self.tmp_name();
-                    self.line(&format!("  {} = icmp {} i64 {}, {}", reg, pred, l, r));
-                    format!("i1 {}", reg)
-                }
-                _ => {
-                    self.err("only `==`/`!=` are supported between `Symbol` values", Span::dummy());
-                    "%undef".into()
-                }
-            };
-        }
-        // `BitField<N> == BitField<N>` / `!=` -- a single `i{N}` bit-pattern
-        // comparison -- see `Ty::BitField`'s doc comment.
-        if let (Ty::BitField(n), Ty::BitField(_)) = (lty, rty) {
+        // `Symbol`/`BitField<N>`/`Flags<E>` == same type / `!=` -- a single
+        // opaque-width `icmp`, no `strcmp`/RC involved at all (unlike
+        // `str == str` just below) -- see `Ty::eq_only_scalar_shape`'s doc
+        // comment for why this is one shared table instead of a hand-copied
+        // block per type. `Checker::infer_binop_ty` already restricted every
+        // reachable pairing here to an exact same-type match.
+        if let Some((width, name)) = lty.eq_only_scalar_shape() {
             return match op {
                 BinOp::Eq | BinOp::Ne => {
                     let l = self.untag(lhs, lty);
                     let r = self.untag(rhs, rty);
                     let pred = if op == BinOp::Eq { "eq" } else { "ne" };
                     let reg = self.tmp_name();
-                    self.line(&format!("  {} = icmp {} i{} {}, {}", reg, pred, n, l, r));
+                    self.line(&format!("  {} = icmp {} i{} {}, {}", reg, pred, width, l, r));
                     format!("i1 {}", reg)
                 }
                 _ => {
-                    self.err("only `==`/`!=` are supported between `BitField<N>` values", Span::dummy());
-                    "%undef".into()
-                }
-            };
-        }
-        // `Flags<E> == Flags<E>` / `!=` -- a single `i64` mask comparison --
-        // see `Ty::Flags`'s doc comment.
-        if matches!((lty, rty), (Ty::Flags(_), Ty::Flags(_))) {
-            return match op {
-                BinOp::Eq | BinOp::Ne => {
-                    let l = self.untag(lhs, lty);
-                    let r = self.untag(rhs, rty);
-                    let pred = if op == BinOp::Eq { "eq" } else { "ne" };
-                    let reg = self.tmp_name();
-                    self.line(&format!("  {} = icmp {} i64 {}, {}", reg, pred, l, r));
-                    format!("i1 {}", reg)
-                }
-                _ => {
-                    self.err("only `==`/`!=` are supported between `Flags<E>` values", Span::dummy());
+                    self.err(&format!("only `==`/`!=` are supported between `{}` values", name), Span::dummy());
                     "%undef".into()
                 }
             };
@@ -859,42 +826,6 @@ impl Codegen {
                 }
                 _ => {
                     self.err("only `==`/`!=` are supported between `str` values", Span::dummy());
-                    "%undef".into()
-                }
-            };
-        }
-        // `Color32 == Color32` / `!=` -- a single `i32` pack comparison --
-        // see `Ty::Color32`'s doc comment.
-        if matches!((lty, rty), (Ty::Color32, Ty::Color32)) {
-            return match op {
-                BinOp::Eq | BinOp::Ne => {
-                    let l = self.untag(lhs, &Ty::Color32);
-                    let r = self.untag(rhs, &Ty::Color32);
-                    let pred = if op == BinOp::Eq { "eq" } else { "ne" };
-                    let reg = self.tmp_name();
-                    self.line(&format!("  {} = icmp {} i32 {}, {}", reg, pred, l, r));
-                    format!("i1 {}", reg)
-                }
-                _ => {
-                    self.err("only `==`/`!=` are supported between `Color32` values", Span::dummy());
-                    "%undef".into()
-                }
-            };
-        }
-        // `PaletteIndex == PaletteIndex` / `!=` -- a single `u8` comparison
-        // -- see `Ty::PaletteIndex`'s doc comment.
-        if matches!((lty, rty), (Ty::PaletteIndex, Ty::PaletteIndex)) {
-            return match op {
-                BinOp::Eq | BinOp::Ne => {
-                    let l = self.untag(lhs, &Ty::PaletteIndex);
-                    let r = self.untag(rhs, &Ty::PaletteIndex);
-                    let pred = if op == BinOp::Eq { "eq" } else { "ne" };
-                    let reg = self.tmp_name();
-                    self.line(&format!("  {} = icmp {} i8 {}, {}", reg, pred, l, r));
-                    format!("i1 {}", reg)
-                }
-                _ => {
-                    self.err("only `==`/`!=` are supported between `PaletteIndex` values", Span::dummy());
                     "%undef".into()
                 }
             };
