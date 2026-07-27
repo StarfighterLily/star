@@ -1859,7 +1859,7 @@ impl Codegen {
     /// `STATUS_STACK_OVERFLOW` after ~500,000 iterations of a trivial `let
     /// s: str = concat("a", "b")` inside a `while` loop compiled at `-O0`
     /// (this compiler's own test suite always builds at `-O0` -- see
-    /// `tests/frontend.rs`'s `compile_and_run`) -- reproducible on a clean
+    /// `tests/frontend/common.rs`'s `compile_and_run`) -- reproducible on a clean
     /// checkout with none of this round's other fixes applied, so this is a
     /// pre-existing bug, not something introduced by them. Discovered while
     /// writing a stress-test regression for the `TypedStmt::Expr` RC-release
@@ -2059,7 +2059,7 @@ mod tests {
     /// `map_s_a_s_b_s_c` under the old formula. Star's surface syntax
     /// requires a struct name to start uppercase to be usable as a
     /// constructor call, so this can't be reproduced by parsing real source
-    /// (see `tests/frontend.rs`'s
+    /// (see `tests/frontend_collections_map_set.rs`'s
     /// `codegen_map_release_thunk_names_dont_collide_across_underscore_ambiguous_structs`
     /// for the parseable end-to-end version of this same fix) -- exercised
     /// directly here instead, against `Ty` values built by hand, so the

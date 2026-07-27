@@ -354,7 +354,8 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>, local_s
         // receiver pointer with a verified longer lifetime for any of
         // them -- see `rejects_closure_capturing_frame_local_self_*` and
         // `rejects_closure_capturing_plain_local_self_*` in
-        // `tests/frontend.rs` for the concrete repros this closes.
+        // `tests/frontend_frame_loop_reclaim_and_alloca_hoisting.rs` for the
+        // concrete repros this closes.
         TypedExpr::Call { callee, ty, .. } => {
             if matches!(ty, Ty::Closure(..)) {
                 if let TypedExpr::Field { base, .. } = callee.as_ref() {

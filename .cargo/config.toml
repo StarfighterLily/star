@@ -4,7 +4,7 @@
 # STAR_MINGW_LIB_DIR env var -- see readme.md's "Requirements" section and
 # build.rs's module doc comment.
 #
-# `cargo test` runs `tests/frontend.rs`'s Driver::parse/check/codegen calls
+# `cargo test` runs `tests/frontend_*.rs`'s Driver::parse/check/codegen calls
 # directly on libtest's per-test worker threads (bypassing `src/main.rs`'s
 # own large-stack-spawned-thread fix -- see `MAIN_STACK_SIZE`'s doc comment),
 # which otherwise default to a stack too small for this front end's

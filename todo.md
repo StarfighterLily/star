@@ -60,7 +60,17 @@ review's 13-item punch list, now fully closed) versus adds new surface area
    minimum separating checker-diagnostic tests / codegen-shape tests /
    runtime end-to-end tests into their own files). No functional change
    needed — this is purely about keeping "find existing coverage before
-   adding more" cheap as the suite keeps growing every session.
+   adding more" cheap as the suite keeps growing every session. -- Done: split
+   into 59 topic-scoped `tests/frontend_*.rs` files (e.g.
+   `frontend_collections_map_set.rs`, `frontend_bitfield_flags.rs`,
+   `frontend_sdl_graphics_input_and_geometry_audit.rs`), each a separate
+   `cargo test` binary named for the feature/section it covers, plus a shared
+   `tests/frontend/common.rs` (pulled in via `#[path]`) for the dozen
+   cross-cutting helpers (`compile_and_run`, `assert_no_leak`,
+   `typed_fn_result_ty`, the `PAR_SRC_PREFIX`/`FRAME_ESCAPE_SRC_PREFIX`
+   fixtures, ...) used across more than one file. All 1,530 tests still pass
+   (`cargo +stable-x86_64-pc-windows-gnu test --tests`), same pass/fail
+   behavior as before -- purely a file-layout change.
 7. **Finish (or explicitly bound) the binop-dispatch unification.** The P3
    #12 abstraction pass (`Ty::eq_only_scalar_shape`) only unified the
    equality-only types (`Symbol`/`BitField<N>`/`Flags<E>`/`Color32`/

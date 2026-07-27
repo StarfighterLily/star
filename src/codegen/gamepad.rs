@@ -14,7 +14,7 @@
 //! SDL2's own virtual-joystick API (`SDL_JoystickAttachVirtual`/
 //! `SDL_JoystickSetVirtualButton`/`SDL_JoystickSetVirtualAxis`, all called
 //! straight from a test `.star` program through an `extern "C" fn`
-//! declaration -- see `tests/frontend.rs`), which made it the clearly
+//! declaration -- see `tests/frontend_audio_gamepad.rs`), which made it the clearly
 //! better fit for this floor over pulling in a mapping database.
 //!
 //! `Ty::Ptr` is reused as the opaque `SDL_Joystick*` handle, exactly the
