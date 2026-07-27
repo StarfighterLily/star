@@ -80,6 +80,68 @@ impl Codegen {
         format!("{} {}", arr_ty, loaded)
     }
 
+    /// `[value; N]`, written directly into a destination the caller already
+    /// owns (a fresh `let` binding's own alloca, or a struct-literal field's
+    /// GEP), instead of building a private temp array and handing back a
+    /// loaded aggregate *value* for the caller to store a second time.
+    ///
+    /// Exists because that "load the whole `[N x T]` into one SSA register,
+    /// then store it again" round trip -- fine for `Vec3`-sized things -- is
+    /// exactly the shape that crashes `clang`'s instruction selector outright
+    /// at `N=65536` (a genuine LLVM/clang bug hit while building a Nova-16
+    /// emulator's 64KB memory array: `store [65536 x i8] %v, ...` reproduces
+    /// a SelectionDAG crash under `-O0` and hangs for minutes under the
+    /// default `-O2` well before that, starting around `N=16384` -- see
+    /// `projects/nova/NOTES.md`) and would only get worse once that array is
+    /// itself a field of a larger struct. This writes each slot straight into
+    /// `dest_ptr` via the same runtime loop `emit_array_repeat` already uses
+    /// for the slots-1..N case, so no `[N x T]`-typed value ever exists at
+    /// all -- not even transiently -- regardless of `N`. Only usable where a
+    /// destination pointer already exists before the initializer runs
+    /// (`TypedStmt::Let`, struct-literal fields); every other array-repeat
+    /// call site (nested subexpressions, function arguments/returns) still
+    /// goes through `emit_array_repeat` unchanged.
+    pub(super) fn emit_array_repeat_into(&mut self, dest_ptr: &str, value: &TypedExpr, count: u64, elem_ty: &Ty) {
+        let elem_llvm = self.llvm_ty(elem_ty);
+        let arr_ty = format!("[{} x {}]", count, elem_llvm);
+        let val = self.emit_expr(value);
+        let clean_val = self.untag(&val, elem_ty);
+
+        let gep0 = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i64 0", gep0, arr_ty, arr_ty, dest_ptr));
+        self.line(&format!("  store {} {}, {}* {}", elem_llvm, clean_val, elem_llvm, gep0));
+
+        if count > 1 {
+            let i_ptr = self.tmp_name();
+            self.line(&format!("  {} = alloca i64", i_ptr));
+            self.line(&format!("  store i64 1, i64* {}", i_ptr));
+
+            let cond_label = self.block_label("arr_rep_cond");
+            let body_label = self.block_label("arr_rep_body");
+            let end_label = self.block_label("arr_rep_end");
+
+            self.line(&format!("  br label %{}", cond_label));
+            self.open_block(&cond_label);
+            let i_reg = self.tmp_name();
+            self.line(&format!("  {} = load i64, i64* {}", i_reg, i_ptr));
+            let in_range = self.tmp_name();
+            self.line(&format!("  {} = icmp ult i64 {}, {}", in_range, i_reg, count));
+            self.line(&format!("  br i1 {}, label %{}, label %{}", in_range, body_label, end_label));
+
+            self.open_block(&body_label);
+            let gep = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i64 {}", gep, arr_ty, arr_ty, dest_ptr, i_reg));
+            self.line(&format!("  store {} {}, {}* {}", elem_llvm, clean_val, elem_llvm, gep));
+            self.emit_retain_at(&gep, elem_ty);
+            let i_next = self.tmp_name();
+            self.line(&format!("  {} = add i64 {}, 1", i_next, i_reg));
+            self.line(&format!("  store i64 {}, i64* {}", i_next, i_ptr));
+            self.line(&format!("  br label %{}", cond_label));
+
+            self.open_block(&end_label);
+        }
+    }
+
     /// Bounds-checked pointer to `base_ptr`'s element at `index`: a real GEP
     /// into the array's own storage when in bounds, or a fresh, zeroed,
     /// disconnected alloca when not (so a read through it sees a well-defined

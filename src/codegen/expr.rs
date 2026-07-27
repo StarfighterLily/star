@@ -294,6 +294,58 @@ impl Codegen {
         format!("i1 {}", phi)
     }
 
+    /// Fills an already-allocated `%name*` struct pointer's fields in place
+    /// -- shared by the ordinary struct-literal expression below (which
+    /// allocates its own temp and loads the result back out as a value) and
+    /// `TypedStmt::Let`'s direct-construction fast path (`crate::codegen::
+    /// stmt`), which reuses the binding's own storage as `ptr` and never
+    /// needs a loaded whole-struct value at all. A field initializer that's
+    /// itself a `[value; N]` repeat literal is written straight into that
+    /// field's slot via `emit_array_repeat_into` instead of `emit_expr` +
+    /// store, so a struct embedding a big fixed array (e.g. a CPU's 64KB
+    /// memory) never needs a `[N x T]`-typed SSA value to exist even
+    /// transiently -- see `emit_array_repeat_into`'s own doc comment for why
+    /// that matters (a real `clang` crash/hang otherwise).
+    pub(super) fn emit_struct_lit_fields_into(&mut self, ptr: &str, name: &str, args: &[TypedExpr]) {
+        for (i, a) in args.iter().enumerate() {
+            let gep = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds %{}, %{}* {}, i32 0, i32 {}", gep, name, name, ptr, i as u32));
+            if let TypedExpr::ArrayRepeat { value, count, elem_ty, .. } = a {
+                self.emit_array_repeat_into(&gep, value, *count, elem_ty);
+                continue;
+            }
+            // A nested plain-struct literal (e.g. `Cpu(mem = Memory(bytes =
+            // [0 as u8; 65536]), ...)`) recurses the same direct-into
+            // treatment instead of falling through to `emit_expr`, which
+            // would build the inner struct in its own temp alloca and hand
+            // back a whole-aggregate *value* -- reintroducing exactly the
+            // crash/hang this function exists to avoid, just one field
+            // deeper (see `emit_array_repeat_into`'s doc comment).
+            if let TypedExpr::StructLit { name: inner_name, args: inner_args, ty: Ty::Named(_), .. } = a {
+                self.emit_struct_lit_fields_into(&gep, inner_name, inner_args);
+                continue;
+            }
+            let val = self.emit_expr(a);
+            let aty = self.expr_ty(a);
+            let ats = self.llvm_ty(&aty);
+            let clean_val = val.strip_prefix(&format!("{} ", ats)).unwrap_or(&val);
+            self.line(&format!("  store {} {}, {}* {}", ats, clean_val, ats, gep));
+        }
+        // Trailing fields the call site didn't supply are zero-initialized.
+        // This is what lets a `sequence` desugar to a struct whose
+        // `resume()` state and hoisted-local fields trail the constructor's
+        // own params: `Name(p1, p2)` only ever supplies `p1`/`p2`.
+        if let Some(field_tys) = self.struct_field_types.get(name).cloned() {
+            for (i, fty) in field_tys.iter().enumerate().skip(args.len()) {
+                let zero = self.zero_value(fty);
+                let fts = self.llvm_ty(fty);
+                let gep = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds %{}, %{}* {}, i32 0, i32 {}", gep, name, name, ptr, i as u32));
+                self.line(&format!("  store {} {}, {}* {}", fts, zero, fts, gep));
+            }
+        }
+    }
+
     pub(super) fn emit_expr(&mut self, expr: &TypedExpr) -> String {
         match expr {
             // Almost always `Ty::Int` (`i32`) -- the checker's `Expr::Int`
@@ -1184,29 +1236,7 @@ impl Codegen {
                     _ => {
                         let ptr = self.tmp_name();
                         self.line(&format!("  {} = alloca %{}", ptr, name));
-                        for (i, a) in args.iter().enumerate() {
-                            let val = self.emit_expr(a);
-                            let gep = self.tmp_name();
-                            let aty = self.expr_ty(a);
-                            let ats = self.llvm_ty(&aty);
-                            let clean_val = val.strip_prefix(&format!("{} ", ats)).unwrap_or(&val);
-                            self.line(&format!("  {} = getelementptr inbounds %{}, %{}* {}, i32 0, i32 {}", gep, name, name, ptr, i as u32));
-                            self.line(&format!("  store {} {}, {}* {}", ats, clean_val, ats, gep));
-                        }
-                        // Trailing fields the call site didn't supply are
-                        // zero-initialized. This is what lets a `sequence`
-                        // desugar to a struct whose `resume()` state and
-                        // hoisted-local fields trail the constructor's own
-                        // params: `Name(p1, p2)` only ever supplies `p1`/`p2`.
-                        if let Some(field_tys) = self.struct_field_types.get(name).cloned() {
-                            for (i, fty) in field_tys.iter().enumerate().skip(args.len()) {
-                                let zero = self.zero_value(fty);
-                                let fts = self.llvm_ty(fty);
-                                let gep = self.tmp_name();
-                                self.line(&format!("  {} = getelementptr inbounds %{}, %{}* {}, i32 0, i32 {}", gep, name, name, ptr, i as u32));
-                                self.line(&format!("  store {} {}, {}* {}", fts, zero, fts, gep));
-                            }
-                        }
+                        self.emit_struct_lit_fields_into(&ptr, name, args);
                         // Return the struct *value* (loaded from the alloca) so it can be
                         // stored into another aggregate or assigned, not the pointer.
                         let loaded = self.tmp_name();

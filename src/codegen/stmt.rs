@@ -123,7 +123,18 @@ impl Codegen {
         self.push_scope();
         let then_val = self.emit_stmts_value(&then_block.stmts)?;
         self.pop_scope(!Self::body_terminates(&then_block.stmts));
-        let ty_str = then_val.split_once(' ').map(|(t, _)| t.to_string())?;
+        // `rsplit_once` (split at the *last* space), not `split_once`: the
+        // value half is always a single token (an SSA register name) with
+        // no internal whitespace, but the type half can itself contain
+        // spaces for any aggregate type (a tuple's `{ i8, i1 }`, a fixed
+        // array's `[65536 x i8]`) -- splitting at the *first* space instead
+        // truncated the type down to just `{`/`[` for exactly those cases,
+        // corrupting the `phi` this feeds below (confirmed: a trailing
+        // `if`/`else` returning a tuple, e.g. Nova-16's `Keyboard::pop_key`
+        // returning `(u8, bool)`, emitted a malformed `phi { [ ... ]` that
+        // the IR verifier rejected outright). `reg_of` already extracts the
+        // value half the matching way (`split_whitespace().next_back()`).
+        let ty_str = then_val.rsplit_once(' ').map(|(t, _)| t.to_string())?;
         let then_reg = self.reg_of(&then_val);
         let then_pred = self.current_label.clone();
         self.line(&format!("  br label %{}", end_label));
@@ -431,6 +442,34 @@ impl Codegen {
                     self.line(&format!("  store {} {}, {}* {}", ty, clean_val, ty, typed_ptr));
                     self.symbols.push((name.clone(), typed_ptr.clone(), vty.clone()));
                     self.track_owned(&typed_ptr, &vty);
+                } else if let TypedExpr::ArrayRepeat { value: rep_val, count, elem_ty, .. } = value {
+                    // Build straight into this binding's own storage instead
+                    // of the generic `emit_expr` path's temp-alloca +
+                    // whole-array load + second store -- see
+                    // `Codegen::emit_array_repeat_into`'s doc comment (a
+                    // `[N x T]`-typed SSA value is a real `clang` crash/hang
+                    // risk once `N` gets into the tens of thousands, exactly
+                    // what a Nova-16-style 64KB memory array needs).
+                    let ptr = self.tmp_name();
+                    self.line(&format!("  {} = alloca {}", ptr, ty));
+                    self.emit_array_repeat_into(&ptr, rep_val, *count, elem_ty);
+                    self.symbols.push((name.clone(), ptr.clone(), vty.clone()));
+                    self.track_owned(&ptr, &vty);
+                } else if let TypedExpr::StructLit { name: struct_name, args, ty: Ty::Named(_), .. } = value {
+                    // Same idea for `let x = StructName(...)`: fill this
+                    // binding's own alloca directly via
+                    // `emit_struct_lit_fields_into` rather than building the
+                    // struct in a private temp and copying the whole
+                    // aggregate value over a second time -- the copy is
+                    // wasted work in general, and a real correctness hazard
+                    // (not just slow) when a field is itself a huge fixed
+                    // array (`emit_struct_lit_fields_into` forwards those to
+                    // `emit_array_repeat_into` in turn).
+                    let ptr = self.tmp_name();
+                    self.line(&format!("  {} = alloca {}", ptr, ty));
+                    self.emit_struct_lit_fields_into(&ptr, struct_name, args);
+                    self.symbols.push((name.clone(), ptr.clone(), vty.clone()));
+                    self.track_owned(&ptr, &vty);
                 } else {
                     let ptr = self.tmp_name();
                     self.line(&format!("  {} = alloca {}", ptr, ty));

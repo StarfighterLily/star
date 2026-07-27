@@ -1,0 +1,8 @@
+# Nova-16 fantasy computer emulator, reimplemented natively in Star.
+# See NOTES.md in this directory for architecture/design notes, and docs/
+# for the ported reference documentation this port is built from.
+
+[package]
+name = "nova16"
+version = "0.1.0"
+entry = "main.star"
