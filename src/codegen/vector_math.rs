@@ -58,6 +58,10 @@ impl Codegen {
                 // branch-based lowering, not a plain opcode) and never
                 // reach this generic scalar path.
                 BinOp::And | BinOp::Or => { self.err("internal error: `&&`/`||` should be short-circuit lowered, not reach emit_scalar_binop", Span::dummy()); "add i32" }
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                    self.err("internal error: `&`/`|`/`^`/`<<`/`>>` should be dispatched by emit_binop before emit_scalar_binop", Span::dummy());
+                    "add i32"
+                }
                 BinOp::Div | BinOp::Rem => unreachable!("handled above"),
             };
             self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
@@ -81,6 +85,10 @@ impl Codegen {
             BinOp::Lt => "fcmp olt float", BinOp::Gt => "fcmp ogt float",
             BinOp::Le => "fcmp ole float", BinOp::Ge => "fcmp oge float",
             BinOp::And | BinOp::Or => { self.err("internal error: `&&`/`||` should be short-circuit lowered, not reach emit_scalar_binop", Span::dummy()); "fadd float" }
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                self.err("internal error: `&`/`|`/`^`/`<<`/`>>` are int-only and never reach the float scalar path", Span::dummy());
+                "fadd float"
+            }
         };
         self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
         format!("{} {}", if is_cmp { "i1" } else { "float" }, reg)
@@ -117,6 +125,10 @@ impl Codegen {
             BinOp::Ge => format!("icmp {} {}", if signed { "sge" } else { "uge" }, ity),
             BinOp::And | BinOp::Or => {
                 self.err("internal error: `&&`/`||` should be short-circuit lowered, not reach emit_sized_int_binop", Span::dummy());
+                format!("add {}", ity)
+            }
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                self.err("internal error: `&`/`|`/`^`/`<<`/`>>` should be dispatched by emit_binop before emit_sized_int_binop", Span::dummy());
                 format!("add {}", ity)
             }
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => unreachable!("handled above"),
@@ -226,6 +238,10 @@ impl Codegen {
             BinOp::Lt => "fcmp olt double", BinOp::Gt => "fcmp ogt double",
             BinOp::Le => "fcmp ole double", BinOp::Ge => "fcmp oge double",
             BinOp::And | BinOp::Or => { self.err("internal error: `&&`/`||` should be short-circuit lowered, not reach emit_f64_binop", Span::dummy()); "fadd double" }
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                self.err("internal error: `&`/`|`/`^`/`<<`/`>>` are int-only and never reach the f64 scalar path", Span::dummy());
+                "fadd double"
+            }
         };
         self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
         format!("{} {}", if is_cmp { "i1" } else { "double" }, reg)
@@ -703,6 +719,27 @@ impl Codegen {
     }
 
     pub(super) fn emit_binop(&mut self, lhs: &str, lty: &Ty, rhs: &str, rty: &Ty, op: BinOp) -> String {
+        // `&`/`|`/`^` and `<<`/`>>` are dispatched to their own dedicated
+        // lowering up front, the same way `Tick`/`Wrapping`/`Fixed` get their
+        // own branch below rather than falling into the generic numeric
+        // path: `Checker::infer_binop_ty` already restricted these five
+        // operators to `Ty::bit_shape()`/`Ty::bitwise_combine_shape()`
+        // operands (any integer width, `Wrapping<T>`, `BitField<N>`, and for
+        // `&`/`|`/`^` also `Flags<E>`), a different legality rule than every
+        // other operator below, so they never reach `emit_scalar_binop`/
+        // `emit_sized_int_binop`/etc. at all (see `crate::codegen::bitfield`).
+        if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) {
+            let opcode = match op {
+                BinOp::BitAnd => "and",
+                BinOp::BitOr => "or",
+                BinOp::BitXor => "xor",
+                _ => unreachable!("matched above"),
+            };
+            return self.emit_bitwise_binop(lhs, lty, rhs, rty, opcode);
+        }
+        if matches!(op, BinOp::Shl | BinOp::Shr) {
+            return self.emit_shift_binop(lhs, lty, rhs, rty, op == BinOp::Shl);
+        }
         // `Tick`/`Duration`/`Instant` all lower to a bare `i64` (see
         // `Ty::Tick`'s doc comment) -- `Checker::infer_time_binop_ty` already
         // restricted the reachable (type, op, type) combinations to a
@@ -1244,6 +1281,11 @@ impl Codegen {
             AssignOp::Sub => BinOp::Sub,
             AssignOp::Mul => BinOp::Mul,
             AssignOp::Div => BinOp::Div,
+            AssignOp::BitAnd => BinOp::BitAnd,
+            AssignOp::BitOr => BinOp::BitOr,
+            AssignOp::BitXor => BinOp::BitXor,
+            AssignOp::Shl => BinOp::Shl,
+            AssignOp::Shr => BinOp::Shr,
             AssignOp::Eq => unreachable!("AssignOp::Eq is filtered out before reaching emit_assign_binop"),
         };
         self.emit_binop(lhs, lty, rhs, rty, bin_op)

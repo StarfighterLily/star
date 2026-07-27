@@ -909,6 +909,23 @@ impl Codegen {
                         self.line(&format!("  {} = xor i1 true, {}", reg, bare));
                         reg
                     }
+                    // `x ^ -1` -- the same opcode `bit_not(x)` uses
+                    // (`Codegen::emit_bit_not`), just inlined against the
+                    // operand this match arm already evaluated into `o`
+                    // above rather than calling that `TypedExpr`-taking
+                    // helper, which would evaluate `operand` a second time
+                    // (a real correctness bug for anything with a side
+                    // effect, e.g. `~f()` calling `f` twice) -- the same
+                    // "already evaluated, don't re-evaluate" reasoning
+                    // `UnOp::Not` just above already follows.
+                    UnOp::BitNot => {
+                        let (width, _) =
+                            operand_ty.bit_shape().expect("Checker::infer_expr guarantees a bit-shaped `~` operand");
+                        let bare = self.untag(&o, &operand_ty);
+                        let reg = self.tmp_name();
+                        self.line(&format!("  {} = xor i{} {}, -1", reg, width, bare));
+                        format!("i{} {}", width, reg)
+                    }
                 }
             }
             TypedExpr::Match { scrutinee, arms, ty, .. } => {

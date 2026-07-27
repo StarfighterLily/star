@@ -92,6 +92,21 @@ pub struct Parser {
     /// silently resetting to `0` (the root file) regardless of which file
     /// the f-string itself was written in.
     file_id: u32,
+    /// `true` when the cursor sits on a lexed `>>` (`TokenKind::Shr`) token
+    /// whose *first* `>` has already been consumed as one level's closing
+    /// generic bracket, leaving its second `>` still to close the next
+    /// (outer) level -- see `at_close_generic`/`eat_close_generic`'s doc
+    /// comments for why this exists at all (the lexer has no nesting
+    /// context, so `List<List<i32>>` lexes its trailing `>>` as one shift-
+    /// operator token). Deliberately a `bool` flag rather than mutating
+    /// `self.tokens` in place: every speculative parse in this file
+    /// (`try_parse_type_args`, `parse_ring_new`, `parse_fixed_new`,
+    /// `parse_bitfield_new`) already saves/restores `self.pos` on a failed
+    /// attempt, so folding this into the same checkpoint/restore pattern
+    /// (instead of a token-stream edit a checkpoint restore can't undo)
+    /// makes backtracking exactly as sound for a split `>>` as it already
+    /// is for the cursor position itself.
+    split_gt_pending: bool,
 }
 
 impl Parser {
@@ -107,6 +122,7 @@ impl Parser {
             block_depth: 0,
             match_depth: 0,
             file_id,
+            split_gt_pending: false,
         }
     }
 
@@ -280,7 +296,7 @@ impl Parser {
                 self.error("ring capacity must be a positive integer", count_span);
                 return None;
             }
-            self.expect(&TokenKind::Gt)?;
+            self.expect_close_generic()?;
             return Some(Type::Ring(Box::new(elem), count as u64));
         }
         // `Fixed<Bits, Frac>` -- both `Bits` and `Frac` are plain
@@ -312,7 +328,7 @@ impl Parser {
                 self.error("`Fixed<Bits, Frac>`'s fractional-bit count cannot be negative", frac_span);
                 return None;
             }
-            self.expect(&TokenKind::Gt)?;
+            self.expect_close_generic()?;
             return Some(Type::Fixed(bits as u32, frac as u32));
         }
         // `BitField<N>` -- `N` is a plain non-negative integer literal (no
@@ -331,18 +347,18 @@ impl Parser {
                 self.error("`BitField<N>`'s bit width must be a positive integer", bits_span);
                 return None;
             }
-            self.expect(&TokenKind::Gt)?;
+            self.expect_close_generic()?;
             return Some(Type::BitField(bits as u32));
         }
         if self.eat(&TokenKind::Lt) {
             let mut args = Vec::new();
-            while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {
+            while !self.at_close_generic() && !self.at(&TokenKind::Eof) {
                 args.push(self.parse_type()?);
                 if !self.eat(&TokenKind::Comma) {
                     break;
                 }
             }
-            self.expect(&TokenKind::Gt)?;
+            self.expect_close_generic()?;
             return Some(Type::Generic(name, args));
         }
         Some(Type::Named(name))
@@ -396,6 +412,67 @@ impl Parser {
             let span = self.peek_span();
             self.error(
                 format!("expected {}, found {}", kind.describe(), self.peek_kind().describe()),
+                span,
+            );
+            None
+        }
+    }
+
+    /// `true` when the cursor is positioned at a token that can close a
+    /// generic argument/parameter list: an ordinary `>`, a lexed `>>`
+    /// (`TokenKind::Shr`) sitting where two nestings close back-to-back
+    /// (`List<List<i32>>`), or the second half of a `Shr` already half-
+    /// consumed by an inner level (`self.split_gt_pending`). The lexer has
+    /// no parser-nesting context, so `>>`/`>>>`/... are always lexed as
+    /// greedy 2-char `Shr` tokens regardless of position -- this (and
+    /// `eat_close_generic`/`expect_close_generic` below) is where that gets
+    /// un-done, the same "split the token" fix C++/Rust parsers use for the
+    /// identical ambiguity. Safe to treat `Shr` as a closer unconditionally
+    /// in this context: `parse_type`'s grammar has no expression operators
+    /// at all, so a real `>>` binary operator can never legally appear
+    /// where a generic argument list expects a `Type`.
+    fn at_close_generic(&self) -> bool {
+        self.split_gt_pending || matches!(self.peek_kind(), TokenKind::Gt | TokenKind::Shr)
+    }
+
+    /// Consume one closing `>` of a generic argument/parameter list,
+    /// transparently splitting a `>>` (`Shr`) token into two single `>`s
+    /// when nesting closes back-to-back -- see `at_close_generic`'s doc
+    /// comment. The first half just flips `split_gt_pending` on without
+    /// moving the cursor (the `Shr` token itself still sits at `self.pos`,
+    /// unmodified); the second half (`split_gt_pending` already true) is
+    /// what actually advances past it. Because this only ever touches the
+    /// `split_gt_pending` flag and `self.pos` -- never the token stream
+    /// itself -- a caller that backtracks via the usual `self.pos =
+    /// checkpoint` pattern needs only additionally restore
+    /// `split_gt_pending` to fully undo a speculative split, unlike an
+    /// in-place token rewrite a plain position reset couldn't take back.
+    fn eat_close_generic(&mut self) -> bool {
+        if self.split_gt_pending {
+            self.split_gt_pending = false;
+            self.advance();
+            return true;
+        }
+        match self.peek_kind() {
+            TokenKind::Gt => {
+                self.advance();
+                true
+            }
+            TokenKind::Shr => {
+                self.split_gt_pending = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn expect_close_generic(&mut self) -> Option<()> {
+        if self.eat_close_generic() {
+            Some(())
+        } else {
+            let span = self.peek_span();
+            self.error(
+                format!("expected {}, found {}", TokenKind::Gt.describe(), self.peek_kind().describe()),
                 span,
             );
             None

@@ -299,6 +299,11 @@ impl Parser {
             TokenKind::MinusEq => Some(AssignOp::Sub),
             TokenKind::StarEq => Some(AssignOp::Mul),
             TokenKind::SlashEq => Some(AssignOp::Div),
+            TokenKind::AmpEq => Some(AssignOp::BitAnd),
+            TokenKind::PipeEq => Some(AssignOp::BitOr),
+            TokenKind::CaretEq => Some(AssignOp::BitXor),
+            TokenKind::ShlEq => Some(AssignOp::Shl),
+            TokenKind::ShrEq => Some(AssignOp::Shr),
             _ => None,
         }
     }

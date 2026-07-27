@@ -5,12 +5,17 @@
 //! truncate when the source is *wider* than `N`, which `Tick`/`Duration`/
 //! `Instant`'s fixed `i64` target never needs to). The free-function surface
 //! (`bit_get`/`bit_set`/`bit_clear`/`bit_toggle`/`bit_and`/`bit_or`/
-//! `bit_xor`/`bit_not`) is plain `shl`/`and`/`or`/`xor`/`icmp` -- there is no
-//! bitwise operator grammar in this language yet (`&`/`|`/`^`/`~` don't
-//! exist), so these are ordinary builtin calls dispatched by name exactly
-//! like `symbol_name`/`bytes_from_str` (`Checker::infer_expr`'s `Expr::Call`
-//! arm has already validated arity/types via `Ty::bit_shape`/
-//! `Ty::bitwise_combine_shape`).
+//! `bit_xor`/`bit_not`) is plain `shl`/`and`/`or`/`xor`/`icmp`, dispatched by
+//! name exactly like `symbol_name`/`bytes_from_str` (`Checker::infer_expr`'s
+//! `Expr::Call` arm has already validated arity/types via `Ty::bit_shape`/
+//! `Ty::bitwise_combine_shape`). The real `&`/`|`/`^`/`~`/`<<`/`>>` operator
+//! grammar (`todo.md` P0 #3) reuses those exact same two shape queries --
+//! `Codegen::emit_bitwise_binop`/`emit_shift_binop` below are `emit_binop`'s
+//! (`crate::codegen::vector_math`) dedicated dispatch targets for them, the
+//! operator-syntax counterpart of `emit_bit_combine`/`emit_bit_not` just
+//! above; `Codegen::emit_unary`'s `UnOp::BitNot` arm calls `emit_bit_not`
+//! directly rather than duplicating it, since `~x` and `bit_not(x)` are
+//! identical operations.
 
 use crate::types::*;
 
@@ -48,23 +53,35 @@ impl Codegen {
         reg
     }
 
-    /// `1 << (idx mod width)` as a bare `i{width}` register. `idx` (a bare
-    /// `i32` register/literal) is first reduced mod `width` -- `width` is
-    /// always a power of two (`{8, 16, 32, 64}`, `Checker::resolve_type`'s
-    /// restriction), so `idx & (width - 1)` is an exact, cheap modulo -- and
-    /// *then* widened/truncated to `i{width}`, so the shift amount is always
-    /// in `0..width`. This is a real correctness requirement, not just
-    /// defensive polish: LLVM's `shl` is a poison value for a shift amount
-    /// `>= width` (unlike x86 hardware `shl`, which masks the count itself),
-    /// so an out-of-range `idx` (e.g. `bit_get(x, 99)` on an `8`-bit `x`)
-    /// would otherwise be undefined behavior, not just a "wrong but safe"
-    /// answer -- masking first keeps this in line with this compiler's
-    /// existing "safe, not panicking" convention for other builtin edge
-    /// cases like an out-of-bounds `List<T>` index.
-    fn emit_bit_mask(&mut self, idx_i32: &str, width: u32) -> String {
+    /// `idx mod width`, widened/truncated to a bare `i{width}` register.
+    /// `idx` (a bare `i32` register/literal) is first reduced mod `width` --
+    /// `width` is always a power of two (`{8, 16, 32, 64}`,
+    /// `Checker::resolve_type`'s restriction), so `idx & (width - 1)` is an
+    /// exact, cheap modulo -- and *then* widened/truncated to `i{width}`, so
+    /// the result is always a legal shift amount (`0..width`). This is a
+    /// real correctness requirement, not just defensive polish: LLVM's
+    /// `shl`/`lshr`/`ashr` are a poison value for a shift amount `>= width`
+    /// (unlike x86 hardware, which masks the count itself), so an
+    /// out-of-range count (e.g. `bit_get(x, 99)` on an `8`-bit `x`, or `x <<
+    /// 99`) would otherwise be undefined behavior, not just a "wrong but
+    /// safe" answer -- masking first keeps this in line with this
+    /// compiler's existing "safe, not panicking" convention for other
+    /// builtin edge cases like an out-of-bounds `List<T>` index, and
+    /// doubles as the exact mod-width masking x86's own `SHL`/`SHR`/`SAR`
+    /// hardware instructions perform on their count operand -- the real
+    /// hardware semantics `Codegen::emit_shift_binop` needs to match for
+    /// Nova's own opcode emulation.
+    fn emit_shift_amount(&mut self, idx_i32: &str, width: u32) -> String {
         let masked = self.tmp_name();
         self.line(&format!("  {} = and i32 {}, {}", masked, idx_i32, width - 1));
-        let idx = self.emit_int_widen_narrow(&masked, 32, false, width);
+        self.emit_int_widen_narrow(&masked, 32, false, width)
+    }
+
+    /// `1 << (idx mod width)` as a bare `i{width}` register -- see
+    /// `emit_shift_amount`'s doc comment for why the masking step is a
+    /// correctness requirement, not just polish.
+    fn emit_bit_mask(&mut self, idx_i32: &str, width: u32) -> String {
+        let idx = self.emit_shift_amount(idx_i32, width);
         let mask = self.tmp_name();
         self.line(&format!("  {} = shl i{} 1, {}", mask, width, idx));
         mask
@@ -135,6 +152,50 @@ impl Codegen {
         let x_bare = self.untag(&x_val, &x_ty);
         let reg = self.tmp_name();
         self.line(&format!("  {} = xor i{} {}, -1", reg, width, x_bare));
+        format!("i{} {}", width, reg)
+    }
+
+    /// `a & b` / `a | b` / `a ^ b` -- `emit_binop`'s (`crate::codegen::
+    /// vector_math`) dispatch target for `BinOp::BitAnd`/`BitOr`/`BitXor`.
+    /// The operator-syntax counterpart of `emit_bit_combine` just above:
+    /// same opcode/shape (`Checker::infer_binop_ty` guarantees `lty`/`rty`
+    /// are the identical `bitwise_combine_shape()`-having type), just taking
+    /// already-evaluated operand strings the way every other `emit_binop`
+    /// dispatch target does, instead of re-evaluating a `TypedExpr` pair
+    /// itself.
+    pub(super) fn emit_bitwise_binop(&mut self, lhs: &str, lty: &Ty, rhs: &str, rty: &Ty, opcode: &str) -> String {
+        let (width, _) = lty.bitwise_combine_shape().expect("Checker::infer_binop_ty guarantees a bitwise-combinable operand");
+        let l = self.untag(lhs, lty);
+        let r = self.untag(rhs, rty);
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = {} i{} {}, {}", reg, opcode, width, l, r));
+        format!("i{} {}", width, reg)
+    }
+
+    /// `a << b` / `a >> b` -- `emit_binop`'s dispatch target for
+    /// `BinOp::Shl`/`Shr`. `lty` is any `Ty::bit_shape()` type (an integer of
+    /// any width, `Wrapping<T>`, or `BitField<N>`); `rty` is always `Ty::Int`
+    /// (`Checker::infer_shift_ty` restricts the shift count to a plain
+    /// `int`, the same convention `bit_get`'s bit-index argument already
+    /// uses). `b` is first reduced mod the *left* operand's own width via
+    /// `emit_shift_amount` -- see that function's doc comment for why this
+    /// is a real correctness requirement (an unmasked out-of-range shift
+    /// amount is an LLVM poison value), and note it also happens to be
+    /// exactly the mod-width masking x86's own hardware `SHL`/`SHR`/`SAR`
+    /// perform on their count operand, which is what actually makes this a
+    /// faithful primitive for Nova's own opcode emulation rather than just a
+    /// safety patch. `>>` is arithmetic (`ashr`, sign-extending) on a signed
+    /// left operand and logical (`lshr`, zero-filling) on unsigned -- `<<`
+    /// is the same `shl` opcode either way (shifting in zero bits from the
+    /// low end never depends on signedness).
+    pub(super) fn emit_shift_binop(&mut self, lhs: &str, lty: &Ty, rhs: &str, rty: &Ty, is_shl: bool) -> String {
+        let (width, signed) = lty.bit_shape().expect("Checker::infer_binop_ty guarantees a bit-shaped shift left operand");
+        let l = self.untag(lhs, lty);
+        let r = self.untag(rhs, rty);
+        let amount = self.emit_shift_amount(&r, width);
+        let reg = self.tmp_name();
+        let opcode = if is_shl { "shl" } else if signed { "ashr" } else { "lshr" };
+        self.line(&format!("  {} = {} i{} {}, {}", reg, opcode, width, l, amount));
         format!("i{} {}", width, reg)
     }
 }

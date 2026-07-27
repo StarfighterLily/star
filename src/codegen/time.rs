@@ -63,6 +63,9 @@ impl Codegen {
             }
             BinOp::Add | BinOp::Sub => unreachable!("handled above"),
             BinOp::And | BinOp::Or => unreachable!("`&&`/`||` never reach a type-specific binop dispatch"),
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                unreachable!("Checker::infer_binop_ty restricts these to Ty::bit_shape() types, which Tick/Duration/Instant are not")
+            }
         };
         self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
         format!("i1 {}", reg)

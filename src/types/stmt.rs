@@ -107,7 +107,19 @@ impl Checker {
                 // own strictness for vector arithmetic.
                 let target_ty = target_typed.clone().into_ty();
                 let value_ty = value_typed.clone().into_ty();
-                if !Self::types_compatible(&target_ty, &value_ty) {
+                if matches!(op, AssignOp::Shl | AssignOp::Shr) {
+                    // `<<=`/`>>=` are the one compound-assign pair whose rhs
+                    // is never the same type as the target -- a shift count
+                    // is always `int` regardless of what's being shifted
+                    // (`reg: mut u8 = 1; reg <<= 4`), the same asymmetry
+                    // plain `<<`/`>>` already have (see `infer_shift_ty`).
+                    // The generic `types_compatible` gate below assumes a
+                    // shared type on both sides (built for `=`/`+=`/`&=`/...),
+                    // so it's bypassed here in favor of `infer_binop_ty`'s
+                    // own shift-specific legality check.
+                    let binop = if matches!(op, AssignOp::Shl) { BinOp::Shl } else { BinOp::Shr };
+                    self.infer_binop_ty(&binop, &target_ty, &value_ty, *span);
+                } else if !Self::types_compatible(&target_ty, &value_ty) {
                     self.error(
                         format!("cannot assign a value of type `{:?}` to a target of type `{:?}`", value_ty, target_ty),
                         *span,
@@ -118,6 +130,10 @@ impl Checker {
                     AssignOp::Sub => Some(BinOp::Sub),
                     AssignOp::Mul => Some(BinOp::Mul),
                     AssignOp::Div => Some(BinOp::Div),
+                    AssignOp::BitAnd => Some(BinOp::BitAnd),
+                    AssignOp::BitOr => Some(BinOp::BitOr),
+                    AssignOp::BitXor => Some(BinOp::BitXor),
+                    AssignOp::Shl | AssignOp::Shr => unreachable!("handled above"),
                 } {
                     // `types_compatible` alone isn't enough for a compound
                     // op: `s: mut str = "a"; s += "b"` has a compatible

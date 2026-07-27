@@ -4,7 +4,7 @@
 //! files directly under `tests/` are; this one is pulled in via
 //! `#[path = "frontend/common.rs"] mod common;` from each split file.
 
-pub use star::ast::{BinOp, EnumDef, Expr, FStrExpr, Item, Pattern, Stmt, Type, TypeParam, UnOp};
+pub use star::ast::{AssignOp, BinOp, EnumDef, Expr, FStrExpr, Item, Pattern, Stmt, Type, TypeParam, UnOp};
 pub use star::driver::{Driver};
 pub use star::lexer::{TokenKind};
 pub use star::types::{Ty, TypedExpr, TypedItem, TypedStmt};

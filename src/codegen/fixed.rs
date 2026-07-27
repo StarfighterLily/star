@@ -102,6 +102,9 @@ impl Codegen {
             }
             BinOp::Rem => unreachable!("Checker::infer_binop_ty rejects `%` on Fixed<Bits,Frac>"),
             BinOp::And | BinOp::Or => unreachable!("`&&`/`||` never reach a type-specific binop dispatch"),
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                unreachable!("Checker::infer_binop_ty restricts these to Ty::bit_shape() types, which Fixed<Bits,Frac> is not")
+            }
         }
     }
 

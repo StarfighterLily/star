@@ -83,18 +83,48 @@ future `.star` project.
    out of scope and still use the old whole-value path — narrower gaps than
    the two shapes this item named, and not hit by Nova's own constructor-
    function use case.
-3. **No bitwise or shift operators/functions at all.** No `& | ^ ~ << >>`
-   anywhere in the lexer. The free-function surface (`bit_get`/`bit_set`/
-   `bit_clear`/`bit_toggle`/`bit_and`/`bit_or`/`bit_xor`/`bit_not`) covers
-   single-bit ops and whole-register bitwise logic, but there's no general
-   "shift by N" primitive — Nova's `bits.star` had to hand-build all eight
-   shift/rotate variants (`SHL SHR SAR SAL ROL ROR RCL RCR`) bit-by-bit.
-   Multiply/divide by a power of two doesn't substitute: divide truncates
-   toward zero, not toward -infinity, so it doesn't reproduce arithmetic
-   right-shift's sign-extending semantics. This directly blocks Nova's
-   deferred sound-synthesis (waveform generation/mixing) and BCD opcode
-   groups, both bit-manipulation-heavy, and is the single most-cited gotcha
-   in the whole project.
+3. **No bitwise or shift operators/functions at all.** — **done**: the
+   lexer now has real `&`/`|`/`^`/`~`/`<<`/`>>` tokens (plus `&=`/`|=`/`^=`/
+   `<<=`/`>>=` compound-assignment forms), new `BinOp::BitAnd`/`BitOr`/
+   `BitXor`/`Shl`/`Shr` and `UnOp::BitNot` AST variants, a new precedence
+   tier in `Parser::peek_binop` (`&` > `^` > `|`, both above comparisons and
+   below `<<`/`>>`, which sit above `+`/`-`; unary `~` binds like `-`/`!`),
+   and dedicated checker (`Checker::infer_bitwise_combine_ty`/
+   `infer_shift_ty`, `src/types/expr.rs`) and codegen (`Codegen::
+   emit_bitwise_binop`/`emit_shift_binop`, `src/codegen/bitfield.rs`)
+   dispatch that reuse the exact `Ty::bit_shape()`/`bitwise_combine_shape()`
+   legality the pre-existing `bit_get`/`bit_and`/etc. free functions already
+   established — so `&`/`|`/`^`/`~` also work on `Wrapping<T>`/`BitField<N>`,
+   and `&`/`|`/`^` additionally on `Flags<E>` (deliberately excluded from
+   `<<`/`>>`/`~`, same as `bit_not`/`bit_get`). This directly gives Nova the
+   missing "shift by N" primitive the free-function surface never had: `>>`
+   dispatches to `ashr` (sign-extending) on a signed operand and `lshr`
+   (zero-filling) on unsigned, matching real hardware `SAR`/`SHR` semantics
+   rather than the truncating-division approximation that couldn't
+   reproduce it; the shift count is masked mod the operand's own width
+   before shifting (reusing `bit_get`'s existing masking helper, now
+   factored into `Codegen::emit_shift_amount`) both to avoid an LLVM poison
+   value on an out-of-range count and to match x86 hardware's own mod-width
+   masking. `const` initializers fold all six operators at compile time too
+   (`eval_const_binop`/`fold_const_expr`, `src/types/mod.rs`). Adding real
+   `<`/`>`-adjacent tokens reopened the classic "nested generic closing
+   bracket" ambiguity C++/Rust parsers hit (`List<List<i32>>`'s trailing
+   `>>` now lexes as one `Shr` token, not two `Gt`s) — fixed by
+   `Parser::at_close_generic`/`eat_close_generic`/`expect_close_generic`
+   (`src/parser/mod.rs`), which transparently split a `Shr` back into two
+   closes via a `split_gt_pending` flag (not a token-stream mutation) kept
+   sound across every existing speculative/backtracking turbofish parse.
+   37 new tests in `tests/frontend_bitwise_shift_operators.rs`: lexer-token,
+   parser-precedence/AST-shape, the nested-generic-splitting regressions
+   (including a dedicated test for the abandoned-turbofish-then-real-shift-
+   then-later-nested-generic corruption scenario the `split_gt_pending`
+   checkpoint fix specifically prevents), type-checking (positive and
+   negative, across plain ints/`Wrapping`/`BitField`/`Flags`/`Fixed`),
+   IR-shape assertions (`and`/`or`/`xor`/`ashr`/`lshr`/`shl` opcodes, not
+   calls), and runtime end-to-end coverage (arithmetic-vs-logical shift,
+   mod-width masking, compound assignment including a narrower-than-`int`
+   target, operator precedence, `const` folding, and a realistic Nova-style
+   8-bit rotate built entirely from the new operators).
 
 ## P1 — Ergonomics that scale badly as the project grows
 
@@ -162,3 +192,5 @@ Wired through the type checker (src/types/mod.rs, src/types/expr.rs) and codegen
 Added 37 new tests across tests/frontend_file_io.rs and tests/frontend_method_calls_and_builtin_validation.rs: type-checking, IR-level "never calls strlen" assertions, and end-to-end runtime tests — including the exact repro cited in todo.md (a 6-byte file with an embedded 0x00 now round-trips with len() == 6, not 1), a write-side round trip verified against raw on-disk bytes, null-handle abort behavior, empty-file/non-seekable-stream edge cases, and read-only-handle failure reporting.
 
 Pointer-passing calling convention for large struct/array function parameters and return values (Codegen::is_large_aggregate_ty gating, src/codegen/mod.rs), fixing the by-value-return/by-value-parameter clang hang todo.md P0 #2 described. A parameter above the 512-byte threshold arrives as a pointer and is memcpy'd into a private local (emit_fn's prologue, src/codegen/stmt.rs); a matching return type gets a hidden sret out-pointer (%.sret) instead of a by-value ret, filled by the new Codegen::emit_into_ptr, which special-cases a fresh literal (no copy), a nested call (forwards %.sret straight through, zero copies through a whole constructor chain), and a read of existing storage (retain + one memcpy) — used by TypedStmt::Let/TypedStmt::Return/emit_fn's tail logic and the new Codegen::emit_call_arg/emit_aggregate_place pair for call arguments (src/codegen/expr.rs). Size-gated (not unconditional) specifically to leave every existing small struct, and anything passed through a first-class function value/closure (emit_fn_value/emit_closure_call, not updated by this fix), on the pre-existing by-value convention untouched — confirmed by the full pre-existing test suite passing with zero changes needed. Added 11 new tests in tests/frontend_large_aggregate_by_value.rs: IR-shape/compile-time-budget assertions (no clang) for the sret/pointer-param/zero-copy-chained-constructor shapes at a 1,000,000-byte field, plus real clang-compiled runtime tests at 8192 bytes covering constructor-return, parameter value-independence (mutation inside the callee doesn't leak back to the caller), let-copy independence, a method returning a large struct by value, and an RC-bearing (str) field mixed with a large array field round-tripped through both return and parameter across 20 iterations.
+
+Real bitwise/shift operator grammar (`&`/`|`/`^`/`~`/`<<`/`>>`, plus `&=`/`|=`/`^=`/`<<=`/`>>=`), fixing todo.md P0 #3. New lexer tokens (src/lexer.rs), new BinOp::BitAnd/BitOr/BitXor/Shl/Shr and UnOp::BitNot AST variants with a new Parser::peek_binop precedence tier, and dedicated Checker::infer_bitwise_combine_ty/infer_shift_ty (src/types/expr.rs) and Codegen::emit_bitwise_binop/emit_shift_binop (src/codegen/bitfield.rs) dispatch reusing the pre-existing Ty::bit_shape()/bitwise_combine_shape() legality the bit_get/bit_and/etc. free functions already established, so the operators work on plain integers of any width, Wrapping<T>, BitField<N>, and (for &/|/^ only) Flags<E>. >> dispatches to ashr (signed) or lshr (unsigned) — the real hardware-matching arithmetic/logical distinction Nova's bit-manipulation code needs, which truncating-division could never substitute for — and the shift count is masked mod the operand's width (Codegen::emit_shift_amount, factored out of bit_get's existing masking helper) to avoid an LLVM poison value on an out-of-range count. const initializers fold all six operators at compile time too (src/types/mod.rs). Adding real `<`/`>`-adjacent tokens reopened the C++/Rust "nested generic closing bracket" ambiguity (List<List<i32>>'s trailing `>>` now lexes as one Shr token) — fixed by Parser::at_close_generic/eat_close_generic/expect_close_generic (src/parser/mod.rs) transparently splitting a Shr via a split_gt_pending flag (not a token mutation, so it composes safely with every existing speculative/backtracking turbofish parse). Added 37 new tests in tests/frontend_bitwise_shift_operators.rs: lexer-token, parser-precedence/AST-shape, nested-generic-splitting regressions (including the abandoned-turbofish-then-real-shift-then-later-nested-generic corruption scenario the split_gt_pending checkpoint fix specifically prevents), positive/negative type-checking across every accepted/rejected type, IR-shape assertions for the real opcodes, and runtime end-to-end coverage (arithmetic-vs-logical shift, mod-width masking, compound assignment onto a narrower-than-int target, precedence, const folding, and a realistic Nova-style 8-bit rotate built from the new operators).

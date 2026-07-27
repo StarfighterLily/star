@@ -1198,6 +1198,13 @@ fn fold_const_expr(expr: &TypedExpr) -> Result<ConstValue, (Span, String)> {
                 (UnOp::Neg, ConstValue::Int(i, ty)) => Ok(ConstValue::Int(cast_int_to_ty(i.wrapping_neg(), &ty), ty)),
                 (UnOp::Neg, ConstValue::Float(f, ty)) => Ok(ConstValue::Float(-f, ty)),
                 (UnOp::Not, ConstValue::Bool(b)) => Ok(ConstValue::Bool(!b)),
+                // `~x` -- one's complement. `!i` flips every bit of the
+                // canonical `i64` storage; `cast_int_to_ty` then re-narrows
+                // to `ty`'s real width/signedness exactly like every other
+                // arithmetic fold here does, so the result matches
+                // `Codegen::emit_unary`'s `UnOp::BitNot` (`xor iN, -1`) bit
+                // for bit.
+                (UnOp::BitNot, ConstValue::Int(i, ty)) => Ok(ConstValue::Int(cast_int_to_ty(!i, &ty), ty)),
                 _ => Err((*span, "this operator is not supported in a constant expression".to_string())),
             }
         }
@@ -1323,6 +1330,36 @@ fn eval_const_binop(op: BinOp, l: ConstValue, r: ConstValue, span: Span) -> Resu
             }
             let unsigned = ty.int_shape().is_some_and(|(_, signed)| !signed);
             let v = if unsigned { ((a as u64).wrapping_rem(b as u64)) as i64 } else { a.wrapping_rem(b) };
+            Ok(Int(cast_int_to_ty(v, &ty), ty))
+        }
+        // `&`/`|`/`^` -- plain bitwise ops on the canonical `i64` storage,
+        // then re-narrowed via `cast_int_to_ty` like every other arm here.
+        // Signedness-agnostic at the bit level (unlike `Div`/`Rem`/ordering
+        // just below), so unlike those there's no separate signed/unsigned
+        // branch needed.
+        (BinOp::BitAnd, Int(a, ty), Int(b, _)) => Ok(Int(cast_int_to_ty(a & b, &ty), ty)),
+        (BinOp::BitOr, Int(a, ty), Int(b, _)) => Ok(Int(cast_int_to_ty(a | b, &ty), ty)),
+        (BinOp::BitXor, Int(a, ty), Int(b, _)) => Ok(Int(cast_int_to_ty(a ^ b, &ty), ty)),
+        // `<<`/`>>` -- `Checker::infer_shift_ty` guarantees `b`'s type is
+        // always `int` regardless of `a`'s own type (a shift count, not a
+        // same-shaped operand), so only `a`'s `ty` is threaded through as
+        // the result's type, mirroring `Codegen::emit_shift_binop`'s own
+        // "mask the count mod width, then shift" lowering exactly --
+        // including its mod-width masking of an out-of-range count (`b` can
+        // be any `i32`, negative or `>= width`), so a constant expression
+        // never disagrees with what the equivalent runtime `<<`/`>>` would
+        // compute. `>>` branches on `ty`'s own signedness the same way
+        // `Div`/`Rem` above do (arithmetic/sign-extending for a signed
+        // width, logical/zero-filling for unsigned via a `u64` reinterpret).
+        (BinOp::Shl, Int(a, ty), Int(b, _)) => {
+            let (width, _) = ty.int_shape().expect("Checker::infer_shift_ty guarantees an int-shaped left operand");
+            let amount = (b as u32) & (width - 1);
+            Ok(Int(cast_int_to_ty(a.wrapping_shl(amount), &ty), ty))
+        }
+        (BinOp::Shr, Int(a, ty), Int(b, _)) => {
+            let (width, signed) = ty.int_shape().expect("Checker::infer_shift_ty guarantees an int-shaped left operand");
+            let amount = (b as u32) & (width - 1);
+            let v = if signed { a.wrapping_shr(amount) } else { (a as u64).wrapping_shr(amount) as i64 };
             Ok(Int(cast_int_to_ty(v, &ty), ty))
         }
         (BinOp::Eq, Int(a, _), Int(b, _)) => Ok(Bool(a == b)),

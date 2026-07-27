@@ -109,11 +109,33 @@ pub enum TokenKind {
     Star,
     Slash,
     Percent,
+    /// `&` -- bitwise AND (also the left operand's turbofish-adjacent
+    /// spelling never collides: `&&` is lexed as one [`TokenKind::AndAnd`]
+    /// token, so a lone `&` here is unambiguous).
+    Amp,
+    /// `|` -- bitwise OR (see `Amp`'s doc comment: `||` is its own
+    /// [`TokenKind::OrOr`] token, so a lone `|` is unambiguous).
+    Pipe,
+    /// `^` -- bitwise XOR.
+    Caret,
+    /// `~` -- bitwise NOT (unary, one's complement).
+    Tilde,
+    /// `<<` -- left shift.
+    Shl,
+    /// `>>` -- right shift (arithmetic/sign-extending on a signed operand
+    /// type, logical/zero-filling on unsigned -- see
+    /// `Codegen::emit_shift_binop`).
+    Shr,
     Assign,     // =
     PlusEq,     // +=
     MinusEq,    // -=
     StarEq,     // *=
     SlashEq,    // /=
+    AmpEq,      // &=
+    PipeEq,     // |=
+    CaretEq,    // ^=
+    ShlEq,      // <<=
+    ShrEq,      // >>=
     EqEq,       // ==
     NotEq,      // !=
     Lt,         // <
@@ -199,11 +221,22 @@ impl TokenKind {
             TokenKind::Star => "'*'".into(),
             TokenKind::Slash => "'/'".into(),
             TokenKind::Percent => "'%'".into(),
+            TokenKind::Amp => "'&'".into(),
+            TokenKind::Pipe => "'|'".into(),
+            TokenKind::Caret => "'^'".into(),
+            TokenKind::Tilde => "'~'".into(),
+            TokenKind::Shl => "'<<'".into(),
+            TokenKind::Shr => "'>>'".into(),
             TokenKind::Assign => "'='".into(),
             TokenKind::PlusEq => "'+='".into(),
             TokenKind::MinusEq => "'-='".into(),
             TokenKind::StarEq => "'*='".into(),
             TokenKind::SlashEq => "'/='".into(),
+            TokenKind::AmpEq => "'&='".into(),
+            TokenKind::PipeEq => "'|='".into(),
+            TokenKind::CaretEq => "'^='".into(),
+            TokenKind::ShlEq => "'<<='".into(),
+            TokenKind::ShrEq => "'>>='".into(),
             TokenKind::EqEq => "'=='".into(),
             TokenKind::NotEq => "'!='".into(),
             TokenKind::Lt => "'<'".into(),
@@ -756,6 +789,22 @@ impl<'src> Lexer<'src> {
                 return;
             }};
         }
+        macro_rules! three_char {
+            ($k:expr) => {{
+                self.pos += 3;
+                self.push($k, start, self.pos);
+                return;
+            }};
+        }
+        // `<<=`/`>>=` must be checked ahead of the two-char `<<`/`>>` match
+        // just below -- both share the same two-byte prefix, and the
+        // three-byte form is the longer (correct) match whenever the third
+        // byte is also present.
+        match (c, two, self.peek(2)) {
+            (b'<', Some(b'<'), Some(b'=')) => three_char!(TokenKind::ShlEq),
+            (b'>', Some(b'>'), Some(b'=')) => three_char!(TokenKind::ShrEq),
+            _ => {}
+        }
         match (c, two) {
             (b'-', Some(b'>')) => two_char!(TokenKind::Arrow),
             (b'=', Some(b'>')) => two_char!(TokenKind::FatArrow),
@@ -771,6 +820,11 @@ impl<'src> Lexer<'src> {
             (b'/', Some(b'=')) => two_char!(TokenKind::SlashEq),
             (b'&', Some(b'&')) => two_char!(TokenKind::AndAnd),
             (b'|', Some(b'|')) => two_char!(TokenKind::OrOr),
+            (b'&', Some(b'=')) => two_char!(TokenKind::AmpEq),
+            (b'|', Some(b'=')) => two_char!(TokenKind::PipeEq),
+            (b'^', Some(b'=')) => two_char!(TokenKind::CaretEq),
+            (b'<', Some(b'<')) => two_char!(TokenKind::Shl),
+            (b'>', Some(b'>')) => two_char!(TokenKind::Shr),
             _ => {}
         }
         let kind = match c {
@@ -807,6 +861,10 @@ impl<'src> Lexer<'src> {
             b'*' => TokenKind::Star,
             b'/' => TokenKind::Slash,
             b'%' => TokenKind::Percent,
+            b'&' => TokenKind::Amp,
+            b'|' => TokenKind::Pipe,
+            b'^' => TokenKind::Caret,
+            b'~' => TokenKind::Tilde,
             b'=' => TokenKind::Assign,
             b'<' => TokenKind::Lt,
             b'>' => TokenKind::Gt,

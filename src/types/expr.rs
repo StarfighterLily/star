@@ -456,6 +456,23 @@ impl Checker {
                         }
                         Ty::Bool
                     }
+                    // `~x` -- one's complement, the unary counterpart of
+                    // `&`/`|`/`^`/`<<`/`>>`. Accepts the same
+                    // `Ty::bit_shape()` set `bit_not(x)` already validates
+                    // (any integer width, `Wrapping<T>`, `BitField<N>`; not
+                    // `Flags<E>`, see `infer_shift_ty`'s doc comment for why).
+                    // `~x` preserves the operand's own type, the same
+                    // "output type mirrors input type" rule `Neg` follows.
+                    UnOp::BitNot => {
+                        let operand_ty = operand_expr.clone().into_ty();
+                        if operand_ty.bit_shape().is_none() && !Self::is_placeholder_ty(&operand_ty) {
+                            self.error(
+                                format!("`~` operand expected an integer/`Wrapping<T>`/`BitField<N>` value, found `{:?}`", operand_ty),
+                                *span,
+                            );
+                        }
+                        operand_ty
+                    }
                 };
                 Ok(TypedExpr::Unary { op: *op, operand: Box::new(operand_expr), ty, span: *span })
             }
@@ -2927,6 +2944,7 @@ impl Checker {
             BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*", BinOp::Div => "/", BinOp::Rem => "%",
             BinOp::Eq => "==", BinOp::Ne => "!=", BinOp::Lt => "<", BinOp::Gt => ">", BinOp::Le => "<=", BinOp::Ge => ">=",
             BinOp::And => "&&", BinOp::Or => "||",
+            BinOp::BitAnd => "&", BinOp::BitOr => "|", BinOp::BitXor => "^", BinOp::Shl => "<<", BinOp::Shr => ">>",
         }
     }
 
@@ -2958,6 +2976,13 @@ impl Checker {
             BinOp::Le => ("Ord", "le"),
             BinOp::Ge => ("Ord", "ge"),
             BinOp::And | BinOp::Or => return None,
+            // Never overloadable on a struct: `&`/`|`/`^`/`<<`/`>>` only
+            // ever reach `infer_bitwise_combine_ty`/`infer_shift_ty`
+            // (`Ty::bit_shape()`/`bitwise_combine_shape()`-restricted, never
+            // a `Ty::Named` struct), so `try_operator_overload_call`'s
+            // caller never has a struct-typed `lhs_ty` to look this up for
+            // in the first place -- same reasoning as `And`/`Or` above.
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => return None,
         })
     }
 
@@ -3080,6 +3105,71 @@ impl Checker {
     /// `Fixed`-shaped type gets one new match arm in the shared branch below;
     /// a future asymmetric time-like type gets its own `infer_*_binop_ty`
     /// sibling instead, same as `Tick`/`Duration`/`Instant` today.
+    /// `a & b` / `a | b` / `a ^ b` -- the operator-syntax counterpart of the
+    /// `bit_and`/`bit_or`/`bit_xor` free functions' own type checking
+    /// (`"bit_and" | "bit_or" | "bit_xor"` arm, this same file), sharing the
+    /// identical `Ty::bitwise_combine_shape()` legality: any integer width,
+    /// `Wrapping<T>`, `BitField<N>`, or `Flags<E>`, with both operands
+    /// required to be the exact same type (no implicit widening, matching
+    /// every other sized-numeric operator in this compiler). Returns
+    /// `lhs_ty` (a placeholder-tolerant best-effort type) on any mismatch so
+    /// a caller building a `TypedExpr::Binary` around this still has
+    /// *something* to attach, the same "error once, keep going" convention
+    /// `infer_binop_ty`'s other branches already follow.
+    fn infer_bitwise_combine_ty(&mut self, op: &BinOp, lhs_ty: &Ty, rhs_ty: &Ty, span: Span) -> Ty {
+        let sym = match op {
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            _ => unreachable!("caller only routes BitAnd/BitOr/BitXor here"),
+        };
+        if lhs_ty.bitwise_combine_shape().is_none() && !Self::is_placeholder_ty(lhs_ty) {
+            self.error(
+                format!(
+                    "`{}` left operand expected an integer/`Wrapping<T>`/`BitField<N>`/`Flags<E>` value, found `{:?}`",
+                    sym, lhs_ty
+                ),
+                span,
+            );
+            return lhs_ty.clone();
+        }
+        if lhs_ty != rhs_ty && !Self::is_placeholder_ty(rhs_ty) {
+            self.error(
+                format!("`{}` operands must be the same type, found `{:?}` and `{:?}`", sym, lhs_ty, rhs_ty),
+                span,
+            );
+        }
+        lhs_ty.clone()
+    }
+
+    /// `a << b` / `a >> b`. The left operand accepts any `Ty::bit_shape()`
+    /// type (any integer width, `Wrapping<T>`, `BitField<N>` -- deliberately
+    /// *not* `Flags<E>`, unlike the `&`/`|`/`^` trio just above: shifting a
+    /// flag mask bit-by-bit isn't a meaningful set operation the way union/
+    /// intersect/symmetric-difference are, see `Ty::bitwise_combine_shape`'s
+    /// doc comment for the same reasoning applied to `bit_not`). The right
+    /// operand (the shift count) is always plain `int` regardless of the
+    /// left operand's own type -- the same "index/count operand is always
+    /// `int`" convention `bit_get`'s second argument already established --
+    /// *not* required to match the left operand's type the way `&`/`|`/`^`
+    /// require an exact pair, since a shift count is conceptually a small
+    /// magnitude, not a same-shaped value to combine bits with. Returns the
+    /// left operand's own type either way, matching every other
+    /// same-type-in-same-type-out sized-integer operator.
+    fn infer_shift_ty(&mut self, lhs_ty: &Ty, rhs_ty: &Ty, span: Span) -> Ty {
+        if lhs_ty.bit_shape().is_none() && !Self::is_placeholder_ty(lhs_ty) {
+            self.error(
+                format!("`<<`/`>>` left operand expected an integer/`Wrapping<T>`/`BitField<N>` value, found `{:?}`", lhs_ty),
+                span,
+            );
+            return lhs_ty.clone();
+        }
+        if *rhs_ty != Ty::Int && !Self::is_placeholder_ty(rhs_ty) {
+            self.error(format!("`<<`/`>>` right operand (shift count) expected `int`, found `{:?}`", rhs_ty), span);
+        }
+        lhs_ty.clone()
+    }
+
     pub(super) fn infer_binop_ty(&mut self, op: &BinOp, lhs_ty: &Ty, rhs_ty: &Ty, span: Span) -> Ty {
         if matches!(op, BinOp::And | BinOp::Or) {
             if *lhs_ty != Ty::Bool || *rhs_ty != Ty::Bool {
@@ -3089,6 +3179,21 @@ impl Checker {
                 );
             }
             return Ty::Bool;
+        }
+        // `&`/`|`/`^` and `<<`/`>>` get their own dedicated dispatch, the
+        // same way `&&`/`||` do just above -- their legal operand set
+        // (`Ty::bit_shape()`/`Ty::bitwise_combine_shape()`: any integer
+        // width, `Wrapping<T>`, `BitField<N>`, and for the combine trio also
+        // `Flags<E>`) has nothing to do with `is_numeric()`/vec/mat dispatch
+        // below, and reuses the exact same shape queries the `bit_get`/
+        // `bit_and`/etc. free functions already validate against
+        // (`todo.md` P0 #3 -- these are the real operator-syntax surface for
+        // what those free functions could previously only offer as calls).
+        if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) {
+            return self.infer_bitwise_combine_ty(op, lhs_ty, rhs_ty, span);
+        }
+        if matches!(op, BinOp::Shl | BinOp::Shr) {
+            return self.infer_shift_ty(lhs_ty, rhs_ty, span);
         }
         let is_cmp = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge);
         // `Tick`/`Duration`/`Instant` get their own dedicated dispatch too --
@@ -3116,6 +3221,9 @@ impl Checker {
                 BinOp::Eq => "==", BinOp::Ne => "!=",
                 BinOp::Lt => "<", BinOp::Gt => ">", BinOp::Le => "<=", BinOp::Ge => ">=",
                 BinOp::And | BinOp::Or => unreachable!("handled above"),
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                    unreachable!("handled above, before Wrapping/Fixed are ever reached")
+                }
             };
             if lhs_ty != rhs_ty {
                 self.error(
@@ -3417,6 +3525,9 @@ impl Checker {
             BinOp::Eq => "==", BinOp::Ne => "!=",
             BinOp::Lt => "<", BinOp::Gt => ">", BinOp::Le => "<=", BinOp::Ge => ">=",
             BinOp::And | BinOp::Or => unreachable!("handled by infer_binop_ty before this is ever called"),
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                unreachable!("handled by infer_binop_ty before this is ever called")
+            }
         };
         self.error(
             format!("`{}` is not supported between `{:?}` and `{:?}`", op_str, lhs_ty, rhs_ty),

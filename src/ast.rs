@@ -491,6 +491,11 @@ pub enum AssignOp {
     Sub,
     Mul,
     Div,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 /// An expression node.
@@ -855,6 +860,23 @@ pub enum BinOp {
     And,
     /// `||` / `or` - short-circuiting logical OR.
     Or,
+    /// `&` - bitwise AND. Unlike `And`, not short-circuiting and not
+    /// restricted to `bool` -- accepts any `Ty::bitwise_combine_shape()`
+    /// type (an integer of any width, `Wrapping<T>`, `BitField<N>`,
+    /// `Flags<E>`), see `Checker::infer_bitwise_combine_ty`.
+    BitAnd,
+    /// `|` - bitwise OR. See `BitAnd`'s doc comment.
+    BitOr,
+    /// `^` - bitwise XOR. See `BitAnd`'s doc comment.
+    BitXor,
+    /// `<<` - left shift. Only `Ty::bit_shape()` types (no `Flags<E>` --
+    /// shifting a flag mask bit-by-bit isn't a meaningful set operation the
+    /// way union/intersect/symmetric-difference are), see
+    /// `Checker::infer_shift_ty`.
+    Shl,
+    /// `>>` - right shift: arithmetic (sign-extending) on a signed operand
+    /// type, logical (zero-filling) on unsigned. See `Shl`'s doc comment.
+    Shr,
 }
 
 /// Unary operators.
@@ -862,4 +884,8 @@ pub enum BinOp {
 pub enum UnOp {
     Neg,
     Not,
+    /// `~` - bitwise NOT (one's complement). Accepts any `Ty::bit_shape()`
+    /// type, the same set `BinOp::Shl`/`BinOp::Shr` do -- see
+    /// `Checker::infer_expr`'s `Expr::Unary` arm.
+    BitNot,
 }

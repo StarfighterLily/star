@@ -227,7 +227,7 @@ impl Parser {
             return Some(Vec::new());
         }
         let mut params = Vec::new();
-        while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {
+        while !self.at_close_generic() && !self.at(&TokenKind::Eof) {
             let name = self.expect_ident()?;
             let mut bounds = Vec::new();
             if self.eat(&TokenKind::Colon) {
@@ -241,7 +241,7 @@ impl Parser {
                 break;
             }
         }
-        self.expect(&TokenKind::Gt)?;
+        self.expect_close_generic()?;
         Some(params)
     }
 

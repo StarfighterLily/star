@@ -96,11 +96,26 @@ impl Parser {
     /// comparison -- no special-casing needed here.
     fn peek_binop(&self) -> Option<(BinOp, u8)> {
         let op = match self.peek_kind() {
-            TokenKind::Star => (BinOp::Mul, 7),
-            TokenKind::Slash => (BinOp::Div, 7),
-            TokenKind::Percent => (BinOp::Rem, 7),
-            TokenKind::Plus => (BinOp::Add, 6),
-            TokenKind::Minus => (BinOp::Sub, 6),
+            TokenKind::Star => (BinOp::Mul, 10),
+            TokenKind::Slash => (BinOp::Div, 10),
+            TokenKind::Percent => (BinOp::Rem, 10),
+            TokenKind::Plus => (BinOp::Add, 9),
+            TokenKind::Minus => (BinOp::Sub, 9),
+            // Shift binds tighter than the bitwise combine tier just below
+            // (`a << 1 & mask` is `(a << 1) & mask`, matching C/Rust's own
+            // shift-above-bitwise-AND precedence) but looser than `+`/`-`
+            // (`a + 1 << b` is `(a + 1) << b`).
+            TokenKind::Shl => (BinOp::Shl, 8),
+            TokenKind::Shr => (BinOp::Shr, 8),
+            // `&` binds tighter than `^`, which binds tighter than `|` --
+            // the same relative ordering C/Rust give the three bitwise
+            // operators (mirrored here since Star otherwise groups `and`/
+            // `or` at one shared tier: keeping the bitwise trio distinct
+            // avoids `a | b & c` silently meaning `(a | b) & c` for anyone
+            // coming from a C-family language).
+            TokenKind::Amp => (BinOp::BitAnd, 7),
+            TokenKind::Caret => (BinOp::BitXor, 6),
+            TokenKind::Pipe => (BinOp::BitOr, 5),
             TokenKind::Lt => (BinOp::Lt, 4),
             TokenKind::Gt => (BinOp::Gt, 4),
             TokenKind::LtEq => (BinOp::Le, 4),
@@ -169,6 +184,12 @@ impl Parser {
                 let operand = self.parse_unary()?;
                 let span = start.to(operand.span());
                 Some(Expr::Unary { op: UnOp::Not, operand: Box::new(operand), span })
+            }
+            TokenKind::Tilde => {
+                self.advance();
+                let operand = self.parse_unary()?;
+                let span = start.to(operand.span());
+                Some(Expr::Unary { op: UnOp::BitNot, operand: Box::new(operand), span })
             }
             _ => self.parse_postfix(),
         }
@@ -308,6 +329,7 @@ impl Parser {
                             // cursor/diagnostics and fall through to ordinary
                             // comparison handling.
                             let checkpoint = self.pos;
+                            let gt_checkpoint = self.split_gt_pending;
                             let err_checkpoint = self.errors.len();
                             match self.parse_type_args() {
                                 Some(type_args) if self.at(&TokenKind::LParen) => {
@@ -348,6 +370,7 @@ impl Parser {
                                 }
                                 _ => {
                                     self.pos = checkpoint;
+                                    self.split_gt_pending = gt_checkpoint;
                                     self.errors.truncate(err_checkpoint);
                                 }
                             }
@@ -385,13 +408,13 @@ impl Parser {
     fn parse_type_args(&mut self) -> Option<Vec<Type>> {
         self.expect(&TokenKind::Lt)?;
         let mut args = Vec::new();
-        while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {
+        while !self.at_close_generic() && !self.at(&TokenKind::Eof) {
             args.push(self.parse_type()?);
             if !self.eat(&TokenKind::Comma) {
                 break;
             }
         }
-        self.expect(&TokenKind::Gt)?;
+        self.expect_close_generic()?;
         Some(args)
     }
 
@@ -407,11 +430,13 @@ impl Parser {
     /// unrelated parse errors.
     fn try_parse_type_args(&mut self) -> Vec<Type> {
         let checkpoint = self.pos;
+        let gt_checkpoint = self.split_gt_pending;
         let err_checkpoint = self.errors.len();
         match self.parse_type_args() {
             Some(args) if self.at(&TokenKind::LParen) || self.at(&TokenKind::ColonColon) => args,
             _ => {
                 self.pos = checkpoint;
+                self.split_gt_pending = gt_checkpoint;
                 self.errors.truncate(err_checkpoint);
                 Vec::new()
             }
@@ -442,11 +467,13 @@ impl Parser {
     /// convention elsewhere in this parser.
     fn parse_ring_new(&mut self, start: Span) -> Result<Option<Expr>, ()> {
         let checkpoint = self.pos;
+        let gt_checkpoint = self.split_gt_pending;
         let err_checkpoint = self.errors.len();
 
         let shape = self.probe_ring_shape();
         if shape.is_none() || !self.at(&TokenKind::LParen) {
             self.pos = checkpoint;
+            self.split_gt_pending = gt_checkpoint;
             self.errors.truncate(err_checkpoint);
             return Ok(None);
         }
@@ -481,7 +508,7 @@ impl Parser {
             return None;
         };
         self.advance();
-        if !self.eat(&TokenKind::Gt) {
+        if !self.eat_close_generic() {
             return None;
         }
         Some((elem, count, count_span))
@@ -497,11 +524,13 @@ impl Parser {
     /// handling; `Err(())` means a real, committed syntax error.
     fn parse_fixed_new(&mut self, start: Span) -> Result<Option<Expr>, ()> {
         let checkpoint = self.pos;
+        let gt_checkpoint = self.split_gt_pending;
         let err_checkpoint = self.errors.len();
 
         let shape = self.probe_fixed_shape();
         if shape.is_none() || !self.at(&TokenKind::LParen) {
             self.pos = checkpoint;
+            self.split_gt_pending = gt_checkpoint;
             self.errors.truncate(err_checkpoint);
             return Ok(None);
         }
@@ -545,7 +574,7 @@ impl Parser {
             return None;
         };
         self.advance();
-        if !self.eat(&TokenKind::Gt) {
+        if !self.eat_close_generic() {
             return None;
         }
         Some((bits, bits_span, frac, frac_span))
@@ -560,11 +589,13 @@ impl Parser {
     /// comparison handling; `Err(())` means a real, committed syntax error.
     fn parse_bitfield_new(&mut self, start: Span) -> Result<Option<Expr>, ()> {
         let checkpoint = self.pos;
+        let gt_checkpoint = self.split_gt_pending;
         let err_checkpoint = self.errors.len();
 
         let shape = self.probe_bitfield_shape();
         if shape.is_none() || !self.at(&TokenKind::LParen) {
             self.pos = checkpoint;
+            self.split_gt_pending = gt_checkpoint;
             self.errors.truncate(err_checkpoint);
             return Ok(None);
         }
@@ -596,7 +627,7 @@ impl Parser {
             return None;
         };
         self.advance();
-        if !self.eat(&TokenKind::Gt) {
+        if !self.eat_close_generic() {
             return None;
         }
         Some((bits, bits_span))

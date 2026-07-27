@@ -55,6 +55,9 @@ impl Codegen {
                 self.err("internal error: `&&`/`||` should be short-circuit lowered, not reach emit_wrapping_binop", Span::dummy());
                 format!("add {}", ity)
             }
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => unreachable!(
+                "`&`/`|`/`^`/`<<`/`>>` on Wrapping<T> are dispatched straight to emit_bitwise_binop/emit_shift_binop by emit_binop, before emit_wrapping_binop is ever reached"
+            ),
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => unreachable!("handled above"),
         };
         self.line(&format!("  {} = {} {}, {}", reg, opcode, l, r));
