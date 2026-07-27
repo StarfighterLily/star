@@ -94,7 +94,20 @@ review's 13-item punch list, now fully closed) versus adds new surface area
    Tree-sitter grammar for syntax highlighting. No LSP urgency yet while the
    syntax is still moving, but even highlighting would materially help
    anyone other than the primary author read `.star` code, and it's cheap
-   relative to everything else on this list.
+   relative to everything else on this list. -- Done: added a TextMate
+   grammar plus a minimal VS Code extension under `editors/vscode/`
+   (`syntaxes/star.tmLanguage.json`, `language-configuration.json`,
+   `package.json`, `README.md`). No LSP, no snippets -- highlighting and
+   basic bracket/comment/indentation config only, matching the "no LSP
+   urgency yet" scoping call. Verified by tokenizing all 81 `examples/*.star`
+   files through the real grammar (`vscode-textmate`/`vscode-oniguruma`, the
+   same engine VS Code itself uses) -- no crashes and no leftover open-string
+   state at EOF in any file -- plus spot-checked output for keywords, nested
+   f-string interpolation (`f"{self.name} has perished."`), char-literal
+   escapes, generics (`Option<i32>::None`, `List<i32>()`), and `extern "C" fn`
+   declarations. Being plain TextMate JSON, the grammar also doubles as a
+   GitHub Linguist grammar source if `.star` highlighting on github.com is
+   ever wanted later, at no extra cost.
 
 
 # Previous Work
