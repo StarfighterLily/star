@@ -1,9 +1,18 @@
-//! File I/O builtins (`file_open`/`file_read`/`file_read_line`/`file_write`/
-//! `file_close`/`file_exists`): thin wrappers over the C runtime's buffered
-//! `FILE*` API, reusing `Ty::Ptr` (see its doc comment in `crate::types`) as
-//! the file-handle type -- exactly the same "opaque foreign pointer, no RC
+//! File I/O builtins (`file_open`/`file_read`/`file_read_bytes`/
+//! `file_read_line`/`file_write`/`file_write_bytes`/`file_close`/
+//! `file_exists`): thin wrappers over the C runtime's buffered `FILE*` API,
+//! reusing `Ty::Ptr` (see its doc comment in `crate::types`) as the
+//! file-handle type -- exactly the same "opaque foreign pointer, no RC
 //! header" shape `extern "C"` FFI already established for `getenv`'s
 //! returned `char*`.
+//!
+//! `file_read`/`file_write` are `str`-based and thus NUL-terminated end to
+//! end (`todo.md`'s P0 #1) -- fine for text, silently wrong for arbitrary
+//! binary data containing a `0x00` byte. `file_read_bytes`/`file_write_bytes`
+//! are the binary-safe siblings: same `ftell`/`fseek`-sized read and
+//! `fread`/`fwrite` shape, but routed through `Ty::Bytes`'s explicit-length
+//! `{ u8*, i64, i64 }` payload (`Codegen::emit_bytes_wrap_raw_buf`/
+//! `Codegen::list_fields`) instead of `@strlen`/a NUL terminator.
 //!
 //! Error model (see `todo.md`'s "decide error model" note): `file_open`
 //! returns a null `ptr` on failure, checked with the existing
@@ -146,6 +155,72 @@ impl Codegen {
         self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", nul_ptr, buf, n));
         self.line(&format!("  store i8 0, i8* {}", nul_ptr));
         buf
+    }
+
+    /// `file_read_bytes(handle: ptr) -> Bytes`: binary-safe sibling of
+    /// `emit_file_read` -- same `ftell`/`fseek`-sized, single-`fread` shape,
+    /// but the result is wrapped straight into a `Bytes`/`List<u8>` RC object
+    /// (`Codegen::emit_bytes_wrap_raw_buf`) instead of being NUL-terminated
+    /// into a `str`. Nothing here ever calls `@strlen` or appends a `\0`, so
+    /// an embedded `0x00` byte anywhere in the file (routine in any real
+    /// compiled binary -- `todo.md`'s P0 #1: `HLT` alone is Nova opcode `0`)
+    /// is read back with its true length intact instead of silently
+    /// truncating at the first zero byte the way `str`-based `file_read`
+    /// does end to end.
+    pub(super) fn emit_file_read_bytes(&mut self, args: &[TypedExpr]) -> String {
+        let Some(arg) = args.first() else {
+            self.err("file_read_bytes(..) expects 1 argument", Span::dummy());
+            return "i8* null".into();
+        };
+        let val = self.emit_expr(arg);
+        let handle = self.untag(&val, &Ty::Ptr);
+        self.abort_if_null_handle(&handle, "file_read_bytes");
+
+        let cur = self.tmp_name();
+        self.line(&format!("  {} = call i32 @ftell(i8* {})", cur, handle));
+        self.line(&format!("  call i32 @fseek(i8* {}, i32 0, i32 2)", handle));
+        let end = self.tmp_name();
+        self.line(&format!("  {} = call i32 @ftell(i8* {})", end, handle));
+        self.line(&format!("  call i32 @fseek(i8* {}, i32 {}, i32 0)", handle, cur));
+        let remaining = self.tmp_name();
+        self.line(&format!("  {} = sub i32 {}, {}", remaining, end, cur));
+        let remaining64_raw = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", remaining64_raw, remaining));
+        // Same non-seekable-stream/negative-`ftell` guard as `emit_file_read`
+        // -- see its own comment for why this can't just trust the sign-
+        // extended result directly.
+        let is_valid = self.tmp_name();
+        self.line(&format!("  {} = icmp sge i64 {}, 0", is_valid, remaining64_raw));
+        let remaining64 = self.tmp_name();
+        self.line(&format!("  {} = select i1 {}, i64 {}, i64 0", remaining64, is_valid, remaining64_raw));
+        let buf = self.tmp_name();
+        self.line(&format!("  {} = call i8* @malloc(i64 {})", buf, remaining64));
+        let n = self.tmp_name();
+        self.line(&format!("  {} = call i64 @fread(i8* {}, i64 1, i64 {}, i8* {})", n, buf, remaining64, handle));
+
+        self.emit_bytes_wrap_raw_buf(&buf, &n)
+    }
+
+    /// `file_write_bytes(handle: ptr, data: Bytes) -> bool`: binary-safe
+    /// sibling of `emit_file_write` -- reads `data`'s `(ptr, len)` fields
+    /// directly via `Codegen::list_fields` instead of `@strlen`, so an
+    /// embedded `0x00` byte is written (and the write-succeeded length check
+    /// stays correct) instead of the write silently stopping short the way
+    /// a `str`-based `file_write` would if it were ever handed binary data.
+    pub(super) fn emit_file_write_bytes(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 2 {
+            self.err("file_write_bytes(..) expects 2 arguments (handle, data)", Span::dummy());
+            return "i1 false".into();
+        }
+        let hval = self.emit_expr(&args[0]);
+        let handle = self.untag(&hval, &Ty::Ptr);
+        self.abort_if_null_handle(&handle, "file_write_bytes");
+        let (data, len) = self.list_fields(&args[1], &Ty::U8);
+        let n = self.tmp_name();
+        self.line(&format!("  {} = call i64 @fwrite(i8* {}, i64 1, i64 {}, i8* {})", n, data, len, handle));
+        let reg = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i64 {}, {}", reg, n, len));
+        format!("i1 {}", reg)
     }
 
     /// `file_read_line(handle: ptr) -> str`: structurally identical to

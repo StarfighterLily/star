@@ -90,6 +90,111 @@ impl Codegen {
         }
     }
 
+    /// Build one call argument: an ordinary scalar/small-aggregate value
+    /// (unchanged, pre-existing `emit_expr`-based convention), or -- for a
+    /// struct/fixed-array type large enough to trip `Codegen::is_large_aggregate_ty`
+    /// -- a pointer via `Codegen::emit_aggregate_place`, matching the
+    /// pointer-typed parameter `emit_fn` declares for the same case (see
+    /// `todo.md` P0 #2).
+    fn emit_call_arg(&mut self, a: &TypedExpr) -> String {
+        let aty = self.expr_ty(a);
+        if self.is_large_aggregate_ty(&aty) {
+            let ptr = self.emit_aggregate_place(a, &aty);
+            format!("{}* {}", self.llvm_ty(&aty), ptr)
+        } else {
+            let reg = self.emit_expr(a);
+            let ats = self.llvm_ty(&aty);
+            let clean_val = reg.strip_prefix(&format!("{} ", ats)).unwrap_or(&reg).to_string();
+            format!("{} {}", ats, clean_val)
+        }
+    }
+
+    /// Resolve `expr` (of large-aggregate type `ty`) to a pointer suitable
+    /// for passing as a call argument (`emit_call_arg`) -- the callee's own
+    /// prologue (`emit_fn`) `memcpy`s a private copy from whatever this
+    /// returns, so no copy is needed on the caller's side, just the right
+    /// pointer with the right ownership already accounted for. A read of
+    /// existing storage resolves straight to its real address and is
+    /// retained (mirrors `emit_expr`'s own `Ident`/`Field`/`SelfExpr`/...
+    /// read arms: duplicating an existing owned slot hands out a reference
+    /// that must be retained -- see `rc.rs`'s module doc comment). Anything
+    /// else (a fresh struct/array literal, a nested call, ...) is built into
+    /// a private scratch alloca via `Codegen::emit_into_ptr` -- which itself
+    /// avoids ever materializing a whole-aggregate SSA value for the shapes
+    /// that matter (see its own doc comment) -- and needs no extra retain
+    /// (already uniquely owned).
+    pub(super) fn emit_aggregate_place(&mut self, expr: &TypedExpr, ty: &Ty) -> String {
+        match expr {
+            TypedExpr::Ident { .. }
+            | TypedExpr::SelfExpr(..)
+            | TypedExpr::Field { .. }
+            | TypedExpr::TupleIndex { .. }
+            | TypedExpr::ArrayIndex { .. }
+            | TypedExpr::RingIndex { .. } => {
+                let ptr = self.emit_read_place(expr);
+                self.emit_retain_at(&ptr, ty);
+                ptr
+            }
+            _ => {
+                let llvm_ty = self.llvm_ty(ty);
+                let ptr = self.tmp_name();
+                self.line(&format!("  {} = alloca {}", ptr, llvm_ty));
+                self.emit_into_ptr(&ptr, expr, ty);
+                ptr
+            }
+        }
+    }
+
+    /// Call a free function or method whose return type is a large
+    /// struct/array (`Codegen::is_large_aggregate_ty`), writing the result
+    /// directly into `dest_ptr` (a caller-supplied `sret`-style out-pointer)
+    /// instead of materializing a whole-aggregate SSA value the way an
+    /// ordinary `{} = call {ty} @fn(...)` would -- see
+    /// `Codegen::emit_into_ptr`'s doc comment, the only other caller of this
+    /// function (directly, or transitively through `emit_call_expr`'s own
+    /// generic fallback just below). Mirrors `emit_call_expr`'s
+    /// method-vs-free-function callee resolution exactly (the two must stay
+    /// in sync on how a callee is resolved), just appending `dest_ptr` as
+    /// the hidden trailing `sret` argument `emit_fn` declares for a matching
+    /// return type, and emitting `call void` instead of capturing a
+    /// by-value return.
+    pub(super) fn emit_call_into(&mut self, dest_ptr: &str, callee: &TypedExpr, args: &[TypedExpr], ret_ty: &Ty) {
+        let ret_llvm = self.llvm_ty(ret_ty);
+        if let TypedExpr::Field { base, field, .. } = callee {
+            let base_ty = self.expr_ty(base);
+            let struct_name = match &base_ty {
+                Ty::Named(n) => n.clone(),
+                _ => { self.err("method call on non-struct receiver", Span::dummy()); String::new() }
+            };
+            let key = format!("{}#{}", struct_name, field);
+            let (fn_name, has_self) = match self.methods.get(&key) {
+                Some(m) => m.clone(),
+                None => { self.err(&format!("no method `{}` on `{}`", field, struct_name), Span::dummy()); (field.clone(), true) }
+            };
+            let mut call_args = if has_self {
+                let recv_ptr = self.emit_place(base);
+                let recv_ty = self.llvm_ty(&base_ty);
+                vec![format!("{}* {}", recv_ty, recv_ptr)]
+            } else {
+                self.emit_expr(base);
+                Vec::new()
+            };
+            for a in args {
+                call_args.push(self.emit_call_arg(a));
+            }
+            call_args.push(format!("{}* {}", ret_llvm, dest_ptr));
+            self.line(&format!("  call void @{}({})", fn_name, call_args.join(", ")));
+        } else {
+            let fn_name = match callee {
+                TypedExpr::Ident { name, .. } => name.clone(),
+                _ => { self.err("indirect calls are not supported", Span::dummy()); String::new() }
+            };
+            let mut call_args: Vec<String> = args.iter().map(|a| self.emit_call_arg(a)).collect();
+            call_args.push(format!("{}* {}", ret_llvm, dest_ptr));
+            self.line(&format!("  call void @{}({})", fn_name, call_args.join(", ")));
+        }
+    }
+
     /// A method call (`obj.method(args)`) or a direct free-function call
     /// (`name(args)`), lowered to `call @method(%Struct* obj, args...)` or
     /// `call @name(args...)` respectively.
@@ -103,6 +208,28 @@ impl Codegen {
         // mistaken for one.
         if let Ty::Closure(param_tys, ret_ty) = self.expr_ty(callee) {
             return self.emit_closure_call(callee, args, &param_tys, &ret_ty);
+        }
+        // A large struct/array return type (`Codegen::is_large_aggregate_ty`)
+        // always goes through the caller side of the `sret` convention
+        // `emit_fn` declares for it: build the result into a fresh temp via
+        // `emit_call_into` (never a whole-aggregate SSA value), then hand
+        // back the ordinary tagged-value string every other `emit_expr`
+        // caller expects. This last `load` is the one remaining whole-value
+        // materialization this fix doesn't remove -- unreachable for the two
+        // shapes `todo.md` P0 #2 names (a `let` binding, a `return`, or a
+        // call argument all intercept the aggregate *before* it reaches
+        // here, via `TypedStmt::Let`/`TypedStmt::Return`/`emit_call_arg`),
+        // only for a rarer generic "value" consumer (e.g. a bare
+        // expression-statement discarding the result).
+        let expr_ty = self.expr_ty(expr);
+        if self.is_large_aggregate_ty(&expr_ty) {
+            let llvm_ty = self.llvm_ty(&expr_ty);
+            let tmp = self.tmp_name();
+            self.line(&format!("  {} = alloca {}", tmp, llvm_ty));
+            self.emit_call_into(&tmp, callee, args, &expr_ty);
+            let loaded = self.tmp_name();
+            self.line(&format!("  {} = load {}, {}* {}", loaded, llvm_ty, llvm_ty, tmp));
+            return format!("{} {}", llvm_ty, loaded);
         }
         if let TypedExpr::Field { base, field, .. } = callee {
             // Method call: `obj.method(args)` -> `@method(%Struct* obj, args...)`.
@@ -143,10 +270,7 @@ impl Codegen {
                 Vec::new()
             };
             for a in args {
-                let reg = self.emit_expr(a);
-                let ats = self.llvm_ty(&self.expr_ty(a));
-                let clean_val = reg.strip_prefix(&format!("{} ", ats)).unwrap_or(&reg);
-                call_args.push(format!("{} {}", ats, clean_val));
+                call_args.push(self.emit_call_arg(a));
             }
             let ret = self.tmp_name();
             // Methods without an explicit return type are typed `unknown`
@@ -172,12 +296,7 @@ impl Codegen {
                 TypedExpr::Ident { name, .. } => name.clone(),
                 _ => { self.err("indirect calls are not supported", Span::dummy()); String::new() }
             };
-            let call_args: Vec<String> = args.iter().map(|a| {
-                let reg = self.emit_expr(a);
-                let ats = self.llvm_ty(&self.expr_ty(a));
-                let clean_val = reg.strip_prefix(&format!("{} ", ats)).unwrap_or(&reg).to_string();
-                format!("{} {}", ats, clean_val)
-            }).collect();
+            let call_args: Vec<String> = args.iter().map(|a| self.emit_call_arg(a)).collect();
             // Free functions without an explicit return type are typed
             // `unknown` by the checker; emit them as `void` calls.
             let ret_ty = match &self.expr_ty(expr) {
@@ -325,8 +444,18 @@ impl Codegen {
                 self.emit_struct_lit_fields_into(&gep, inner_name, inner_args);
                 continue;
             }
-            let val = self.emit_expr(a);
             let aty = self.expr_ty(a);
+            if self.is_large_aggregate_ty(&aty) {
+                // A field whose value is a large struct/array read from
+                // elsewhere (an existing local, `self`, another field, a
+                // constructor call, ...) rather than a fresh literal --
+                // `emit_into_ptr` builds/copies it straight into this
+                // field's slot the same hang-free way the two special cases
+                // above do (see its own doc comment, `todo.md` P0 #2).
+                self.emit_into_ptr(&gep, a, &aty);
+                continue;
+            }
+            let val = self.emit_expr(a);
             let ats = self.llvm_ty(&aty);
             let clean_val = val.strip_prefix(&format!("{} ", ats)).unwrap_or(&val);
             self.line(&format!("  store {} {}, {}* {}", ats, clean_val, ats, gep));
@@ -639,8 +768,10 @@ impl Codegen {
                     Some("file_open") => self.emit_file_open(args),
                     Some("file_close") => { self.emit_file_close(args); "%undef".into() }
                     Some("file_read") => self.emit_file_read(args),
+                    Some("file_read_bytes") => self.emit_file_read_bytes(args),
                     Some("file_read_line") => self.emit_file_read_line(args),
                     Some("file_write") => self.emit_file_write(args),
+                    Some("file_write_bytes") => self.emit_file_write_bytes(args),
                     Some("file_exists") => self.emit_file_exists(args),
                     Some("args") => self.emit_args(),
                     Some("env_get") => self.emit_env_get(args),

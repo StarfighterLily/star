@@ -2316,7 +2316,7 @@ impl Checker {
                     self.error(format!("`rand_seed` expects an `int` argument, found `{:?}`", arg_tys[0]), span);
                 }
             }
-            "is_null" | "ptr_to_str" | "file_close" | "file_read" | "file_read_line" | "tcp_close" | "tcp_recv" => {
+            "is_null" | "ptr_to_str" | "file_close" | "file_read" | "file_read_bytes" | "file_read_line" | "tcp_close" | "tcp_recv" => {
                 if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Ptr) {
                     self.error(format!("`{}` expects a `ptr` argument, found `{:?}`", name, arg_tys[0]), span);
                 }
@@ -2342,6 +2342,16 @@ impl Checker {
                     }
                     if !tys_eq(&arg_tys[1], &Ty::Str) {
                         self.error(format!("`file_write` argument 2 expected `str`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "file_write_bytes" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`file_write_bytes` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Bytes) {
+                        self.error(format!("`file_write_bytes` argument 2 expected `Bytes`, found `{:?}`", arg_tys[1]), span);
                     }
                 }
             }

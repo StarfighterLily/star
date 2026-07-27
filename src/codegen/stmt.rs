@@ -266,6 +266,68 @@ impl Codegen {
         }
     }
 
+    /// Build `expr` (of type `ty`) directly into already-allocated `dest_ptr`
+    /// storage, without ever materializing a whole-aggregate SSA value --
+    /// used wherever a struct/fixed-array value crosses a `let` binding,
+    /// function return, or call-argument boundary and
+    /// `Codegen::is_large_aggregate_ty` says the ordinary by-value
+    /// `load`/`store` shape is a real `clang` hang/crash risk (`todo.md` P0
+    /// #2; see `crate::codegen::array::emit_array_repeat_into`'s doc comment
+    /// for the underlying LLVM/clang bug this all routes around). Four
+    /// shapes get a genuinely copy-free lowering:
+    /// - a fresh struct/array literal is built field-by-field straight into
+    ///   `dest_ptr` (`emit_struct_lit_fields_into`/`emit_array_repeat_into`),
+    ///   exactly `TypedStmt::Let`'s pre-existing direct-literal fast path;
+    /// - a nested call with the same aggregate return type forwards
+    ///   `dest_ptr` straight through as *its own* hidden `sret` argument
+    ///   (`emit_call_into`), so a chain of constructor calls never copies at
+    ///   all;
+    /// - a read of existing storage (a local, `self`, a field, a tuple/
+    ///   array/ring element) resolves to that storage's real address via
+    ///   `emit_read_place` (not `emit_place` -- see its own doc comment on
+    ///   why a `list[idx]`-based read must never go through `emit_place`'s
+    ///   write-oriented `ListIndex` arm) and `memcpy`s from it
+    ///   (`emit_memcpy_aggregate`, a single intrinsic call regardless of
+    ///   size), after retaining it exactly like `emit_expr`'s own `Ident`/
+    ///   `Field`/`SelfExpr` read arms do (see `rc.rs`'s module doc comment: a
+    ///   read of an existing owned slot hands out a duplicate reference and
+    ///   must retain, while a fresh construction starts at refcount 1 and
+    ///   must not be retained again).
+    ///
+    /// Anything else (a `match`/trailing-`if` result, ...) falls back to the
+    /// ordinary whole-aggregate `load`+`store` -- rare in practice for a
+    /// value large enough to reach this function at all, and no worse than
+    /// the behavior this fix replaces.
+    pub(super) fn emit_into_ptr(&mut self, dest_ptr: &str, expr: &TypedExpr, ty: &Ty) {
+        match expr {
+            TypedExpr::StructLit { name, args, ty: Ty::Named(_), .. } => {
+                self.emit_struct_lit_fields_into(dest_ptr, name, args);
+            }
+            TypedExpr::ArrayRepeat { value, count, elem_ty, .. } => {
+                self.emit_array_repeat_into(dest_ptr, value, *count, elem_ty);
+            }
+            TypedExpr::Call { callee, args, .. } => {
+                self.emit_call_into(dest_ptr, callee, args, ty);
+            }
+            TypedExpr::Ident { .. }
+            | TypedExpr::SelfExpr(..)
+            | TypedExpr::Field { .. }
+            | TypedExpr::TupleIndex { .. }
+            | TypedExpr::ArrayIndex { .. }
+            | TypedExpr::RingIndex { .. } => {
+                let src_ptr = self.emit_read_place(expr);
+                self.emit_retain_at(&src_ptr, ty);
+                self.emit_memcpy_aggregate(dest_ptr, &src_ptr, ty);
+            }
+            _ => {
+                let val = self.emit_expr(expr);
+                let bare = self.untag(&val, ty);
+                let llvm_ty = self.llvm_ty(ty);
+                self.line(&format!("  store {} {}, {}* {}", llvm_ty, bare, llvm_ty, dest_ptr));
+            }
+        }
+    }
+
     /// `extern "C" fn name(params) -> ret`: a bare LLVM `declare`, no body.
     /// Parameter names aren't needed in a `declare` (LLVM's textual IR only
     /// requires them on `define`), so this is just a type-signature dump --
@@ -317,8 +379,18 @@ impl Codegen {
         // return a value, mirroring what `rustc`/`clang` do for a bare `fn
         // main()`/`void main()`.
         let is_main = owner.is_none() && f.sig.name == "main";
+        // A struct/fixed-array return type large enough that by-value `ret`
+        // risks the same `clang` hang/crash `emit_array_repeat_into`'s doc
+        // comment describes (`todo.md` P0 #2) lowers to `void` plus a hidden
+        // trailing out-pointer argument (`%.sret`) instead of an ordinary
+        // by-value `ret` -- see `Codegen::sret_ptr`'s doc comment. `main` is
+        // exempt (always forced to `i32` below, and never declares a
+        // struct/array return type in practice).
+        let ret_is_agg = !is_main && matches!(&f.sig.ret, Some(t) if self.is_large_aggregate_ty(t));
         let ret_ty = if is_main {
             "i32".to_string()
+        } else if ret_is_agg {
+            "void".to_string()
         } else {
             match &f.sig.ret { Some(t) => self.llvm_ty(t), None => "void".into() }
         };
@@ -332,16 +404,26 @@ impl Codegen {
         // `argv` regardless of Star `fn main()`'s own (always empty in
         // practice) declared parameter list -- see `args()`'s doc comment
         // above `@star.argc`/`@star.argv` in `crate::codegen::Codegen::emit_builtins`.
-        let params: Vec<String> = if is_main {
+        let mut params: Vec<String> = if is_main {
             vec!["i32 %.argc".to_string(), "i8** %.argv".to_string()]
         } else {
             f.sig.params.iter().map(|p| {
                 let ty = if p.is_self {
                     match &p.ty { Ty::Named(n) => format!("%{}*", n), t => format!("{}*", self.llvm_ty(t)) }
+                } else if self.is_large_aggregate_ty(&p.ty) {
+                    // Pointer-passed, like `self` just above -- see this
+                    // function's own prologue below, which `memcpy`s the
+                    // pointee into a private local instead of loading the
+                    // whole by-value aggregate (`todo.md` P0 #2).
+                    format!("{}*", self.llvm_ty(&p.ty))
                 } else { self.llvm_ty(&p.ty) };
                 format!("{} %{}", ty, p.name)
             }).collect()
         };
+        if ret_is_agg {
+            let rty_llvm = self.llvm_ty(f.sig.ret.as_ref().unwrap());
+            params.push(format!("{}* %.sret", rty_llvm));
+        }
         self.write(&params.join(", "));
         self.line(") {");
         self.open_block("entry");
@@ -359,6 +441,22 @@ impl Codegen {
         }
 
         for p in &f.sig.params {
+            if !p.is_self && self.is_large_aggregate_ty(&p.ty) {
+                // Arrives as a pointer to the caller's own storage, already
+                // correctly retained/uniquely-owned on the caller's side
+                // (see `Codegen::emit_call_arg`'s doc comment) -- `memcpy` a
+                // private local copy so this function's own mutations, if
+                // any, can't alias the caller's storage (ordinary by-value
+                // parameter semantics), without ever loading a
+                // whole-aggregate SSA value (`todo.md` P0 #2).
+                let llvm_ty = self.llvm_ty(&p.ty);
+                let alloca = self.tmp_name();
+                self.line(&format!("  {} = alloca {}", alloca, llvm_ty));
+                self.emit_memcpy_aggregate(&alloca, &format!("%{}", p.name), &p.ty);
+                self.track_owned(&alloca, &p.ty);
+                self.symbols.push((p.name.clone(), alloca, p.ty.clone()));
+                continue;
+            }
             let ptr_ty = if p.is_self {
                 match &p.ty { Ty::Named(n) => format!("%{}*", n), t => format!("{}*", self.llvm_ty(t)) }
             } else { self.llvm_ty(&p.ty) };
@@ -380,31 +478,82 @@ impl Codegen {
 
         let was_in_main = self.in_main;
         self.in_main = is_main;
+        let was_sret = self.sret_ptr.take();
+        if ret_is_agg {
+            self.sret_ptr = Some("%.sret".to_string());
+        }
         let terminated = Self::body_terminates(&f.body.stmts);
-        let trailing_val = self.emit_stmts_value(&f.body.stmts);
+        // Aggregate-returning function: build a bare trailing expression
+        // (no `return` keyword -- the common constructor-function shape,
+        // `fn new() -> Cpu:\n    Cpu(...)`) directly into `%.sret` via
+        // `emit_into_ptr` instead of computing a whole-aggregate "value"
+        // through the ordinary `emit_stmts_value` path (see
+        // `emit_into_ptr`'s doc comment). Anything else in trailing position
+        // (a `frame:` scope, a trailing `if`/`else` value, ...) falls back
+        // to the pre-existing whole-value path below, `memcpy`'d into
+        // `%.sret` after the fact -- rarer in practice, and no worse than
+        // the behavior this fix replaces.
+        let mut agg_written_directly = false;
+        let trailing_val = if ret_is_agg && !terminated {
+            match f.body.stmts.split_last() {
+                Some((TypedStmt::Expr(e), init)) => {
+                    for s in init {
+                        self.emit_stmt(s);
+                    }
+                    let rty = f.sig.ret.clone().unwrap();
+                    self.emit_into_ptr("%.sret", e, &rty);
+                    agg_written_directly = true;
+                    None
+                }
+                _ => self.emit_stmts_value(&f.body.stmts),
+            }
+        } else {
+            self.emit_stmts_value(&f.body.stmts)
+        };
         self.pop_scope(!terminated);
         self.in_main = was_in_main;
+        self.sret_ptr = was_sret;
 
         if !terminated {
-            match &f.sig.ret {
-                Some(rty) => {
+            if ret_is_agg {
+                let rty = f.sig.ret.as_ref().unwrap();
+                if !agg_written_directly {
                     let rty_s = self.llvm_ty(rty);
                     match trailing_val {
                         Some(v) => {
                             let clean = v.strip_prefix(&format!("{} ", rty_s)).unwrap_or(&v).to_string();
-                            self.line(&format!("  ret {} {}", rty_s, clean));
+                            let tmp = self.tmp_name();
+                            self.line(&format!("  {} = alloca {}", tmp, rty_s));
+                            self.line(&format!("  store {} {}, {}* {}", rty_s, clean, rty_s, tmp));
+                            self.emit_memcpy_aggregate("%.sret", &tmp, rty);
                         }
                         None => {
                             self.err("function must end in a value-producing expression or explicit return", Span::dummy());
-                            self.line(&format!("  ret {} undef", rty_s));
                         }
                     }
                 }
-                None => {
-                    if is_main {
-                        self.line("  ret i32 0");
-                    } else {
-                        self.line("  ret void");
+                self.line("  ret void");
+            } else {
+                match &f.sig.ret {
+                    Some(rty) => {
+                        let rty_s = self.llvm_ty(rty);
+                        match trailing_val {
+                            Some(v) => {
+                                let clean = v.strip_prefix(&format!("{} ", rty_s)).unwrap_or(&v).to_string();
+                                self.line(&format!("  ret {} {}", rty_s, clean));
+                            }
+                            None => {
+                                self.err("function must end in a value-producing expression or explicit return", Span::dummy());
+                                self.line(&format!("  ret {} undef", rty_s));
+                            }
+                        }
+                    }
+                    None => {
+                        if is_main {
+                            self.line("  ret i32 0");
+                        } else {
+                            self.line("  ret void");
+                        }
                     }
                 }
             }
@@ -470,6 +619,19 @@ impl Codegen {
                     self.emit_struct_lit_fields_into(&ptr, struct_name, args);
                     self.symbols.push((name.clone(), ptr.clone(), vty.clone()));
                     self.track_owned(&ptr, &vty);
+                } else if self.is_large_aggregate_ty(&vty) {
+                    // Neither a fresh literal (handled directly above) nor a
+                    // `frame:` binding -- but still large enough that the
+                    // generic `else` branch's whole-aggregate `load`+`store`
+                    // below is a real `clang` hang/crash risk (`todo.md` P0
+                    // #2). Covers `let x = <existing large struct/array
+                    // local>` (a copy) and `let x = <call returning one>` (a
+                    // constructor function) via `emit_into_ptr`.
+                    let ptr = self.tmp_name();
+                    self.line(&format!("  {} = alloca {}", ptr, ty));
+                    self.emit_into_ptr(&ptr, value, &vty);
+                    self.symbols.push((name.clone(), ptr.clone(), vty.clone()));
+                    self.track_owned(&ptr, &vty);
                 } else {
                     let ptr = self.tmp_name();
                     self.line(&format!("  {} = alloca {}", ptr, ty));
@@ -493,7 +655,23 @@ impl Codegen {
                 }
             }
             TypedStmt::Return { value, .. } => {
-                if let Some(v) = value {
+                if let (Some(v), Some(sret)) = (value, self.sret_ptr.clone()) {
+                    // Aggregate-returning function (`Codegen::is_large_aggregate_ty`,
+                    // see `emit_fn`'s doc comment on `sret_ptr`): build
+                    // straight into the caller-supplied out-pointer via
+                    // `emit_into_ptr` instead of materializing a
+                    // whole-aggregate SSA value and `ret`-ing it -- the exact
+                    // `clang` hang/crash risk `todo.md` P0 #2 is about.
+                    let ty = self.expr_ty(v);
+                    self.emit_into_ptr(&sret, v, &ty);
+                    // Same reasoning as the ordinary scalar path below: any
+                    // retain `emit_into_ptr` performed for a read of an
+                    // existing owned slot must be balanced against releasing
+                    // every open scope now, before the `ret`, so the caller
+                    // ends up owning exactly one reference.
+                    self.emit_releases_for_return();
+                    self.line("  ret void");
+                } else if let Some(v) = value {
                     let reg = self.emit_expr(v);
                     let ty = self.expr_ty(v);
                     // `emit_expr` returns some values already tagged with

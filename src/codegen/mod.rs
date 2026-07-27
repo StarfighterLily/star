@@ -322,6 +322,15 @@ pub struct Codegen {
     /// picks any other target explicitly. Consulted by `emit`'s `target
     /// triple` line and every `crate::codegen::platform` method.
     target: Target,
+    /// The hidden `sret`-style out-pointer argument of the function
+    /// currently being emitted, when its return type is a large struct/array
+    /// (see `Codegen::is_large_aggregate_ty`) -- `None` otherwise. Set by
+    /// `emit_fn` for the duration of one function body and consulted by
+    /// `TypedStmt::Return`'s codegen so an explicit early `return` of such a
+    /// value writes directly into the caller-supplied slot (via
+    /// `emit_into_ptr`) instead of materializing a whole-aggregate SSA value
+    /// -- see `todo.md` P0 #2.
+    sret_ptr: Option<String>,
 }
 
 impl Codegen {
@@ -408,6 +417,7 @@ impl Codegen {
             generic_instantiations: std::collections::HashMap::new(),
             default_font_global: None,
             current_label: "entry".to_string(),
+            sret_ptr: None,
         }
     }
 
@@ -1235,6 +1245,61 @@ impl Codegen {
         let sz = self.tmp_name();
         self.line(&format!("  {} = ptrtoint {}* {} to i64", sz, llvm_ty, gep));
         sz
+    }
+
+    /// Byte-size threshold above which a struct/fixed-array-typed function
+    /// parameter or return value switches from ordinary by-value SSA passing
+    /// to pointer-based passing (`Codegen::is_large_aggregate_ty`). Every
+    /// hand-written struct in the existing test suite (`Vec3`/`Mat4`-sized
+    /// types top out at 64 bytes per `type_size`) stays comfortably under
+    /// this, so the pre-existing by-value convention -- and everything built
+    /// on top of it that this fix doesn't also update, e.g. first-class
+    /// function values/closures wrapping a small-struct function
+    /// (`crate::codegen::closure::emit_fn_value`/`emit_closure_call`) --
+    /// is untouched. Comfortably below the sizes that actually reproduce
+    /// `clang`'s SelectionDAG hang/crash (starting around 16KB under `-O2`,
+    /// see `crate::codegen::array::emit_array_repeat_into`'s doc comment),
+    /// which is what this threshold exists to route around (`todo.md` P0
+    /// #2).
+    const LARGE_AGGREGATE_THRESHOLD: u32 = 512;
+
+    /// True for a struct or fixed-array type large enough that ordinary
+    /// by-value parameter/return passing risks the real `clang` hang/crash
+    /// the array-repeat fix (`crate::codegen::array::emit_array_repeat_into`)
+    /// already had to route around for a direct `let` binding -- that fix
+    /// only ever covered `let x = <array-repeat-or-struct-literal>` built
+    /// straight into its own binding (see its own doc comment), leaving an
+    /// ordinary function *returning* such a value, or taking one as a plain
+    /// (non-`self`) parameter, still going through a whole-aggregate
+    /// `load`/`store`/`ret`/by-value-argument -- exactly `todo.md`'s P0 #2.
+    /// Gates `emit_fn`'s pointer-parameter/`sret`-return convention and
+    /// every call site that builds arguments or return values for it
+    /// (`Codegen::emit_into_ptr`, `Codegen::emit_call_arg`,
+    /// `Codegen::emit_call_into`); a type this returns `false` for keeps the
+    /// pre-existing by-value codegen entirely unchanged.
+    pub(super) fn is_large_aggregate_ty(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Named(n) if n != "unknown" => self.type_size(ty) > Self::LARGE_AGGREGATE_THRESHOLD,
+            Ty::Array(_, _) => self.type_size(ty) > Self::LARGE_AGGREGATE_THRESHOLD,
+            _ => false,
+        }
+    }
+
+    /// Copy `ty`-typed storage from `src_ptr` to `dest_ptr` via a single
+    /// `memcpy` call, sized by `emit_sizeof_llvm_ty` -- never materializes a
+    /// whole-aggregate SSA value the way a `load`+`store` pair would (see
+    /// `is_large_aggregate_ty`'s doc comment for why that matters). Emits
+    /// exactly the same fixed handful of IR lines regardless of `ty`'s size,
+    /// unlike a `load`/`store` pair whose cost to `clang`'s own instruction
+    /// selector scales (very badly) with it.
+    pub(super) fn emit_memcpy_aggregate(&mut self, dest_ptr: &str, src_ptr: &str, ty: &Ty) {
+        let llvm_ty = self.llvm_ty(ty);
+        let size = self.emit_sizeof_llvm_ty(&llvm_ty);
+        let dst8 = self.tmp_name();
+        self.line(&format!("  {} = bitcast {}* {} to i8*", dst8, llvm_ty, dest_ptr));
+        let src8 = self.tmp_name();
+        self.line(&format!("  {} = bitcast {}* {} to i8*", src8, llvm_ty, src_ptr));
+        self.line(&format!("  call i8* @memcpy(i8* {}, i8* {}, i64 {})", dst8, src8, size));
     }
 
     fn llvm_ty(&self, ty: &Ty) -> String {

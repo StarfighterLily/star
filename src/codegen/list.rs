@@ -204,6 +204,20 @@ impl Codegen {
         // inside that function itself).
         self.line(&format!("  call void @star_rc_release(i8* {})", raw));
 
+        self.emit_bytes_wrap_raw_buf(&new_raw, &n)
+    }
+
+    /// Wraps an already-`malloc`'d `u8*` buffer of exactly `len` (an `i64`
+    /// SSA value) bytes into a fresh `Bytes`/`List<u8>` RC object -- the
+    /// shared tail of `emit_bytes_from_str` (which `malloc`s+`memcpy`s a
+    /// buffer first) and `crate::codegen::file_io::emit_file_read_bytes`
+    /// (which `fread`s straight into a buffer it already sized itself, with
+    /// no intermediate `str`/`strlen` step -- the whole point being that
+    /// `len` can be, and in the file-read case routinely is, a value
+    /// `strlen` would get wrong on an embedded `0x00` byte). Takes ownership
+    /// of `buf`: the returned object's release thunk (`list_release_thunk_operand`)
+    /// is what eventually `free`s it, so callers must not free it themselves.
+    pub(super) fn emit_bytes_wrap_raw_buf(&mut self, buf: &str, len: &str) -> String {
         let payload_ty = self.list_payload_llvm_ty(&Ty::U8);
         let release_fn = self.list_release_thunk_operand(&Ty::U8);
         let obj_raw = self.tmp_name();
@@ -212,13 +226,13 @@ impl Codegen {
         self.line(&format!("  {} = bitcast i8* {} to {}*", payload, obj_raw, payload_ty));
         let data_field = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0", data_field, payload_ty, payload_ty, payload));
-        self.line(&format!("  store i8* {}, i8** {}", new_raw, data_field));
+        self.line(&format!("  store i8* {}, i8** {}", buf, data_field));
         let len_field = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 1", len_field, payload_ty, payload_ty, payload));
-        self.line(&format!("  store i64 {}, i64* {}", n, len_field));
+        self.line(&format!("  store i64 {}, i64* {}", len, len_field));
         let cap_field = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i32 2", cap_field, payload_ty, payload_ty, payload));
-        self.line(&format!("  store i64 {}, i64* {}", n, cap_field));
+        self.line(&format!("  store i64 {}, i64* {}", len, cap_field));
 
         format!("i8* {}", obj_raw)
     }
@@ -870,7 +884,7 @@ impl Codegen {
     /// expression, so the object it points at is guaranteed to stay alive
     /// long enough to read through here without needing an independent,
     /// owned copy of its own.
-    fn list_fields(&mut self, base: &TypedExpr, elem_ty: &Ty) -> (String, String) {
+    pub(super) fn list_fields(&mut self, base: &TypedExpr, elem_ty: &Ty) -> (String, String) {
         if let TypedExpr::ListIndex { base: inner_base, index, ty: inner_elem_ty, .. } = base {
             let obj = self.list_index_read_obj(inner_base, index, inner_elem_ty);
             return self.list_fields_from_obj(&obj, elem_ty);

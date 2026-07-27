@@ -292,6 +292,18 @@ fn checker_rejects_file_write_swapped_arg_types() {
     assert!(diags.iter().any(|d| d.message.contains("`file_write`")), "{:?}", diags);
 }
 
+/// `file_write_bytes(handle, data)` expects `ptr` then `Bytes` -- swapping
+/// them the same way `checker_rejects_file_write_swapped_arg_types` does for
+/// `file_write` should also be rejected, not silently misdirect
+/// `list_fields`' expected `Bytes` object pointer.
+#[test]
+fn checker_rejects_file_write_bytes_swapped_arg_types() {
+    let src = "fn t():\n    let h = file_open(\"x.txt\", \"w\")\n    let data = bytes_from_str(\"data\")\n    file_write_bytes(data, h)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("file_write_bytes with swapped argument types should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`file_write_bytes`")), "{:?}", diags);
+}
+
 /// Every valid file-I/O call shape still type-checks cleanly -- a sanity
 /// check that `check_builtin_call_args` didn't become so strict it rejects
 /// legitimate use, run alongside the existing `runtime_file_*_end_to_end`

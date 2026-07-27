@@ -929,6 +929,12 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "file_close" => Some(Ty::Named("unknown".into())),
         "file_read" | "file_read_line" => Some(Ty::Str),
         "file_write" | "file_exists" => Some(Ty::Bool),
+        // Binary-safe siblings of `file_read`/`file_write` (`todo.md`'s P0
+        // #1) -- see `crate::codegen::file_io`'s module doc comment. Routed
+        // through `Ty::Bytes`'s explicit-length payload instead of a NUL-
+        // terminated `str`, so an embedded `0x00` byte round-trips intact.
+        "file_read_bytes" => Some(Ty::Bytes),
+        "file_write_bytes" => Some(Ty::Bool),
         // Minimal OS surface (todo.md #2) -- see `crate::codegen::list::emit_args`
         // and `crate::codegen::os`. `args()` includes `argv[0]` (the program
         // path/name), same convention the underlying OS argv itself uses.
