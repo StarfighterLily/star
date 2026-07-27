@@ -23,17 +23,22 @@ so it's cheap to keep in sync while the language itself is still moving.
 
 VS Code doesn't load an unpacked extension from an arbitrary folder by
 default; either symlink or copy this directory into your extensions
-folder, or package it properly:
+folder, or package it properly. Examples below use `code`; substitute
+`codium` if you're on VSCodium (same CLI, different binary name -- on
+Windows it's typically `%LOCALAPPDATA%\Programs\VSCodium\bin\codium.cmd`,
+which the VSCodium installer normally puts on `PATH`).
 
 ```sh
-# Option A: point VS Code at this folder directly for one session
+# Option A: point the editor at this folder directly for one session
 code --extensionDevelopmentPath="editors/vscode" .
+# or: codium --extensionDevelopmentPath="editors/vscode" .
 
 # Option B: install it like a normal extension
 npm install -g @vscode/vsce
 cd editors/vscode
 vsce package
 code --install-extension star-lang-0.1.0.vsix
+# or: codium --install-extension star-lang-0.1.0.vsix
 ```
 
 ## Coverage
