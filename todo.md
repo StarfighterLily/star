@@ -7,13 +7,22 @@ review's 13-item punch list, now fully closed) versus adds new surface area
 
 ## P0 — Protects existing investment / structural
 
-1. **Scale the `par`/`swarm` worker pool to actual hardware.** `NUM_WORKERS:
+1. **Fuzz the lexer/parser/checker directly, not just `ir_check.rs`.**
+   `ir_check.rs`'s 2,000-case fuzz test (asserting no panic) exists precisely
+   because hand-rolled IR generation was identified as a risk — but raw user
+   text hits the lexer/parser/checker *first*, and none of that pipeline has
+   the same guarantee despite 181 `.expect()` call sites across `src/` that
+   are plausible panic surfaces on malformed input. Apply the exact same
+   methodology one layer earlier: feed random bytes and mutated real `.star`
+   files through `star check`'s full pipeline and assert it always ends in
+   either success or a clean diagnostic, never a panic.
+2. **Scale the `par`/`swarm` worker pool to actual hardware.** `NUM_WORKERS:
    u32 = 4` (`src/codegen/par_pool.rs:43`) is a hardcoded compile-time
    constant baked into every generated program, not queried at runtime. Query
    the real core count (`GetSystemInfo`'s `dwNumberOfProcessors`, with an
    optional explicit override) so the "swarm" pitch's actual performance
    matches the hardware it runs on instead of always assuming 4 cores.
-2. **Make the Windows-only scope an explicit decision, not a default, before
+3. **Make the Windows-only scope an explicit decision, not a default, before
    more Win32-specific machinery lands.** `par_pool.rs` (`CreateThread`),
    `audio.rs`, `gamepad.rs`, and `system_font.rs` (GDI) each independently
    deepened the same Win32 coupling this round, with no platform-abstraction
@@ -25,7 +34,7 @@ review's 13-item punch list, now fully closed) versus adds new surface area
 
 ## P1 — Real design gaps
 
-3. **Decide and document the dynamic-dispatch story.** Traits today are
+4. **Decide and document the dynamic-dispatch story.** Traits today are
    structural sugar over monomorphization — no vtable, no `dyn Trait`, no
    heterogeneous collection of mixed concrete types satisfying one trait —
    and only structs may implement a trait at all (`check_impl`'s struct-only
@@ -35,7 +44,7 @@ review's 13-item punch list, now fully closed) versus adds new surface area
    and adjust that example/prose to stop implying otherwise, or scope what a
    `dyn Trait`/tagged-enum-of-variants alternative would need for the one
    real motivating use case (heterogeneous ECS component lists).
-4. **Allow enums to implement traits, or document why not.** The struct-only
+5. **Allow enums to implement traits, or document why not.** The struct-only
    restriction on `impl Trait for ...:` was a reasonable bootstrapping choice
    when traits were new; now that trait-bounded generics and operator
    overloading are both real, load-bearing features, the asymmetry (a
@@ -45,14 +54,14 @@ review's 13-item punch list, now fully closed) versus adds new surface area
 
 ## P2 — Maintainability
 
-5. **Split `tests/frontend.rs`** (1,514 tests, ~1.45 MB — by far the largest
+6. **Split `tests/frontend.rs`** (1,514 tests, ~1.45 MB — by far the largest
    file in the repo) **into topic-scoped files**, mirroring `src/codegen/`'s
    own 35-file decomposition (e.g. one test file per codegen module, or at
    minimum separating checker-diagnostic tests / codegen-shape tests /
    runtime end-to-end tests into their own files). No functional change
    needed — this is purely about keeping "find existing coverage before
    adding more" cheap as the suite keeps growing every session.
-6. **Finish (or explicitly bound) the binop-dispatch unification.** The P3
+7. **Finish (or explicitly bound) the binop-dispatch unification.** The P3
    #12 abstraction pass (`Ty::eq_only_scalar_shape`) only unified the
    equality-only types (`Symbol`/`BitField<N>`/`Flags<E>`/`Color32`/
    `PaletteIndex`); `Wrapping`/`Fixed` and the `Tick`/`Duration`/`Instant`
@@ -64,15 +73,30 @@ review's 13-item punch list, now fully closed) versus adds new surface area
 
 ## P3 — Process
 
-7. **Treat a review like this one as recurring, not one-off.** The prior
+8. **Treat a review like this one as recurring, not one-off.** The prior
    punch list — 13 items, several structural — was fully closed in about two
    days. At that velocity, new special cases and new untested code paths can
    accumulate faster than periodic manual review catches them. Consider a
    `.clinerules/workflows/` trigger tied to feature-batch size (e.g., "every
    N changelog entries" or "before any session that touches a new codegen
    module") rather than only running a full assessment when asked.
-8. **Start scoping minimal editor tooling** — at minimum a TextMate/
+9. **Start scoping minimal editor tooling** — at minimum a TextMate/
    Tree-sitter grammar for syntax highlighting. No LSP urgency yet while the
    syntax is still moving, but even highlighting would materially help
    anyone other than the primary author read `.star` code, and it's cheap
    relative to everything else on this list.
+
+
+# Previous Work
+todo.md P0 #1:
+Code (tests/frontend.rs): extended the existing lexer/parser fuzz test into a full-pipeline fuzzer (fuzz_lexer_parser_checker_do_not_panic) that now also runs the type checker, scaled from 300 → 2,000 cases to match ir_check.rs's methodology. Added a second test, fuzz_full_pipeline_random_bytes_do_not_panic, that feeds truly uniform random bytes (not just the plausible-source-alphabet mutations) through the same lex→parse→check pipeline, also 2,000 cases. Both assert no panic and no hang (bounded worker thread), matching ir_check.rs's fuzz_never_panics guarantee one layer earlier in the front end. Full suite (1,515 tests) still passes; the two new fuzz tests run in ~0.3s combined.
+
+Implemented todo.md P0 #2: the par/swarm worker pool now sizes itself to real hardware instead of a hardcoded 4.
+
+src/codegen/par_pool.rs (near-complete rewrite): NUM_WORKERS: u32 = 4 became MAX_WORKERS: u32 = 64 (array-sizing ceiling) and MIN_WORKERS: u32 = 4 (runtime floor). ensure_init now determines the live worker count via GetSystemInfo's dwNumberOfProcessors, with a STAR_WORKERS environment-variable override (parsed via atoi), clamped to [MIN_WORKERS, MAX_WORKERS]. Thread creation, dispatch fan-out, and the join wait all became genuine LLVM runtime loops instead of Rust-compile-time-unrolled sequences — including switching per-worker argument-struct storage from N separate allocas to one array alloca indexed at runtime (a single alloca inside the loop would have aliased every concurrent worker onto the same memory).
+
+src/codegen/mod.rs: added GetSystemInfo/atoi externs, plus a prelude_declared name-tracking fix — an unconditional atoi prelude declare collided with existing tests that extern "C" fn atoi(...) themselves (LLVM rejects duplicate declares), so emit_extern_fn_decl now skips re-declaring anything the fixed prelude already provided.
+
+src/codegen/system.rs / src/types/system_analysis.rs: updated to the new constant names/semantics; MAX_PARALLEL_SYSTEMS (4) is now documented as a floor the pool guarantees, not a ceiling it's fixed to.
+
+Tests (tests/frontend.rs, +11 net): fixed two existing IR-shape tests that asserted CreateThread appears 4 times (now 1, since it's a single runtime-loop call site); added coverage for the new mailbox array sizing, hardware/env-var detection in the IR, the runtime-loop shape itself, and — most importantly — end-to-end runtime correctness across STAR_WORKERS overrides (1, 2, 3, 4, 5, 8, 37, 64, 100), the zero/below-floor clamp, and a 4-system parallel: block still dispatching correctly when STAR_WORKERS=1. Full suite: 1522 passed.

@@ -24,12 +24,18 @@ use super::par_analysis::is_banned_sdl_builtin_in_par;
 use super::*;
 
 /// The worker pool `codegen::par_pool` dispatches `par`/`swarm` chunks *and*
-/// (once compiled) whole `system`s onto has a fixed size -- see
-/// `codegen::par_pool::NUM_WORKERS`. A `parallel:` block can never
-/// meaningfully list more systems than that: there'd be nowhere left to run
-/// the (N+1)th one concurrently. Kept as a small literal, doc-commented
-/// cross-reference rather than plumbed across the `types`/`codegen` module
-/// boundary, since it only matters as a compile-time diagnostic bound here.
+/// (once compiled) whole `system`s onto sizes itself at runtime from the
+/// real hardware core count (see `codegen::par_pool::ensure_init`), but
+/// never with fewer than `codegen::par_pool::MIN_WORKERS` live threads --
+/// that floor, not the runtime-detected count, is the bound this
+/// compile-time diagnostic must respect, since it runs long before any
+/// hardware is known. A `parallel:` block can never meaningfully list more
+/// systems than that floor: there'd be nowhere left to run the (N+1)th one
+/// concurrently on a machine that happens to only have that many cores.
+/// Kept as a small literal, doc-commented cross-reference rather than
+/// plumbed across the `types`/`codegen` module boundary, since it only
+/// matters as a compile-time diagnostic bound here -- must never exceed
+/// `codegen::par_pool::MIN_WORKERS`.
 const MAX_PARALLEL_SYSTEMS: usize = 4;
 
 /// Per-system-body walk state: the declared arena-access table (unchanged
@@ -84,7 +90,7 @@ impl Checker {
 
     /// Check a `parallel: SystemA() SystemB() ...` block: every listed name
     /// must resolve to a declared system, no name may repeat, the list may
-    /// not exceed the worker pool's fixed size, and no two listed systems
+    /// not exceed the worker pool's guaranteed minimum size, and no two listed systems
     /// may declare a conflicting (>= 1 mutable) access to the same arena --
     /// the literal "compile-time lock" `docs/features.md` describes.
     pub(super) fn check_parallel_stmt(&mut self, systems: &[(String, Span)], span: Span) -> TypedStmt {
@@ -109,7 +115,7 @@ impl Checker {
         if resolved.len() > MAX_PARALLEL_SYSTEMS {
             self.error(
                 format!(
-                    "a `parallel:` block can dispatch at most {} systems (the worker pool's fixed size), found {}",
+                    "a `parallel:` block can dispatch at most {} systems (the worker pool's guaranteed minimum size), found {}",
                     MAX_PARALLEL_SYSTEMS,
                     resolved.len()
                 ),

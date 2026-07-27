@@ -1274,11 +1274,11 @@ fn rejects_par_undefined_arena() {
 
 /// Codegen for `par` dispatches to the persistent worker-thread pool: the
 /// pool's static machinery (`par.pool.worker_main`/`par.pool.ensure_init`,
-/// created via `CreateThread`/`CreateSemaphoreA` exactly once) is emitted
-/// alongside this callsite's own `par_worker_` chunking function, and the
-/// dispatcher joins via `WaitForSingleObject` on the pool's per-worker
-/// "done" semaphores before continuing -- no `CloseHandle` anywhere, since
-/// pool threads are persistent, not per-call.
+/// created via `CreateThread`/`CreateSemaphoreA`) is emitted alongside this
+/// callsite's own `par_worker_` chunking function, and the dispatcher joins
+/// via `WaitForSingleObject` on the pool's per-worker "done" semaphores
+/// before continuing -- no `CloseHandle` anywhere, since pool threads are
+/// persistent, not per-call.
 #[test]
 fn codegen_par_dispatches_threads() {
     let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
@@ -1294,14 +1294,20 @@ fn codegen_par_dispatches_threads() {
     assert!(ir.contains("call i32 @GetCurrentThreadId"), "{}", ir);
     assert!(ir.contains("call i8* @CreateSemaphoreA"), "{}", ir);
     assert!(ir.contains("call i32 @ReleaseSemaphore"), "{}", ir);
-    // The pool's `ensure_init` creates all 4 persistent worker threads (once,
-    // from this single statement's lazy-init call) -- not one CreateThread
-    // per `par`/`swarm` statement execution as the old per-call design did.
-    assert_eq!(ir.matches("call i8* @CreateThread(").count(), 4, "{}", ir);
+    // `ensure_init` creates however many persistent worker threads the
+    // runtime-detected/overridden count calls for via a *runtime* loop
+    // (`par_pool_thread_cond`/`par_pool_thread_body`), so the actual thread
+    // count never appears as a repeated static IR pattern -- there is
+    // exactly one `CreateThread` call site in the text, executed however
+    // many times `@par.pool.num_workers` says at run time, not one
+    // textually-unrolled call site per worker the way a compile-time-fixed
+    // pool size would produce.
+    assert_eq!(ir.matches("call i8* @CreateThread(").count(), 1, "{}", ir);
+    assert!(ir.contains("@par.pool.num_workers"), "{}", ir);
 }
 
 /// A program with **two** separate `par`/`swarm` statements still only
-/// creates the pool's 4 worker threads once -- the second statement's
+/// creates the pool's worker threads once -- the second statement's
 /// `ensure_init` call sees the pool already initialized and skips straight
 /// to dispatch, proving the pool is genuinely reused rather than recreated
 /// per statement.
@@ -1314,7 +1320,10 @@ fn codegen_par_pool_reused_across_multiple_statements() {
     let module = Driver::parse(&src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    assert_eq!(ir.matches("call i8* @CreateThread(").count(), 4, "pool threads should be created once, not once per statement: {}", ir);
+    // Still just the one `CreateThread` call site (inside `ensure_init`'s
+    // runtime thread-creation loop -- see `codegen_par_dispatches_threads`),
+    // not one per `par`/`swarm` statement.
+    assert_eq!(ir.matches("call i8* @CreateThread(").count(), 1, "pool threads should be created once, not once per statement: {}", ir);
     assert_eq!(ir.matches("define i32 @par.pool.worker_main").count(), 1, "{}", ir);
     assert_eq!(ir.matches("define void @par.pool.ensure_init").count(), 1, "{}", ir);
     assert_eq!(ir.matches("define i32 @par_worker_").count(), 2, "each callsite still gets its own chunking function: {}", ir);
@@ -1399,6 +1408,160 @@ fn runtime_par_nested_serial_fallback_is_race_free() {
         "all 4 bullets should show dmg 3 (one increment per live enemy, no lost updates): {}",
         stdout
     );
+}
+
+// --- `par`/`swarm` worker pool sizing (hardware core count + `STAR_WORKERS`) --
+
+/// The pool's mailbox arrays are declared at `par_pool::MAX_WORKERS` (a
+/// generous compile-time ceiling), not a small hardcoded worker count -- the
+/// live count is a separate runtime global (`@par.pool.num_workers`)
+/// computed by `ensure_init`, not baked into the array size itself.
+#[test]
+fn codegen_par_pool_mailbox_arrays_sized_to_max_workers_ceiling() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(
+        ir.contains("@par.pool.job_fn = global [64 x i32 (i8*)*] zeroinitializer"),
+        "mailbox arrays should be sized to the MAX_WORKERS ceiling, not a small fixed count: {}",
+        ir
+    );
+    assert!(ir.contains("@par.pool.num_workers = global i32 0"), "{}", ir);
+}
+
+/// `ensure_init` determines the live worker count at runtime rather than
+/// baking in a fixed number: it reads `STAR_WORKERS` via the same `getenv`
+/// the `env_get` builtin uses, falls back to `GetSystemInfo`'s
+/// `dwNumberOfProcessors` when unset, and parses an override with `atoi`.
+#[test]
+fn codegen_par_pool_init_detects_hardware_and_env_override() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let init_body = extract_fn_body(&ir, "define void @par.pool.ensure_init(");
+    assert!(init_body.contains("call i8* @getenv("), "should check for a STAR_WORKERS override: {}", init_body);
+    assert!(init_body.contains("call void @GetSystemInfo("), "should query the real hardware core count: {}", init_body);
+    assert!(init_body.contains("call i32 @atoi("), "an override value should be parsed with atoi: {}", init_body);
+    assert!(ir.contains("STAR_WORKERS"), "{}", ir);
+}
+
+/// However many workers `ensure_init` decides on, thread creation happens in
+/// a genuine runtime loop (`par_pool_thread_cond`/`par_pool_thread_body`),
+/// not a Rust-compile-time-unrolled sequence of `CreateThread` calls -- so
+/// there is exactly one `CreateThread`/`CreateSemaphoreA`-pair call site in
+/// the emitted text no matter how many threads it ends up creating at run
+/// time.
+#[test]
+fn codegen_par_pool_thread_creation_is_a_runtime_loop_not_unrolled() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("par_pool_thread_cond:"), "{}", ir);
+    assert!(ir.contains("par_pool_thread_body:"), "{}", ir);
+    assert!(ir.contains("@par.pool.init_i"), "{}", ir);
+    assert_eq!(ir.matches("call i8* @CreateThread(").count(), 1, "{}", ir);
+    // Two `CreateSemaphoreA` call sites inside the loop body (start + done
+    // per worker) plus one more, outside the loop, for the nested-`par`
+    // serial-fallback lock -- three total, regardless of worker count.
+    assert_eq!(ir.matches("call i8* @CreateSemaphoreA(").count(), 3, "{}", ir);
+}
+
+/// `emit_par_dispatch`'s fan-out (mailbox population) and join
+/// (`WaitForSingleObject` on every done-semaphore) loops are also genuine
+/// runtime loops over `@par.pool.num_workers`, each with exactly one static
+/// call site -- mirroring `ensure_init`'s own thread-creation loop.
+#[test]
+fn codegen_par_dispatch_fanout_and_join_are_runtime_loops() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("par_fanout_cond"), "{}", ir);
+    assert!(ir.contains("par_fanout_body"), "{}", ir);
+    assert!(ir.contains("par_join_wait_cond"), "{}", ir);
+    assert!(ir.contains("par_join_wait_body"), "{}", ir);
+    // One `ReleaseSemaphore` in the fan-out loop body (releasing a worker's
+    // start semaphore) + one in `par.pool.worker_main`'s own per-job loop
+    // (signaling done, unconditional, textually once regardless of
+    // workload) + one in the nested-`par` serial fallback's `release` block
+    // (releasing the recursive lock) = 3.
+    assert_eq!(ir.matches("call i32 @ReleaseSemaphore(").count(), 3, "{}", ir);
+    // One `WaitForSingleObject` in the join loop body + one in
+    // `par.pool.worker_main`'s own per-job loop + one in the serial
+    // fallback's `acquire` block (taking the recursive lock) = 3.
+    assert_eq!(ir.matches("call i32 @WaitForSingleObject(").count(), 3, "{}", ir);
+}
+
+/// End-to-end: a `par`/`swarm` dispatch over an arena whose live-element
+/// count doesn't divide evenly by the worker count still visits every
+/// element exactly once, across a range of explicit `STAR_WORKERS`
+/// overrides -- including below the pool's own floor (clamped up to 4),
+/// exactly at typical hardware counts, and above the `MAX_WORKERS` ceiling
+/// (clamped down to 64). A single lost or double-counted chunk boundary in
+/// the runtime chunk-math loop (`emit_par_dispatch`'s fan-out loop) would
+/// show up here as a wrong total.
+#[test]
+fn runtime_par_dispatch_correct_across_star_workers_overrides_end_to_end() {
+    let src = "struct Enemy:\n    mut hp: i32\n\narena Enemies: Enemy\n\nfn main():\n    let mut n: i32 = 0\n    while n < 37:\n        spawn Enemies(1)\n        n += 1\n    par e in Enemies:\n        e.hp -= 1\n    let mut total: i32 = 0\n    each e in Enemies:\n        total += e.hp\n    println(f\"{total}\")\n";
+    for workers in ["1", "2", "3", "4", "5", "8", "37", "64", "100"] {
+        let output = compile_and_run_with("par_dispatch_workers_override", src, &[], &[("STAR_WORKERS", workers)]);
+        assert!(output.status.success(), "STAR_WORKERS={}: {:?}", workers, output.status);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            stdout.trim_end(),
+            "0",
+            "STAR_WORKERS={}: all 37 enemies should be decremented exactly once (hp 1 -> 0): {}",
+            workers,
+            stdout
+        );
+    }
+}
+
+/// `STAR_WORKERS=0` (or any non-numeric/garbage value `atoi` parses as `<=
+/// 0`) does not shrink the pool below its `MIN_WORKERS` floor or otherwise
+/// break dispatch -- the clamp in `ensure_init` applies to an explicit
+/// override exactly as it does to a detected hardware count.
+#[test]
+fn runtime_par_dispatch_star_workers_zero_clamps_to_floor_end_to_end() {
+    let src = "struct Enemy:\n    mut hp: i32\n\narena Enemies: Enemy\n\nfn main():\n    let mut n: i32 = 0\n    while n < 10:\n        spawn Enemies(2)\n        n += 1\n    par e in Enemies:\n        e.hp -= 1\n    let mut total: i32 = 0\n    each e in Enemies:\n        total += e.hp\n    println(f\"{total}\")\n";
+    let output = compile_and_run_with("par_dispatch_workers_zero", src, &[], &[("STAR_WORKERS", "0")]);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "10", "10 enemies at hp 2 each, decremented once, should total 10: {}", stdout);
+}
+
+/// A `parallel:` block listing exactly `MAX_PARALLEL_SYSTEMS` (4) systems
+/// still dispatches all of them correctly even when `STAR_WORKERS` requests
+/// fewer live workers than that -- the compile-time "at most 4 systems"
+/// guarantee (`system_analysis::MAX_PARALLEL_SYSTEMS`) only holds if the
+/// pool's runtime floor (`par_pool::MIN_WORKERS`) never actually drops that
+/// low, regardless of what an explicit override asks for.
+#[test]
+fn runtime_parallel_four_systems_still_dispatch_with_star_workers_below_floor_end_to_end() {
+    let mut src = String::new();
+    for c in ['A', 'B', 'C', 'D'] {
+        src.push_str(&format!(
+            "struct E{c}:\n    mut hp: i32\n\narena Ar{c}: E{c}\n\nsystem S{c}(mut Ar{c}):\n    par e in Ar{c}:\n        e.hp -= 1\n\n"
+        ));
+    }
+    src.push_str("fn main():\n");
+    for c in ['A', 'B', 'C', 'D'] {
+        src.push_str(&format!("    spawn Ar{c}(1)\n"));
+    }
+    src.push_str("    parallel:\n");
+    for c in ['A', 'B', 'C', 'D'] {
+        src.push_str(&format!("        S{c}()\n"));
+    }
+    for c in ['A', 'B', 'C', 'D'] {
+        src.push_str(&format!("    each e in Ar{c}:\n        println(f\"{{e.hp}}\")\n"));
+    }
+    let output = compile_and_run_with("parallel_four_systems_workers_1", &src, &[], &[("STAR_WORKERS", "1")]);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.matches("0").count(), 4, "all 4 systems should have run (hp 1 -> 0): {}", stdout);
 }
 
 // --- `system` / `parallel` (cross-system compile-time locks) -------------

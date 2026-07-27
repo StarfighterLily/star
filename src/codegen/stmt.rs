@@ -259,8 +259,14 @@ impl Codegen {
     /// Parameter names aren't needed in a `declare` (LLVM's textual IR only
     /// requires them on `define`), so this is just a type-signature dump --
     /// contrast with `emit_fn` below, which allocas/stores every parameter
-    /// and walks a real body.
+    /// and walks a real body. If the fixed builtin prelude already declared
+    /// this exact name (e.g. a user writing `extern "C" fn atoi(...)`, the
+    /// same real libc function `par_pool.rs` also calls internally), skip
+    /// emitting a second `declare` -- see `prelude_declared`'s doc comment.
     pub(super) fn emit_extern_fn_decl(&mut self, sig: &TypedFnSig) {
+        if self.prelude_declared.contains(&sig.name) {
+            return;
+        }
         let ret_ty = match &sig.ret { Some(t) => self.llvm_ty(t), None => "void".into() };
         let params: Vec<String> = sig.params.iter().map(|p| self.llvm_ty(&p.ty)).collect();
         self.line(&format!("declare {} @{}({})", ret_ty, sig.name, params.join(", ")));

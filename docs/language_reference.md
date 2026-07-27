@@ -724,7 +724,10 @@ fn main():
 **Safety Guarantees:**
 - Compiler proves iterations are disjoint
 - Workers only mutate their loop variable's fields
-- Uses a persistent 4-worker thread pool for efficiency
+- Uses a persistent worker thread pool for efficiency, sized to the
+  machine's real core count (`GetSystemInfo`'s `dwNumberOfProcessors`) at
+  first use, never fewer than 4 threads. Set the `STAR_WORKERS` environment
+  variable to an explicit count to override detection (still floored at 4).
 
 Because a `par`/`swarm` body genuinely runs across worker threads, it may
 never call anything that touches SDL's shared window/renderer state or its
@@ -870,7 +873,8 @@ parallel:
 Before letting this dispatch for real, the compiler checks:
 
 - Every listed name is a declared system, listed at most once.
-- At most 4 systems (the worker pool's fixed size) are listed.
+- At most 4 systems (the worker pool's guaranteed minimum size -- see
+  "Parallel Iteration" above) are listed.
 - No two listed systems declare a conflicting access to the same arena --
   i.e. both declare it, and at least one declares it `mut`. Two systems that
   both declare the *same* arena read-only is fine (concurrent reads never

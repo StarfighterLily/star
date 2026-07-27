@@ -3,7 +3,7 @@
 //! A `system` compiles to exactly the `i32(i8*)` shape
 //! `Codegen::emit_par_stmt`'s per-callsite `par_worker_N` chunk functions
 //! already use (see `arena.rs`) -- the same shape `par_pool`'s mailbox
-//! arrays (`@par.pool.job_fn`, sized `[NUM_WORKERS x i32 (i8*)*]`) expect.
+//! arrays (`@par.pool.job_fn`, sized `[MAX_WORKERS x i32 (i8*)*]`) expect.
 //! That's deliberate: it lets `emit_parallel_stmt` dispatch a `system` to
 //! the persistent worker pool by reusing `par_pool`'s existing globals and
 //! lazy-init function completely unchanged, rather than building a second,
@@ -21,7 +21,7 @@
 //! no new runtime code at all: once that system is running on a pool-worker
 //! thread (dispatched here), `emit_par_dispatch`'s existing
 //! `GetCurrentThreadId`-based reentrancy check already recognizes the
-//! calling thread as one of the `NUM_WORKERS` pool workers and takes its
+//! calling thread as one of the pool's live workers and takes its
 //! existing serial-fallback path -- the same path a `par` nested inside
 //! another `par` already takes today.
 
@@ -85,8 +85,12 @@ impl Codegen {
     /// lazy-init function verbatim -- see this module's doc comment), then
     /// wait for all of them to finish. `systems` is already validated by
     /// `Checker::check_parallel_stmt` to name real, non-conflicting,
-    /// at-most-`NUM_WORKERS`-many systems, so no bounds/reentrancy handling
-    /// is needed here at all.
+    /// at-most-`par_pool::MIN_WORKERS`-many systems -- which the pool always
+    /// has at least that many live workers for, regardless of the actual
+    /// (runtime-detected, possibly higher) worker count, since
+    /// `par_pool::MIN_WORKERS` is a floor, never a ceiling, on how many
+    /// threads `ensure_init` creates -- so no bounds/reentrancy handling is
+    /// needed here at all.
     pub(super) fn emit_parallel_stmt(&mut self, systems: &[String]) {
         self.ensure_par_pool_emitted();
         self.line("  call void @par.pool.ensure_init()");
@@ -97,8 +101,8 @@ impl Codegen {
             self.line(&format!(
                 "  {} = getelementptr inbounds [{} x i32 (i8*)*], [{} x i32 (i8*)*]* @par.pool.job_fn, i32 0, i32 {}",
                 fn_slot,
-                par_pool::NUM_WORKERS,
-                par_pool::NUM_WORKERS,
+                par_pool::MAX_WORKERS,
+                par_pool::MAX_WORKERS,
                 t
             ));
             self.line(&format!("  store i32 (i8*)* @sys.{}, i32 (i8*)** {}", name, fn_slot));
@@ -107,8 +111,8 @@ impl Codegen {
             self.line(&format!(
                 "  {} = getelementptr inbounds [{} x i8*], [{} x i8*]* @par.pool.job_arg, i32 0, i32 {}",
                 arg_slot,
-                par_pool::NUM_WORKERS,
-                par_pool::NUM_WORKERS,
+                par_pool::MAX_WORKERS,
+                par_pool::MAX_WORKERS,
                 t
             ));
             self.line(&format!("  store i8* null, i8** {}", arg_slot));
@@ -117,8 +121,8 @@ impl Codegen {
             self.line(&format!(
                 "  {} = getelementptr inbounds [{} x i8*], [{} x i8*]* @par.pool.start_sem, i32 0, i32 {}",
                 start_slot,
-                par_pool::NUM_WORKERS,
-                par_pool::NUM_WORKERS,
+                par_pool::MAX_WORKERS,
+                par_pool::MAX_WORKERS,
                 t
             ));
             let start_h = self.tmp_name();
@@ -132,8 +136,8 @@ impl Codegen {
             self.line(&format!(
                 "  {} = getelementptr inbounds [{} x i8*], [{} x i8*]* @par.pool.done_sem, i32 0, i32 {}",
                 done_slot,
-                par_pool::NUM_WORKERS,
-                par_pool::NUM_WORKERS,
+                par_pool::MAX_WORKERS,
+                par_pool::MAX_WORKERS,
                 t
             ));
             let done_h = self.tmp_name();

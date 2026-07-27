@@ -272,6 +272,16 @@ pub struct Codegen {
     /// they need different argument-passing conventions for RC'd (`str`)
     /// arguments, see `emit_extern_call`'s own doc comment.
     extern_fns: std::collections::HashSet<String>,
+    /// Names of every C/Win32 symbol the fixed builtin prelude (`emit_builtins`)
+    /// unconditionally `declare`s, populated once right after that call
+    /// returns (see `emit`). A user's own `extern "C" fn` of the same name
+    /// (e.g. `atoi`, a real libc function also needed internally by
+    /// `par_pool.rs`'s worker-count detection) must not emit a second
+    /// `declare` for it -- LLVM's textual IR parser rejects a duplicate
+    /// `declare` of the same global symbol outright ("invalid redefinition
+    /// of function"), even when both spellings are identical. See
+    /// `emit_extern_fn_decl`.
+    prelude_declared: std::collections::HashSet<String>,
     /// Copied from `TypedModule::generic_instantiations` at the start of
     /// `emit` -- see that field's own doc comment. Consulted by
     /// `reflect_type_name` to render a monomorphized generic struct/enum's
@@ -376,6 +386,7 @@ impl Codegen {
             par_pool_emitted: false,
             audio_pool_emitted: false,
             extern_fns: std::collections::HashSet::new(),
+            prelude_declared: std::collections::HashSet::new(),
             generic_instantiations: std::collections::HashMap::new(),
             default_font_global: None,
             current_label: "entry".to_string(),
@@ -394,6 +405,21 @@ impl Codegen {
         self.generic_instantiations = module.generic_instantiations.clone();
 
         self.emit_builtins();
+
+        // Snapshot every symbol name the fixed prelude just unconditionally
+        // `declare`d -- see `prelude_declared`'s own doc comment for why
+        // `emit_extern_fn_decl` needs this. `self.ir` at this exact point
+        // contains only what `emit_builtins` wrote, so a plain per-line scan
+        // is exact with no risk of picking up an unrelated later `declare`.
+        for line in self.ir.lines() {
+            if let Some(rest) = line.strip_prefix("declare ") {
+                if let Some(at) = rest.find('@') {
+                    let after_at = &rest[at + 1..];
+                    let name_end = after_at.find('(').unwrap_or(after_at.len());
+                    self.prelude_declared.insert(after_at[..name_end].to_string());
+                }
+            }
+        }
 
         // Register every extern fn's name before any function body is
         // emitted, so a call to one (from anywhere in the module,
@@ -655,6 +681,12 @@ impl Codegen {
         self.line("declare i8* @CreateSemaphoreA(i8*, i32, i32, i8*)");
         self.line("declare i32 @ReleaseSemaphore(i8*, i32, i32*)");
         self.line("declare i32 @GetCurrentThreadId()");
+        // Runtime worker-count detection (`par_pool.rs`'s `ensure_init`):
+        // `GetSystemInfo` for the real core count, `atoi` to parse an
+        // optional `STAR_WORKERS` override read via the `getenv` already
+        // declared above.
+        self.line("declare void @GetSystemInfo(i8*)");
+        self.line("declare i32 @atoi(i8*)");
         // `math` builtins: lowered to LLVM's target-independent float
         // intrinsics rather than libm symbols, so no extra linker flags are
         // needed to resolve them.

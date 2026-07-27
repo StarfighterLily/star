@@ -13,6 +13,9 @@ declare i8* @memcpy(i8*, i8*, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
 declare i32 @strcmp(i8*, i8*)
+declare i8* @strstr(i8*, i8*)
+declare i32 @strncmp(i8*, i8*, i64)
+@str.empty = private unnamed_addr constant [1 x i8] c"\00"
 declare i8* @fopen(i8*, i8*)
 declare i32 @fclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
@@ -47,12 +50,45 @@ declare i8* @SDL_GetKeyboardState(i32*)
 declare i32 @SDL_GetMouseState(i32*, i32*)
 declare void @SDL_Delay(i32)
 declare i32 @SDL_GetTicks()
+declare i32 @SDL_RenderReadPixels(i8*, i8*, i32, i8*, i32)
+declare i32 @SDL_OpenAudioDevice(i8*, i32, i8*, i8*, i32)
+declare void @SDL_PauseAudioDevice(i32, i32)
+declare void @SDL_MixAudioFormat(i8*, i8*, i16, i32, i32)
+declare i32 @SDL_NumJoysticks()
+declare i8* @SDL_JoystickOpen(i32)
+declare void @SDL_JoystickClose(i8*)
+declare void @SDL_JoystickUpdate()
+declare i8 @SDL_JoystickGetButton(i8*, i32)
+declare i16 @SDL_JoystickGetAxis(i8*, i32)
+declare i32 @SDL_JoystickGetAttached(i8*)
+declare i8* @CreateCompatibleDC(i8*)
+declare i8* @CreateFontA(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i8*)
+declare i8* @SelectObject(i8*, i8*)
+declare i32 @DeleteObject(i8*)
+declare i32 @DeleteDC(i8*)
+declare i32 @SetBkMode(i8*, i32)
+declare i32 @SetTextColor(i8*, i32)
+declare i32 @GetTextExtentPoint32A(i8*, i8*, i32, i8*)
+declare i32 @GetTextMetricsA(i8*, i8*)
+declare i8* @CreateDIBSection(i8*, i8*, i32, i8**, i8*, i32)
+declare i32 @TextOutA(i8*, i32, i32, i8*, i32)
+declare i32 @AddFontResourceExA(i8*, i32, i8*)
+declare i32 @RemoveFontResourceExA(i8*, i32, i8*)
+declare i8* @SDL_CreateTexture(i8*, i32, i32, i32, i32)
+declare i32 @SDL_UpdateTexture(i8*, i8*, i8*, i32)
+declare i32 @SDL_SetTextureBlendMode(i8*, i32)
+declare i32 @SDL_SetTextureColorMod(i8*, i8, i8, i8)
+declare i32 @SDL_SetTextureAlphaMod(i8*, i8)
+declare i32 @SDL_RenderCopy(i8*, i8*, i8*, i8*)
+declare void @SDL_DestroyTexture(i8*)
 declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)
 declare i32 @WaitForSingleObject(i8*, i32)
 declare i32 @CloseHandle(i8*)
 declare i8* @CreateSemaphoreA(i8*, i32, i32, i8*)
 declare i32 @ReleaseSemaphore(i8*, i32, i32*)
 declare i32 @GetCurrentThreadId()
+declare void @GetSystemInfo(i8*)
+declare i32 @atoi(i8*)
 declare float @llvm.sqrt.f32(float)
 declare float @llvm.pow.f32(float, float)
 declare float @llvm.fabs.f32(float)
@@ -60,6 +96,18 @@ declare float @llvm.floor.f32(float)
 declare float @llvm.ceil.f32(float)
 declare float @llvm.minnum.f32(float, float)
 declare float @llvm.maxnum.f32(float, float)
+declare float @llvm.sin.f32(float)
+declare float @llvm.cos.f32(float)
+declare float @llvm.tan.f32(float)
+declare float @llvm.asin.f32(float)
+declare float @llvm.acos.f32(float)
+declare float @llvm.atan.f32(float)
+declare float @llvm.atan2.f32(float, float)
+declare float @llvm.exp.f32(float)
+declare float @llvm.exp2.f32(float)
+declare float @llvm.log.f32(float)
+declare float @llvm.log2.f32(float)
+declare float @llvm.log10.f32(float)
 declare i8 @llvm.fptosi.sat.i8.f32(float)
 declare i8 @llvm.fptosi.sat.i8.f64(double)
 declare i8 @llvm.fptoui.sat.i8.f32(float)
@@ -100,7 +148,7 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 
 %GenRef = type { i32, i64 }
 
-@frame.buf = global [4096 x i8] zeroinitializer
+@frame.buf = global [16777216 x i8] zeroinitializer
 @frame.off = global i64 0
 
 @star.argc = global i32 0
@@ -112,6 +160,8 @@ declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
 @sym.data = global i8** null
 @sym.len = global i64 0
 @sym.cap = global i64 0
+@sym.tbl.ids = global i64* null
+@sym.tbl.cap = global i64 0
 @sym.lock = global i8* null
 
 define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {
@@ -182,6 +232,7 @@ done:
 @arena.Enemies.gen = global [1024 x i64] zeroinitializer
 @arena.Enemies.free = global [1024 x i64] zeroinitializer
 @arena.Enemies.free_top = global i64 0
+@arena.Enemies.warned = global i1 0
 
 %Rect = type { float, float, float, float }
 %Aabb2 = type { <2 x float>, <2 x float> }
@@ -192,16 +243,18 @@ done:
 %Frustum = type { [6 x %Plane] }
 define i32 @main(i32 %.argc, i8** %.argv) {
 entry:
-  %t81 = alloca { i64, i64 }
-  %t94 = alloca { i64, i64 }
-  %t107 = alloca { i64, i64 }
-  %t120 = alloca { i64, i64 }
-  %t146 = alloca { i64, i64 }
-  %t192 = alloca { i64, i64 }
-  %t205 = alloca { i64, i64 }
-  %t218 = alloca { i64, i64 }
-  %t231 = alloca { i64, i64 }
-  %t257 = alloca { i64, i64 }
+  %t64 = alloca i32
+  %t65 = alloca i32
+  %t75 = alloca [64 x { i64, i64 }]
+  %t76 = alloca i32
+  %t96 = alloca i32
+  %t108 = alloca { i64, i64 }
+  %t134 = alloca i32
+  %t135 = alloca i32
+  %t145 = alloca [64 x { i64, i64 }]
+  %t146 = alloca i32
+  %t166 = alloca i32
+  %t178 = alloca { i64, i64 }
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
@@ -209,253 +262,213 @@ entry:
   %t1 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
   store i8* %t1, i8** @rng.lock
   call void @par.pool.ensure_init()
-  %t58 = call i32 @GetCurrentThreadId()
-  %t59 = getelementptr inbounds [4 x i32], [4 x i32]* @par.pool.tid, i32 0, i32 0
-  %t60 = load i32, i32* %t59
-  %t61 = icmp eq i32 %t58, %t60
-  %t62 = select i1 %t61, i32 0, i32 -1
-  %t63 = getelementptr inbounds [4 x i32], [4 x i32]* @par.pool.tid, i32 0, i32 1
-  %t64 = load i32, i32* %t63
-  %t65 = icmp eq i32 %t58, %t64
-  %t66 = select i1 %t65, i32 1, i32 %t62
-  %t67 = getelementptr inbounds [4 x i32], [4 x i32]* @par.pool.tid, i32 0, i32 2
-  %t68 = load i32, i32* %t67
-  %t69 = icmp eq i32 %t58, %t68
-  %t70 = select i1 %t69, i32 2, i32 %t66
-  %t71 = getelementptr inbounds [4 x i32], [4 x i32]* @par.pool.tid, i32 0, i32 3
-  %t72 = load i32, i32* %t71
-  %t73 = icmp eq i32 %t58, %t72
-  %t74 = select i1 %t73, i32 3, i32 %t70
-  %t75 = icmp sge i32 %t74, 0
-  br i1 %t75, label %par_serial_7, label %par_pooled_6
-par_pooled_6:
-  %t76 = load i64, i64* @arena.Enemies.count
-  %t77 = mul i64 %t76, 0
-  %t78 = sdiv i64 %t77, 4
-  %t79 = mul i64 %t76, 1
-  %t80 = sdiv i64 %t79, 4
-  %t82 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t81, i32 0, i32 0
-  store i64 %t78, i64* %t82
-  %t83 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t81, i32 0, i32 1
-  store i64 %t80, i64* %t83
-  %t84 = bitcast { i64, i64 }* %t81 to i8*
-  %t85 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.job_arg, i32 0, i32 0
-  store i8* %t84, i8** %t85
-  %t86 = getelementptr inbounds [4 x i32 (i8*)*], [4 x i32 (i8*)*]* @par.pool.job_fn, i32 0, i32 0
-  store i32 (i8*)* @par_worker_0, i32 (i8*)** %t86
-  %t87 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.start_sem, i32 0, i32 0
-  %t88 = load i8*, i8** %t87
-  %t89 = call i32 @ReleaseSemaphore(i8* %t88, i32 1, i32* null)
-  %t90 = mul i64 %t76, 1
-  %t91 = sdiv i64 %t90, 4
-  %t92 = mul i64 %t76, 2
-  %t93 = sdiv i64 %t92, 4
-  %t95 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t94, i32 0, i32 0
-  store i64 %t91, i64* %t95
-  %t96 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t94, i32 0, i32 1
-  store i64 %t93, i64* %t96
-  %t97 = bitcast { i64, i64 }* %t94 to i8*
-  %t98 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.job_arg, i32 0, i32 1
-  store i8* %t97, i8** %t98
-  %t99 = getelementptr inbounds [4 x i32 (i8*)*], [4 x i32 (i8*)*]* @par.pool.job_fn, i32 0, i32 1
-  store i32 (i8*)* @par_worker_0, i32 (i8*)** %t99
-  %t100 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.start_sem, i32 0, i32 1
-  %t101 = load i8*, i8** %t100
-  %t102 = call i32 @ReleaseSemaphore(i8* %t101, i32 1, i32* null)
-  %t103 = mul i64 %t76, 2
-  %t104 = sdiv i64 %t103, 4
-  %t105 = mul i64 %t76, 3
-  %t106 = sdiv i64 %t105, 4
-  %t108 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t107, i32 0, i32 0
-  store i64 %t104, i64* %t108
-  %t109 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t107, i32 0, i32 1
-  store i64 %t106, i64* %t109
-  %t110 = bitcast { i64, i64 }* %t107 to i8*
-  %t111 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.job_arg, i32 0, i32 2
-  store i8* %t110, i8** %t111
-  %t112 = getelementptr inbounds [4 x i32 (i8*)*], [4 x i32 (i8*)*]* @par.pool.job_fn, i32 0, i32 2
-  store i32 (i8*)* @par_worker_0, i32 (i8*)** %t112
-  %t113 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.start_sem, i32 0, i32 2
-  %t114 = load i8*, i8** %t113
-  %t115 = call i32 @ReleaseSemaphore(i8* %t114, i32 1, i32* null)
-  %t116 = mul i64 %t76, 3
-  %t117 = sdiv i64 %t116, 4
-  %t118 = mul i64 %t76, 4
-  %t119 = sdiv i64 %t118, 4
-  %t121 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t120, i32 0, i32 0
-  store i64 %t117, i64* %t121
-  %t122 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t120, i32 0, i32 1
-  store i64 %t119, i64* %t122
-  %t123 = bitcast { i64, i64 }* %t120 to i8*
-  %t124 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.job_arg, i32 0, i32 3
-  store i8* %t123, i8** %t124
-  %t125 = getelementptr inbounds [4 x i32 (i8*)*], [4 x i32 (i8*)*]* @par.pool.job_fn, i32 0, i32 3
-  store i32 (i8*)* @par_worker_0, i32 (i8*)** %t125
-  %t126 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.start_sem, i32 0, i32 3
-  %t127 = load i8*, i8** %t126
-  %t128 = call i32 @ReleaseSemaphore(i8* %t127, i32 1, i32* null)
-  %t129 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.done_sem, i32 0, i32 0
-  %t130 = load i8*, i8** %t129
-  %t131 = call i32 @WaitForSingleObject(i8* %t130, i32 -1)
-  %t132 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.done_sem, i32 0, i32 1
-  %t133 = load i8*, i8** %t132
-  %t134 = call i32 @WaitForSingleObject(i8* %t133, i32 -1)
-  %t135 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.done_sem, i32 0, i32 2
-  %t136 = load i8*, i8** %t135
-  %t137 = call i32 @WaitForSingleObject(i8* %t136, i32 -1)
-  %t138 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.done_sem, i32 0, i32 3
-  %t139 = load i8*, i8** %t138
-  %t140 = call i32 @WaitForSingleObject(i8* %t139, i32 -1)
-  br label %par_join_11
-par_serial_7:
-  %t141 = load i32, i32* @par.pool.serial_owner
-  %t142 = icmp eq i32 %t141, %t74
-  br i1 %t142, label %par_run_9, label %par_acquire_8
-par_acquire_8:
-  %t143 = load i8*, i8** @par.pool.serial_lock
-  %t144 = call i32 @WaitForSingleObject(i8* %t143, i32 -1)
-  store i32 %t74, i32* @par.pool.serial_owner
-  br label %par_run_9
-par_run_9:
-  %t145 = load i64, i64* @arena.Enemies.count
-  %t147 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t146, i32 0, i32 0
-  store i64 0, i64* %t147
-  %t148 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t146, i32 0, i32 1
-  store i64 %t145, i64* %t148
-  %t149 = bitcast { i64, i64 }* %t146 to i8*
-  %t150 = call i32 @par_worker_0(i8* %t149)
-  br i1 %t142, label %par_join_11, label %par_release_10
-par_release_10:
+  %t61 = load i32, i32* @par.pool.num_workers
+  %t62 = sext i32 %t61 to i64
+  %t63 = call i32 @GetCurrentThreadId()
+  store i32 -1, i32* %t64
+  store i32 0, i32* %t65
+  br label %par_reentry_cond_6
+par_reentry_cond_6:
+  %t66 = load i32, i32* %t65
+  %t67 = icmp slt i32 %t66, %t61
+  br i1 %t67, label %par_reentry_body_7, label %par_reentry_end_10
+par_reentry_body_7:
+  %t68 = getelementptr inbounds [64 x i32], [64 x i32]* @par.pool.tid, i32 0, i32 %t66
+  %t69 = load i32, i32* %t68
+  %t70 = icmp eq i32 %t63, %t69
+  br i1 %t70, label %par_reentry_match_8, label %par_reentry_step_9
+par_reentry_match_8:
+  store i32 %t66, i32* %t64
+  br label %par_reentry_step_9
+par_reentry_step_9:
+  %t71 = add i32 %t66, 1
+  store i32 %t71, i32* %t65
+  br label %par_reentry_cond_6
+par_reentry_end_10:
+  %t72 = load i32, i32* %t64
+  %t73 = icmp sge i32 %t72, 0
+  br i1 %t73, label %par_serial_12, label %par_pooled_11
+par_pooled_11:
+  %t74 = load i64, i64* @arena.Enemies.count
+  store i32 0, i32* %t76
+  br label %par_fanout_cond_17
+par_fanout_cond_17:
+  %t77 = load i32, i32* %t76
+  %t78 = icmp slt i32 %t77, %t61
+  br i1 %t78, label %par_fanout_body_18, label %par_fanout_end_20
+par_fanout_body_18:
+  %t79 = sext i32 %t77 to i64
+  %t80 = mul i64 %t74, %t79
+  %t81 = sdiv i64 %t80, %t62
+  %t82 = add i32 %t77, 1
+  %t83 = sext i32 %t82 to i64
+  %t84 = mul i64 %t74, %t83
+  %t85 = sdiv i64 %t84, %t62
+  %t86 = getelementptr inbounds [64 x { i64, i64 }], [64 x { i64, i64 }]* %t75, i32 0, i32 %t77
+  %t87 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t86, i32 0, i32 0
+  store i64 %t81, i64* %t87
+  %t88 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t86, i32 0, i32 1
+  store i64 %t85, i64* %t88
+  %t89 = bitcast { i64, i64 }* %t86 to i8*
+  %t90 = getelementptr inbounds [64 x i8*], [64 x i8*]* @par.pool.job_arg, i32 0, i32 %t77
+  store i8* %t89, i8** %t90
+  %t91 = getelementptr inbounds [64 x i32 (i8*)*], [64 x i32 (i8*)*]* @par.pool.job_fn, i32 0, i32 %t77
+  store i32 (i8*)* @par_worker_0, i32 (i8*)** %t91
+  %t92 = getelementptr inbounds [64 x i8*], [64 x i8*]* @par.pool.start_sem, i32 0, i32 %t77
+  %t93 = load i8*, i8** %t92
+  %t94 = call i32 @ReleaseSemaphore(i8* %t93, i32 1, i32* null)
+  br label %par_fanout_step_19
+par_fanout_step_19:
+  %t95 = add i32 %t77, 1
+  store i32 %t95, i32* %t76
+  br label %par_fanout_cond_17
+par_fanout_end_20:
+  store i32 0, i32* %t96
+  br label %par_join_wait_cond_21
+par_join_wait_cond_21:
+  %t97 = load i32, i32* %t96
+  %t98 = icmp slt i32 %t97, %t61
+  br i1 %t98, label %par_join_wait_body_22, label %par_join_wait_end_24
+par_join_wait_body_22:
+  %t99 = getelementptr inbounds [64 x i8*], [64 x i8*]* @par.pool.done_sem, i32 0, i32 %t97
+  %t100 = load i8*, i8** %t99
+  %t101 = call i32 @WaitForSingleObject(i8* %t100, i32 -1)
+  br label %par_join_wait_step_23
+par_join_wait_step_23:
+  %t102 = add i32 %t97, 1
+  store i32 %t102, i32* %t96
+  br label %par_join_wait_cond_21
+par_join_wait_end_24:
+  br label %par_join_16
+par_serial_12:
+  %t103 = load i32, i32* @par.pool.serial_owner
+  %t104 = icmp eq i32 %t103, %t72
+  br i1 %t104, label %par_run_14, label %par_acquire_13
+par_acquire_13:
+  %t105 = load i8*, i8** @par.pool.serial_lock
+  %t106 = call i32 @WaitForSingleObject(i8* %t105, i32 -1)
+  store i32 %t72, i32* @par.pool.serial_owner
+  br label %par_run_14
+par_run_14:
+  %t107 = load i64, i64* @arena.Enemies.count
+  %t109 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t108, i32 0, i32 0
+  store i64 0, i64* %t109
+  %t110 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t108, i32 0, i32 1
+  store i64 %t107, i64* %t110
+  %t111 = bitcast { i64, i64 }* %t108 to i8*
+  %t112 = call i32 @par_worker_0(i8* %t111)
+  br i1 %t104, label %par_join_16, label %par_release_15
+par_release_15:
   store i32 -1, i32* @par.pool.serial_owner
-  %t151 = load i8*, i8** @par.pool.serial_lock
-  %t152 = call i32 @ReleaseSemaphore(i8* %t151, i32 1, i32* null)
-  br label %par_join_11
-par_join_11:
+  %t113 = load i8*, i8** @par.pool.serial_lock
+  %t114 = call i32 @ReleaseSemaphore(i8* %t113, i32 1, i32* null)
+  br label %par_join_16
+par_join_16:
   call void @par.pool.ensure_init()
-  %t169 = call i32 @GetCurrentThreadId()
-  %t170 = getelementptr inbounds [4 x i32], [4 x i32]* @par.pool.tid, i32 0, i32 0
-  %t171 = load i32, i32* %t170
-  %t172 = icmp eq i32 %t169, %t171
-  %t173 = select i1 %t172, i32 0, i32 -1
-  %t174 = getelementptr inbounds [4 x i32], [4 x i32]* @par.pool.tid, i32 0, i32 1
-  %t175 = load i32, i32* %t174
-  %t176 = icmp eq i32 %t169, %t175
-  %t177 = select i1 %t176, i32 1, i32 %t173
-  %t178 = getelementptr inbounds [4 x i32], [4 x i32]* @par.pool.tid, i32 0, i32 2
-  %t179 = load i32, i32* %t178
-  %t180 = icmp eq i32 %t169, %t179
-  %t181 = select i1 %t180, i32 2, i32 %t177
-  %t182 = getelementptr inbounds [4 x i32], [4 x i32]* @par.pool.tid, i32 0, i32 3
-  %t183 = load i32, i32* %t182
-  %t184 = icmp eq i32 %t169, %t183
-  %t185 = select i1 %t184, i32 3, i32 %t181
-  %t186 = icmp sge i32 %t185, 0
-  br i1 %t186, label %par_serial_19, label %par_pooled_18
-par_pooled_18:
-  %t187 = load i64, i64* @arena.Enemies.count
-  %t188 = mul i64 %t187, 0
-  %t189 = sdiv i64 %t188, 4
-  %t190 = mul i64 %t187, 1
-  %t191 = sdiv i64 %t190, 4
-  %t193 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t192, i32 0, i32 0
-  store i64 %t189, i64* %t193
-  %t194 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t192, i32 0, i32 1
-  store i64 %t191, i64* %t194
-  %t195 = bitcast { i64, i64 }* %t192 to i8*
-  %t196 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.job_arg, i32 0, i32 0
-  store i8* %t195, i8** %t196
-  %t197 = getelementptr inbounds [4 x i32 (i8*)*], [4 x i32 (i8*)*]* @par.pool.job_fn, i32 0, i32 0
-  store i32 (i8*)* @par_worker_12, i32 (i8*)** %t197
-  %t198 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.start_sem, i32 0, i32 0
-  %t199 = load i8*, i8** %t198
-  %t200 = call i32 @ReleaseSemaphore(i8* %t199, i32 1, i32* null)
-  %t201 = mul i64 %t187, 1
-  %t202 = sdiv i64 %t201, 4
-  %t203 = mul i64 %t187, 2
-  %t204 = sdiv i64 %t203, 4
-  %t206 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t205, i32 0, i32 0
-  store i64 %t202, i64* %t206
-  %t207 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t205, i32 0, i32 1
-  store i64 %t204, i64* %t207
-  %t208 = bitcast { i64, i64 }* %t205 to i8*
-  %t209 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.job_arg, i32 0, i32 1
-  store i8* %t208, i8** %t209
-  %t210 = getelementptr inbounds [4 x i32 (i8*)*], [4 x i32 (i8*)*]* @par.pool.job_fn, i32 0, i32 1
-  store i32 (i8*)* @par_worker_12, i32 (i8*)** %t210
-  %t211 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.start_sem, i32 0, i32 1
-  %t212 = load i8*, i8** %t211
-  %t213 = call i32 @ReleaseSemaphore(i8* %t212, i32 1, i32* null)
-  %t214 = mul i64 %t187, 2
-  %t215 = sdiv i64 %t214, 4
-  %t216 = mul i64 %t187, 3
-  %t217 = sdiv i64 %t216, 4
-  %t219 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t218, i32 0, i32 0
-  store i64 %t215, i64* %t219
-  %t220 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t218, i32 0, i32 1
-  store i64 %t217, i64* %t220
-  %t221 = bitcast { i64, i64 }* %t218 to i8*
-  %t222 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.job_arg, i32 0, i32 2
-  store i8* %t221, i8** %t222
-  %t223 = getelementptr inbounds [4 x i32 (i8*)*], [4 x i32 (i8*)*]* @par.pool.job_fn, i32 0, i32 2
-  store i32 (i8*)* @par_worker_12, i32 (i8*)** %t223
-  %t224 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.start_sem, i32 0, i32 2
-  %t225 = load i8*, i8** %t224
-  %t226 = call i32 @ReleaseSemaphore(i8* %t225, i32 1, i32* null)
-  %t227 = mul i64 %t187, 3
-  %t228 = sdiv i64 %t227, 4
-  %t229 = mul i64 %t187, 4
-  %t230 = sdiv i64 %t229, 4
-  %t232 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t231, i32 0, i32 0
-  store i64 %t228, i64* %t232
-  %t233 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t231, i32 0, i32 1
-  store i64 %t230, i64* %t233
-  %t234 = bitcast { i64, i64 }* %t231 to i8*
-  %t235 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.job_arg, i32 0, i32 3
-  store i8* %t234, i8** %t235
-  %t236 = getelementptr inbounds [4 x i32 (i8*)*], [4 x i32 (i8*)*]* @par.pool.job_fn, i32 0, i32 3
-  store i32 (i8*)* @par_worker_12, i32 (i8*)** %t236
-  %t237 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.start_sem, i32 0, i32 3
-  %t238 = load i8*, i8** %t237
-  %t239 = call i32 @ReleaseSemaphore(i8* %t238, i32 1, i32* null)
-  %t240 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.done_sem, i32 0, i32 0
-  %t241 = load i8*, i8** %t240
-  %t242 = call i32 @WaitForSingleObject(i8* %t241, i32 -1)
-  %t243 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.done_sem, i32 0, i32 1
-  %t244 = load i8*, i8** %t243
-  %t245 = call i32 @WaitForSingleObject(i8* %t244, i32 -1)
-  %t246 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.done_sem, i32 0, i32 2
-  %t247 = load i8*, i8** %t246
-  %t248 = call i32 @WaitForSingleObject(i8* %t247, i32 -1)
-  %t249 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.done_sem, i32 0, i32 3
-  %t250 = load i8*, i8** %t249
-  %t251 = call i32 @WaitForSingleObject(i8* %t250, i32 -1)
-  br label %par_join_23
-par_serial_19:
-  %t252 = load i32, i32* @par.pool.serial_owner
-  %t253 = icmp eq i32 %t252, %t185
-  br i1 %t253, label %par_run_21, label %par_acquire_20
-par_acquire_20:
-  %t254 = load i8*, i8** @par.pool.serial_lock
-  %t255 = call i32 @WaitForSingleObject(i8* %t254, i32 -1)
-  store i32 %t185, i32* @par.pool.serial_owner
-  br label %par_run_21
-par_run_21:
-  %t256 = load i64, i64* @arena.Enemies.count
-  %t258 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t257, i32 0, i32 0
-  store i64 0, i64* %t258
-  %t259 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t257, i32 0, i32 1
-  store i64 %t256, i64* %t259
-  %t260 = bitcast { i64, i64 }* %t257 to i8*
-  %t261 = call i32 @par_worker_12(i8* %t260)
-  br i1 %t253, label %par_join_23, label %par_release_22
-par_release_22:
+  %t131 = load i32, i32* @par.pool.num_workers
+  %t132 = sext i32 %t131 to i64
+  %t133 = call i32 @GetCurrentThreadId()
+  store i32 -1, i32* %t134
+  store i32 0, i32* %t135
+  br label %par_reentry_cond_31
+par_reentry_cond_31:
+  %t136 = load i32, i32* %t135
+  %t137 = icmp slt i32 %t136, %t131
+  br i1 %t137, label %par_reentry_body_32, label %par_reentry_end_35
+par_reentry_body_32:
+  %t138 = getelementptr inbounds [64 x i32], [64 x i32]* @par.pool.tid, i32 0, i32 %t136
+  %t139 = load i32, i32* %t138
+  %t140 = icmp eq i32 %t133, %t139
+  br i1 %t140, label %par_reentry_match_33, label %par_reentry_step_34
+par_reentry_match_33:
+  store i32 %t136, i32* %t134
+  br label %par_reentry_step_34
+par_reentry_step_34:
+  %t141 = add i32 %t136, 1
+  store i32 %t141, i32* %t135
+  br label %par_reentry_cond_31
+par_reentry_end_35:
+  %t142 = load i32, i32* %t134
+  %t143 = icmp sge i32 %t142, 0
+  br i1 %t143, label %par_serial_37, label %par_pooled_36
+par_pooled_36:
+  %t144 = load i64, i64* @arena.Enemies.count
+  store i32 0, i32* %t146
+  br label %par_fanout_cond_42
+par_fanout_cond_42:
+  %t147 = load i32, i32* %t146
+  %t148 = icmp slt i32 %t147, %t131
+  br i1 %t148, label %par_fanout_body_43, label %par_fanout_end_45
+par_fanout_body_43:
+  %t149 = sext i32 %t147 to i64
+  %t150 = mul i64 %t144, %t149
+  %t151 = sdiv i64 %t150, %t132
+  %t152 = add i32 %t147, 1
+  %t153 = sext i32 %t152 to i64
+  %t154 = mul i64 %t144, %t153
+  %t155 = sdiv i64 %t154, %t132
+  %t156 = getelementptr inbounds [64 x { i64, i64 }], [64 x { i64, i64 }]* %t145, i32 0, i32 %t147
+  %t157 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t156, i32 0, i32 0
+  store i64 %t151, i64* %t157
+  %t158 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t156, i32 0, i32 1
+  store i64 %t155, i64* %t158
+  %t159 = bitcast { i64, i64 }* %t156 to i8*
+  %t160 = getelementptr inbounds [64 x i8*], [64 x i8*]* @par.pool.job_arg, i32 0, i32 %t147
+  store i8* %t159, i8** %t160
+  %t161 = getelementptr inbounds [64 x i32 (i8*)*], [64 x i32 (i8*)*]* @par.pool.job_fn, i32 0, i32 %t147
+  store i32 (i8*)* @par_worker_25, i32 (i8*)** %t161
+  %t162 = getelementptr inbounds [64 x i8*], [64 x i8*]* @par.pool.start_sem, i32 0, i32 %t147
+  %t163 = load i8*, i8** %t162
+  %t164 = call i32 @ReleaseSemaphore(i8* %t163, i32 1, i32* null)
+  br label %par_fanout_step_44
+par_fanout_step_44:
+  %t165 = add i32 %t147, 1
+  store i32 %t165, i32* %t146
+  br label %par_fanout_cond_42
+par_fanout_end_45:
+  store i32 0, i32* %t166
+  br label %par_join_wait_cond_46
+par_join_wait_cond_46:
+  %t167 = load i32, i32* %t166
+  %t168 = icmp slt i32 %t167, %t131
+  br i1 %t168, label %par_join_wait_body_47, label %par_join_wait_end_49
+par_join_wait_body_47:
+  %t169 = getelementptr inbounds [64 x i8*], [64 x i8*]* @par.pool.done_sem, i32 0, i32 %t167
+  %t170 = load i8*, i8** %t169
+  %t171 = call i32 @WaitForSingleObject(i8* %t170, i32 -1)
+  br label %par_join_wait_step_48
+par_join_wait_step_48:
+  %t172 = add i32 %t167, 1
+  store i32 %t172, i32* %t166
+  br label %par_join_wait_cond_46
+par_join_wait_end_49:
+  br label %par_join_41
+par_serial_37:
+  %t173 = load i32, i32* @par.pool.serial_owner
+  %t174 = icmp eq i32 %t173, %t142
+  br i1 %t174, label %par_run_39, label %par_acquire_38
+par_acquire_38:
+  %t175 = load i8*, i8** @par.pool.serial_lock
+  %t176 = call i32 @WaitForSingleObject(i8* %t175, i32 -1)
+  store i32 %t142, i32* @par.pool.serial_owner
+  br label %par_run_39
+par_run_39:
+  %t177 = load i64, i64* @arena.Enemies.count
+  %t179 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t178, i32 0, i32 0
+  store i64 0, i64* %t179
+  %t180 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t178, i32 0, i32 1
+  store i64 %t177, i64* %t180
+  %t181 = bitcast { i64, i64 }* %t178 to i8*
+  %t182 = call i32 @par_worker_25(i8* %t181)
+  br i1 %t174, label %par_join_41, label %par_release_40
+par_release_40:
   store i32 -1, i32* @par.pool.serial_owner
-  %t262 = load i8*, i8** @par.pool.serial_lock
-  %t263 = call i32 @ReleaseSemaphore(i8* %t262, i32 1, i32* null)
-  br label %par_join_23
-par_join_23:
-  %t264 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.0, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t264)
+  %t183 = load i8*, i8** @par.pool.serial_lock
+  %t184 = call i32 @ReleaseSemaphore(i8* %t183, i32 1, i32* null)
+  br label %par_join_41
+par_join_41:
+  %t185 = getelementptr inbounds [12 x i8], [12 x i8]* @.str.0, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t185)
   ret i32 0
 }
 
@@ -499,12 +512,16 @@ par_end_5:
 }
 
 
-@par.pool.job_fn = global [4 x i32 (i8*)*] zeroinitializer
-@par.pool.job_arg = global [4 x i8*] zeroinitializer
-@par.pool.start_sem = global [4 x i8*] zeroinitializer
-@par.pool.done_sem = global [4 x i8*] zeroinitializer
-@par.pool.tid = global [4 x i32] zeroinitializer
+@par.pool.job_fn = global [64 x i32 (i8*)*] zeroinitializer
+@par.pool.job_arg = global [64 x i8*] zeroinitializer
+@par.pool.start_sem = global [64 x i8*] zeroinitializer
+@par.pool.done_sem = global [64 x i8*] zeroinitializer
+@par.pool.tid = global [64 x i32] zeroinitializer
 @par.pool.inited = global i1 false
+@par.pool.num_workers = global i32 0
+@par.pool.sysinfo_buf = global [48 x i8] zeroinitializer
+@par.pool.init_i = global i32 0
+@par.pool.env_name = private unnamed_addr constant [13 x i8] c"STAR_WORKERS\00"
 @par.pool.serial_lock = global i8* null
 @par.pool.serial_owner = global i32 -1
 
@@ -513,19 +530,19 @@ entry:
   %t21 = ptrtoint i8* %idx_arg to i64
   %t22 = trunc i64 %t21 to i32
   %t23 = call i32 @GetCurrentThreadId()
-  %t24 = getelementptr inbounds [4 x i32], [4 x i32]* @par.pool.tid, i32 0, i32 %t22
+  %t24 = getelementptr inbounds [64 x i32], [64 x i32]* @par.pool.tid, i32 0, i32 %t22
   store i32 %t23, i32* %t24
   br label %loop
 loop:
-  %t25 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.start_sem, i32 0, i32 %t22
+  %t25 = getelementptr inbounds [64 x i8*], [64 x i8*]* @par.pool.start_sem, i32 0, i32 %t22
   %t26 = load i8*, i8** %t25
   %t27 = call i32 @WaitForSingleObject(i8* %t26, i32 -1)
-  %t28 = getelementptr inbounds [4 x i32 (i8*)*], [4 x i32 (i8*)*]* @par.pool.job_fn, i32 0, i32 %t22
+  %t28 = getelementptr inbounds [64 x i32 (i8*)*], [64 x i32 (i8*)*]* @par.pool.job_fn, i32 0, i32 %t22
   %t29 = load i32 (i8*)*, i32 (i8*)** %t28
-  %t30 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.job_arg, i32 0, i32 %t22
+  %t30 = getelementptr inbounds [64 x i8*], [64 x i8*]* @par.pool.job_arg, i32 0, i32 %t22
   %t31 = load i8*, i8** %t30
   %t32 = call i32 %t29(i8* %t31)
-  %t33 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.done_sem, i32 0, i32 %t22
+  %t33 = getelementptr inbounds [64 x i8*], [64 x i8*]* @par.pool.done_sem, i32 0, i32 %t22
   %t34 = load i8*, i8** %t33
   %t35 = call i32 @ReleaseSemaphore(i8* %t34, i32 1, i32* null)
   br label %loop
@@ -536,36 +553,49 @@ entry:
   %t36 = load i1, i1* @par.pool.inited
   br i1 %t36, label %par_pool_already, label %par_pool_init
 par_pool_init:
-  %t37 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
-  store i8* %t37, i8** @par.pool.serial_lock
-  %t38 = call i8* @CreateSemaphoreA(i8* null, i32 0, i32 1, i8* null)
-  %t39 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.start_sem, i32 0, i32 0
-  store i8* %t38, i8** %t39
-  %t40 = call i8* @CreateSemaphoreA(i8* null, i32 0, i32 1, i8* null)
-  %t41 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.done_sem, i32 0, i32 0
-  store i8* %t40, i8** %t41
-  %t42 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par.pool.worker_main to i8*), i8* inttoptr (i64 0 to i8*), i32 0, i32* null)
-  %t43 = call i8* @CreateSemaphoreA(i8* null, i32 0, i32 1, i8* null)
-  %t44 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.start_sem, i32 0, i32 1
-  store i8* %t43, i8** %t44
-  %t45 = call i8* @CreateSemaphoreA(i8* null, i32 0, i32 1, i8* null)
-  %t46 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.done_sem, i32 0, i32 1
-  store i8* %t45, i8** %t46
-  %t47 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par.pool.worker_main to i8*), i8* inttoptr (i64 1 to i8*), i32 0, i32* null)
-  %t48 = call i8* @CreateSemaphoreA(i8* null, i32 0, i32 1, i8* null)
-  %t49 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.start_sem, i32 0, i32 2
-  store i8* %t48, i8** %t49
-  %t50 = call i8* @CreateSemaphoreA(i8* null, i32 0, i32 1, i8* null)
-  %t51 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.done_sem, i32 0, i32 2
-  store i8* %t50, i8** %t51
-  %t52 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par.pool.worker_main to i8*), i8* inttoptr (i64 2 to i8*), i32 0, i32* null)
+  %t37 = getelementptr inbounds [13 x i8], [13 x i8]* @par.pool.env_name, i64 0, i64 0
+  %t38 = call i8* @getenv(i8* %t37)
+  %t39 = icmp eq i8* %t38, null
+  br i1 %t39, label %par_pool_detect, label %par_pool_override
+par_pool_override:
+  %t40 = call i32 @atoi(i8* %t38)
+  br label %par_pool_clamp
+par_pool_detect:
+  %t41 = getelementptr inbounds [48 x i8], [48 x i8]* @par.pool.sysinfo_buf, i64 0, i64 0
+  call void @GetSystemInfo(i8* %t41)
+  %t42 = getelementptr inbounds [48 x i8], [48 x i8]* @par.pool.sysinfo_buf, i64 0, i64 32
+  %t43 = bitcast i8* %t42 to i32*
+  %t44 = load i32, i32* %t43
+  br label %par_pool_clamp
+par_pool_clamp:
+  %t45 = phi i32 [ %t40, %par_pool_override ], [ %t44, %par_pool_detect ]
+  %t46 = icmp slt i32 %t45, 4
+  %t47 = select i1 %t46, i32 4, i32 %t45
+  %t48 = icmp sgt i32 %t47, 64
+  %t49 = select i1 %t48, i32 64, i32 %t47
+  store i32 %t49, i32* @par.pool.num_workers
+  %t50 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
+  store i8* %t50, i8** @par.pool.serial_lock
+  store i32 0, i32* @par.pool.init_i
+  br label %par_pool_thread_cond
+par_pool_thread_cond:
+  %t51 = load i32, i32* @par.pool.init_i
+  %t52 = icmp slt i32 %t51, %t49
+  br i1 %t52, label %par_pool_thread_body, label %par_pool_init_done
+par_pool_thread_body:
   %t53 = call i8* @CreateSemaphoreA(i8* null, i32 0, i32 1, i8* null)
-  %t54 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.start_sem, i32 0, i32 3
+  %t54 = getelementptr inbounds [64 x i8*], [64 x i8*]* @par.pool.start_sem, i32 0, i32 %t51
   store i8* %t53, i8** %t54
   %t55 = call i8* @CreateSemaphoreA(i8* null, i32 0, i32 1, i8* null)
-  %t56 = getelementptr inbounds [4 x i8*], [4 x i8*]* @par.pool.done_sem, i32 0, i32 3
+  %t56 = getelementptr inbounds [64 x i8*], [64 x i8*]* @par.pool.done_sem, i32 0, i32 %t51
   store i8* %t55, i8** %t56
-  %t57 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par.pool.worker_main to i8*), i8* inttoptr (i64 3 to i8*), i32 0, i32* null)
+  %t57 = sext i32 %t51 to i64
+  %t58 = inttoptr i64 %t57 to i8*
+  %t59 = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par.pool.worker_main to i8*), i8* %t58, i32 0, i32* null)
+  %t60 = add i32 %t51, 1
+  store i32 %t60, i32* @par.pool.init_i
+  br label %par_pool_thread_cond
+par_pool_init_done:
   store i1 true, i1* @par.pool.inited
   br label %par_pool_already
 par_pool_already:
@@ -573,37 +603,37 @@ par_pool_already:
 }
 
 
-define i32 @par_worker_12(i8* %argp) {
+define i32 @par_worker_25(i8* %argp) {
 entry:
-  %t159 = alloca i64
-  %t153 = bitcast i8* %argp to { i64, i64 }*
-  %t154 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t153, i32 0, i32 0
-  %t155 = load i64, i64* %t154
-  %t156 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t153, i32 0, i32 1
-  %t157 = load i64, i64* %t156
-  %t158 = load %Enemy*, %Enemy** @arena.Enemies.data
-  store i64 %t155, i64* %t159
-  br label %par_cond_13
-par_cond_13:
-  %t160 = load i64, i64* %t159
-  %t161 = icmp slt i64 %t160, %t157
-  br i1 %t161, label %par_body_14, label %par_end_17
-par_body_14:
-  %t162 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.Enemies.gen, i64 0, i64 %t160
-  %t163 = load i64, i64* %t162
-  %t164 = and i64 %t163, 1
-  %t165 = icmp eq i64 %t164, 1
-  br i1 %t165, label %par_live_15, label %par_incr_16
-par_live_15:
-  %t166 = getelementptr inbounds %Enemy, %Enemy* %t158, i64 %t160
-  %t167 = getelementptr inbounds %Enemy, %Enemy* %t166, i32 0, i32 0
-  store i32 0, i32* %t167
-  br label %par_incr_16
-par_incr_16:
-  %t168 = add i64 %t160, 1
-  store i64 %t168, i64* %t159
-  br label %par_cond_13
-par_end_17:
+  %t121 = alloca i64
+  %t115 = bitcast i8* %argp to { i64, i64 }*
+  %t116 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t115, i32 0, i32 0
+  %t117 = load i64, i64* %t116
+  %t118 = getelementptr inbounds { i64, i64 }, { i64, i64 }* %t115, i32 0, i32 1
+  %t119 = load i64, i64* %t118
+  %t120 = load %Enemy*, %Enemy** @arena.Enemies.data
+  store i64 %t117, i64* %t121
+  br label %par_cond_26
+par_cond_26:
+  %t122 = load i64, i64* %t121
+  %t123 = icmp slt i64 %t122, %t119
+  br i1 %t123, label %par_body_27, label %par_end_30
+par_body_27:
+  %t124 = getelementptr inbounds [1024 x i64], [1024 x i64]* @arena.Enemies.gen, i64 0, i64 %t122
+  %t125 = load i64, i64* %t124
+  %t126 = and i64 %t125, 1
+  %t127 = icmp eq i64 %t126, 1
+  br i1 %t127, label %par_live_28, label %par_incr_29
+par_live_28:
+  %t128 = getelementptr inbounds %Enemy, %Enemy* %t120, i64 %t122
+  %t129 = getelementptr inbounds %Enemy, %Enemy* %t128, i32 0, i32 0
+  store i32 0, i32* %t129
+  br label %par_incr_29
+par_incr_29:
+  %t130 = add i64 %t122, 1
+  store i64 %t130, i64* %t121
+  br label %par_cond_26
+par_end_30:
   ret i32 0
 }
 
