@@ -316,3 +316,164 @@ fn reflect_metadata_names_time_types_distinctly_from_i64() {
     assert!(ir.contains("d:8:Duration:export"), "{}", ir);
     assert!(ir.contains("i:16:Instant:export"), "{}", ir);
 }
+
+// ===== todo.md P2 #7: binop-dispatch unification (arithmetic-bearing types)
+//
+// `Wrapping<T>`/`Fixed<Bits,Frac>` are folded into one shared exact-type-
+// match branch in `Checker::infer_binop_ty` (see that function's own doc
+// comment for the full reasoning); `Tick`/`Duration`/`Instant` deliberately
+// stay in their own dedicated `infer_time_binop_ty` table because their
+// legal pairings are asymmetric per operator (`Tick + i64 -> Tick` but
+// `Tick + Tick` is illegal; `Instant - Instant -> Duration` but `Instant +
+// Instant` is illegal). The tests above already cover the "happy path" for
+// both families end to end; the tests below close the remaining gaps this
+// dispatch decision specifically hinges on: comparisons (not just
+// arithmetic) sharing the same-type-match rule, the two families correctly
+// rejecting each other despite being adjacent in the same source branch, and
+// asymmetric pairings/operators the existing tests didn't already exercise
+// for all three time types. ========================================
+
+/// `Wrapping<T>` supports the full six-operator comparison set, not just
+/// arithmetic -- the shared branch's `is_cmp` handling must return `bool`
+/// for a same-type pair exactly like `Ty::Fixed`'s own comparison test
+/// (`runtime_fixed_comparisons_end_to_end`) already covers for that sibling
+/// type.
+#[test]
+fn runtime_wrapping_equality_and_ordering_end_to_end() {
+    let src = "fn main():\n    let a: Wrapping<i32> = Wrapping<i32>(3)\n    let b: Wrapping<i32> = Wrapping<i32>(7)\n    \
+               println(f\"{a == a} {a != b} {a < b} {b > a} {a <= a} {b >= a}\")\n";
+    let output = compile_and_run("wrapping_eq_ord", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "true true true true true true");
+}
+
+/// The shared branch threads each `Wrapping<T>`'s own signedness through to
+/// its comparison opcode (`slt`/`ult`) rather than defaulting to one or the
+/// other -- `Wrapping<i8>(-1) < Wrapping<i8>(1)` is `true` under a signed
+/// compare, but the same two bit patterns reinterpreted as `Wrapping<u8>`
+/// (`255`/`1`) are `false` under an unsigned compare. A dispatch bug that
+/// hardcoded (or dropped) the signedness flag would still type-check and
+/// only surface here, at runtime.
+#[test]
+fn runtime_wrapping_signed_vs_unsigned_ordering_end_to_end() {
+    let src = "fn main():\n    let a: Wrapping<i8> = Wrapping<i8>(-1 as i8)\n    let b: Wrapping<i8> = Wrapping<i8>(1 as i8)\n    println(f\"{a < b}\")\n    \
+               let c: Wrapping<u8> = Wrapping<u8>(255 as u8)\n    let d: Wrapping<u8> = Wrapping<u8>(1 as u8)\n    println(f\"{c < d}\")\n";
+    let output = compile_and_run("wrapping_signed_unsigned_ord", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["true", "false"], "{}", stdout);
+}
+
+/// `Wrapping<T>` and `Fixed<Bits,Frac>` sit right next to each other in the
+/// same shared branch of `Checker::infer_binop_ty` -- a binop between one of
+/// each must still fall through to the generic "mismatched types" diagnostic
+/// (same as two different-width `Wrapping`s or two different-shape `Fixed`s
+/// would), not be silently accepted just because both sides matched the
+/// branch's outer `Wrapping(_) | Fixed(..)` guard.
+#[test]
+fn rejects_binop_between_wrapping_and_fixed() {
+    let src = "fn main():\n    let a: Wrapping<i32> = Wrapping<i32>(1)\n    let b: Fixed<32, 16> = Fixed<32, 16>(1.0)\n    let c = a + b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("mismatched types") && d.message.contains("use `as` to cast")), "{:?}", diags);
+}
+
+/// `Fixed<Bits,Frac>` against its own bare backing-shaped operand (a plain
+/// `int`) must still require an explicit `as`, the same "no implicit
+/// anything" rule the shared branch enforces between two different
+/// `Wrapping<T>` widths (`rejects_binop_between_mismatched_wrapping_types`).
+#[test]
+fn rejects_binop_between_fixed_and_bare_int() {
+    let src = "fn main():\n    let a: Fixed<32, 16> = Fixed<32, 16>(1.0)\n    let b: int = 2\n    let c = a + b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("mismatched types") && d.message.contains("use `as` to cast")), "{:?}", diags);
+}
+
+/// The shared branch's mismatch check applies uniformly to comparisons, not
+/// just arithmetic -- `Wrapping<u8> < Wrapping<i32>` must be rejected the
+/// same way `Wrapping<u8> + Wrapping<i32>` already is
+/// (`rejects_binop_between_mismatched_wrapping_types` only covers `+`).
+#[test]
+fn rejects_wrapping_comparison_between_mismatched_widths() {
+    let src = "fn main():\n    let a: Wrapping<u8> = Wrapping<u8>(1 as u8)\n    let b: Wrapping<i32> = Wrapping<i32>(1)\n    let c = a < b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("mismatched types")), "{:?}", diags);
+}
+
+/// `Tick`/`Tick` supports the full comparison set (`infer_time_binop_ty`'s
+/// `is_cmp && lhs_ty == rhs_ty` rule), not just the `Tick - Tick -> i64`
+/// delta arithmetic the existing `runtime_tick_advance_and_delta_end_to_end`
+/// test covers -- companion to `runtime_duration_add_sub_and_compare_end_to_end`
+/// (`Duration`) and the `Instant` equality already checked in
+/// `runtime_instant_diff_and_shift_end_to_end`, closing the last of the three
+/// types' comparison coverage.
+#[test]
+fn runtime_tick_ordering_end_to_end() {
+    let src = "fn main():\n    let a: Tick = Tick(3)\n    let b: Tick = Tick(7)\n    println(f\"{a < b} {b > a} {a == a} {a != b}\")\n";
+    let output = compile_and_run("tick_ordering", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "true true true true");
+}
+
+/// The asymmetry that keeps `Tick`/`Duration`/`Instant` out of the shared
+/// `Wrapping`/`Fixed` branch: `Tick + i64 -> Tick` is legal (already tested
+/// via `runtime_tick_advance_and_delta_end_to_end`), but `Tick < i64` is not
+/// -- comparisons require an exact same-type pair per
+/// `infer_time_binop_ty`'s `is_cmp` rule, unlike its `Add`/`Sub` arm which
+/// explicitly allows a bare `i64` on the other side.
+#[test]
+fn rejects_tick_comparison_against_i64() {
+    let src = "fn main():\n    let a: Tick = Tick(0)\n    let b: i64 = 1 as i64\n    let c = a < b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("`<` is not supported between `Tick` and `I64`")), "{:?}", diags);
+}
+
+/// `Instant - Instant -> Duration` is legal (per
+/// `runtime_instant_diff_and_shift_end_to_end`), but `Instant + Instant` has
+/// no entry in `infer_time_binop_ty`'s table at all -- summing two absolute
+/// timestamps is meaningless, the same reasoning `rejects_tick_plus_tick`
+/// already covers for `Tick`.
+#[test]
+fn rejects_instant_plus_instant() {
+    let src = "fn main():\n    let a: Instant = Instant(0 as i64)\n    let b: Instant = Instant(1 as i64)\n    let c = a + b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("`+` is not supported between `Instant` and `Instant`")), "{:?}", diags);
+}
+
+/// `Tick - Duration` has no entry in `infer_time_binop_ty`'s table (only
+/// `Tick - Tick`/`Tick - i64` subtract from a `Tick`) -- companion to
+/// `rejects_binop_between_tick_and_duration` (which covers `+`), closing the
+/// same mismatched-family gap for `-`.
+#[test]
+fn rejects_tick_minus_duration() {
+    let src = "fn main():\n    let a: Tick = Tick(0)\n    let b: Duration = Duration(1 as i64)\n    let c = a - b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("`-` is not supported between `Tick` and `Duration`")), "{:?}", diags);
+}
+
+/// `*`/`/`/`%` are illegal on `Tick`, the same as `rejects_multiply_on_
+/// duration_values` already covers for `Duration` -- closes the matching gap
+/// for `Tick` specifically (advancing a tick count by scaling it has no
+/// sensible meaning any more than summing two of them does).
+#[test]
+fn rejects_tick_division() {
+    let src = "fn main():\n    let a: Tick = Tick(10)\n    let b: Tick = Tick(2)\n    let c = a / b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("`/` is not supported between `Tick` and `Tick`")), "{:?}", diags);
+}
+
+/// Same "no `*`/`/`/`%`" rule as `rejects_tick_division`, exercised for
+/// `Instant` (the third of the three time types) with `%` specifically.
+#[test]
+fn rejects_instant_modulo() {
+    let src = "fn main():\n    let a: Instant = Instant(10 as i64)\n    let b: Instant = Instant(3 as i64)\n    let c = a % b\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("`%` is not supported between `Instant` and `Instant`")), "{:?}", diags);
+}

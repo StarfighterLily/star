@@ -3049,6 +3049,27 @@ impl Checker {
     /// Infer the result type of a binary operator, dispatching on whether
     /// either operand is a builtin vector/matrix type. Falls through to the
     /// original Int/Float/Bool behavior when both operands are scalar.
+    ///
+    /// `todo.md` P2 #7 (binop-dispatch unification, arithmetic-bearing types):
+    /// `Wrapping<T>`/`Fixed<Bits,Frac>` are folded into one shared branch
+    /// below -- once `Fixed`'s `%` rejection is special-cased out, both
+    /// families are the exact same shape (every arithmetic/comparison
+    /// operator, exact `lhs_ty == rhs_ty` required, no implicit widening),
+    /// the same reasoning `Ty::eq_only_scalar_shape` already applies one
+    /// level down to `Symbol`/`BitField<N>`/`Flags<E>`/`Color32`/
+    /// `PaletteIndex`. `Tick`/`Duration`/`Instant` deliberately stay their
+    /// own dedicated function (`infer_time_binop_ty`) instead of joining that
+    /// branch: their legal pairings are *asymmetric* per operator and per
+    /// type (`Tick + i64 -> Tick`, `Tick - Tick -> i64`, `Instant - Instant
+    /// -> Duration`, `Instant + Duration -> Instant`, ...), so unifying them
+    /// would require a per-`(lhs, op, rhs)` result-type table rather than one
+    /// shared "operands match, result mirrors operand type" rule -- at that
+    /// point it stops being a shared *shape* and just becomes the dedicated
+    /// dispatch table it already is. This split is the permanent decision,
+    /// not a placeholder: a future contributor adding a fourth `Wrapping`/
+    /// `Fixed`-shaped type gets one new match arm in the shared branch below;
+    /// a future asymmetric time-like type gets its own `infer_*_binop_ty`
+    /// sibling instead, same as `Tick`/`Duration`/`Instant` today.
     pub(super) fn infer_binop_ty(&mut self, op: &BinOp, lhs_ty: &Ty, rhs_ty: &Ty, span: Span) -> Ty {
         if matches!(op, BinOp::And | BinOp::Or) {
             if *lhs_ty != Ty::Bool || *rhs_ty != Ty::Bool {
