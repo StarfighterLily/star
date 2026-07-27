@@ -2943,12 +2943,19 @@ fn parser_error_uses_friendly_token_names() {
 // No fuzzing crate is available (no external dependency was added for it), so
 // this is a small self-contained fuzzer: a xorshift PRNG mutates a handful of
 // known-good seed programs (byte insert/delete/replace), and each mutated
-// input is fed through the lexer and parser on a worker thread with a bounded
-// timeout. The lexer/parser must never panic, and must always terminate --
-// `parser_error_uses_friendly_token_names`'s sibling test class is exactly
-// how the module-scope stray-`Dedent` infinite loop fixed alongside this test
-// suite was first found by hand; this harness exists to catch the next one
-// automatically instead of by hand-crafted example.
+// input is fed through the full front-end pipeline (lexer, parser, and type
+// checker -- the same stages `star check` runs, minus module resolution,
+// which the seeds below never exercise since none of them `import`) on a
+// worker thread with a bounded timeout. A second fuzzer feeds the same
+// pipeline uniformly random bytes with no plausible-Star-source bias at all,
+// covering `ir_check.rs`'s `fuzz_never_panics`'s original motivation one
+// layer earlier: raw user text hits the lexer/parser/checker *before* any
+// hand-rolled IR ever could. Every run must either succeed or return a clean
+// `Err`, and must always terminate -- `parser_error_uses_friendly_token_
+// names`'s sibling test class is exactly how the module-scope stray-`Dedent`
+// infinite loop fixed alongside this test suite was first found by hand;
+// this harness exists to catch the next one automatically instead of by
+// hand-crafted example.
 
 /// A minimal xorshift64* PRNG so the fuzzer has no external dependency.
 struct Rng(u64);
@@ -3021,11 +3028,23 @@ fn run_bounded(label: &str, input: &str, timeout: std::time::Duration, f: impl F
     }
 }
 
-/// Fuzz the lexer and parser with mutated inputs derived from known-good
-/// programs, asserting every run either succeeds or returns a clean `Err` --
-/// never panics, never hangs.
+/// Run the full front-end pipeline `star check` runs -- lex, parse, then
+/// type-check on a successful parse -- discarding the result. Never panics
+/// on its own; any panic from a stage below propagates to the caller so
+/// `run_bounded` can catch and report it against the offending input.
+fn check_pipeline(src: &str) {
+    if let Ok(module) = star::parser::Parser::parse_source(src) {
+        let _ = Driver::check(&module);
+    }
+}
+
+/// Fuzz the lexer, parser, and type checker with mutated inputs derived from
+/// known-good programs, asserting every run either succeeds or returns a
+/// clean `Err` -- never panics, never hangs. 2,000 cases to match
+/// `ir_check.rs`'s `fuzz_never_panics` methodology one layer earlier in the
+/// pipeline.
 #[test]
-fn fuzz_lexer_and_parser_do_not_panic() {
+fn fuzz_lexer_parser_checker_do_not_panic() {
     let seeds = [
         include_str!("../examples/player.star"),
         include_str!("../examples/vecmath.star"),
@@ -3041,15 +3060,38 @@ fn fuzz_lexer_and_parser_do_not_panic() {
 
     let mut rng = Rng(0x2545_F491_4F6C_DD1D);
     let timeout = std::time::Duration::from_secs(2);
-    for i in 0..300 {
+    for i in 0..2000 {
         let seed = seeds[rng.next_usize(seeds.len())];
         let input = mutate(seed, &mut rng);
         let label = format!("iteration {}", i);
-        run_bounded(&label, &input, timeout, |src| {
-            if let Ok(tokens) = Driver::lex(src) {
-                let _ = star::parser::Parser::new(tokens).parse_module();
-            }
-        });
+        run_bounded(&label, &input, timeout, |src| check_pipeline(src));
+    }
+}
+
+/// Generate `len` uniformly random bytes (the full `0..=255` range, not the
+/// plausible-Star-source alphabet `mutate` restricts itself to), repaired to
+/// valid UTF-8 the same lossy way `mutate` does since the driver API takes
+/// `&str`. Unlike `mutate`'s seed-derived inputs, this has no bias toward
+/// ever getting past the lexer's first few tokens -- it exists to cover the
+/// raw-garbage end of the input space `mutate` structurally can't reach.
+fn random_bytes(len: usize, rng: &mut Rng) -> String {
+    let bytes: Vec<u8> = (0..len).map(|_| rng.next_usize(256) as u8).collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Fuzz the same full pipeline with pure random bytes instead of mutated
+/// real programs, asserting every run either succeeds or returns a clean
+/// `Err` -- never panics, never hangs. 2,000 cases, matching
+/// `ir_check.rs`'s `fuzz_never_panics`.
+#[test]
+fn fuzz_full_pipeline_random_bytes_do_not_panic() {
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let timeout = std::time::Duration::from_secs(2);
+    for i in 0..2000 {
+        let len = rng.next_usize(300);
+        let input = random_bytes(len, &mut rng);
+        let label = format!("iteration {}", i);
+        run_bounded(&label, &input, timeout, |src| check_pipeline(src));
     }
 }
 

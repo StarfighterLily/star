@@ -7,22 +7,13 @@ review's 13-item punch list, now fully closed) versus adds new surface area
 
 ## P0 — Protects existing investment / structural
 
-1. **Fuzz the lexer/parser/checker directly, not just `ir_check.rs`.**
-   `ir_check.rs`'s 2,000-case fuzz test (asserting no panic) exists precisely
-   because hand-rolled IR generation was identified as a risk — but raw user
-   text hits the lexer/parser/checker *first*, and none of that pipeline has
-   the same guarantee despite 181 `.expect()` call sites across `src/` that
-   are plausible panic surfaces on malformed input. Apply the exact same
-   methodology one layer earlier: feed random bytes and mutated real `.star`
-   files through `star check`'s full pipeline and assert it always ends in
-   either success or a clean diagnostic, never a panic.
-2. **Scale the `par`/`swarm` worker pool to actual hardware.** `NUM_WORKERS:
+1. **Scale the `par`/`swarm` worker pool to actual hardware.** `NUM_WORKERS:
    u32 = 4` (`src/codegen/par_pool.rs:43`) is a hardcoded compile-time
    constant baked into every generated program, not queried at runtime. Query
    the real core count (`GetSystemInfo`'s `dwNumberOfProcessors`, with an
    optional explicit override) so the "swarm" pitch's actual performance
    matches the hardware it runs on instead of always assuming 4 cores.
-3. **Make the Windows-only scope an explicit decision, not a default, before
+2. **Make the Windows-only scope an explicit decision, not a default, before
    more Win32-specific machinery lands.** `par_pool.rs` (`CreateThread`),
    `audio.rs`, `gamepad.rs`, and `system_font.rs` (GDI) each independently
    deepened the same Win32 coupling this round, with no platform-abstraction
@@ -34,7 +25,7 @@ review's 13-item punch list, now fully closed) versus adds new surface area
 
 ## P1 — Real design gaps
 
-4. **Decide and document the dynamic-dispatch story.** Traits today are
+3. **Decide and document the dynamic-dispatch story.** Traits today are
    structural sugar over monomorphization — no vtable, no `dyn Trait`, no
    heterogeneous collection of mixed concrete types satisfying one trait —
    and only structs may implement a trait at all (`check_impl`'s struct-only
@@ -44,7 +35,7 @@ review's 13-item punch list, now fully closed) versus adds new surface area
    and adjust that example/prose to stop implying otherwise, or scope what a
    `dyn Trait`/tagged-enum-of-variants alternative would need for the one
    real motivating use case (heterogeneous ECS component lists).
-5. **Allow enums to implement traits, or document why not.** The struct-only
+4. **Allow enums to implement traits, or document why not.** The struct-only
    restriction on `impl Trait for ...:` was a reasonable bootstrapping choice
    when traits were new; now that trait-bounded generics and operator
    overloading are both real, load-bearing features, the asymmetry (a
@@ -54,14 +45,14 @@ review's 13-item punch list, now fully closed) versus adds new surface area
 
 ## P2 — Maintainability
 
-6. **Split `tests/frontend.rs`** (1,514 tests, ~1.45 MB — by far the largest
+5. **Split `tests/frontend.rs`** (1,514 tests, ~1.45 MB — by far the largest
    file in the repo) **into topic-scoped files**, mirroring `src/codegen/`'s
    own 35-file decomposition (e.g. one test file per codegen module, or at
    minimum separating checker-diagnostic tests / codegen-shape tests /
    runtime end-to-end tests into their own files). No functional change
    needed — this is purely about keeping "find existing coverage before
    adding more" cheap as the suite keeps growing every session.
-7. **Finish (or explicitly bound) the binop-dispatch unification.** The P3
+6. **Finish (or explicitly bound) the binop-dispatch unification.** The P3
    #12 abstraction pass (`Ty::eq_only_scalar_shape`) only unified the
    equality-only types (`Symbol`/`BitField<N>`/`Flags<E>`/`Color32`/
    `PaletteIndex`); `Wrapping`/`Fixed` and the `Tick`/`Duration`/`Instant`
@@ -73,14 +64,14 @@ review's 13-item punch list, now fully closed) versus adds new surface area
 
 ## P3 — Process
 
-8. **Treat a review like this one as recurring, not one-off.** The prior
+7. **Treat a review like this one as recurring, not one-off.** The prior
    punch list — 13 items, several structural — was fully closed in about two
    days. At that velocity, new special cases and new untested code paths can
    accumulate faster than periodic manual review catches them. Consider a
    `.clinerules/workflows/` trigger tied to feature-batch size (e.g., "every
    N changelog entries" or "before any session that touches a new codegen
    module") rather than only running a full assessment when asked.
-9. **Start scoping minimal editor tooling** — at minimum a TextMate/
+8. **Start scoping minimal editor tooling** — at minimum a TextMate/
    Tree-sitter grammar for syntax highlighting. No LSP urgency yet while the
    syntax is still moving, but even highlighting would materially help
    anyone other than the primary author read `.star` code, and it's cheap
