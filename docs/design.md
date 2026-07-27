@@ -72,6 +72,29 @@ fn main():
 ```
 Notice the match statement—Rust's pattern matching is too good to leave behind, but we can make it visually lighter.
 
+2. Trait Dispatch: Decision and Scope
+The `Damageable` example above only ever needs one concrete type (`Player`) at its one call site, and that's not an accident of a small example -- it's the whole model. `impl Trait for Type:` is structural sugar over monomorphization: `check_impl` (`src/types/mod.rs`) resolves a trait bound to exactly one concrete type per call site, checked nominally but dispatched statically, exactly like an unbounded generic. There is no vtable anywhere in this compiler, no `dyn Trait`, and no `List<SomeTrait>` holding a runtime-mixed set of concrete types satisfying it.
+
+**Decision: this is permanent, not a gap to close.** Real dynamic dispatch would need a fat-pointer/vtable value representation, a boxed-or-heap story for an unsized `dyn Trait` value, and a second codegen dispatch path bolted onto a compiler that is monomorphization-only end to end -- none of which fits the existing `frame`/arena/`GenRef` memory model (a boxed trait object isn't frame-allocatable, arena-scoped, or generation-checked the way every other reference type here is), and it would reopen exactly the kind of half-finished, partially-supported feature this project otherwise avoids. `impl Trait for ...` also only ever targets a `struct` (`check_impl`'s `self.structs.contains_key(...)` check, todo.md P1 #5's own open question) -- see `docs/language_reference.md`'s "Traits and Implementations" section for that restriction's current status.
+
+**The actual answer for a heterogeneous collection** -- the motivating case a trait named `Damageable` implies: a mix of players, enemies, and destructibles in one list -- **is a tagged enum of variants, not a trait object**, and it costs nothing new, since data-carrying enum variants already exist:
+
+```star
+enum DamageableKind:
+    PlayerK(player: Player)
+    EnemyK(enemy: Enemy)
+
+fn damage_all(mut things: List<DamageableKind>, amount: i32):
+    for i in 0..things.len():
+        match things[i]:
+            DamageableKind::PlayerK(p) -> p.take_damage(amount)
+            DamageableKind::EnemyK(e)  -> e.take_damage(amount)
+```
+
+The trait still documents and checks the shared method contract on each concrete type's own `impl`; the enum is what actually holds the mixed-type list, dispatched via `match` instead of a vtable call. See `docs/language_reference.md`'s "Heterogeneous Collections" section for the full pattern (verified compiling and running end to end).
+
+**Future work, scoped but not planned.** If a real `dyn Trait` is ever justified, it would need at minimum: (1) a fat-pointer representation (`{ data: i8*, vtable: i8* }`) for a `dyn Trait`-typed value; (2) a decision on where that pointer's pointee lives, since arenas/`frame`/`GenRef` have no existing "boxed, unsized, dynamically-typed" storage class; (3) a second per-trait vtable-construction codegen path alongside the existing monomorphize-per-call-site path, including how it interacts with operator-overloading trait methods (`Add`/`Eq`/...) that today assume a single static type at the call site; and (4) an answer for how `par`/`swarm`'s per-system parallel iteration (which iterates one concrete component type per system) would type a system over a `dyn Trait` list at all. None of this is scheduled -- it's recorded here so a future revisit starts from this list instead of re-deriving it.
+
 
 # Type System
 Star's pitch is a single language spanning small indie titles, retro remakes/throwbacks and emulated retrocomputer systems, and AAA-quality games. Today's type system (`src/types/mod.rs`'s `Ty` enum) covers `i32`/`i8`/`u8`/`i16`/`u16`/`u32`/`i64`/`u64`, `f32`/`f64`, `char`, `str`, `bool`, `Vec2`/`Vec3`/`Vec4`, `Mat2`/`Mat3`/`Mat4`, `Quat`, `Color`/`Color32`, `Palette`/`PaletteIndex`, `List<T>`, `Map<K,V>`/`Set<T>`, `Tuple`/`Array`/`Ring<T,N>`/`Table<T>` (`(T, U, ...)`/`[T; N]`/`Ring<T, N>`/`Table<T>`), `GenRef<T>`/`Handle<T>`, `Wrapping<T>`/`Fixed<Bits,Frac>`, `Tick`/`Duration`/`Instant`, `Bytes`/`Symbol`, `BitField<N>`/`Flags<E>`, closures, and nominal structs/enums (including the builtin `Rect`/`Aabb2`/`Aabb3`/`Transform`/`Ray`/`Plane`/`Frustum`), plus `Option`/`Result` as true compiler-builtin generic enums with `?`-propagation sugar. That's every item this section originally set out to add: the "indie connective tissue" tier (§3's collection/compound types, §9's `Option`/`Result`), §7's resource handles, all of §2's numeric-width gap, §6's time types, all of §4's text/bytes gap, all of §8's bit-level types, and (as of this round) all of §5's math/geometry gap -- closing this section out entirely. Items marked **done** below are implemented and tested (`tests/frontend.rs`); this section is kept as a record of what was added and why, rather than a live plan.

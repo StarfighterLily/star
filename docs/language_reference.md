@@ -439,6 +439,30 @@ impl Player:
         self.health
 ```
 
+### Dispatch Model
+
+A trait bound (an `impl Trait for Type:` block, or a generic function/struct/enum's `T: Trait` bound) always resolves to exactly one concrete type per call site -- checked nominally, dispatched statically, exactly like an unbounded generic's own monomorphization (see [Generics](#generics)). There is no `dyn Trait`, no vtable, and no way to store a runtime-mixed set of concrete types satisfying the same trait in one `List<T>`. This is an intentional, permanent design choice, not a gap -- see `docs/design.md`'s "Trait Dispatch: Decision and Scope" section for the rationale.
+
+`impl Trait for ...:` also only targets a `struct`; an enum cannot implement a trait (`check_impl`'s struct-only restriction).
+
+### Heterogeneous Collections
+
+Since a trait can't be used as a storage type, a collection of mixed concrete types (e.g. an ECS-style list of different damageable things) uses a tagged enum of variants instead -- enum variants can already carry a different payload type each:
+
+```star
+enum DamageableKind:
+    PlayerK(player: Player)
+    EnemyK(enemy: Enemy)
+
+fn damage_all(mut things: List<DamageableKind>, amount: i32):
+    for i in 0..things.len():
+        match things[i]:
+            DamageableKind::PlayerK(p) -> p.take_damage(amount)
+            DamageableKind::EnemyK(e)  -> e.take_damage(amount)
+```
+
+The trait (`Damageable`) still documents and checks the shared method contract on each concrete type's own `impl`; the enum is what actually holds the mixed-type list, dispatched via `match` instead of a vtable call.
+
 ---
 
 ## Closures

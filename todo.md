@@ -43,14 +43,14 @@ review's 13-item punch list, now fully closed) versus adds new surface area
    commit explicitly to "generics/traits are compile-time-only, full stop"
    and adjust that example/prose to stop implying otherwise, or scope what a
    `dyn Trait`/tagged-enum-of-variants alternative would need for the one
-   real motivating use case (heterogeneous ECS component lists).
+   real motivating use case (heterogeneous ECS component lists). -- Done
 5. **Allow enums to implement traits, or document why not.** The struct-only
    restriction on `impl Trait for ...:` was a reasonable bootstrapping choice
    when traits were new; now that trait-bounded generics and operator
    overloading are both real, load-bearing features, the asymmetry (a
    fieldless enum can't satisfy even a trivial trait bound) is worth either
    closing or naming as an intentional limitation in
-   `docs/language_reference.md`'s "Traits and Implementations" section.
+   `docs/language_reference.md`'s "Traits and Implementations" section. -- Done
 
 ## P2 — Maintainability
 
@@ -88,6 +88,14 @@ review's 13-item punch list, now fully closed) versus adds new surface area
 
 
 # Previous Work
+Implemented todo.md P1 #4: decided and documented the dynamic-dispatch story, plus scoped (but did not build) what real `dyn Trait` support would require.
+
+Decision (docs, no code changes): traits remain compile-time-only, permanently -- `impl Trait for Type:`/`T: Trait` bounds resolve to exactly one concrete type per call site (monomorphized, per `check_impl`), with no vtable and no `dyn Trait` anywhere in the compiler. This is now stated explicitly rather than left implicit, in two places: `docs/design.md` gets a new "Trait Dispatch: Decision and Scope" section right after the `Player`/`Damageable` flagship example (`docs/design.md`), and `docs/language_reference.md`'s "Traits and Implementations" section gets a new "Dispatch Model" subsection cross-referencing it.
+
+The motivating use case the review flagged -- a trait named `Damageable` reading like it wants a mixed collection of damageable things -- already has a real answer that needs zero new compiler machinery: a tagged enum of variants, since enum variants can already carry different payload types (`Shape::Circle(radius: i32)`/`Rect(width, height)` already existed). Both docs now show the same worked example (`enum DamageableKind: PlayerK(player: Player), EnemyK(enemy: Enemy)`, dispatched via an index-based `for`/`match` loop over `List<DamageableKind>`) in a new "Heterogeneous Collections" subsection of `docs/language_reference.md`. Verified by hand with `star check`/`star build` against a scratch `.star` file exercising this exact shape (two concrete `impl Damageable for ...` types, a `List<DamageableKind>`, and the `for`/`match` dispatch loop) -- both parsed/type-checked and compiled cleanly; this also caught two real syntax facts worth recording since they contradicted an initial draft: enum variant payloads must be named fields (`PlayerK(player: Player)`, not a bare `PlayerK(Player)`), and match-arm bindings can never carry a `mut` modifier (`PlayerK(p)`, not `PlayerK(mut p)`) -- calling a `mut self` method on a plain pattern-bound name still type-checks fine.
+
+`docs/design.md`'s new section also scopes what real `dyn Trait`/vtable support would need if ever revisited: a fat-pointer/vtable value representation, a decision on where a boxed `dyn Trait` value lives (arenas/`frame`/`GenRef` have no boxed/unsized storage class today), a second per-trait vtable-construction codegen path alongside the existing monomorphize-per-call-site path, and an answer for how `par`/`swarm`'s per-system parallel iteration would type a system over a `dyn Trait` list. Recorded as scoped-not-planned, matching the user's explicit choice to write this down for a future revisit rather than build it now.
+
 todo.md P0 #1:
 Code (tests/frontend.rs): extended the existing lexer/parser fuzz test into a full-pipeline fuzzer (fuzz_lexer_parser_checker_do_not_panic) that now also runs the type checker, scaled from 300 → 2,000 cases to match ir_check.rs's methodology. Added a second test, fuzz_full_pipeline_random_bytes_do_not_panic, that feeds truly uniform random bytes (not just the plausible-source-alphabet mutations) through the same lex→parse→check pipeline, also 2,000 cases. Both assert no panic and no hang (bounded worker thread), matching ir_check.rs's fuzz_never_panics guarantee one layer earlier in the front end. Full suite (1,515 tests) still passes; the two new fuzz tests run in ~0.3s combined.
 
