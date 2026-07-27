@@ -127,8 +127,7 @@ impl Codegen {
             ));
             let start_h = self.tmp_name();
             self.line(&format!("  {} = load i8*, i8** {}", start_h, start_slot));
-            let rel = self.tmp_name();
-            self.line(&format!("  {} = call i32 @ReleaseSemaphore(i8* {}, i32 1, i32* null)", rel, start_h));
+            self.emit_semaphore_post(&start_h);
         }
 
         for t in 0..systems.len() as u32 {
@@ -142,8 +141,7 @@ impl Codegen {
             ));
             let done_h = self.tmp_name();
             self.line(&format!("  {} = load i8*, i8** {}", done_h, done_slot));
-            let wait = self.tmp_name();
-            self.line(&format!("  {} = call i32 @WaitForSingleObject(i8* {}, i32 -1)", wait, done_h));
+            self.emit_semaphore_wait(&done_h);
         }
     }
 }

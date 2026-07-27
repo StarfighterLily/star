@@ -1,4 +1,4 @@
 1. Resume implementing the Star language as described in the [todo.md](todo) file.
-2. Update the file afterwards to reflect the changes made: remove completed objectives and sections, replace the `LATEST:` section with the latest changes, and update the immediate action(s).
+2. Update the file afterwards to reflect the changes made: update the `Previous work` section with the latest changes and mark the outline item as done
 3. Confirm code with cargo.
 4. Add new tests as needed and run them for verification.

@@ -1381,6 +1381,11 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     "strstr", "strncmp",
     "CreateThread", "WaitForSingleObject", "CloseHandle",
     "CreateSemaphoreA", "ReleaseSemaphore", "GetCurrentThreadId",
+    // `Target::LinuxGnu` counterparts of the six names just above -- see
+    // `crate::codegen::platform`. Reserved unconditionally (not just when
+    // actually building for Linux) since this list is checked at type-check
+    // time, before a build's `--target` is known to codegen.
+    "pthread_create", "pthread_self", "sem_init", "sem_wait", "sem_post", "sysconf",
     "star_rc_alloc", "star_rc_retain", "star_rc_release",
     // `env_get`/`env_set` builtins -- see `crate::codegen::os`.
     "getenv", "_putenv_s",

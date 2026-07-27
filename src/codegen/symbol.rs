@@ -143,7 +143,7 @@ impl Codegen {
         // `memcpy`/`free`.
         let lock_h = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** @sym.lock", lock_h));
-        self.line(&format!("  call i32 @WaitForSingleObject(i8* {}, i32 -1)", lock_h));
+        self.emit_semaphore_wait(&lock_h);
 
         let len = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @sym.len", len));
@@ -332,7 +332,7 @@ impl Codegen {
         // Must come *after* the phi above -- LLVM requires every phi in a
         // block to be grouped at the block's top, before any other
         // instruction.
-        self.line(&format!("  call i32 @ReleaseSemaphore(i8* {}, i32 1, i32* null)", lock_h));
+        self.emit_semaphore_post(&lock_h);
         format!("i64 {}", result)
     }
 
@@ -428,7 +428,7 @@ impl Codegen {
         // race. See `@sym.lock`'s doc comment in `Codegen::emit_builtins`.
         let lock_h = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** @sym.lock", lock_h));
-        self.line(&format!("  call i32 @WaitForSingleObject(i8* {}, i32 -1)", lock_h));
+        self.emit_semaphore_wait(&lock_h);
 
         let len = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* @sym.len", len));
@@ -473,7 +473,7 @@ impl Codegen {
         // Both paths (found or out-of-range) have finished reading the
         // table by this point, so it's safe to release. Must come *after*
         // the phi above -- see the identical note in `emit_symbol_intern`.
-        self.line(&format!("  call i32 @ReleaseSemaphore(i8* {}, i32 1, i32* null)", lock_h));
+        self.emit_semaphore_post(&lock_h);
         format!("i8* {}", result)
     }
 }

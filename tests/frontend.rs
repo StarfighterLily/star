@@ -1564,6 +1564,143 @@ fn runtime_parallel_four_systems_still_dispatch_with_star_workers_below_floor_en
     assert_eq!(stdout.matches("0").count(), 4, "all 4 systems should have run (hp 1 -> 0): {}", stdout);
 }
 
+// --- cross-platform codegen (`crate::codegen::platform::Target`) --------
+
+/// `Target::LinuxGnu` emits the same worker-pool IR *shape* as the default
+/// `Target::WindowsGnu` (same block structure, same runtime loops -- see
+/// `codegen_par_pool_thread_creation_is_a_runtime_loop_not_unrolled`/
+/// `codegen_par_dispatch_fanout_and_join_are_runtime_loops`), just routed
+/// through POSIX pthreads/`sem_t`/`sysconf` (`crate::codegen::platform`)
+/// instead of Win32 primitives, and declares/calls none of the Win32
+/// threading symbols at all.
+#[test]
+fn codegen_linux_target_uses_pthread_and_sem_not_win32() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let v =
+        Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen");
+    let ir = v.ir;
+
+    assert!(ir.contains("target triple = \"x86_64-unknown-linux-gnu\""), "{}", ir);
+
+    assert!(ir.contains("declare i32 @pthread_create("), "{}", ir);
+    assert!(ir.contains("declare i64 @pthread_self()"), "{}", ir);
+    assert!(ir.contains("declare i32 @sem_init("), "{}", ir);
+    assert!(ir.contains("declare i32 @sem_wait("), "{}", ir);
+    assert!(ir.contains("declare i32 @sem_post("), "{}", ir);
+    assert!(ir.contains("declare i64 @sysconf("), "{}", ir);
+    assert!(ir.contains("call i32 @pthread_create("), "{}", ir);
+    assert!(ir.contains("call i64 @sysconf(i32 84)"), "should query _SC_NPROCESSORS_ONLN: {}", ir);
+    assert!(ir.contains("call i64 @pthread_self()"), "{}", ir);
+
+    for win32_sym in
+        ["CreateThread", "WaitForSingleObject", "CreateSemaphoreA", "ReleaseSemaphore", "GetCurrentThreadId", "GetSystemInfo"]
+    {
+        assert!(!ir.contains(win32_sym), "Target::LinuxGnu IR should never mention `{}`: {}", win32_sym, ir);
+    }
+}
+
+/// Exact call-site counts under `Target::LinuxGnu` mirror
+/// `codegen_par_pool_thread_creation_is_a_runtime_loop_not_unrolled`'s
+/// Windows-target counts one-for-one: one `pthread_create` (the
+/// thread-creation loop still runs at runtime, not unrolled) and three
+/// `sem_init` (two per-worker semaphores created inside that loop, plus one
+/// more, outside it, for the nested-`par` serial-fallback lock).
+#[test]
+fn codegen_linux_target_thread_creation_is_a_runtime_loop_not_unrolled() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let v =
+        Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen");
+    let ir = v.ir;
+    assert!(ir.contains("par_pool_thread_cond:"), "{}", ir);
+    assert!(ir.contains("par_pool_thread_body:"), "{}", ir);
+    assert_eq!(ir.matches("call i32 @pthread_create(").count(), 1, "{}", ir);
+    assert_eq!(ir.matches("call i32 @sem_init(").count(), 3, "{}", ir);
+}
+
+/// Fan-out/join call counts under `Target::LinuxGnu` mirror
+/// `codegen_par_dispatch_fanout_and_join_are_runtime_loops`'s Windows-target
+/// counts one-for-one: 3 `sem_post` (the fan-out loop's release + `par.pool.
+/// worker_main`'s own per-job done-signal + the serial-fallback lock's own
+/// release) and 3 `sem_wait` (the join loop's wait + `worker_main`'s own
+/// per-job start-wait + the serial-fallback lock's own acquire).
+#[test]
+fn codegen_linux_target_dispatch_fanout_and_join_call_counts_match_windows_shape() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let v =
+        Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen");
+    let ir = v.ir;
+    assert_eq!(ir.matches("call i32 @sem_post(").count(), 3, "{}", ir);
+    assert_eq!(ir.matches("call i32 @sem_wait(").count(), 3, "{}", ir);
+}
+
+/// `crate::ir_check`'s structural verifier (target-agnostic -- it never
+/// inspects the `target triple` line) accepts `Target::LinuxGnu`'s IR just
+/// as cleanly as the default target's: nothing about the pthread/`sem_t`
+/// call shapes this compiler emits trips a false positive.
+#[test]
+fn codegen_linux_target_ir_passes_internal_verifier() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let v =
+        Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen");
+    assert!(
+        v.errors.is_empty(),
+        "Target::LinuxGnu IR should pass the internal verifier: {:?}",
+        v.errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// `Symbol(..)`/`symbol_name(..)`/`rand()`'s shared locks (`@sym.lock`/
+/// `@rng.lock` -- see `Codegen::emit_sym_lock_init`/`emit_rng_lock_init` and
+/// `crate::codegen::vector_math::emit_rand_next`) route through the same
+/// platform seam as `par_pool.rs`, not a hand-rolled `CreateSemaphoreA` call
+/// of their own: under `Target::LinuxGnu` they also become `sem_init`/
+/// `sem_wait`/`sem_post`.
+#[test]
+fn codegen_linux_target_sym_and_rng_locks_use_sem_not_win32() {
+    let src = "fn main():\n    let a = Symbol(\"hello\")\n    println(symbol_name(a))\n    println(f\"{rand()}\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let v =
+        Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen");
+    let ir = v.ir;
+    assert!(ir.contains("call i32 @sem_init("), "{}", ir);
+    assert!(ir.contains("call i32 @sem_wait("), "{}", ir);
+    assert!(ir.contains("call i32 @sem_post("), "{}", ir);
+    assert!(!ir.contains("CreateSemaphoreA"), "{}", ir);
+    assert!(!ir.contains("WaitForSingleObject"), "{}", ir);
+    assert!(!ir.contains("ReleaseSemaphore"), "{}", ir);
+}
+
+/// The default target (no `--target` involved -- plain `Driver::codegen`,
+/// exactly what every pre-existing par-pool test above already calls) is
+/// untouched by the `Target::LinuxGnu` backend's existence: still Win32
+/// primitives, still the `x86_64-w64-windows-gnu` triple, and -- regression
+/// guard for the seam refactor itself -- the pool's tid-tracking array is
+/// now `i64`-wide (widened so a Windows `i32` thread id and a Linux
+/// `pthread_t` can share one array shape, see `crate::codegen::platform::
+/// emit_current_thread_id64`), not the original `i32`.
+#[test]
+fn codegen_windows_target_default_unchanged_by_platform_seam() {
+    let src = format!("{}fn t():\n    par e in Enemies:\n        e.hp -= 1\n", PAR_SRC_PREFIX);
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("target triple = \"x86_64-w64-windows-gnu\""), "{}", ir);
+    assert!(ir.contains("call i8* @CreateThread("), "{}", ir);
+    assert!(ir.contains("@par.pool.tid = global [64 x i64] zeroinitializer"), "{}", ir);
+    for posix_sym in ["pthread_create", "pthread_self", "sem_init", "sem_wait", "sem_post", "sysconf"] {
+        assert!(!ir.contains(posix_sym), "Target::WindowsGnu IR should never mention `{}`: {}", posix_sym, ir);
+    }
+}
+
 // --- `system` / `parallel` (cross-system compile-time locks) -------------
 
 /// Parse `system Name(mut ArenaA, ArenaB): <body>`.
@@ -11779,6 +11916,28 @@ fn extern_fn_rejects_getenv_as_reserved_name() {
     let src = "extern \"C\" fn getenv(name: str) -> ptr\n";
     let module = Driver::parse(src).expect("should parse");
     let Err(diags) = Driver::check(&module) else { panic!("extern fn named `getenv` should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("compiler always declares internally")), "{:?}", diags);
+}
+
+/// `pthread_create`/`sem_wait` -- the `Target::LinuxGnu` counterparts of
+/// `CreateThread`/`WaitForSingleObject` (see `crate::codegen::platform`) --
+/// are reserved runtime symbol names too, even though this check runs at
+/// type-check time, before a build's `--target` is known: a program checked
+/// once and later built for either target must not be able to declare an
+/// `extern "C" fn` that collides with either backend's internal `declare`s.
+#[test]
+fn extern_fn_rejects_pthread_create_as_reserved_name() {
+    let src = "extern \"C\" fn pthread_create(a: ptr, b: ptr, c: ptr, d: ptr) -> int\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("extern fn named `pthread_create` should be a type error") };
+    assert!(diags.iter().any(|d| d.message.contains("compiler always declares internally")), "{:?}", diags);
+}
+
+#[test]
+fn extern_fn_rejects_sem_wait_as_reserved_name() {
+    let src = "extern \"C\" fn sem_wait(s: ptr) -> int\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("extern fn named `sem_wait` should be a type error") };
     assert!(diags.iter().any(|d| d.message.contains("compiler always declares internally")), "{:?}", diags);
 }
 

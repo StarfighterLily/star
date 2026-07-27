@@ -6,18 +6,33 @@
 //! a zero-setup debug HUD.
 //!
 //! ## Why GDI instead of `SDL_ttf` or a hand-rolled TrueType rasterizer
-//! This compiler's only target is `x86_64-w64-windows-gnu` (see
-//! `crate::codegen::mod`'s target-triple line) -- gdi32.dll ships with every
-//! Windows install, so binding it needs no new vendored DLL the way
-//! `SDL_ttf` (+ its own transitive `libfreetype` dependency) would, the
-//! exact tradeoff `crate::codegen::font`'s own doc comment already declined.
-//! It also sidesteps hand-rolling a TrueType glyph-outline rasterizer
-//! (`glyf`/`loca` quadratic-bezier parsing, scanline coverage
-//! antialiasing) entirely as hand-emitted LLVM IR text -- what
-//! `stb_truetype.h` needs ~5000 careful lines of C for. Windows' own font
-//! engine already does that work (with real hinting, antialiasing, and
+//! gdi32.dll ships with every Windows install, so binding it needs no new
+//! vendored DLL the way `SDL_ttf` (+ its own transitive `libfreetype`
+//! dependency) would, the exact tradeoff `crate::codegen::font`'s own doc
+//! comment already declined. It also sidesteps hand-rolling a TrueType
+//! glyph-outline rasterizer (`glyf`/`loca` quadratic-bezier parsing,
+//! scanline coverage antialiasing) entirely as hand-emitted LLVM IR text --
+//! what `stb_truetype.h` needs ~5000 careful lines of C for. Windows' own
+//! font engine already does that work (with real hinting, antialiasing, and
 //! kerning) behind a flat, easy-to-`declare`-and-`call` C ABI; this module
 //! only has to drive it and copy its output into an SDL texture.
+//!
+//! ## Windows-only by construction, not by omission
+//! Unlike `par_pool.rs`'s thread/semaphore/core-count primitives (see
+//! `crate::codegen::platform`), this module has no cross-platform seam and
+//! isn't going to grow one cheaply: there's no POSIX syscall that
+//! rasterizes a TrueType glyph, only a genuinely new rendering backend
+//! (`SDL_ttf`+`libfreetype`, or a hand-rolled rasterizer) would make
+//! `font_load_system`/`font_load_ttf`/`draw_text_ttf` work under
+//! `Target::LinuxGnu` -- a real feature addition, not a retrofit, and out of
+//! scope until (if) a second target is ever actually shipped. Every
+//! `declare` this module needs (`CreateFontA`, `TextOutA`, ...) stays
+//! unconditional regardless of `Target` -- an unreferenced `declare` costs
+//! nothing at link time -- but calling any of these builtins under
+//! `Target::LinuxGnu` will still fail to *link*, on purpose, since nothing
+//! provides those symbols there. `crate::codegen::font`'s hand-rolled 5x7
+//! bitmap font is the already-portable fallback for a program that needs
+//! text under both targets.
 //!
 //! ## Loading
 //! `font_load_system(window, family, size) -> ptr` loads an already-

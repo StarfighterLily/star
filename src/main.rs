@@ -91,6 +91,11 @@ enum Command {
         /// stopping short of ever asking it.
         #[arg(long = "skip-ir-verify")]
         skip_ir_verify: bool,
+        /// Which native target to emit code (and, ultimately, a linked
+        /// executable) for. See `TargetArg`'s own doc comment -- `linux` is
+        /// best-effort cross-emission, not a verified cross-compile story.
+        #[arg(long = "target", value_enum, default_value_t = TargetArg::Windows)]
+        target: TargetArg,
     },
     /// Emit an intermediate representation for debugging.
     Emit {
@@ -102,7 +107,44 @@ enum Command {
         file: String,
         #[command(flatten)]
         search: SearchPathArgs,
+        /// Which native target to emit code for -- see `Build`'s own
+        /// `--target` doc comment. Only meaningful for `star emit llvm`;
+        /// ignored (accepted but unused) for `tokens`/`ast`.
+        #[arg(long = "target", value_enum, default_value_t = TargetArg::Windows)]
+        target: TargetArg,
     },
+}
+
+/// `--target`'s CLI spelling of `star::codegen::Target` -- kept as its own
+/// `clap`-derivable enum rather than deriving `ValueEnum` on `Target` itself
+/// so the codegen crate doesn't need a `clap` dependency just for its CLI
+/// surface (`star::codegen` is also used as a library, e.g. by this crate's
+/// own tests, with no CLI involved).
+#[derive(Copy, Clone, Default, ValueEnum)]
+enum TargetArg {
+    /// `x86_64-w64-windows-gnu` -- this compiler's original target, and the
+    /// only one built/linked end-to-end in this project's own test suite.
+    #[default]
+    Windows,
+    /// `x86_64-unknown-linux-gnu`. Codegen emits real pthread/`sem_t`-based
+    /// synchronization for `par`/`swarm` (see `star::codegen::platform`)
+    /// instead of Win32 primitives, and this flag passes `-target
+    /// x86_64-unknown-linux-gnu` through to clang -- but actually *linking*
+    /// a working Linux ELF binary needs a matching sysroot/libc/linker this
+    /// compiler doesn't vendor, detect, or verify are present. Treat this as
+    /// best-effort cross-emission (inspect the `.ll` with `star emit llvm
+    /// --target=linux`, or hand it to a real Linux toolchain) rather than a
+    /// supported one-command cross-compile.
+    Linux,
+}
+
+impl TargetArg {
+    fn to_target(self) -> star::codegen::Target {
+        match self {
+            TargetArg::Windows => star::codegen::Target::WindowsGnu,
+            TargetArg::Linux => star::codegen::Target::LinuxGnu,
+        }
+    }
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -153,10 +195,10 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> ExitCode {
     match cli.command {
         Command::Check { file, search } => cmd_check(&file, &search),
-        Command::Build { file, search, output, opt_level, release, libs, lib_paths, skip_ir_verify } => {
-            cmd_build(&file, &search, output.as_deref(), opt_level, release, &libs, &lib_paths, skip_ir_verify)
+        Command::Build { file, search, output, opt_level, release, libs, lib_paths, skip_ir_verify, target } => {
+            cmd_build(&file, &search, output.as_deref(), opt_level, release, &libs, &lib_paths, skip_ir_verify, target.to_target())
         }
-        Command::Emit { what, file, search } => cmd_emit(what, &file, &search),
+        Command::Emit { what, file, search, target } => cmd_emit(what, &file, &search, target.to_target()),
     }
 }
 
@@ -236,6 +278,26 @@ fn link_args(libs: &[String], lib_paths: &[String]) -> Vec<String> {
     lib_paths.iter().map(|p| format!("-L{}", p)).chain(libs.iter().map(|l| format!("-l{}", l))).collect()
 }
 
+/// The `-target <triple>` flag clang should be invoked with for a given
+/// `--target`, or nothing for the default `Target::WindowsGnu` -- the build
+/// invocation this replaces never passed `-target` at all and relied
+/// entirely on clang inferring the right one from the emitted `.ll`'s own
+/// `target triple` line (see `Codegen::emit`) plus the installed clang's own
+/// default (this project's toolchain is an LLVM-mingw clang whose default
+/// already matches). Leaving the well-tested default path's clang
+/// invocation byte-for-byte unchanged avoids any risk of that inference
+/// behaving differently once a flag is added; only a non-default `--target`
+/// needs (and gets) an explicit override. Split out from `cmd_build` so it
+/// can be exercised directly without shelling out to clang -- see the
+/// `tests` module below.
+fn clang_target_flag(target: star::codegen::Target) -> Vec<String> {
+    if target == star::codegen::Target::default() {
+        Vec::new()
+    } else {
+        vec!["-target".to_string(), target.triple().to_string()]
+    }
+}
+
 /// Full pipeline: parse, type-check, emit LLVM IR, compile with clang.
 #[allow(clippy::too_many_arguments)]
 fn cmd_build(
@@ -247,6 +309,7 @@ fn cmd_build(
     libs: &[String],
     lib_paths: &[String],
     skip_ir_verify: bool,
+    target: star::codegen::Target,
 ) -> ExitCode {
     let Some(resolved) = resolve_entry(file, search) else { return ExitCode::FAILURE };
     let driver = Driver::with_search_paths(&resolved.entry, resolved.search_paths);
@@ -264,7 +327,7 @@ fn cmd_build(
     }
 
     let typed = compilation.typed.as_ref().expect("typed module after successful compile");
-    let verification = match Driver::codegen_verified(typed) {
+    let verification = match Driver::codegen_verified_for_target(typed, target) {
         Ok(v) => v,
         Err(diags) => {
             // `Codegen::emit` itself failed -- a genuine codegen-stage
@@ -320,6 +383,7 @@ fn cmd_build(
         .arg(&ll_path)
         .arg(opt_flag(opt_level, release))
         .arg("-Wno-override-module")
+        .args(clang_target_flag(target))
         .args(link_args(libs, lib_paths))
         .status()
     {
@@ -375,7 +439,7 @@ fn find_clang_on(
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_search_paths_from, emit_llvm_ir_verified, find_clang_on, link_args, opt_flag};
+    use super::{clang_target_flag, collect_search_paths_from, emit_llvm_ir_verified, find_clang_on, link_args, opt_flag};
 
     /// `star emit llvm` on a file with an `import` must resolve it exactly
     /// like `star check`/`star build` do (both go through `Driver::compile`,
@@ -396,7 +460,8 @@ mod tests {
         std::fs::write(&main_path, "import \"lib.star\" as lib\nfn main() -> i32:\n    return lib::helper()\n").expect("write main.star");
 
         let source = std::fs::read_to_string(&main_path).unwrap();
-        let v = emit_llvm_ir_verified(&main_path, &[], &source).expect("should resolve the import and codegen cleanly");
+        let v = emit_llvm_ir_verified(&main_path, &[], &source, star::codegen::Target::default())
+            .expect("should resolve the import and codegen cleanly");
         assert!(v.errors.is_empty(), "expected no IR-verifier errors, got: {:?}", v.errors.iter().map(|d| &d.message).collect::<Vec<_>>());
         let ir = v.ir;
         assert!(ir.contains("define i32 @lib__helper("), "expected the imported fn to be mangled and defined: {}", ir);
@@ -495,6 +560,30 @@ mod tests {
         assert_eq!(link_args(&libs, &lib_paths), vec![r"-LC:\SDL2\lib", "-lSDL2"]);
     }
 
+    /// The default target (`Target::WindowsGnu`, `--target` never passed)
+    /// adds no `-target` flag at all -- the well-tested existing build
+    /// invocation stays byte-for-byte unchanged, relying (as it always has)
+    /// on the emitted `.ll`'s own `target triple` line plus this project's
+    /// LLVM-mingw clang's own matching default.
+    #[test]
+    fn clang_target_flag_empty_for_default_windows_target() {
+        assert!(clang_target_flag(star::codegen::Target::WindowsGnu).is_empty());
+        assert!(clang_target_flag(star::codegen::Target::default()).is_empty());
+    }
+
+    /// A non-default `--target` (currently only `linux`) becomes an explicit
+    /// `-target <triple>` clang argument -- needed because clang's own
+    /// default target (this project's LLVM-mingw clang defaults to
+    /// `x86_64-w64-windows-gnu`) would otherwise silently override whatever
+    /// the `.ll` file's own `target triple` line says.
+    #[test]
+    fn clang_target_flag_passes_explicit_triple_for_linux() {
+        assert_eq!(
+            clang_target_flag(star::codegen::Target::LinuxGnu),
+            vec!["-target".to_string(), "x86_64-unknown-linux-gnu".to_string()]
+        );
+    }
+
     /// A `clang`/`clang.exe` on `PATH` is preferred over a `STAR_CLANG_PATH`
     /// override -- the bug this guards against: `cmd_build` ignoring `PATH`
     /// entirely in favor of a fallback, contradicting `STAR_CLANG_PATH`
@@ -552,7 +641,7 @@ mod tests {
 }
 
 /// Emit tokens, AST, or LLVM IR for debugging.
-fn cmd_emit(what: EmitKind, file: &str, search: &SearchPathArgs) -> ExitCode {
+fn cmd_emit(what: EmitKind, file: &str, search: &SearchPathArgs, target: star::codegen::Target) -> ExitCode {
     let Some(resolved) = resolve_entry(file, search) else { return ExitCode::FAILURE };
     let source = match std::fs::read_to_string(&resolved.entry) {
         Ok(s) => s,
@@ -596,7 +685,7 @@ fn cmd_emit(what: EmitKind, file: &str, search: &SearchPathArgs) -> ExitCode {
         // `crate::ir_check` was happy with it. Verifier findings still
         // print (to stderr, so they don't get piped along with the IR
         // itself) and still fail the exit code on an `Error`-severity one.
-        EmitKind::Llvm => match emit_llvm_ir_verified(&resolved.entry, &resolved.search_paths, &source) {
+        EmitKind::Llvm => match emit_llvm_ir_verified(&resolved.entry, &resolved.search_paths, &source, target) {
             Ok(v) => {
                 for w in &v.warnings {
                     eprintln!("warning: {}", w.message);
@@ -639,10 +728,11 @@ fn emit_llvm_ir_verified(
     entry: &Path,
     search_paths: &[PathBuf],
     source: &str,
+    target: star::codegen::Target,
 ) -> Result<star::driver::IrVerification, Vec<star::diagnostics::Diagnostic>> {
     let module = Driver::parse(source)?;
     let (module, _imported_files) = star::modules::resolve_with_search_paths(module, entry, search_paths)?;
     let mut checker = star::types::Checker::new();
     let typed = checker.check(&module)?;
-    Driver::codegen_verified(&typed)
+    Driver::codegen_verified_for_target(&typed, target)
 }

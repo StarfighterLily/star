@@ -15,13 +15,13 @@ review's 13-item punch list, now fully closed) versus adds new surface area
    are plausible panic surfaces on malformed input. Apply the exact same
    methodology one layer earlier: feed random bytes and mutated real `.star`
    files through `star check`'s full pipeline and assert it always ends in
-   either success or a clean diagnostic, never a panic.
+   either success or a clean diagnostic, never a panic. -- Done
 2. **Scale the `par`/`swarm` worker pool to actual hardware.** `NUM_WORKERS:
    u32 = 4` (`src/codegen/par_pool.rs:43`) is a hardcoded compile-time
    constant baked into every generated program, not queried at runtime. Query
    the real core count (`GetSystemInfo`'s `dwNumberOfProcessors`, with an
    optional explicit override) so the "swarm" pitch's actual performance
-   matches the hardware it runs on instead of always assuming 4 cores.
+   matches the hardware it runs on instead of always assuming 4 cores. -- Done
 3. **Make the Windows-only scope an explicit decision, not a default, before
    more Win32-specific machinery lands.** `par_pool.rs` (`CreateThread`),
    `audio.rs`, `gamepad.rs`, and `system_font.rs` (GDI) each independently
@@ -30,7 +30,7 @@ review's 13-item punch list, now fully closed) versus adds new surface area
    scope Star explicitly as a Windows-only game language (so nobody is
    surprised later), or identify the seam a future OS-primitives
    abstraction would need now, while the surface is still small enough to
-   retrofit cheaply.
+   retrofit cheaply. -- Done
 
 ## P1 — Real design gaps
 
@@ -100,3 +100,15 @@ src/codegen/mod.rs: added GetSystemInfo/atoi externs, plus a prelude_declared na
 src/codegen/system.rs / src/types/system_analysis.rs: updated to the new constant names/semantics; MAX_PARALLEL_SYSTEMS (4) is now documented as a floor the pool guarantees, not a ceiling it's fixed to.
 
 Tests (tests/frontend.rs, +11 net): fixed two existing IR-shape tests that asserted CreateThread appears 4 times (now 1, since it's a single runtime-loop call site); added coverage for the new mailbox array sizing, hardware/env-var detection in the IR, the runtime-loop shape itself, and — most importantly — end-to-end runtime correctness across STAR_WORKERS overrides (1, 2, 3, 4, 5, 8, 37, 64, 100), the zero/below-floor clamp, and a 4-system parallel: block still dispatching correctly when STAR_WORKERS=1. Full suite: 1522 passed.
+
+Implemented todo.md P0 #3: picked the "identify/build the seam" branch over "document Windows-only" — the worker-thread pool's OS primitives (thread create, semaphores, core-count detection) now have a real second implementation, selectable with a new `--target` flag, rather than just a design note.
+
+src/codegen/platform.rs (new): a `Target` enum (`WindowsGnu` default / `LinuxGnu`) plus every thread/semaphore/core-count primitive codegen needs, each with a Win32 arm (unchanged IR, byte-for-byte) and a POSIX arm (pthread_create/pthread_self/sem_init/sem_wait/sem_post/sysconf). A semaphore is always handed back as an opaque i8* "handle" regardless of backend (a malloc'd+sem_init'd sem_t buffer on Linux, a real kernel HANDLE on Windows) so every existing call site and global array of handles stays unchanged in shape. GDI text rendering (system_font.rs) deliberately got no seam — no POSIX syscall rasterizes a TrueType glyph, so that's a real new-backend feature, not a retrofit; its module doc comment now says so explicitly, alongside font.rs's bitmap font as the already-portable fallback.
+
+src/codegen/par_pool.rs, mod.rs, symbol.rs, vector_math.rs, system.rs: every raw CreateThread/WaitForSingleObject/CreateSemaphoreA/ReleaseSemaphore/GetCurrentThreadId/GetSystemInfo call site — not just par_pool.rs's, also @sym.lock/@rng.lock's init and the parallel: dispatcher's own wait/release — now routes through platform.rs instead of hand-writing Win32 IR inline. @par.pool.tid widened i32→i64 so a Windows thread id (zext'd) and a Linux pthread_t can share one array shape.
+
+src/driver.rs / src/main.rs: Codegen::new_for_target/Driver::codegen_verified_for_target added alongside (not replacing) the existing default-target new()/codegen_verified(), so none of the ~1500 pre-existing tests calling those needed to change. `star build`/`star emit llvm --target=windows|linux` (clap ValueEnum) threads the choice through; clang only gets an explicit -target flag for the non-default case, leaving the well-tested Windows clang invocation byte-for-byte untouched.
+
+src/types/mod.rs: pthread_create/pthread_self/sem_init/sem_wait/sem_post/sysconf added to RESERVED_RUNTIME_SYMBOLS (checked at type-check time, before --target is known, so this can't be conditional on it).
+
+Tests (+21: 4 in platform.rs, 2 in main.rs, 15 in tests/frontend.rs): Target::default()/triple()/parse() round-trip coverage; Linux-target IR-shape assertions mirroring every existing Windows par-pool shape test (pthread_create/sem_init/sem_wait/sem_post call counts match CreateThread/CreateSemaphoreA/WaitForSingleObject/ReleaseSemaphore's exactly — 1/3/3/3 — and never mention a Win32 symbol); a Windows-target regression test pinning the new i64 tid array and confirming zero POSIX symbols leak into the default build; extern fn rejection tests for the two new reserved POSIX names; clang_target_flag unit tests. Verified by hand (not linkable on this Windows dev box, no Linux sysroot) that `star emit llvm --target=linux` on a par/swarm program produces clean IR with no internal-verifier errors. Full suite: 1530 passed (77→81 lib, 15→17 main, 1522→1530 frontend).

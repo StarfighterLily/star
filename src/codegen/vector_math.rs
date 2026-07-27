@@ -1069,7 +1069,7 @@ impl Codegen {
     fn emit_rand_next(&mut self) -> String {
         let lock_h = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** @rng.lock", lock_h));
-        self.line(&format!("  call i32 @WaitForSingleObject(i8* {}, i32 -1)", lock_h));
+        self.emit_semaphore_wait(&lock_h);
 
         let x0 = self.tmp_name();
         self.line(&format!("  {} = load i32, i32* @rng.state", x0));
@@ -1087,7 +1087,7 @@ impl Codegen {
         self.line(&format!("  {} = xor i32 {}, {}", x3, x2, s3));
         self.line(&format!("  store i32 {}, i32* @rng.state", x3));
 
-        self.line(&format!("  call i32 @ReleaseSemaphore(i8* {}, i32 1, i32* null)", lock_h));
+        self.emit_semaphore_post(&lock_h);
         x3
     }
 
@@ -1154,9 +1154,9 @@ impl Codegen {
 
         let lock_h = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** @rng.lock", lock_h));
-        self.line(&format!("  call i32 @WaitForSingleObject(i8* {}, i32 -1)", lock_h));
+        self.emit_semaphore_wait(&lock_h);
         self.line(&format!("  store i32 {}, i32* @rng.state", safe));
-        self.line(&format!("  call i32 @ReleaseSemaphore(i8* {}, i32 1, i32* null)", lock_h));
+        self.emit_semaphore_post(&lock_h);
     }
 
     /// Shared by both f-string codegen paths (`emit_print_like` in

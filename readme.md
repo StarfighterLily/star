@@ -13,6 +13,28 @@ A game programming language with Pythonic-Rust syntax and unique memory manageme
 
 See [docs/design.md](docs/design.md) and [docs/features.md](docs/features.md) for the full language specification.
 
+## Platform Support
+
+A compiled Star program only runs on Windows today: `window_create`/audio/
+gamepad (`crate::codegen::sdl`/`audio`/`gamepad`) bind SDL2, and
+`font_load_system`/`font_load_ttf`/`draw_text_ttf` (`crate::codegen::
+system_font`) bind Windows GDI directly, with no portable equivalent bound
+in either case. That's an explicit, acknowledged scope decision, not an
+oversight — see `crate::codegen::system_font`'s module doc comment for why
+GDI text rendering in particular isn't a cheap retrofit (there's no POSIX
+syscall that rasterizes a TrueType glyph).
+
+One piece *is* target-abstracted: the `par`/`swarm` worker-thread pool
+(`crate::codegen::platform`) has a real second implementation using POSIX
+threads/semaphores instead of Win32 primitives, selectable with `--target
+linux` on `star build`/`star emit llvm`. This is best-effort cross-*emission*
+of that one subsystem, not a supported cross-compile story: nothing in this
+repo vendors, detects, or verifies a Linux sysroot/libc, and any program
+touching a window/audio/gamepad/font builtin still won't link under that
+target regardless. Use it to inspect the generated IR shape or hand it to a
+real Linux toolchain, not to expect `star build --target=linux` to produce a
+working binary out of the box.
+
 ## Compilation Toolchain
 
 Star compiles via a two-stage pipeline:

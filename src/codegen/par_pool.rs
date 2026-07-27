@@ -1,20 +1,26 @@
 //! The persistent `par`/`swarm` worker-thread pool: a set of OS threads
 //! created once (lazily, on first dispatch) and reused for the process's
-//! lifetime, replacing the old per-`par`-statement
-//! `CreateThread`/`WaitForSingleObject`/`CloseHandle` cycle. See
-//! `Codegen::emit_par_stmt` (`arena.rs`) for the per-callsite worker
+//! lifetime, replacing the old per-`par`-statement create/wait/close cycle.
+//! See `Codegen::emit_par_stmt` (`arena.rs`) for the per-callsite worker
 //! function this dispatches to.
 //!
+//! Every thread/semaphore/core-count primitive this module needs goes
+//! through `crate::codegen::platform` rather than a raw Win32 (or POSIX)
+//! call inline -- see that module's own doc comment for why, and for the
+//! `Target::LinuxGnu` pthread/`sem_t`/`sysconf` implementations this
+//! module's IR shape stays identical under either backend for.
+//!
 //! The pool's *live* size is computed once at runtime, in
-//! `@par.pool.ensure_init`: `GetSystemInfo`'s `dwNumberOfProcessors`, an
-//! explicit `STAR_WORKERS` environment-variable override if set, clamped
-//! into `[MIN_WORKERS, MAX_WORKERS]` and stored in `@par.pool.num_workers`.
-//! `MAX_WORKERS` only bounds how large the mailbox arrays below are
-//! declared (a compile-time-fixed LLVM array size is unavoidable); every
-//! dispatch loop below reads the real, runtime `@par.pool.num_workers`
-//! value rather than either constant, so the actual thread count -- and
-//! thus how finely a `par`/`swarm` chunk splits -- tracks the hardware it
-//! runs on instead of always assuming a fixed number of cores.
+//! `@par.pool.ensure_init`: the platform's own core-count query
+//! (`platform::emit_detect_core_count`), an explicit `STAR_WORKERS`
+//! environment-variable override if set, clamped into `[MIN_WORKERS,
+//! MAX_WORKERS]` and stored in `@par.pool.num_workers`. `MAX_WORKERS` only
+//! bounds how large the mailbox arrays below are declared (a
+//! compile-time-fixed LLVM array size is unavoidable); every dispatch loop
+//! below reads the real, runtime `@par.pool.num_workers` value rather than
+//! either constant, so the actual thread count -- and thus how finely a
+//! `par`/`swarm` chunk splits -- tracks the hardware it runs on instead of
+//! always assuming a fixed number of cores.
 //!
 //! Each of the pool's `num_workers` threads has its own dedicated "mailbox"
 //! (a slot in four parallel global arrays) rather than pulling from a
@@ -22,12 +28,13 @@
 //! chunks, one per worker, so a generic multi-producer/multi-consumer queue
 //! would only add deadlock/lost-wakeup surface area for no behavioral
 //! benefit. Handoff in both directions (dispatcher -> worker "go", worker ->
-//! dispatcher "done") uses a Win32 counting semaphore rather than a
-//! condition variable: a `ReleaseSemaphore` that happens before the
-//! matching `WaitForSingleObject` is reached still leaves the semaphore's
-//! count at 1, so there is no lost-wakeup window on either side of the
-//! handoff -- a condition variable would need an auxiliary mutex-guarded
-//! predicate to get the same guarantee.
+//! dispatcher "done") uses a counting semaphore (`platform::
+//! emit_alloc_semaphore`/`emit_semaphore_wait`/`emit_semaphore_post`) rather
+//! than a condition variable: a "post" that happens before the matching
+//! "wait" is reached still leaves the semaphore's count at 1, so there is no
+//! lost-wakeup window on either side of the handoff -- a condition variable
+//! would need an auxiliary mutex-guarded predicate to get the same
+//! guarantee.
 //!
 //! Nested `par`/`swarm` (a `par` body containing another `par` statement,
 //! which the checker's disjointness proof allows -- see
@@ -40,7 +47,7 @@
 //! (the outer `par` is genuinely running on multiple workers at once) and
 //! each would independently run a full, overlapping pass over the same
 //! nested arena -- a real data race. The lock is manually reentrant (a bare
-//! Win32 semaphore is not) so that a thread already holding it for an outer
+//! semaphore is not) so that a thread already holding it for an outer
 //! nested `par` doesn't self-deadlock when it reaches a *deeper* nested
 //! `par` on the same thread.
 
@@ -91,7 +98,11 @@ impl Codegen {
         self.line(&format!("@par.pool.job_arg = global [{} x i8*] zeroinitializer", MAX_WORKERS));
         self.line(&format!("@par.pool.start_sem = global [{} x i8*] zeroinitializer", MAX_WORKERS));
         self.line(&format!("@par.pool.done_sem = global [{} x i8*] zeroinitializer", MAX_WORKERS));
-        self.line(&format!("@par.pool.tid = global [{} x i32] zeroinitializer", MAX_WORKERS));
+        // `i64`, not a platform-native width, so a Windows `i32` thread id
+        // (zero-extended) and a Linux `pthread_t` (already 64-bit) can share
+        // one array shape -- see `crate::codegen::platform::
+        // emit_current_thread_id64`.
+        self.line(&format!("@par.pool.tid = global [{} x i64] zeroinitializer", MAX_WORKERS));
         self.line("@par.pool.inited = global i1 false");
         // The pool's live worker count, computed once by `ensure_init` --
         // see this module's doc comment.
@@ -108,6 +119,15 @@ impl Codegen {
         // which the LLVM verifier rejects.
         self.line(&format!("@par.pool.sysinfo_buf = global [{} x i8] zeroinitializer", SYSTEM_INFO_SIZE));
         self.line("@par.pool.init_i = global i32 0");
+        // `pthread_create`'s required `pthread_t*` out-param, on
+        // `Target::LinuxGnu` only -- its value is written once per thread
+        // created and never read back (this pool never joins a worker
+        // thread), so one shared scratch slot reused across every iteration
+        // of the thread-creation loop below is fine; unused, but harmless,
+        // under `Target::WindowsGnu`. Must be a global rather than an
+        // `alloca` for the same reason `sysinfo_buf`/`init_i` are -- see
+        // this function's earlier comment on `hoist_allocas_to_entry`.
+        self.line("@platform.pthread_out = global i64 0");
         self.line("@par.pool.env_name = private unnamed_addr constant [13 x i8] c\"STAR_WORKERS\\00\"");
         // Recursive-mutex pair backing the nested-`par` serial fallback --
         // see this module's header comment.
@@ -128,14 +148,13 @@ impl Codegen {
         // Record this thread's own OS thread id before ever waiting on a
         // job, so `emit_par_dispatch`'s reentrancy check can always trust
         // that a job running on worker `idx` has already published its tid.
-        let tid = self.tmp_name();
-        self.line(&format!("  {} = call i32 @GetCurrentThreadId()", tid));
+        let tid = self.emit_current_thread_id64();
         let tid_slot = self.tmp_name();
         self.line(&format!(
-            "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @par.pool.tid, i32 0, i32 {}",
+            "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @par.pool.tid, i32 0, i32 {}",
             tid_slot, MAX_WORKERS, MAX_WORKERS, idx
         ));
-        self.line(&format!("  store i32 {}, i32* {}", tid, tid_slot));
+        self.line(&format!("  store i64 {}, i64* {}", tid, tid_slot));
         self.line("  br label %loop");
         self.line("loop:");
         let start_slot = self.tmp_name();
@@ -145,8 +164,7 @@ impl Codegen {
         ));
         let start_h = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** {}", start_h, start_slot));
-        let wres = self.tmp_name();
-        self.line(&format!("  {} = call i32 @WaitForSingleObject(i8* {}, i32 -1)", wres, start_h));
+        self.emit_semaphore_wait(&start_h);
         let fn_slot = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i32 (i8*)*], [{} x i32 (i8*)*]* @par.pool.job_fn, i32 0, i32 {}",
@@ -170,8 +188,7 @@ impl Codegen {
         ));
         let done_h = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** {}", done_h, done_slot));
-        let rel = self.tmp_name();
-        self.line(&format!("  {} = call i32 @ReleaseSemaphore(i8* {}, i32 1, i32* null)", rel, done_h));
+        self.emit_semaphore_post(&done_h);
         self.line("  br label %loop");
         self.line("}");
         self.line("");
@@ -212,28 +229,11 @@ impl Codegen {
         self.line(&format!("  {} = call i32 @atoi(i8* {})", override_raw, env_ptr));
         self.line("  br label %par_pool_clamp");
 
-        // No override: ask the OS. `SYSTEM_INFO.dwNumberOfProcessors` sits
-        // at byte offset `SYSTEM_INFO_NUM_PROCESSORS_OFFSET` on x86-64 --
-        // past the leading anonymous union (4 bytes), `dwPageSize` (4
-        // bytes), the two `LPVOID` address-range fields (8 bytes each,
-        // 8-byte aligned), and `dwActiveProcessorMask` (a `DWORD_PTR`, 8
-        // bytes on this target).
+        // No override: ask the OS -- `GetSystemInfo` or `sysconf`, whichever
+        // `crate::codegen::platform::emit_detect_core_count` picked for this
+        // `Codegen`'s `Target`.
         self.line("par_pool_detect:");
-        let sysinfo_ptr = self.tmp_name();
-        self.line(&format!(
-            "  {} = getelementptr inbounds [{} x i8], [{} x i8]* @par.pool.sysinfo_buf, i64 0, i64 0",
-            sysinfo_ptr, SYSTEM_INFO_SIZE, SYSTEM_INFO_SIZE
-        ));
-        self.line(&format!("  call void @GetSystemInfo(i8* {})", sysinfo_ptr));
-        let nproc_ptr8 = self.tmp_name();
-        self.line(&format!(
-            "  {} = getelementptr inbounds [{} x i8], [{} x i8]* @par.pool.sysinfo_buf, i64 0, i64 {}",
-            nproc_ptr8, SYSTEM_INFO_SIZE, SYSTEM_INFO_SIZE, SYSTEM_INFO_NUM_PROCESSORS_OFFSET
-        ));
-        let nproc_ptr = self.tmp_name();
-        self.line(&format!("  {} = bitcast i8* {} to i32*", nproc_ptr, nproc_ptr8));
-        let detected_raw = self.tmp_name();
-        self.line(&format!("  {} = load i32, i32* {}", detected_raw, nproc_ptr));
+        let detected_raw = self.emit_detect_core_count();
         self.line("  br label %par_pool_clamp");
 
         self.line("par_pool_clamp:");
@@ -252,8 +252,7 @@ impl Codegen {
         self.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", count_final, above_max, MAX_WORKERS, count_floor));
         self.line(&format!("  store i32 {}, i32* @par.pool.num_workers", count_final));
 
-        let lock = self.tmp_name();
-        self.line(&format!("  {} = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)", lock));
+        let lock = self.emit_alloc_semaphore(1);
         self.line(&format!("  store i8* {}, i8** @par.pool.serial_lock", lock));
 
         self.line("  store i32 0, i32* @par.pool.init_i");
@@ -267,8 +266,7 @@ impl Codegen {
         self.line(&format!("  br i1 {}, label %par_pool_thread_body, label %par_pool_init_done", ti_cont));
 
         self.line("par_pool_thread_body:");
-        let ss = self.tmp_name();
-        self.line(&format!("  {} = call i8* @CreateSemaphoreA(i8* null, i32 0, i32 1, i8* null)", ss));
+        let ss = self.emit_alloc_semaphore(0);
         let ss_slot = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i8*], [{} x i8*]* @par.pool.start_sem, i32 0, i32 {}",
@@ -276,8 +274,7 @@ impl Codegen {
         ));
         self.line(&format!("  store i8* {}, i8** {}", ss, ss_slot));
 
-        let ds = self.tmp_name();
-        self.line(&format!("  {} = call i8* @CreateSemaphoreA(i8* null, i32 0, i32 1, i8* null)", ds));
+        let ds = self.emit_alloc_semaphore(0);
         let ds_slot = self.tmp_name();
         self.line(&format!(
             "  {} = getelementptr inbounds [{} x i8*], [{} x i8*]* @par.pool.done_sem, i32 0, i32 {}",
@@ -289,16 +286,12 @@ impl Codegen {
         self.line(&format!("  {} = sext i32 {} to i64", ti64, ti));
         let idx_as_ptr = self.tmp_name();
         self.line(&format!("  {} = inttoptr i64 {} to i8*", idx_as_ptr, ti64));
-        // The persistent worker thread's own handle is intentionally never
-        // `CloseHandle`'d: it lives for the process's lifetime, same as the
-        // pool itself -- matching the codebase's existing "no cleanup
+        // The persistent worker thread's own handle/id is intentionally
+        // never closed/joined: it lives for the process's lifetime, same as
+        // the pool itself -- matching the codebase's existing "no cleanup
         // needed for main-lifetime global state" precedent (arenas are
         // never freed either).
-        let h = self.tmp_name();
-        self.line(&format!(
-            "  {} = call i8* @CreateThread(i8* null, i64 0, i8* bitcast (i32 (i8*)* @par.pool.worker_main to i8*), i8* {}, i32 0, i32* null)",
-            h, idx_as_ptr
-        ));
+        self.emit_create_persistent_thread("par.pool.worker_main", &idx_as_ptr);
         let ti_next = self.tmp_name();
         self.line(&format!("  {} = add i32 {}, 1", ti_next, ti));
         self.line(&format!("  store i32 {}, i32* @par.pool.init_i", ti_next));
@@ -342,8 +335,7 @@ impl Codegen {
         // runtime value, so this scans in a real loop rather than the fixed
         // chain of compile-time-unrolled comparisons a constant slot count
         // would allow.
-        let my_tid = self.tmp_name();
-        self.line(&format!("  {} = call i32 @GetCurrentThreadId()", my_tid));
+        let my_tid = self.emit_current_thread_id64();
 
         let my_idx_ptr = self.tmp_name();
         self.line(&format!("  {} = alloca i32", my_idx_ptr));
@@ -369,13 +361,13 @@ impl Codegen {
         self.open_block(&scan_body);
         let tid_slot = self.tmp_name();
         self.line(&format!(
-            "  {} = getelementptr inbounds [{} x i32], [{} x i32]* @par.pool.tid, i32 0, i32 {}",
+            "  {} = getelementptr inbounds [{} x i64], [{} x i64]* @par.pool.tid, i32 0, i32 {}",
             tid_slot, MAX_WORKERS, MAX_WORKERS, si
         ));
         let tid_t = self.tmp_name();
-        self.line(&format!("  {} = load i32, i32* {}", tid_t, tid_slot));
+        self.line(&format!("  {} = load i64, i64* {}", tid_t, tid_slot));
         let eq = self.tmp_name();
-        self.line(&format!("  {} = icmp eq i32 {}, {}", eq, my_tid, tid_t));
+        self.line(&format!("  {} = icmp eq i64 {}, {}", eq, my_tid, tid_t));
         self.line(&format!("  br i1 {}, label %{}, label %{}", eq, scan_match, scan_step));
 
         self.open_block(&scan_match);
@@ -499,8 +491,7 @@ impl Codegen {
         ));
         let start_h = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** {}", start_h, start_slot));
-        let relr = self.tmp_name();
-        self.line(&format!("  {} = call i32 @ReleaseSemaphore(i8* {}, i32 1, i32* null)", relr, start_h));
+        self.emit_semaphore_post(&start_h);
 
         self.line(&format!("  br label %{}", fanout_step));
         self.open_block(&fanout_step);
@@ -536,8 +527,7 @@ impl Codegen {
         ));
         let done_h = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** {}", done_h, done_slot));
-        let wait = self.tmp_name();
-        self.line(&format!("  {} = call i32 @WaitForSingleObject(i8* {}, i32 -1)", wait, done_h));
+        self.emit_semaphore_wait(&done_h);
         self.line(&format!("  br label %{}", join_wait_step));
         self.open_block(&join_wait_step);
         let ji_next = self.tmp_name();
@@ -561,8 +551,7 @@ impl Codegen {
         self.open_block(&acquire_label);
         let lock_h = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** @par.pool.serial_lock", lock_h));
-        let wait2 = self.tmp_name();
-        self.line(&format!("  {} = call i32 @WaitForSingleObject(i8* {}, i32 -1)", wait2, lock_h));
+        self.emit_semaphore_wait(&lock_h);
         self.line(&format!("  store i32 {}, i32* @par.pool.serial_owner", my_idx));
         self.line(&format!("  br label %{}", run_label));
 
@@ -597,8 +586,7 @@ impl Codegen {
         self.line("  store i32 -1, i32* @par.pool.serial_owner");
         let lock_h2 = self.tmp_name();
         self.line(&format!("  {} = load i8*, i8** @par.pool.serial_lock", lock_h2));
-        let rel2 = self.tmp_name();
-        self.line(&format!("  {} = call i32 @ReleaseSemaphore(i8* {}, i32 1, i32* null)", rel2, lock_h2));
+        self.emit_semaphore_post(&lock_h2);
         self.line(&format!("  br label %{}", join_label));
 
         self.open_block(&join_label);
@@ -612,9 +600,11 @@ impl Codegen {
 /// bytes each), and two trailing `WORD` fields (2 bytes each) -- 48 bytes
 /// total. Only `dwNumberOfProcessors` is ever read (see
 /// `SYSTEM_INFO_NUM_PROCESSORS_OFFSET`); the buffer is sized to the whole
-/// struct because `GetSystemInfo` writes it in full.
-const SYSTEM_INFO_SIZE: u32 = 48;
+/// struct because `GetSystemInfo` writes it in full. `pub(super)`: read by
+/// `crate::codegen::platform::emit_detect_core_count`'s `Target::WindowsGnu`
+/// arm, the only other place this layout needs to be known.
+pub(super) const SYSTEM_INFO_SIZE: u32 = 48;
 
 /// Byte offset of `SYSTEM_INFO.dwNumberOfProcessors` -- see
 /// `SYSTEM_INFO_SIZE`'s doc comment for the field layout this falls out of.
-const SYSTEM_INFO_NUM_PROCESSORS_OFFSET: u32 = 32;
+pub(super) const SYSTEM_INFO_NUM_PROCESSORS_OFFSET: u32 = 32;

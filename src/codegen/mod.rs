@@ -32,6 +32,7 @@ mod map;
 mod net;
 mod os;
 mod par_pool;
+mod platform;
 mod rc;
 mod reflect;
 mod ring;
@@ -50,6 +51,8 @@ use std::fmt::Write;
 
 use crate::diagnostics::{Diagnostic, Span};
 use crate::types::*;
+
+pub use platform::Target;
 
 /// Render an `f64` as an LLVM IR literal for a 32-bit `float` constant.
 ///
@@ -313,6 +316,12 @@ pub struct Codegen {
     /// sites can ask "what block are we actually in right now" instead of
     /// assuming it never changed.
     current_label: String,
+    /// Which native OS/ABI this `Codegen` emits IR for -- see
+    /// `crate::codegen::platform::Target`'s own doc comment. Defaults to
+    /// `Target::WindowsGnu` (`Codegen::new`); `Codegen::new_for_target`
+    /// picks any other target explicitly. Consulted by `emit`'s `target
+    /// triple` line and every `crate::codegen::platform` method.
+    target: Target,
 }
 
 impl Codegen {
@@ -349,7 +358,16 @@ impl Codegen {
     }
 
     pub fn new() -> Self {
+        Self::new_for_target(Target::default())
+    }
+
+    /// Like [`Codegen::new`], but for a `Target` other than the default
+    /// `Target::WindowsGnu` -- used by `star build --target=<name>` and by
+    /// tests exercising `Target::LinuxGnu`'s IR shape directly. See
+    /// `crate::codegen::platform::Target`'s own doc comment.
+    pub fn new_for_target(target: Target) -> Self {
         Self {
+            target,
             ir: String::new(),
             global_defs: Vec::new(),
             tmp: 0,
@@ -396,7 +414,7 @@ impl Codegen {
     /// Generate LLVM IR from a checked module, returning the `.ll` source.
     pub fn emit(&mut self, module: &TypedModule) -> Result<String, Vec<Diagnostic>> {
         self.line("; Star compiler -- LLVM IR");
-        self.line("target triple = \"x86_64-w64-windows-gnu\"");
+        self.line(&format!("target triple = \"{}\"", self.target.triple()));
         self.line("");
 
         // Needed by `reflect_type_name` (via `emit_struct_decl` below), so
@@ -673,19 +691,17 @@ impl Codegen {
         self.line("declare i32 @SDL_SetTextureAlphaMod(i8*, i8)");
         self.line("declare i32 @SDL_RenderCopy(i8*, i8*, i8*, i8*)");
         self.line("declare void @SDL_DestroyTexture(i8*)");
-        self.line("declare i8* @CreateThread(i8*, i64, i8*, i8*, i32, i32*)");
-        self.line("declare i32 @WaitForSingleObject(i8*, i32)");
-        self.line("declare i32 @CloseHandle(i8*)");
-        // Synchronization primitives backing the persistent `par`/`swarm`
-        // worker-thread pool -- see `par_pool.rs`.
-        self.line("declare i8* @CreateSemaphoreA(i8*, i32, i32, i8*)");
-        self.line("declare i32 @ReleaseSemaphore(i8*, i32, i32*)");
-        self.line("declare i32 @GetCurrentThreadId()");
-        // Runtime worker-count detection (`par_pool.rs`'s `ensure_init`):
-        // `GetSystemInfo` for the real core count, `atoi` to parse an
-        // optional `STAR_WORKERS` override read via the `getenv` already
-        // declared above.
-        self.line("declare void @GetSystemInfo(i8*)");
+        // Thread/semaphore/core-count primitives backing the persistent
+        // `par`/`swarm` worker-thread pool (`par_pool.rs`) and every other
+        // shared-global lock (`@sym.lock`/`@rng.lock`) -- declared for
+        // whichever `Target` this `Codegen` was built for by
+        // `crate::codegen::platform::declare_platform_threading_externs`;
+        // see that module's own doc comment for why this is the one place
+        // in the emitted IR that actually branches on `self.target`.
+        self.declare_platform_threading_externs();
+        // `atoi` (shared, ordinary libc, needed under either target) to
+        // parse an optional `STAR_WORKERS` override read via the `getenv`
+        // already declared above -- see `par_pool.rs`'s `ensure_init`.
         self.line("declare i32 @atoi(i8*)");
         // `math` builtins: lowered to LLVM's target-independent float
         // intrinsics rather than libm symbols, so no extra linker flags are
@@ -865,8 +881,7 @@ impl Codegen {
     /// dispatch) can run. See `@sym.lock`'s own declaration comment above
     /// for why this can't safely be lazy the way `par.pool.ensure_init` is.
     pub(super) fn emit_sym_lock_init(&mut self) {
-        let lock = self.tmp_name();
-        self.line(&format!("  {} = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)", lock));
+        let lock = self.emit_alloc_semaphore(1);
         self.line(&format!("  store i8* {}, i8** @sym.lock", lock));
     }
 
@@ -878,8 +893,7 @@ impl Codegen {
     /// itself be inside a `par` body, so this can't safely be a lazy
     /// first-use init the way `par.pool.ensure_init` is.
     pub(super) fn emit_rng_lock_init(&mut self) {
-        let lock = self.tmp_name();
-        self.line(&format!("  {} = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)", lock));
+        let lock = self.emit_alloc_semaphore(1);
         self.line(&format!("  store i8* {}, i8** @rng.lock", lock));
     }
 

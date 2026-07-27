@@ -242,7 +242,16 @@ impl Driver {
     /// what, at worst, should cost a missed diagnostic. `clang` remains the
     /// actual authority on well-formedness either way.
     pub fn codegen_verified(typed: &TypedModule) -> Result<IrVerification, Vec<Diagnostic>> {
-        let mut cg = Codegen::new();
+        Self::codegen_verified_for_target(typed, crate::codegen::Target::default())
+    }
+
+    /// [`Driver::codegen_verified`], but for a `Target` other than the
+    /// default `Target::WindowsGnu` -- the `--target` flag's entry point
+    /// (see `crate::main`'s `cmd_build`) and what this crate's own
+    /// `Target::LinuxGnu` IR-shape tests call directly. See
+    /// `crate::codegen::platform::Target`'s own doc comment.
+    pub fn codegen_verified_for_target(typed: &TypedModule, target: crate::codegen::Target) -> Result<IrVerification, Vec<Diagnostic>> {
+        let mut cg = Codegen::new_for_target(target);
         let ir = cg.emit(typed)?;
         let findings = match std::panic::catch_unwind(|| crate::ir_check::verify(&ir)) {
             Ok(findings) => findings,
