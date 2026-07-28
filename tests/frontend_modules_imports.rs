@@ -629,3 +629,297 @@ fn runtime_modules_end_to_end() {
     assert!(stdout.contains("circle area: 12"), "qualified 3-segment enum variant + match inside the imported module: {}", stdout);
     assert!(stdout.contains("rect area: 12"), "second variant of the same imported enum: {}", stdout);
 }
+
+// ===== `impl alias::Type:` reaching into another module (todo.md P1 #6) ====
+//
+// Previously `impl imported::Type:` was a flat parse error ("expected ':',
+// found '::'") -- `Parser::parse_impl` called `expect_ident()` for the type
+// (and trait) name and never consulted `import_aliases`, unlike every other
+// qualified-path site (`parse_type_inner`, `parse_primary`, pattern parsing).
+// The fix mirrors those sites exactly: once `Parser::parse_impl_qualified_
+// name` (`src/parser/items.rs`) produces the same `alias__Name` mangled
+// string `crate::modules::resolve` gives the struct once its own file is
+// flattened in, the checker's flat, name-keyed `self.structs`/`self.methods`
+// tables (`src/types/mod.rs`) and codegen's flat `alias__Name__method`
+// symbol emission (`src/codegen/mod.rs`) require no changes at all -- so
+// these tests exercise the parser's mangling directly, then prove the whole
+// pipeline end to end (resolve -> check -> codegen -> real clang-compiled
+// runtime), including the exact "split one struct's methods across two
+// files" shape that motivated this item.
+
+/// A bare qualified inherent impl (`impl geo::Point:`) mangles its type name
+/// exactly like a qualified type annotation would, and records no trait.
+#[test]
+fn parses_qualified_impl_type_as_mangled_name() {
+    let src = "import \"lib.star\" as geo\nimpl geo::Point:\n    fn dist(self) -> i32:\n        return 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Impl(blk) = &module.items[1] else { panic!("expected impl item, got {:?}", module.items[1]) };
+    assert_eq!(blk.type_name, "geo__Point");
+    assert_eq!(blk.trait_name, None);
+    assert_eq!(blk.methods.len(), 1);
+    assert_eq!(blk.methods[0].sig.name, "dist");
+}
+
+/// `impl Trait for alias::Type:` mangles only the type side -- a *local*
+/// trait implemented for an *imported* type.
+#[test]
+fn parses_local_trait_for_qualified_type_mangles_only_type_name() {
+    let src = "trait Describable:\n    fn describe(self) -> i32\n\nimport \"lib.star\" as geo\nimpl Describable for geo::Point:\n    fn describe(self) -> i32:\n        return 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Impl(blk) = &module.items[2] else { panic!("expected impl item, got {:?}", module.items[2]) };
+    assert_eq!(blk.trait_name, Some("Describable".to_string()));
+    assert_eq!(blk.type_name, "geo__Point");
+}
+
+/// `impl alias::Trait for Type:` mangles only the trait side -- an
+/// *imported* trait implemented for a *local* type.
+#[test]
+fn parses_qualified_trait_for_local_type_mangles_only_trait_name() {
+    let src = "struct Dog:\n    volume: i32\n\nimport \"lib.star\" as geo\nimpl geo::Describable for Dog:\n    fn describe(self) -> i32:\n        return 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Impl(blk) = &module.items[2] else { panic!("expected impl item, got {:?}", module.items[2]) };
+    assert_eq!(blk.trait_name, Some("geo__Describable".to_string()));
+    assert_eq!(blk.type_name, "Dog");
+}
+
+/// `impl alias::Trait for alias::Type:` mangles both sides independently.
+#[test]
+fn parses_qualified_trait_for_qualified_type_mangles_both_names() {
+    let src = "import \"lib.star\" as geo\nimpl geo::Describable for geo::Point:\n    fn describe(self) -> i32:\n        return 1\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Impl(blk) = &module.items[1] else { panic!("expected impl item, got {:?}", module.items[1]) };
+    assert_eq!(blk.trait_name, Some("geo__Describable".to_string()));
+    assert_eq!(blk.type_name, "geo__Point");
+}
+
+/// A 3-segment qualified impl target (`b::c::Point`, reaching through a
+/// re-exported nested import) chains `mangle_name` the same way the
+/// qualified-type-annotation form does -- `parse_impl_qualified_name`'s own
+/// loop, not `parse_type_inner`'s.
+#[test]
+fn parses_transitive_qualified_impl_type_as_chained_mangled_name() {
+    let src = "import \"lib.star\" as b\nimpl b::c::Point:\n    fn dist(self) -> i32:\n        return 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Impl(blk) = &module.items[1] else { panic!("expected impl item, got {:?}", module.items[1]) };
+    assert_eq!(blk.type_name, "b__c__Point");
+}
+
+/// A qualified generic impl target (`impl geo::Box<T>:`) mangles the base
+/// name and still parses the trailing `<T, ...>` type-parameter list, same
+/// as the unqualified generic-impl form.
+#[test]
+fn parses_qualified_generic_impl_type_params() {
+    let src = "import \"lib.star\" as geo\nimpl geo::Box<T>:\n    fn get(self) -> i32:\n        return 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Impl(blk) = &module.items[1] else { panic!("expected impl item, got {:?}", module.items[1]) };
+    assert_eq!(blk.type_name, "geo__Box");
+    assert_eq!(blk.type_params.len(), 1);
+    assert_eq!(blk.type_params[0].name, "T");
+}
+
+/// Using `::` after an identifier that was never declared as an import
+/// alias must still be a clean parse diagnostic (mirroring the original
+/// "expected ':', found '::'" bug report), not a panic -- an undeclared
+/// name in front of `::` is simply not recognized as a qualified path (same
+/// as the pre-existing behavior for expressions/types), so the parser falls
+/// through to expecting the impl block's `:` and reports exactly that.
+#[test]
+fn parse_error_impl_qualified_type_with_undeclared_alias_is_clean_diagnostic() {
+    let src = "impl nomod::Point:\n    fn dist(self) -> i32:\n        return 0\n";
+    let err = Driver::parse(src).expect_err("an impl target qualified by an undeclared alias should fail to parse");
+    assert!(!err.is_empty());
+}
+
+/// Resolving an import whose file defines a struct, then adding a method to
+/// that struct via a qualified `impl` block in the *importing* file, must
+/// type-check and codegen cleanly end to end -- the core scenario this item
+/// was about: a method defined in a different file than the struct itself.
+#[test]
+fn resolve_cross_module_impl_adds_method_to_imported_struct() {
+    let dir = test_scratch_dir("resolve_cross_module_impl_adds_method_to_imported_struct");
+    write_test_file(&dir, "lib.star", "struct Point:\n    x: i32\n    y: i32\n");
+    let main_path = write_test_file(
+        &dir,
+        "main.star",
+        "import \"lib.star\" as geo\nimpl geo::Point:\n    fn sum(self) -> i32:\n        return self.x + self.y\n\nfn main() -> i32:\n    let p = geo::Point(3, 4)\n    return p.sum()\n",
+    );
+    let module = Driver::parse(&std::fs::read_to_string(&main_path).unwrap()).expect("should parse");
+    let (resolved, _files) = star::modules::resolve(module, &main_path).expect("should resolve imports");
+
+    assert!(resolved.items.iter().any(|i| matches!(i, Item::Impl(b) if b.type_name == "geo__Point")));
+    let typed = Driver::check(&resolved).expect("resolved module should type-check");
+    Driver::codegen(&typed).expect("resolved module should codegen");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An `impl` block naming an imported alias that exists, but a struct name
+/// under it that was never declared there, is still a clean "undefined
+/// type" checker error (not a panic or a silently-ignored impl) -- proves
+/// the flat `self.structs.contains_key` lookup in `Checker::check` really
+/// does see through the mangled name to catch a genuine typo, not just a
+/// successfully-resolved case.
+#[test]
+fn checker_rejects_cross_module_impl_on_undefined_imported_type() {
+    let dir = test_scratch_dir("checker_rejects_cross_module_impl_on_undefined_imported_type");
+    write_test_file(&dir, "lib.star", "struct Point:\n    x: i32\n    y: i32\n");
+    let main_path = write_test_file(
+        &dir,
+        "main.star",
+        "import \"lib.star\" as geo\nimpl geo::Missing:\n    fn f(self) -> i32:\n        return 0\n\nfn main():\n    return\n",
+    );
+    let module = Driver::parse(&std::fs::read_to_string(&main_path).unwrap()).expect("should parse");
+    let (resolved, _files) = star::modules::resolve(module, &main_path).expect("should resolve imports");
+    let errs = Driver::check(&resolved).expect_err("impl on an undefined imported type should be rejected");
+    assert!(errs.iter().any(|d| d.message.contains("undefined type") && d.message.contains("geo__Missing")), "{:?}", errs);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Runtime end-to-end: a struct's methods split across two files -- one
+/// method defined alongside the struct itself, a second added later via a
+/// qualified cross-module `impl` in the importing file -- both remain
+/// callable on the same value, compiled and run through a real `clang`
+/// invocation. This is the exact "split `cpu.star`'s ~90 opcode-handler
+/// methods across several files" shape todo.md's P1 #6 cites as Nova's own
+/// motivating use case.
+#[test]
+fn runtime_cross_module_impl_splits_struct_methods_across_two_files_end_to_end() {
+    let dir = test_scratch_dir("runtime_cross_module_impl_splits_struct_methods_across_two_files_end_to_end");
+    write_test_file(
+        &dir,
+        "shape.star",
+        "struct Rect:\n    w: i32\n    h: i32\n\nimpl Rect:\n    fn area(self) -> i32:\n        return self.w * self.h\n",
+    );
+    let main_path = write_test_file(
+        &dir,
+        "main.star",
+        "import \"shape.star\" as geo\nimpl geo::Rect:\n    fn perimeter(self) -> i32:\n        return 2 * (self.w + self.h)\n\nfn main():\n    let r = geo::Rect(3, 4)\n    println(f\"{r.area()} {r.perimeter()}\")\n",
+    );
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+
+    let exe = std::env::temp_dir().join("star_test_cross_module_impl_split_methods.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "12 14");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Runtime end-to-end: a `mut self` method added to an imported struct via a
+/// qualified cross-module `impl` block actually mutates the caller's value,
+/// not just a by-value copy -- proves the method's `self` receiver wiring
+/// works identically whether the `impl` block lives in the struct's own
+/// file or a different one.
+#[test]
+fn runtime_cross_module_impl_mut_self_method_mutates_struct_end_to_end() {
+    let dir = test_scratch_dir("runtime_cross_module_impl_mut_self_method_mutates_struct_end_to_end");
+    write_test_file(&dir, "counter.star", "struct Counter:\n    mut n: i32\n");
+    let main_path = write_test_file(
+        &dir,
+        "main.star",
+        "import \"counter.star\" as c\nimpl c::Counter:\n    fn bump(mut self) -> i32:\n        self.n = self.n + 1\n        return self.n\n\nfn main():\n    let mut counter = c::Counter(0)\n    counter.bump()\n    counter.bump()\n    println(f\"{counter.bump()}\")\n",
+    );
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+
+    let exe = std::env::temp_dir().join("star_test_cross_module_impl_mut_self.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "3");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Runtime end-to-end: a trait declared in the importing file, implemented
+/// for an *imported* struct via a qualified `impl LocalTrait for alias::
+/// Type:` block, correctly satisfies a generic function's trait bound and
+/// dispatches to the right method -- proves cross-module `impl` interacts
+/// correctly with this language's nominal nothing-changes-in-the-checker
+/// trait-bound machinery (`Checker::check_impl_satisfies_trait`), not just
+/// plain inherent methods.
+#[test]
+fn runtime_cross_module_trait_impl_for_imported_type_satisfies_generic_bound_end_to_end() {
+    let dir = test_scratch_dir("runtime_cross_module_trait_impl_for_imported_type_satisfies_generic_bound_end_to_end");
+    write_test_file(&dir, "animals.star", "struct Dog:\n    volume: i32\n");
+    let main_path = write_test_file(
+        &dir,
+        "main.star",
+        "import \"animals.star\" as zoo\ntrait Speaker:\n    fn speak(self) -> i32\n\nimpl Speaker for zoo::Dog:\n    fn speak(self) -> i32:\n        return self.volume\n\nfn announce<T: Speaker>(x: T) -> i32:\n    return x.speak()\n\nfn main():\n    println(f\"{announce(zoo::Dog(7))}\")\n",
+    );
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+
+    let exe = std::env::temp_dir().join("star_test_cross_module_trait_impl.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "7");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Runtime end-to-end: a qualified impl target reached through a
+/// re-exported *nested* import (`impl mid::base::Base:`, mangling
+/// transitively to `mid__base__Base`, the same name `crate::modules::
+/// resolve` gives the struct after flattening `mid.star` -- which itself
+/// imported `base.star` -- into `main.star`) still resolves, type-checks,
+/// codegens, and runs correctly.
+#[test]
+fn runtime_transitive_qualified_impl_through_nested_import_end_to_end() {
+    let dir = test_scratch_dir("runtime_transitive_qualified_impl_through_nested_import_end_to_end");
+    write_test_file(&dir, "base.star", "struct Base:\n    n: i32\n");
+    write_test_file(&dir, "mid.star", "import \"base.star\" as base\nfn make_base(n: i32) -> base::Base:\n    return base::Base(n)\n");
+    let main_path = write_test_file(
+        &dir,
+        "main.star",
+        "import \"mid.star\" as mid\nimpl mid::base::Base:\n    fn doubled(self) -> i32:\n        return self.n * 2\n\nfn main():\n    let b = mid::make_base(5)\n    println(f\"{b.doubled()}\")\n",
+    );
+    let compilation = Driver::new(&main_path).compile().expect("file read should succeed");
+    assert!(compilation.is_ok(), "{}", compilation.render_diagnostics());
+    let typed = compilation.typed.as_ref().unwrap();
+    let ir = Driver::codegen(typed).expect("should codegen");
+
+    let exe = std::env::temp_dir().join("star_test_transitive_qualified_impl.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+    let output = std::process::Command::new(&exe).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "10");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -192,17 +192,47 @@ future `.star` project.
    three-element destructuring, two destructures in one function, re-
    evaluation inside a loop body, a struct-valued tuple element, and the
    annotated-vs-unannotated `sequence`-hoisting cases).
-6. **`impl` can't reach into another module.** `impl imported::Type:` is a
-   parse error — only a bare identifier is accepted, confirmed empirically
-   (`impl cpu::Cpu:` fails with "expected ':', found '::'"). Every method on
-   a struct must live in the same file as the struct's own definition, which
-   is why `cpu.star`'s ~90 opcode-handler methods are stuck in one
-   ~1500-line file with no way to split it — a problem that only gets worse
-   as sound/sprite/layer/string/math opcode groups are added. Calling a
-   type's existing methods across modules already works fine (composition —
-   `Cpu` holding `mem`/`screen`/`kbd`/`flags` as fields — is how Nova works
-   around this today); only *defining new methods* on an imported type is
-   blocked.
+6. **`impl` can't reach into another module.** — **done**: `Parser::
+   parse_impl` (`src/parser/items.rs`) called a bare `expect_ident()` for
+   both the trait name and the type name, never consulting `self.
+   import_aliases` the way every other qualified-path site already did
+   (`parse_type_inner`, `parse_primary`, pattern parsing) — so `impl
+   geo::Point:` left the parser sitting on the leftover `::` token when it
+   next expected the block's `:`, producing exactly the reported "expected
+   ':', found '::'". Fixed by a new `Parser::parse_impl_qualified_name`
+   helper, called for both `first` and (when `for` is present) the
+   post-`for` name, that reproduces the same chained `alias__name` mangling
+   `parse_type_inner`'s qualified-path loop and `crate::modules::resolve`'s
+   own renaming pass already agree on — an arbitrary-depth `a::b::Point`
+   chains `mangle_name` once per `::` exactly like a qualified type
+   annotation does. Because `ImplBlock::type_name`/`trait_name` are plain
+   `String`s and every downstream consumer (`Checker::check_impl`'s flat
+   `self.structs.contains_key(&blk.type_name)` lookup, `self.methods`'s
+   `"{type_name}#{method}"` keying, codegen's `alias__Name__method` symbol
+   emission) already worked purely by string equality with zero notion of
+   "module," resolving the mangled name at parse time was the entire fix —
+   no changes needed anywhere in `src/modules.rs`, `src/types/mod.rs`, or
+   `src/codegen/mod.rs`. This directly unblocks splitting `cpu.star`'s
+   opcode-handler methods across several files: a struct can now be declared
+   in one file and have additional methods (including `mut self` methods,
+   and trait impls satisfying a generic bound) added from any file that
+   imports it, in any combination of which side (trait, type, both, neither)
+   is itself qualified, including through a re-exported nested import
+   (`impl mid::base::Base:`, chaining to `mid__base__Base`). 14 new tests in
+   `tests/frontend_modules_imports.rs`: parser/AST-shape coverage (bare
+   qualified inherent impl, qualified-trait-for-local-type and
+   local-trait-for-qualified-type and both-qualified combinations, the
+   3-segment chained-mangling case, a qualified generic impl's `<T>` still
+   parsing, and a clean parse-error — not a panic — for `::` after an
+   undeclared alias), a checker-rejection test (an impl naming a real alias
+   but an undefined struct under it is a clean "undefined type" error, not a
+   silently-dropped impl), and real multi-file resolve→check→codegen→
+   clang-compiled-runtime tests: adding a method to an imported struct,
+   splitting one struct's methods across two files (the exact motivating
+   shape), a cross-module `mut self` method actually mutating the caller's
+   value, a local trait implemented for an imported type satisfying a
+   generic function's trait bound end to end, and the transitive
+   nested-import chaining case.
 
 ## P2 — Smaller friction, worth batching with the above
 

@@ -345,13 +345,39 @@ impl Parser {
         Some(TraitDef { name, methods, span })
     }
 
+    /// A single identifier naming the trait or type an `impl` block targets,
+    /// optionally qualified through an imported module (`impl cpu::Cpu:`,
+    /// `impl fmt::Display for cpu::Cpu:`), reproducing the same chained
+    /// `alias__name` mangling `parser::mod::parse_type`'s own qualified-path
+    /// loop and `crate::modules::resolve` agree on -- once resolved, the
+    /// struct/enum this targets and the mangled name produced here are the
+    /// same plain identifier, so the checker's existing name-based
+    /// `self.structs.contains_key(&blk.type_name)` lookup (`src/types/mod.rs`)
+    /// needs no changes at all to find it. This is what lets a method be
+    /// defined on a struct declared in a different file than the struct
+    /// itself -- previously impossible, since only a bare identifier was
+    /// accepted here.
+    fn parse_impl_qualified_name(&mut self) -> Option<String> {
+        let mut name = self.expect_ident()?;
+        if self.import_aliases.contains(&name) && self.at(&TokenKind::ColonColon) {
+            self.advance();
+            let mut item = self.expect_ident()?;
+            name = crate::modules::mangle_name(&name, &item);
+            while self.eat(&TokenKind::ColonColon) {
+                item = self.expect_ident()?;
+                name = crate::modules::mangle_name(&name, &item);
+            }
+        }
+        Some(name)
+    }
+
     fn parse_impl(&mut self) -> Option<ImplBlock> {
         let start = self.peek_span();
         self.expect(&TokenKind::Impl)?;
-        let first = self.expect_ident()?;
+        let first = self.parse_impl_qualified_name()?;
         // `impl Trait for Type` vs inherent `impl Type`.
         let (trait_name, type_name) = if self.eat(&TokenKind::For) {
-            (Some(first), self.expect_ident()?)
+            (Some(first), self.parse_impl_qualified_name()?)
         } else {
             (None, first)
         };
