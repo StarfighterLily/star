@@ -417,6 +417,25 @@ future `.star` project.
     `elif` chain, and a sustained-iteration leak check (`assert_no_leak`)
     alternating branches across 400,000 iterations.
 
+12. **No scientific-notation float literals (`1e10`/`3.0e38`).** Found
+    porting Nova's math-library opcodes (`projects/nova/NOTES.md`'s "Math
+    library / Q8.8 fixed-point" section): `Lexer::scan_number`'s float path
+    only ever scans digits, an optional `.`, then more digits — no `e`/`E`
+    exponent suffix at all. `3.0e38` lexes as two tokens, the float `3.0`
+    then the bare identifier `e38`, which fails to parse as a standalone
+    expression right after it (confirmed the hard way: `let x = 3.0e38`
+    errored `expected ':', found identifier`, not a lexer error, which is
+    what made this non-obvious at first). No workaround short of spelling
+    the literal out in full (Nova's `op_exp`/`op_tan` overflow-guard needed
+    `const MATH_OVERFLOW_GUARD: f32 = 3000...0.0`, 39 zeros written out by
+    hand) — there's also no `f32::INFINITY`/`f32::MAX`/`is_infinite`
+    builtin that could have sidestepped needing the literal at all. Not
+    urgent (every call site so far has had a "spell it out" escape hatch),
+    but worth a small lexer addition (an optional `[eE][+-]?[0-9]+` suffix
+    on the existing float-scanning path, parsed the same way Rust's own
+    float-literal grammar does) the next time a project needs a magnitude
+    this unwieldy, or needs one that isn't a round power of ten.
+
 # Previous Work
 file_read_bytes(handle) -> Bytes and file_write_bytes(handle, data: Bytes) -> bool (src/codegen/file_io.rs) — binary-safe siblings of file_read/file_write that never call @strlen or append a NUL terminator. They reuse the Ty::Bytes explicit-length {u8*, i64, i64} payload that already existed but had no non-strlen way to load real binary data into it.
 Factored a shared emit_bytes_wrap_raw_buf helper in src/codegen/list.rs and exposed list_fields for cross-module reuse.

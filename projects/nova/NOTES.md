@@ -539,6 +539,9 @@ execute cycle, all four addressing modes, and roughly 100 opcodes:
 - Data movement: `MOV MOVZ MOVNZ XCHNG SWAP LEA`
 - Arithmetic: `ADD SUB MUL DIV MOD INC DEC NEG ABS ADC SBC MULH DIVH MIN MAX
   CLZ CTZ POPCNT`
+- Math library: `POWR SQRT LOG EXP SIN COS TAN ATAN ASIN ACOS DEG RAD FLOOR
+  CEIL ROUND TRUNC FRAC INTGR`
+- Fixed-point Q8.8: `FMUL FDIV FTOI ITOF`
 - Bitwise: `AND OR XOR NOT SHL SHR ROL ROR SAR SAL RCL RCR BTST BSET BCLR
   BFLIP`
 - Stack: `PUSH POP PUSHF POPF PUSHA POPA ENTER LEAVE`
@@ -566,11 +569,6 @@ in:
 - **BCD arithmetic** (`SED CLD CLA BCDA BCDS BCDCMP BCD2BIN BIN2BCD BCDADD
   BCDSUB`) — a self-contained subsystem, no interaction with anything
   above; skipped for time.
-- **Math library** (`POWR SQRT LOG EXP SIN COS TAN ATAN ASIN ACOS DEG RAD
-  FLOOR CEIL ROUND TRUNC FRAC INTGR`) and **fixed-point Q8.8** (`FMUL FDIV
-  FTOI ITOF`) — straightforward given Star's own math builtins exist
-  (`sin`/`cos`/`sqrt`/... are already used elsewhere in this repo), just not
-  reached yet.
 - **String library** (`STRCPY STRCAT STRCMP STRLEN STREXT STREXTI STRUPR
   STRLWR STRREV STRFIND STRFINDI`) and **type conversion** (`ITOB BTOI ITOS
   STOI`) — operate on raw memory bytes, moderate complexity, not reached.
@@ -620,6 +618,10 @@ in:
   (`pc`, opcode byte) rather than either crashing or silently
   misinterpreting the following bytes as something else — the safest
   choice given the fetch stream would otherwise desync unrecoverably.
+- **The math library's transcendental opcodes compute in `f32`, not
+  `f64`** like the Python reference — see "Math library / Q8.8
+  fixed-point" below for the full reasoning and the two opcodes (`POWR`,
+  `EXP`) where the gap is actually reachable rather than academic.
 
 ## Testing
 
@@ -653,6 +655,131 @@ wiring anything into the SDL window:
   loop condition — `R0 <= 255` — that can never be false for an 8-bit
   register) caught by exactly this headless-first-then-visual process;
   worth keeping for anything hand-encoded in the future.
+- The math library / Q8.8 fixed-point opcodes (0x5B-0x6C, 0xAC-0xAF),
+  checked against the actual **running** Python reference (via the
+  Nova-16 MCP server) rather than hand-computed expectations — see "Math
+  library / Q8.8 fixed-point"'s own "Verification" section below for the
+  full process.
+
+## Math library / Q8.8 fixed-point (0x5B-0x6C, 0xAC-0xAF)
+
+Added in this round: the full math library (`POWR SQRT LOG EXP SIN COS TAN
+ATAN ASIN ACOS DEG RAD FLOOR CEIL ROUND TRUNC FRAC INTGR`) and Q8.8
+fixed-point conversion (`FMUL FDIV FTOI ITOF`), ported from
+`core/exec_handlers.py`'s `_powr`/`_sqrt`/.../`_itof`. Implementation lives
+in `cpu.star`'s "Math library"/"Fixed-point Q8.8 conversion" sections
+(right after `op_popcnt`), dispatched from `execute` the same way as every
+other opcode.
+
+Notable decisions and quirks found while porting, each also called out at
+its point of use in `cpu.star`:
+
+- **Every one of these opcodes treats its operand as 16-bit signed
+  regardless of the destination's resolved width**, via `to_signed(a, 16)`
+  called unconditionally — matching the reference's own hardcoded
+  `_to_signed_16`, and a deliberate *exception* to this port's usual
+  "infer width from the destination register's real kind" rule (see
+  "Operand width is inferred..." above). Justified because Q8.8 is
+  inherently a 16-bit format and real programs always target a `P`
+  register or memory with these; the one case where the distinction could
+  matter (an 8-bit `R`/`VX`/`SF`/... destination) already reads only 8
+  bits before the signed reinterpretation runs, making it a no-op in both
+  this port and the reference alike.
+- **`TAN` (0x61) is a genuine upstream quirk, not a transcription slip**:
+  unlike every other trig opcode here, it uses its operand directly as
+  radians (not `/ 256.0`) and scales its result by 1000 (not 256) —
+  confirmed intentional by `core/exec_handlers.py::_tan`'s own docstring
+  ("tangent (scaled by 1000)"). Ported bug-for-bug.
+- **`DEG`/`RAD` convert between a plain-integer degree count and Q8.8
+  radians**, not between two Q8.8 values — easy to misread from the opcode
+  names alone; `core/exec_handlers.py::_deg`/`_rad` confirm the asymmetry.
+- **`FLOOR`/`CEIL`/`ROUND`/`FDIV` needed Python's floor-toward-negative-
+  infinity division semantics**, which Star's own `/`/`%` don't have (they
+  truncate toward zero — gotcha #1). Added a small `floor_div16` free
+  function (trunc-to-floor adjustment: subtract 1 from the truncating
+  quotient exactly when the remainder is nonzero and the operands' signs
+  differ) rather than reaching for float math, which sidesteps the
+  precision question below entirely for this family.
+- **`ROUND` reproduces Python's round-half-to-even** with pure integer
+  arithmetic, no float involved: since `v / 256.0` is always *exact* for a
+  16-bit `v` (256 is a power of 2), the "exactly .5" tie case is a genuine
+  tie, not a float-rounding artifact, and occurs exactly when the
+  floor-remainder (`v` mod 256, always in `[0, 256)`) equals 128 — checked
+  directly, then broken by the floor quotient's own parity.
+- **`SIN`/`COS`/`TAN`/`ATAN`/`ASIN`/`ACOS`/`LOG`/`EXP`/`SQRT`/`POWR` route
+  through Star's builtin math functions, which are `f32` (single)
+  precision — the Python reference is `f64` throughout.** Deliberately
+  accepted for the Q8.8-scaled ones: 8 bits of fractional precision is far
+  inside `f32`'s ~23-bit mantissa, so it can only matter at an exact-tie
+  rounding boundary. `POWR` and `EXP` are the two placed where this gap is
+  actually reachable and worth flagging specifically:
+  - `POWR`'s "overflow → 0" fallback (matching `_powr`'s caught
+    `OverflowError`) triggers far more often here, since `f32` overflows to
+    +inf around `3.4e38` where `f64` doesn't until `~1.8e308`. Beyond
+    `f32`'s exact-integer ceiling (`2**24`, ~16.8M) a finite `POWR` result
+    is also only an approximation of the reference's exact
+    (arbitrary-precision-then-truncated) low 16 bits, not a bit-exact
+    match — there's no way to reproduce that through float math without
+    implementing bignum exponentiation, so this is flagged rather than
+    silently wrong.
+  - `EXP` substitutes `0xFFFF` (not `0`) on overflow, matching `_exp`'s own
+    except-clause. `f32` overflows around `exp(88.7)`, `f64` not until
+    `exp(709.8)` — and the input range here (`v/256` up to ~128) actually
+    reaches past the `f32` threshold, unlike the other trig ops whose
+    output magnitude is bounded regardless of precision.
+- **`FDIV` by zero prints a diagnostic and skips the write** rather than
+  raising (Python's `_fdiv` raises `RuntimeError`), matching the existing
+  `DIV`/`MOD`/`DIVH`-by-zero precedent elsewhere in this port (see "Known
+  simplifications" below) instead of introducing a second by-zero policy.
+- **Star's float lexer has no scientific-notation literal syntax**
+  (`3.0e38` lexes as the two tokens `3.0` and the bare identifier `e38`,
+  not one float token — confirmed the hard way, first draft of `op_exp`/
+  `op_tan`'s overflow-guard threshold). Worked around with a `const
+  MATH_OVERFLOW_GUARD: f32 = 300000000000000000000000000000000000000.0`
+  (the full expansion of `3e38`) rather than reaching for a
+  `f32::INFINITY`/`is_infinite` builtin, neither of which exist either.
+  Not filed as a numbered "Language gotcha" above (that list is closed out
+  — every entry there was fixed at the compiler level and swept back
+  through this project) since nothing here was actually *fixed*, just
+  worked around; flagged instead as a plain gap worth a future compiler
+  pass if a project ever needs a literal magnitude this unwieldy again.
+
+### Verification
+
+Unlike everything ported before it in this project (verified only against
+hand-computed expected values or the Python *source* read directly), this
+round was checked against the actual **running** Python reference via the
+Nova-16 MCP server — assembling a real `.asm` test program
+(`asm`-syntax `MOV`/`FTOI`/`ITOF`/`FMUL`/`FDIV`/`TRUNC`/`FRAC`/`FLOOR`/
+`CEIL`/`ROUND`/`SQRT`/`POWR`/`LOG`/`EXP`/`SIN`/`COS`/`TAN`/`ATAN`/`ASIN`/
+`ACOS`/`DEG`/`RAD` covering every new opcode, including deliberately
+negative/edge-case operands and two overflow-triggering `POWR`/`EXP`
+inputs), running it on the live reference CPU, and recording `P0`-`P3` at
+15 checkpoints. The exact same assembled `.bin` was then loaded into this
+port via `file_read_bytes` (a genuine, if temporary, real-world use of the
+binary-safe loader gotcha #9 unblocked but never wired up — see "Ideas for
+future work" below) into a standalone headless harness stepping through the
+same 15 checkpoints and diffing `P0`-`P3` against the reference's recorded
+values. All 15 checkpoints matched exactly, including every transcendental
+op — `f32`-vs-`f64` turned out not to bite anywhere in this test's input
+range (only `POWR`/`EXP`'s already-documented overflow-threshold gap is
+known to differ, and this test's overflow cases were chosen large enough
+that *both* implementations already fall back to their guard value, so
+even that gap didn't surface as a visible mismatch here).
+
+One MCP-server-specific discovery along the way, unrelated to Star or Nova
+itself: **the reference emulator's `halted` flag is sticky through the MCP
+tool surface** — once `HLT` sets it, neither `set_register("PC", ...)` nor
+`cpu_step` clears it, so a test program with an intermediate `HLT`
+"checkpoint" can never be resumed past it in the same session (confirmed
+directly: `cpu_step` after manually setting `PC` past a `HLT` still reports
+`"halted": true` and performs no work). Worked around by dropping every
+`HLT` from the middle of the test program (blocks fall through into each
+other with no gap — an `ORG` gap pads with `0x00`, which *is* `HLT`, an
+earlier version of this test program hit that too) and driving the whole
+thing with `cpu_step(count=N)` where `N` is each block's own known
+instruction count, checking state between calls instead of relying on
+`HLT`+resume.
 
 ## Ideas for future work
 
@@ -660,12 +787,16 @@ wiring anything into the SDL window:
   `SPBLITALL`/`LSWAP`/`LMOVE`/`LCOPY`.
 - Sound synthesis (waveform generation + mixing) behind the already-in-
   place `SA`/`SF`/`SV`/`SW` register model.
-- The math/string/BCD/type-conversion/UART opcode groups listed above.
+- The string/BCD/type-conversion/UART opcode groups listed above (the math
+  library and Q8.8 fixed-point conversion are now done — see above).
 - A byte-accurate binary file loader (so a compiled `.bin` could be loaded
   instead of a baked-in demo) — the language-level blocker is gone
   (`file_read_bytes`/`file_write_bytes` now exist, see "Fixes applied to
-  this project"), but there's still no assembler in this port to produce a
-  `.bin` to load in the first place, which is the actual remaining blocker.
+  this project"), and this round's own verification harness proved the
+  mechanics work end to end (loading a real assembled `.bin` via
+  `file_read_bytes` into `Cpu`'s memory) — but there's still no assembler
+  in this port to produce a `.bin` from source in the first place, which is
+  the actual remaining blocker for wiring this into `main.star` for real.
 - Blend modes (`SBLEND`) actually affecting `SWRITE`/`VWRITE`.
 - Real mouse-event plumbing behind `MOUSECTRL`/`MX`/`MY`/`MB`.
 - Splitting `cpu.star`'s ~90 opcode-handler methods across files by group

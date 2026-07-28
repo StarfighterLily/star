@@ -50,6 +50,30 @@ fn zero_operand() -> Operand:
 fn wrap_addr(a: i32) -> i32:
     ((a % 65536) + 65536) % 65536
 
+# Floor division (Python `//` semantics: rounds toward -infinity), needed by
+# FDIV/FLOOR/CEIL/ROUND below since Star's own `/` truncates toward zero
+# instead (see NOTES.md gotcha #1). Standard trunc-to-floor adjustment: `/`
+# and `%` already agree with `floor_div16` whenever `a`/`b` have the same
+# sign or divide evenly; otherwise `floor_div16` is one less.
+fn floor_div16(a: i32, b: i32) -> i32:
+    let q = a / b
+    let r = a % b
+    if r != 0 and (a < 0) != (b < 0):
+        q - 1
+    else:
+        q
+
+# No builtin `pi` constant (see examples/trig_log.star, which computes its
+# own via `4.0 * atan(1.0)`); DEG/RAD need one, so it's defined once here.
+const PI: f32 = 3.14159265
+
+# ~3e38, just under `f32::MAX` (~3.4028e38) -- an EXP/TAN overflow-to-+inf
+# guard threshold (see their comments below). Spelled without an exponent:
+# Star's float lexer has no `1e10`-style scientific notation (confirmed the
+# hard way -- `3.0e38` lexes as the two tokens `3.0` and the identifier
+# `e38`, a parse error).
+const MATH_OVERFLOW_GUARD: f32 = 300000000000000000000000000000000000000.0
+
 # Interrupt vector table: 8 vectors x 4 bytes at 0x0100-0x011F.
 const IVT_BASE: i32 = 256
 
@@ -1016,6 +1040,331 @@ impl Cpu:
             raw = bits::popcount16(a as u16)
         self.operand_write(op1, width, raw)
 
+    # ── Math library (docs/nova16_instruction_reference.md 0x5B-0x6C) ──
+    # Ported from core/exec_handlers.py's _powr/_sqrt/_log/.../_intgr. Every
+    # one of these treats its operand as a 16-bit *signed* value via
+    # `to_signed(a, 16)` regardless of the destination's resolved width --
+    # matching the reference's own hardcoded `_to_signed_16`, unlike this
+    # port's usual "infer width from the destination register's real kind"
+    # rule (see "Operand width is inferred..." in NOTES.md). Deliberate, not
+    # an oversight: Q8.8 fixed-point is inherently a 16-bit format, real
+    # Nova-16 programs always target a P register (or memory) with these,
+    # and the one case where the distinction could matter -- targeting an
+    # 8-bit R/VX/SF/... register -- already reads only 8 bits before the
+    # signed reinterpretation ever runs, so `to_signed(a, 16)` is a no-op
+    # there in both this port and the reference alike (an 8-bit read is
+    # always < 0x8000). Flags are likewise always computed at width=16,
+    # matching `_set_arith_flags(..., 16, ...)` in every handler below --
+    # `apply_arith`'s `op1`/`op2` arguments are each handler's *raw* operand
+    # read(s), not the signed-reinterpreted value used for the math itself,
+    # again matching the reference exactly.
+    #
+    # SIN/COS/TAN/ATAN/ASIN/ACOS/LOG/EXP/SQRT/POWR route through Star's
+    # builtin math functions, which compute in `f32` (single) precision --
+    # the Python reference uses `f64` throughout. Deliberately accepted for
+    # the fixed-point-scaled ones (SIN/COS/etc.): Q8.8 only needs 8 bits of
+    # fractional precision, far inside `f32`'s ~23-bit mantissa, so it can
+    # only matter at the very edge of an exact-tie rounding boundary.
+    # POWR/EXP's overflow thresholds are a bigger, more visible consequence
+    # of the same gap -- see their own comments below.
+
+    fn op_powr(mut self):
+        let (op1, op2, _op3) = self.decode_operands(2)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let b = self.operand_read(op2, width)
+        let p = pow(a, b)
+        # `_powr` catches Python's OverflowError and substitutes 0; `f32`
+        # overflows to +inf at a far lower magnitude than `f64` (~3.4e38 vs
+        # ~1.8e308), so this falls back to 0 across a visibly wider range of
+        # (base, exponent) pairs than the reference does. Also inherent:
+        # `f32` only represents integers exactly up to 2**24 (~16.8M), so a
+        # POWR result between that and the ~9e15 cutoff below is a rounded
+        # approximation of the reference's exact (arbitrary-precision,
+        # then-truncated-to-16-bits) result, not a bit-exact match -- there
+        # is no way to reproduce Python's exact low-16-bits-of-a-bignum
+        # behavior through float math; flagged rather than silently wrong.
+        let mut result: i32 = 0
+        if p == p and p < 9000000000000000.0 and p > (0.0 - 9000000000000000.0):
+            result = (p as i64) as i32
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, a, b, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    fn op_sqrt(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let mut result = 0
+        if v >= 0:
+            result = sqrt(v) as i32
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    fn op_log(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let mut result = 0
+        if v > 0:
+            result = (log((v as f32) / 256.0) * 256.0) as i32
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    fn op_exp(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let p = exp((v as f32) / 256.0)
+        # `_exp` substitutes 0xFFFF (not 0) on overflow. `f32` overflows
+        # around exp(88.7) where `f64` doesn't overflow until exp(709.8) --
+        # a real, reachable gap here (v/256 can be up to ~128), unlike
+        # SIN/COS/TAN/ATAN's inputs, whose result magnitude is bounded
+        # regardless of precision.
+        let mut result = 0xFFFF
+        if p == p and p < MATH_OVERFLOW_GUARD and p > (0.0 - MATH_OVERFLOW_GUARD):
+            result = self.mask_to_width((p * 256.0) as i32, 16)
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    fn op_sin(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let result = (sin((v as f32) / 256.0) * 256.0) as i32
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    fn op_cos(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let result = (cos((v as f32) / 256.0) * 256.0) as i32
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    # TAN (0x61) is a genuine reference quirk, not a transcription slip: the
+    # Python handler uses `v` directly as radians (not `v / 256.0` like
+    # every other trig op here) and scales its result by 1000 (not 256).
+    # Ported bug-for-bug -- `core/exec_handlers.py::_tan`'s own docstring
+    # ("tangent (scaled by 1000)") confirms it's intentional upstream, odd
+    # as it looks next to its neighbors.
+    fn op_tan(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let t = tan(v as f32)
+        let mut result = 0
+        if t == t and t < MATH_OVERFLOW_GUARD and t > (0.0 - MATH_OVERFLOW_GUARD):
+            result = self.mask_to_width((t * 1000.0) as i32, 16)
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    fn op_atan(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let result = (atan((v as f32) / 256.0) * 256.0) as i32
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    fn op_asin(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let mut result = 0
+        if v >= (0 - 256) and v <= 256:
+            result = (asin((v as f32) / 256.0) * 256.0) as i32
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    fn op_acos(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let mut result = 0
+        if v >= (0 - 256) and v <= 256:
+            result = (acos((v as f32) / 256.0) * 256.0) as i32
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    # DEG (0x65): despite the name, converts a plain-integer *degree* value
+    # to Q8.8 *radians* (docs: "Converts deg to rad") -- `v` itself is the
+    # degree count, not `v / 256.0`.
+    fn op_deg(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let result = (((v as f32) * PI / 180.0) * 256.0) as i32
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    # RAD (0x66): the inverse -- Q8.8 radians in, plain-integer degrees out.
+    fn op_rad(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let result = (((v as f32) / 256.0) * 180.0 / PI) as i32
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    fn op_floor(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let result = floor_div16(v, 256)
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    fn op_ceil(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let q = floor_div16(v, 256)
+        let r = v - q * 256
+        let mut result = q
+        if r != 0:
+            result = q + 1
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    # Round-half-to-even (matches Python's `round()`), computed with pure
+    # integer arithmetic rather than through float math at all: `v / 256.0`
+    # is always *exact* in a double or float (256 is a power of 2 and `v`
+    # is only ever 16 bits), so the "exactly .5" tie case is a genuine tie,
+    # not a float-precision artifact, and happens exactly when the
+    # floor-remainder (`v` mod 256, always in [0, 256)) is exactly 128.
+    fn op_round(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let q = floor_div16(v, 256)
+        let frac = v - q * 256
+        let mut result = q
+        if frac > 128:
+            result = q + 1
+        elif frac == 128:
+            if q % 2 != 0:
+                result = q + 1
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    # TRUNC (0x6A) and INTGR (0x6C) are the same operation in the
+    # reference (`_intgr`'s own docstring: "alias of TRUNC") -- both opcodes
+    # dispatch here directly (see `execute` below) rather than duplicating
+    # this method under two names.
+    fn op_trunc(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let result = v / 256
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    # FRAC: fractional part with the *same sign as the input* (unlike
+    # FLOOR's remainder) -- `v == TRUNC(v) * 256 + FRAC(v)`. This is Star's
+    # `%` directly (truncating remainder, sign follows the dividend), not
+    # `floor_div16`'s remainder.
+    fn op_frac(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let v = self.to_signed(a, 16)
+        let result = v % 256
+        let masked = self.mask_to_width(result, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(result, width))
+
+    # ── Fixed-point Q8.8 conversion (0xAC-0xAF) ─────────────────────────
+    # Same "always 16-bit signed regardless of resolved width" rule as the
+    # math library above -- ported from core/exec_handlers.py's
+    # _fmul/_fdiv/_ftoi/_itof.
+
+    fn op_fmul(mut self):
+        let (op1, op2, _op3) = self.decode_operands(2)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let b = self.operand_read(op2, width)
+        let da = self.to_signed(a, 16)
+        let db = self.to_signed(b, 16)
+        # Widest possible |da * db| is 32768*32768 (~1.07e9), comfortably
+        # inside i32 -- no overflow-trap risk from the plain `*` below.
+        # `>>` arithmetic-shifts (sign-extending), matching Python's `>>`
+        # floor-toward-negative-infinity semantics on a negative product.
+        let raw = (da * db) >> 8
+        let masked = self.mask_to_width(raw, 16)
+        self.flags.apply_arith(masked, a, b, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(raw, width))
+
+    fn op_fdiv(mut self):
+        let (op1, op2, _op3) = self.decode_operands(2)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let b = self.operand_read(op2, width)
+        # Python's FDIV raises on division by zero (a hard error); this port
+        # instead prints a diagnostic and skips the write, matching the
+        # existing DIV/MOD/DIVH precedent above (see NOTES.md "Known
+        # simplifications").
+        if b == 0:
+            println("[nova16] FDIV by zero -- ignored")
+        else:
+            let da = self.to_signed(a, 16)
+            let db = self.to_signed(b, 16)
+            let raw = floor_div16(da << 8, db)
+            let masked = self.mask_to_width(raw, 16)
+            self.flags.apply_arith(masked, a, b, 16, false, false)
+            self.operand_write(op1, width, self.mask_to_width(raw, width))
+
+    fn op_ftoi(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let signed = self.to_signed(a, 16)
+        let raw = signed >> 8
+        let masked = self.mask_to_width(raw, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(raw, width))
+
+    fn op_itof(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let signed = self.to_signed(a, 16)
+        let raw = signed << 8
+        let masked = self.mask_to_width(raw, 16)
+        self.flags.apply_arith(masked, 0, a, 16, false, false)
+        self.operand_write(op1, width, self.mask_to_width(raw, width))
+
     # ── Bitwise ──────────────────────────────────────────────────────────
 
     fn op_and(mut self):
@@ -1749,6 +2098,42 @@ impl Cpu:
                 self.op_memcpy()
             0x5A ->
                 self.op_loop()
+            0x5B ->
+                self.op_powr()
+            0x5C ->
+                self.op_sqrt()
+            0x5D ->
+                self.op_log()
+            0x5E ->
+                self.op_exp()
+            0x5F ->
+                self.op_sin()
+            0x60 ->
+                self.op_cos()
+            0x61 ->
+                self.op_tan()
+            0x62 ->
+                self.op_atan()
+            0x63 ->
+                self.op_asin()
+            0x64 ->
+                self.op_acos()
+            0x65 ->
+                self.op_deg()
+            0x66 ->
+                self.op_rad()
+            0x67 ->
+                self.op_floor()
+            0x68 ->
+                self.op_ceil()
+            0x69 ->
+                self.op_round()
+            0x6A ->
+                self.op_trunc()
+            0x6B ->
+                self.op_frac()
+            0x6C ->
+                self.op_trunc()
             0x6D ->
                 self.op_btst()
             0x6E ->
@@ -1815,6 +2200,14 @@ impl Cpu:
                 self.op_loopz()
             0xA1 ->
                 self.op_while()
+            0xAC ->
+                self.op_fmul()
+            0xAD ->
+                self.op_fdiv()
+            0xAE ->
+                self.op_ftoi()
+            0xAF ->
+                self.op_itof()
             0xB3 ->
                 self.op_mousectrl()
             _ ->
