@@ -544,7 +544,7 @@ impl Checker {
                 if name == "Table" {
                     return Ok(self.infer_table_new(type_args, &arg_exprs, *span));
                 }
-                if name == "Flags" {
+                if name == "Flags" && !self.structs.contains_key(name) {
                     return Ok(self.infer_flags_new(type_args, &arg_exprs, *span));
                 }
                 if self.generic_structs.contains_key(name) {

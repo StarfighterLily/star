@@ -305,12 +305,29 @@ future `.star` project.
    calling another, single-line and full-block functions freely mixed and
    calling each other, and a recursive single-line factorial).
 9. **`Flags` is a reserved builtin generic name with a misleading error.**
-   `struct Flags:` collides with the builtin `Flags<E>` bitset and fails
-   with a confusing "needs an explicit type argument" error *at the
-   construction site*, not the declaration — costly to debug the first time
-   it happens. Either let user structs shadow builtin generic names in
-   their own module, or surface the diagnostic at the colliding
-   declaration instead.
+   — **done**: `Checker::infer_expr`'s `Expr::StructLit` arm
+   (`src/types/expr.rs`) unconditionally hijacked any call named `Flags`
+   to `infer_flags_new` before ever consulting `self.structs`, so
+   `struct Flags:`'s declaration itself produced zero diagnostic and the
+   confusing `` `Flags<E>(..)` needs an explicit type argument `` message
+   only appeared later, at the construction call site. Fixed by guarding
+   that dispatch with `&& !self.structs.contains_key(name)`, the same
+   "declared struct shadows a same-named builtin" precedent already
+   established for builtin scalars (`Vec2`, `Tick`, ...) in `resolve_type`
+   (`src/types/mod.rs`) — once shadowed, construction falls through to the
+   ordinary `resolve_type`/`check_builtin_ctor_arity`/`check_struct_ctor_args`
+   path, which already prioritizes `self.structs` and reports the user
+   struct's own arity/field-type errors. No new AST/diagnostic variant
+   needed; `Flags<E>` used with an explicit type argument is unaffected
+   since a shadowing struct is always non-generic. 8 new tests in
+   `tests/frontend_flags_name_shadowing.rs`: the bare declaration
+   producing no diagnostic, single- and multi-field construction plus
+   named-argument construction running end-to-end, wrong-arity and
+   wrong-field-type construction reporting the struct's own diagnostic
+   (not the old misleading builtin one), and two regression tests
+   confirming the real `Flags<E>` builtin — both its "needs an explicit
+   type argument" diagnostic and full runtime bitset behavior — is
+   unaffected in any module that never declares a colliding struct.
 10. **No fixed-size array literal with differing values.** `[a, b, c]` is
     always a `List<T>`; the only `[T; N]` literal form is the `[value; N]`
     repeat. Nova's 256-glyph font table (`font_data.star`) had no way to be
