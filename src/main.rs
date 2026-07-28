@@ -298,6 +298,63 @@ fn clang_target_flag(target: star::codegen::Target) -> Vec<String> {
     }
 }
 
+/// The default reserved main-thread stack size for a `star build`-produced
+/// executable, in bytes. Windows' own PE linker default (1MiB, inherited
+/// unchanged from `ld`/`lld-link` when nothing overrides it -- confirmed via
+/// a real reproduction, not just documentation) is far too small for what
+/// this language explicitly, deliberately supports: the large-aggregate
+/// pointer-passing convention (`Codegen::LARGE_AGGREGATE_THRESHOLD`,
+/// `src/codegen/mod.rs`) exists specifically so a struct/array holding
+/// megabytes of data can be a perfectly ordinary `let` binding, function
+/// parameter, or return value -- but every one of those still ultimately
+/// lives in *some* function's stack frame (its own, or -- for a large local
+/// in `main` specifically -- `main`'s own frame, for the lifetime of the
+/// program). A real Nova-16 port under `projects/nova` hit exactly this:
+/// its `Cpu` struct (composed of a ~300KB `Memory` and, after this port
+/// grew to 9 compositing layers, a ~650KB `Screen`) is held as one `let mut
+/// c = Cpu(...)` local in `main` -- comfortably under 1MiB on its own, but
+/// *combined* with even a single additional 64KB local array somewhere
+/// deeper in the same call chain (`Screen::roll_x`'s temp buffer, called
+/// from a real loaded program's `SROL` opcode handler), the total native
+/// stack depth at that point exceeded the linker's 1MiB reserve --
+/// producing a genuine `STATUS_STACK_OVERFLOW` (confirmed via a minimal,
+/// language-level reproduction: a `Cpu`-sized struct held in `main` plus one
+/// call to a function with its own 64KB local array, nothing recursive or
+/// otherwise pathological). This isn't unbounded recursion (this compiler's
+/// own front end already has a dedicated, documented fix for that class of
+/// bug -- see `MAIN_STACK_SIZE` above -- covering *this* compiler's own
+/// process, not executables it produces) -- it's an entirely finite,
+/// correct program simply needing more stack than Windows' linker default
+/// budgets for by default. 16MiB (16x the current largest known combined
+/// large-aggregate-plus-locals usage, ~1MiB) gives a generous, cheap-to-grant
+/// margin: reserved address space costs nothing until touched, only the
+/// actually-used pages are committed, so this has no effect on a typical
+/// small program's real memory footprint.
+const DEFAULT_STACK_SIZE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The linker flag(s) that raise the produced executable's reserved
+/// main-thread stack to `DEFAULT_STACK_SIZE_BYTES` -- see that constant's own
+/// doc comment for why this exists at all. Split out (like
+/// `clang_target_flag`) so it's exercised directly in `tests` below without
+/// shelling out to clang; target-specific because the two backends' linkers
+/// spell "reserve more stack" differently: GNU `ld`/mingw-flavored `lld`
+/// (`Target::WindowsGnu`) takes `--stack <reserve>` (a PE-header field, no
+/// ELF equivalent), while a modern GNU `ld`/`lld` targeting ELF
+/// (`Target::LinuxGnu`) takes `-z stack-size=<bytes>` instead -- passing
+/// Windows' `--stack` under an ELF target (or vice versa) is simply an
+/// unrecognized-option link error, not a silent no-op, so this can't be one
+/// flag pair shared unconditionally across both.
+fn stack_size_flag(target: star::codegen::Target) -> Vec<String> {
+    match target {
+        star::codegen::Target::WindowsGnu => {
+            vec![format!("-Wl,--stack,{}", DEFAULT_STACK_SIZE_BYTES)]
+        }
+        star::codegen::Target::LinuxGnu => {
+            vec![format!("-Wl,-z,stack-size={}", DEFAULT_STACK_SIZE_BYTES)]
+        }
+    }
+}
+
 /// Full pipeline: parse, type-check, emit LLVM IR, compile with clang.
 #[allow(clippy::too_many_arguments)]
 fn cmd_build(
@@ -384,6 +441,7 @@ fn cmd_build(
         .arg(opt_flag(opt_level, release))
         .arg("-Wno-override-module")
         .args(clang_target_flag(target))
+        .args(stack_size_flag(target))
         .args(link_args(libs, lib_paths))
         .status()
     {
@@ -439,7 +497,7 @@ fn find_clang_on(
 
 #[cfg(test)]
 mod tests {
-    use super::{clang_target_flag, collect_search_paths_from, emit_llvm_ir_verified, find_clang_on, link_args, opt_flag};
+    use super::{clang_target_flag, collect_search_paths_from, emit_llvm_ir_verified, find_clang_on, link_args, opt_flag, stack_size_flag, DEFAULT_STACK_SIZE_BYTES};
 
     /// `star emit llvm` on a file with an `import` must resolve it exactly
     /// like `star check`/`star build` do (both go through `Driver::compile`,
@@ -582,6 +640,24 @@ mod tests {
             clang_target_flag(star::codegen::Target::LinuxGnu),
             vec!["-target".to_string(), "x86_64-unknown-linux-gnu".to_string()]
         );
+    }
+
+    /// `Target::WindowsGnu` gets GNU `ld`/mingw-`lld`'s `--stack <reserve>`
+    /// spelling, as one comma-joined `-Wl,` argument (not two separate
+    /// arguments -- clang would otherwise treat a bare `16777216` as a stray
+    /// positional/input-file argument rather than `--stack`'s value).
+    #[test]
+    fn stack_size_flag_uses_windows_ld_stack_spelling() {
+        assert_eq!(stack_size_flag(star::codegen::Target::WindowsGnu), vec![format!("-Wl,--stack,{}", DEFAULT_STACK_SIZE_BYTES)]);
+    }
+
+    /// `Target::LinuxGnu` gets the ELF-linker spelling instead (`-z
+    /// stack-size=N`) -- passing Windows' `--stack` spelling under this
+    /// target would be an unrecognized-option link error, not a silent
+    /// no-op, so the two targets cannot share one flag.
+    #[test]
+    fn stack_size_flag_uses_linux_ld_stack_spelling() {
+        assert_eq!(stack_size_flag(star::codegen::Target::LinuxGnu), vec![format!("-Wl,-z,stack-size={}", DEFAULT_STACK_SIZE_BYTES)]);
     }
 
     /// A `clang`/`clang.exe` on `PATH` is preferred over a `STAR_CLANG_PATH`

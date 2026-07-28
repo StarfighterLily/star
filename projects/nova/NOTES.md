@@ -10,8 +10,31 @@ framebuffer, and a keyboard/timer/interrupt model — and to write down
 everything that broke, surprised, or shaped a design choice along the way.
 
 This is a **base emulator only**, per the brief: no assembler, no
-disassembler, no debugger. Test programs in this directory are hand-encoded
-raw opcode bytes (see "Testing" below).
+disassembler, no debugger. There is now a real binary program loader (see
+"Binary program loading" below), so test/demo programs are genuine compiled
+Nova-16 `.bin` files assembled by the upstream Python `nova_assembler.py`,
+not hand-encoded bytes — see "Testing" below for the checked-in `tests/`
+directory this unlocked.
+
+**Expansion round** (this pass): the binary program loader itself, full
+9-layer compositing (`LSWAP`/`LMOVE`/`LCOPY`, every drawing opcode now
+`VL`-aware), memory-mapped sprites (`SPBLIT`/`SPBLITALL`), the UART
+(`SERIN`/`SEROUT`/`SERSTAT`/`SERCTRL`), real host mouse plumbing
+(`MOUSECTRL`/`MX`/`MY`/`MB` + the mouse interrupt), and register-model
+stubs for the three sound opcodes the reference itself actually implements
+(`SPLAY`/`SSTOP`/`STRIG`) — see each section below. Also found and fixed: a
+genuine pre-existing port bug (not a Star compiler bug) in how a memory
+destination's write width was resolved for `MOV`/`MOVZ`/`MOVNZ` — see "A
+genuine port bug: MOV [mem], narrow-source write-width" below.
+
+**Follow-up round**: a real user report ("programs loaded from the command
+line close almost immediately") led to a genuine **Star compiler** bug —
+`star build`-produced executables never had their stack size raised, so a
+large struct like this project's own `Cpu` (grown considerably by the
+9-layer compositing above) combined with just one more sizable local
+elsewhere in the same call chain (`Screen::roll_x`'s pre-existing temp
+buffer) could overflow the OS default 1MiB stack — see "Five Star compiler
+bugs found and fixed" #5 below for the full bisection and fix.
 
 ## Contents
 
@@ -21,7 +44,10 @@ raw opcode bytes (see "Testing" below).
   specs, font format). `reimplantation_analysis.md`, the various profiler/
   monitor-tool READMEs, and anything assembler/debugger-specific were
   deliberately not copied — they document tooling and Python-side
-  refactors, not the machine.
+  refactors, not the machine. Some of this doc set (`SPRITE_SYSTEM.md`'s own
+  "Instructions"/opcode section, in particular) turned out to be stale
+  against the actually-running reference — see "Layer compositing and
+  sprites" below for what was cross-checked against source instead.
 - `bits.star` — shift/rotate/parity/popcount/clz/ctz helpers for the CPU's
   *dynamic*-shift-amount instructions. Originally existed solely because
   Star had no bitwise/shift operators at all; now that it does (see
@@ -41,20 +67,33 @@ raw opcode bytes (see "Testing" below).
 - `font_data.star` — the 8x8 1bpp font glyph table, mechanically generated
   from the upstream `font.py`, now as a real fixed-size array literal (see
   "Language gotchas" #5 below).
-- `screen.star` — the 256x256 8bpp screen + VRAM buffers, drawing
-  primitives (line/rect/circle/char/text/roll/shift/flip/rotate), and the
-  font.
+- `screen.star` — 9 compositing layers (base + 4 background + 4 sprite),
+  each a 256x256 8bpp buffer, plus the VRAM staging buffer and drawing
+  primitives (line/rect/circle/char/text/roll/shift/flip/rotate/fill/invert),
+  all `VL`-layer-aware, and on-demand (uncached) compositing. See "Layer
+  compositing and sprites" below.
+- `uart.star` — the UART's data/status/control register model and RX/TX
+  loopback semantics (no host bridge — see "UART" below).
 - `keyboard.star` — the 64-slot keyboard FIFO and its status/control
   register model.
+- `loader.star` — the binary program loader: reads a compiled `.bin` (plus
+  its `.org` sidecar, if present) via `file_read_bytes` into a `Cpu`'s
+  memory. See "Binary program loading" below.
 - `cpu.star` — the CPU itself: registers, the register-code address space,
   operand decoding, the fetch-decode-execute cycle, every implemented
   instruction, interrupts, and the timer. Still the one large file in the
-  project (~2770 lines, register codes and opcodes now spelled in hex —
-  see "Language gotchas" #6 and #2 below); splitting it by opcode group is
-  now *possible* since `impl` can cross a module boundary, just not done yet.
-- `main.star` — SDL2 window, a small built-in demo program (there's no
-  assembler to produce anything else — see "Loading programs" below), the
-  main loop, and keyboard-event plumbing.
+  project (register codes and opcodes spelled in hex — see "Language
+  gotchas" #6 and #2 below); splitting it by opcode group is now *possible*
+  since `impl` can cross a module boundary, just not done yet.
+- `main.star` — SDL2 window, a small built-in demo program (used when no
+  `.bin` path is given on the command line — see "Binary program loading"
+  below), the main loop, and keyboard/mouse-event plumbing.
+- `tests/` — checked-in headless regression tests: `run_bin.star` (a
+  generic `.bin` runner/register-dumper, built as its own small executable,
+  no SDL needed), a handful of direct-field-poke Star harnesses for things
+  no opcode can drive on its own (`mouse_interrupt_test.star`), and
+  `asm/` (the actual `.asm` sources plus their `nova_assembler.py`-produced
+  `.bin`/`.org`/`.sym` output). See "Testing" below.
 
 ## Building and running
 
@@ -282,12 +321,15 @@ see both what the constraint used to be *and* what replaced it.
    compiler level: `file_read_bytes(handle) -> Bytes`/`file_write_bytes`
    now exist as genuinely binary-safe siblings of `file_read`/`file_write`,
    built on the pre-existing length-prefixed `Bytes` type rather than a
-   NUL-terminated `str`. **Not wired up in this project**, though: there's
-   still no assembler in this port (out of scope per the brief) to produce
-   a real compiled `.bin` to load, so there's nothing to feed a byte-loader
-   that the baked-in demo program doesn't already cover. `main.star`'s
-   header comment now points at `file_read_bytes` for whenever that
-   changes.
+   NUL-terminated `str`. **Not wired up in this project** at the time this
+   gotcha was first written up, though: there was still no assembler in
+   this port (out of scope per the brief) to produce a real compiled
+   `.bin` to load, so there was nothing to feed a byte-loader that the
+   baked-in demo program didn't already cover. **Now wired up for real**
+   (a later round, see "Binary program loading" below): the upstream
+   Python `nova_assembler.py` can produce a real `.bin` this port never
+   needed to write itself, which was the actual remaining blocker, not the
+   language gap this gotcha describes.
 
 10. **A bare multi-statement `if`/`else` doesn't work as a `let`
     initializer.** `let x = if cond: <expr> else: <expr>` worked fine when
@@ -316,7 +358,7 @@ see both what the constraint used to be *and* what replaced it.
     now recognizes an `[eE][+-]?[0-9]+` exponent suffix (`todo.md` P3 #12).
     `cpu.star`'s `MATH_OVERFLOW_GUARD` is now spelled `3.0e38` directly.
 
-## Four Star compiler bugs found and fixed
+## Five Star compiler bugs found and fixed
 
 Building this project's very first smoke test (a struct holding a
 `[u8; 65536]` array — the whole reason a Nova-16 port needs 64KB of
@@ -518,6 +560,78 @@ repro above (now fixed) and the full `cargo test` suite (no regressions —
 including the pre-existing diamond-import tests this mechanism was
 originally built for).
 
+### 5. The default linked executable's stack was too small for this language's own large-aggregate support
+
+Found via a real user report against the binary program loader (see
+"Binary program loading" above): a real, independently-authored Nova-16
+program (`gfxtest.asm`, from the upstream Python repo's own `asm/`
+directory) loaded and ran fine for a few thousand steps, then the whole
+process died silently — no crash message, no diagnostic, window just gone.
+Bisected (via `tests/run_bin.star`'s cycle-count argument, halving the
+range each time) to the *exact* step where a timer interrupt first fires
+(`gfxtest.asm` enables `TC`/`TM`/`TS` and its handler is one instruction,
+`SROL 0, -1`) — reproducible at the precise cycle, every run. `$?`/
+`$LASTEXITCODE` after the "crash" was 0xC00000FD, Windows'
+`STATUS_STACK_OVERFLOW` — not a Star-level trap (those print a diagnostic
+first; this printed nothing at all, consistent with a hard OS-level kill
+that never runs the C runtime's normal `atexit`/stdio-flush path).
+
+Root cause was **not** a Star compiler bug in the usual sense (bad codegen,
+a wrong type rule, a parser gap) — it's that `star build`'s `clang`
+invocation (`cmd_build`, `src/main.rs`) never passed a stack-size linker
+flag at all, so every produced Windows executable got whatever tiny default
+`ld`/`lld` picks for a PE binary's main-thread stack reserve (1MiB,
+confirmed empirically). That's an entirely reasonable default for a
+program with only small, ordinary locals — but this language *deliberately*
+makes large aggregates (multi-hundred-KB structs/arrays) ordinary values a
+program can freely `let`-bind, pass, and return (the whole point of
+`Codegen::LARGE_AGGREGATE_THRESHOLD`'s pointer-passing convention, todo.md
+P0 #2) — and every one of those values still has to live in *some*
+function's native stack frame. `projects/nova`'s own `Cpu` (a ~300KB
+`Memory` plus, after this round grew `Screen` to 9 compositing layers, a
+~650KB `Screen` — see "Layer compositing and sprites" above) is held as a
+single `let mut c = Cpu(...)` local in `main`, comfortably under 1MiB on
+its own — but stacked on top of even one additional, unrelated 64KB local
+array deeper in the same call chain (`Screen::roll_x`'s pre-existing temp
+buffer, called from `SROL`'s opcode handler when the timer interrupt
+fires), the combined depth exceeded the linker's 1MiB reserve. Confirmed
+with a minimal, project-independent repro: a `Cpu`-sized struct held in
+`main`, plus one ordinary (non-recursive) call to a function with its own
+64KB local array — nothing pathological, just two large, unrelated locals
+coexisting on the same native stack the way any real program using this
+language's large-aggregate support legitimately might.
+
+Fix: `cmd_build` now always links with an explicit, generous stack-size
+reserve (16MiB — 16x the current largest known combined usage) via a new
+`stack_size_flag(target)` (`src/main.rs`), added to the `clang` invocation
+right alongside the existing `-target`/`-l`/`-L` flags. Target-specific,
+since the two backends' linkers spell "reserve more stack" differently:
+`--stack,<bytes>` for `Target::WindowsGnu` (GNU `ld`/mingw-flavored
+`lld`, a PE-header field — no ELF equivalent) vs. `-z stack-size=<bytes>`
+for `Target::LinuxGnu` (a modern GNU `ld`/`lld` ELF option); passing the
+wrong one under the wrong target is a hard "unrecognized option" link
+error, not a silent no-op, so the two needed separate handling from the
+start, mirroring how `clang_target_flag` already splits target-specific
+flag logic out of `cmd_build` for testability. Reserved address space costs
+nothing until touched (only committed pages count against real memory), so
+this has no effect on a typical small program's actual footprint — it only
+raises the ceiling for programs that need it. Verified against the exact
+repro above (now fixed, confirmed via `$LASTEXITCODE` back to `0`) and the
+full `cargo test` suite (no regressions). Two new tests in `src/main.rs`'s
+own `tests` module (`stack_size_flag_uses_windows_ld_stack_spelling`/
+`_uses_linux_ld_stack_spelling`), matching the existing `clang_target_flag`
+test pattern.
+
+This is deliberately **not** the same fix as `MAIN_STACK_SIZE`
+(`src/main.rs`, near `fn main`) — that constant already existed, but covers
+a completely different stack: it's the 32MiB the `star` *compiler's own
+process* runs its parser/checker/codegen passes on (for genuinely deep
+input, e.g. long operator chains), not anything about the stack size of the
+*executables* `star build` produces. The two are easy to conflate (same
+file, same general topic) but fix unrelated problems; the doc comment on
+the new `DEFAULT_STACK_SIZE_BYTES` constant cross-references this
+distinction directly for whoever finds this section next.
+
 ## Fixes applied to this project
 
 Once all ten gotchas above were fixed at the compiler level (tracked in
@@ -601,7 +715,7 @@ mechanical version's and are identical.
 ## What's implemented
 
 The full CPU/memory/register-file/flags architecture, the fetch-decode-
-execute cycle, all four addressing modes, and roughly 125 opcodes:
+execute cycle, all four addressing modes, and roughly 140 opcodes:
 
 - No-operand: `HLT NOP RET IRET CLI STI`
 - Data movement: `MOV MOVZ MOVNZ XCHNG SWAP LEA`
@@ -621,17 +735,29 @@ execute cycle, all four addressing modes, and roughly 125 opcodes:
   CALLZ CALLNZ RETN LOOP LOOPZ WHILE INT`
 - Memory bulk: `MEMCPY MEMSET MEMMOVE MEMSWAP MEMTEST`
 - Random: `RND RNDR`
-- Graphics: `SBLEND(stub) SREAD SWRITE VREAD VWRITE SBLIT VBLIT SFILL SINV
-  SLINE SRECT SCIRC SROL SROT SSHFT SFLIP CHAR TEXT`
+- Graphics: `SBLEND(stub, see below) SREAD SWRITE VREAD VWRITE SBLIT VBLIT
+  SFILL SINV SLINE SRECT SCIRC SROL SROT SSHFT SFLIP CHAR TEXT` — every one
+  of these except `SREAD`/`VREAD`/`VWRITE` now targets whichever of the 9
+  layers `VL` selects, not just layer 0 (see "Layer compositing and
+  sprites" below).
+- Layers: `LSWAP LMOVE LCOPY` (see "Layer compositing and sprites" below).
+- Sprites: `SPBLIT SPBLITALL` (see "Layer compositing and sprites" below).
+- UART: `SERIN SEROUT SERSTAT SERCTRL` (see "UART" below).
+- Sound: `SPLAY SSTOP STRIG` (register-model stubs — see "Known
+  simplifications" below; `SMIX SECHO SREVERB SFILTER` are unimplemented in
+  the reference itself, see that same section).
 - Keyboard: `KEYIN KEYSTAT KEYCOUNT KEYCLEAR KEYCTRL`
-- `MOUSECTRL` (stub, consumes its operand and no-ops)
+- `MOUSECTRL` (real host mouse plumbing — see "Mouse plumbing" below).
 - Every register-code target (`R0-R9, P0-P9, SP, FP, VX, VY, VM, VL, VC,
   BANK, C0, C1, MX, MY, MB, SA, SF, SV, SW, TT, TM, TC, TS`, and the
   `P0:`/`:P0`-style byte-halves) via `MOV`/arithmetic/etc., not just as
   dedicated opcodes.
-- Interrupts (timer and keyboard as real hardware sources; software `INT`
-  reaching every vector 0-7) and the timer (`TC`/`TM`/`TS`/`TT`, ticked once
-  per instruction).
+- Interrupts (timer, serial/UART, keyboard, and mouse as real hardware
+  sources, in that priority order; software `INT` reaching every vector
+  0-7) and the timer (`TC`/`TM`/`TS`/`TT`, ticked once per instruction).
+- A real binary program loader (see "Binary program loading" below) --
+  loads a compiled `.bin` (as produced by the upstream Python
+  `nova_assembler.py`) instead of only the built-in demo program.
 
 ## What's not implemented (and why)
 
@@ -642,27 +768,28 @@ in:
   library, now implemented — see "String library and integer/string
   conversion" below) and **`MEMCMP`** — both 4-operand opcodes; see
   "4-operand instructions are out of scope" above.
-- **Sprites** (`SPBLIT SPBLITALL`) and **layers** (`LSWAP LMOVE LCOPY`,
-  and `VL`/layer-switching generally) — the real machine composites 9
-  layers (1 base + 4 background + 4 sprite); this port only implements
-  layer-0 semantics (every draw goes straight to `screen`/`vram`,
-  matching what the upstream reference itself does when `VL==0`). A full
-  compositor is a substantial separate subsystem.
-- **Sound** (`SPLAY SSTOP STRIG SMIX SECHO SREVERB SFILTER`) — the
-  register model (`SA SF SV SW`) is fully in place and settable via `MOV`
-  like any other register, but no audio synthesis/mixing is implemented.
-  The actual waveform generation is a host-audio concern more than CPU-
-  instruction semantics even in the reference implementation.
-- **UART/serial** (`SERIN SEROUT SERSTAT SERCTRL`) — a self-contained
-  peripheral, not reached.
+- **Sound synthesis/mixing** (`SMIX SECHO SREVERB SFILTER`, and real
+  waveform generation for `SPLAY`/`STRIG`) — the register model (`SA SF SV
+  SW`) is fully in place and settable via `MOV` like any other register,
+  and `SPLAY`/`SSTOP`/`STRIG` are now real (if audio-free) opcodes — but no
+  audio synthesis/mixing is implemented. The actual waveform generation is
+  a host-audio concern more than CPU-instruction semantics even in the
+  reference implementation, and `SMIX`/`SECHO`/`SREVERB`/`SFILTER`
+  themselves are marked `# unimplemented` in the reference's own
+  `opcodes.py` (no handler exists there either), so this port leaving them
+  unimplemented too is a bug-for-bug match, not a gap.
+- **UART host bridge** (terminal/TCP transport) and **framed-mode
+  protocol parsing** — the ISA-reachable half of the UART (data register,
+  status/control bits, `SEROUT`-then-`SERIN` loopback) is fully implemented
+  and verified against the live reference; see "UART" below for exactly
+  why the host bridge/framed mode were left out (no opcode can drive them
+  without one).
 - **Hardware debugging opcodes** (`SETBP CLRBP ENABRK DISBRK ENATRAP
   DISATRAP`) — explicitly out of scope per the brief (no debugger).
-- **Real mouse events** — `MOUSECTRL` is stubbed and `MX`/`MY`/`MB` are
-  ordinary readable/writable registers, but nothing feeds them from the
-  host's actual mouse.
 - **An assembler/disassembler/debugger** — explicitly out of scope per the
-  brief. Test/demo programs are hand-encoded raw opcode bytes; see
-  "Testing" below.
+  brief. Programs are now real compiled `.bin`s (see "Binary program
+  loading") assembled by the upstream Python `nova_assembler.py`; this
+  port still can't produce one from source itself.
 
 ## Known simplifications
 
@@ -674,10 +801,17 @@ in:
   reference under a `TS` so small relative to instruction throughput that
   multiple periods elapse between ticks — an edge case, not the common
   path.
-- **`SBLEND` (blend mode) is a stub**: the opcode is recognized and its
-  operand consumed, but every draw is a plain overwrite — no additive/
-  subtractive/multiply/screen blending is wired into `Screen::set_screen`/
-  `set_vram` yet.
+- **`SBLEND` (blend mode) is a stub, and confirmed to be a bug-for-bug
+  match rather than a simplification**: reading `nova/graphics/blitter.py`
+  directly shows `Blitter.blend_pixel`/`_set_pixel_to_layer` (the only
+  blend-aware pixel write) is never called from anywhere in the reference
+  — `SWRITE`'s real path and every drawing primitive write raw, unblended
+  values. See `screen.star`'s header comment for the full trace. This was
+  reconfirmed during this round specifically because it looked like an
+  obvious gap to close — it isn't one.
+- **`SPLAY`/`SSTOP`/`STRIG` update no actual audio state** — they exist as
+  real, dispatched opcodes (rather than halting) so a program using them
+  doesn't stop dead, but there's no synthesizer to drive.
 - **DIV/MOD/DIVH by zero print a diagnostic and leave the destination
   unchanged**, rather than raising a hardware fault/trap — a defensive
   choice so a buggy test program halts with a readable message instead of
@@ -690,14 +824,69 @@ in:
   `f64`** like the Python reference — see "Math library / Q8.8
   fixed-point" below for the full reasoning and the two opcodes (`POWR`,
   `EXP`) where the gap is actually reachable rather than academic.
+- **No layer-visibility toggle, no mouse-cursor compositor overlay** —
+  the reference's `Compositor.set_layer_visibility`/mouse-cursor-bitmap
+  overlay are pure Python-API conveniences with no opcode that reaches
+  them (confirmed by grep — no `exec_handlers.py` handler calls either),
+  so there's nothing ISA-visible to port here.
+- **`Screen`'s composite is always recomputed on demand, never cached** —
+  see `screen.star`'s header comment for why the reference's own dirty-
+  flag/pixel-count cache is a pure performance optimization with no
+  observable effect on any opcode's result, and is therefore skipped
+  entirely (same "don't chase the reference's own performance hacks, only
+  its observable behavior" precedent as the timer/opcode-fetch-cache
+  simplifications above).
 
 ## Testing
 
-No test suite (no assembler to generate real programs from source, and
-unit-testing individual opcodes would mean hand-encoding bytes for each
-one anyway — the same cost as the smoke tests below, without the
-end-to-end confidence). What was actually verified, headlessly, before
-wiring anything into the SDL window:
+**Updated this round**: there is now a real, checked-in `tests/` directory,
+unblocked entirely by the binary program loader (see "Binary program
+loading" below) — assembling a real `.asm` test program with the upstream
+Python `nova_assembler.py` and loading the resulting `.bin` is now strictly
+easier than hand-encoding bytes, so every prior round's "no test suite, no
+assembler" rationale is gone for anything the assembler can express. What's
+checked in:
+
+- `tests/run_bin.star` — a generic headless runner: loads a `.bin` (via
+  `loader.star`, same as `main.star`), steps it to completion or a cycle
+  cap, and prints every register plus `halted`/`pc` (and, given a third/
+  fourth CLI argument, a raw memory range) for shell-level comparison. Built
+  standalone (`star build projects/nova/tests/run_bin.star -o
+  projects/nova/tests/run_bin.exe`, no SDL needed) once per session and
+  reused against every `.bin` below.
+- `tests/asm/*.asm` (+ their assembled `.bin`/`.org`/`.sym`) — the actual
+  test programs:
+  - `uart_integration_test.asm` — copied verbatim from the upstream
+    Python repo's own `asm/uart_integration_test.asm` (not authored for
+    this port), proving the loader can run an *existing*, independently-
+    authored Nova-16 program unmodified. See "Binary program loading"/
+    "UART" below.
+  - `layers_test.asm`, `sprites_test.asm`, `mov_write_width_test.asm` —
+    written for this round, each with its expected-register-values
+    checklist spelled out in its own header comment. See "Layer
+    compositing and sprites" and "A genuine port bug: MOV [mem],
+    narrow-source write-width" below.
+- `tests/mouse_interrupt_test.star` — a direct-field-poke harness (not a
+  `.bin`) for the one piece of this round with no opcode-reachable way to
+  drive it end to end (nothing a Nova-16 program can execute sets
+  `mouse_pending_irq` — only the host mouse does, see "Mouse plumbing"
+  below) — same spirit as the BCD/string rounds' own "standalone headless
+  harness", just checked in this time.
+
+Every one of these was **also** run against the live Python reference
+(`python -c "..."` scripts importing `nova_memory`/`nova_gfx`/`nova_cpu`
+directly, `Memory.load(path)` for the `.org`-aware loader) for a
+checkpoint-by-checkpoint diff, not just hand-derived expected values —
+continuing the standard the math/string/BCD rounds established. Every
+comparison below matched exactly (cycle count, final `pc`, and every
+register), including the mouse-interrupt-gating case, which was cross-
+checked by reading `NovaMouse`/`nova_cpu.py`'s dispatch logic directly
+rather than executing it (there's no way to drive it from a `.bin` on
+either side).
+
+What was verified before this round (headlessly, before wiring anything
+into the SDL window, back when there was no assembler-driven `.bin` to
+load):
 
 - Register-code round trips (`get_reg_value`/`set_reg_value` for `R0`,
   `P0`, and `P0:`/`:P0` byte-halves) against known bit patterns.
@@ -1071,25 +1260,323 @@ throwaway *copy* of `c`. Fixed the same way as before: made both helpers
 `impl cpu::Cpu:` methods in the harness file so `self` carries the
 mutation back correctly.
 
+## Binary program loading
+
+Added in this round: `loader.star`'s `Cpu::load_program(bin_path) ->
+(entry_point, ok)`, wired into `main.star` (`nova16.exe path/to/prog.bin`
+loads and runs a real compiled program; no argument keeps the old built-in
+demo) and into every test harness in `tests/`. This is the thing gotcha #9
+(`file_read`'s NUL-truncation) unblocked at the language level
+(`file_read_bytes`) but never had anywhere to plug in — this round's actual
+blocker was never the language, it was that this port had no assembler
+*and no test asm to load*; both are now moot since the upstream Python
+`nova_assembler.py` can assemble a real `.asm` into a `.bin` this loader can
+read directly.
+
+Segment format: mirrors `nova/memory/memory.py::Memory.load`/
+`load_with_org_info` exactly, since that's the actual producer/consumer
+pair this needs to interoperate with, not something invented independently.
+`nova_assembler.py` always writes a `.org` sidecar next to its `.bin`
+output — one line per contiguous `ORG` segment, `<start_addr_hex>
+<length_decimal> <bin_offset_decimal>`, comments starting with `#`. The
+*first* segment's address becomes the entry point (`PC`'s initial value),
+matching the reference's own "first segment sets entry_point" rule.
+`.bin`s with no matching `.org` (any other binary blob) load at address 0,
+matching the reference's own "legacy" fallback.
+
+Parsing needed real integer parsing this project had never needed before —
+Star has no `parse_int`/`atoi` builtin, but does support declaring one
+directly against the C runtime already linked in: `extern "C" fn atoi(s:
+str) -> i32` and `extern "C" fn strtol(s: str, endptr: ptr, base: i32) ->
+i32` (`strtol(s, null_ptr(), 0)` auto-detects the `.org` file's `0x`-prefixed
+hex addresses, matching `int(parts[0], 16)`'s explicit base-16 the
+reference uses, while still accepting plain decimal for free). Both are
+ordinary, already-linked C runtime symbols on this target (confirmed
+working, no extra `-l` flag needed) — no new language feature, just the
+first real use of `extern "C" fn` for something other than a toy example in
+this project. One real gotcha hit while writing this: `str` has no `.len()`
+*method* (`len(s)` is a free function instead, unlike `Bytes`/`List<T>`'s
+own `.len()` methods) — a `no field len on type Str` compiler error caught
+this immediately rather than silently doing the wrong thing.
+
+`Cpu::load_program` lives as a method on `cpu::Cpu` (a cross-module `impl`,
+gotcha #6) rather than a free function taking `Cpu` by value, for the same
+by-value-large-struct reason `draw_text`/the sprite-blit methods below do —
+see NOTES.md's established rule. This is also the same shape ("a second
+file's `impl cpu::Cpu:` alongside `cpu.star`'s own `impl Cpu:`") gotcha #6's
+bug #4 (a diamond import silently deleting a cross-module `impl` block) was
+originally found through; re-confirmed fixed here too (`main.star` imports
+both `cpu.star` directly and `loader.star`, which itself imports
+`cpu.star` — a genuine diamond — and `load_program` resolved correctly).
+
+### Verification
+
+`tests/asm/uart_integration_test.bin`/`.org` were copied *verbatim* from
+the upstream Python repo's own `asm/uart_integration_test.bin`/`.org` (not
+reassembled, not authored for this port) and loaded through this exact
+mechanism — proving the loader can run an existing, independently-produced
+Nova-16 program unmodified, not just a program this port's own author
+happened to assemble. Confirmed byte-accurate: `PC` starts at the `.org`
+file's recorded entry point (`0x1000`), and the very first instruction
+(`MOV P0, 0xDEAD`) executes correctly (`P0 == 0xDEAD` after one step). The
+same run also became this round's first real regression signal for the
+still-unimplemented UART opcodes at the time (see "UART" below) — the CPU
+halted cleanly with `unimplemented opcode 165 (0xA5, SERCTRL) at pc=4102`,
+exactly the diagnostic "Known simplifications" promises, rather than
+crashing or desyncing.
+
+## Layer compositing and sprites
+
+Added in this round: the remaining 8 compositing layers (backgrounds 1-4,
+sprites 5-8 — layer 0 already existed), `LSWAP`/`LMOVE`/`LCOPY`, and
+memory-mapped sprites (`SPBLIT`/`SPBLITALL`). Implementation lives in
+`screen.star` (layer storage/compositing/transforms) and `cpu.star` (opcode
+dispatch, and the sprite-blit methods specifically, which need `self.mem`
+too). Ported from `nova/graphics/{compositor,blitter,sprites}.py` — read
+directly, since `docs/SPRITE_SYSTEM.md`'s own "Instructions" section turned
+out to be stale (its `STOR`/`LOAD` example opcodes don't exist anywhere in
+the actual ISA or assembler; the real setup uses `MOV [addr], reg`) and its
+sprite-layer-assignment description (sprites use layer 5 *or* 6, selected by
+one flag bit) doesn't match its own dirty-tracking code's 4-sprite-layer
+grouping — the actual `blit_sprite`/`blit_all_sprites` behavior (which only
+ever writes layer 5 or 6) is what this port follows.
+
+Design decisions, each also explained at its point of use in `screen.star`:
+
+- **9 separate `[u8; 65536]` fields, not a `[[u8; 65536]; 9]` nested
+  array.** This project's own "Four Star compiler bugs found and fixed"
+  history is a long list of exactly this shape (a large fixed aggregate
+  built/returned/passed as one value) hitting genuine, previously-unknown
+  `clang` crashes/hangs; a *nested* array repeat/struct-literal-field-of-
+  arrays specifically was never exercised against the existing fixes.
+  Explicit named fields (`bg1`-`bg4`, `sp1`-`sp4`) plus a `vl`-to-field
+  `match`-style dispatch (`layer_get_idx`/`layer_set_idx`) gets the same
+  behavior without depending on an untested codegen path — a deliberately
+  conservative choice given this project's specific history with this
+  compiler.
+- **Compositing is always recomputed on demand, never cached.** The
+  reference's own dirty-flag/pixel-count-tracking `Compositor` cache is a
+  pure performance optimization confirmed (by reading `composite()`/
+  `mark_dirty`/`_pixel_counts` directly) to have zero effect on any
+  opcode's observable result — every mutating path already marks its layer
+  dirty, and the cache is always rebuilt in full before being read. Skipped
+  entirely, same "don't chase the reference's own performance hacks, only
+  its observable behavior" precedent as the pre-existing timer/opcode-
+  fetch-cache simplifications. One concrete, easy-to-miss consequence: the
+  reference's `VBLIT` (`Blitter.blit_vram`) copies the composite into VRAM
+  and then `_screen.fill(0)`s the *cache*, but immediately follows that
+  with `mark_all_dirty()` — so the very next composite-read rebuilds it
+  from the (untouched) individual layers, making the `fill(0)` completely
+  unobservable. This port's `vblit` therefore clears nothing at all.
+- **`SREAD` reads the *composited* screen; every other graphics opcode is
+  `VL`-aware and touches only its own layer.** Easy to get backwards from
+  the opcode names alone — confirmed from `GFX.get_screen_val`, which
+  reads `self.screen` (the compositor's own composited property), while
+  `GFX.set_screen_val`/`_set_pixel_fast` and every drawing primitive
+  (`draw_line`/`draw_rectangle`/`draw_circle`/`draw_char`/fill/invert) all
+  route through `get_layer_buffer_by_num(self.VL)`.
+- **`SBLEND`/blend modes are still a stub, and this round specifically
+  confirmed that's correct, not a gap** — see "Known simplifications"
+  above and `screen.star`'s header comment: `blend_pixel` is genuinely dead
+  code in the reference itself.
+- **An out-of-range `LSWAP`/`LMOVE`/`LCOPY` target layer is a silent
+  no-op** rather than the reference's `raise ValueError` — matching this
+  project's established "memory/graphics ops always bounds-check, never
+  trap" convention (there's no exception mechanism to reproduce the
+  reference's behavior with anyway).
+- **Sprite control blocks are read straight out of `Cpu.mem`** at
+  `0xF000 + sprite_id * 16` (16 bytes: big-endian `data_addr`, `x`, `y`,
+  `width`, `height`, `flags`, `transparency_color`, 8 reserved bytes) —
+  no separate sprite-specific memory model, matching the reference's own
+  "hybrid memory-based" design. `SPBLITALL` clears sprite layers 5-8 (all
+  four, matching `blit_all_sprites`'s own behavior, even though a single
+  sprite can only ever target layer 5 or 6) before re-blitting sprites
+  0-15 in order.
+
+### Verification
+
+Two independently-verified `.asm` test programs (`tests/asm/
+layers_test.asm`, `tests/asm/sprites_test.asm`), each assembled with the
+upstream `nova_assembler.py`, run through this port via `tests/run_bin.
+star`, and cross-checked against the actual **running** Python reference
+(a short script importing `nova_memory`/`nova_gfx`/`nova_cpu` directly,
+loading the same `.bin` via `Memory.load`, stepping to completion, and
+diffing every `R` register) — not just hand-derived expected values.
+
+- `layers_test.asm`: writes distinct pixel values on layers 0/1 at
+  overlapping and non-overlapping coordinates (proving composite-overwrite-
+  where-nonzero ordering), then `LCOPY`s a pixel to a third layer and wipes
+  the source (proving copy-without-clearing-source), `LMOVE`s a pixel to a
+  fourth layer and wipes the *destination* afterward (proving move
+  *does* clear its source — the only way to observationally tell "moved"
+  apart from "copied", since composite alone can't distinguish which layer
+  a value lives on once only one is nonzero), and `LSWAP`s two nonzero
+  pixels between two layers, again wiping one side afterward to prove the
+  swap actually exchanged values rather than no-op'ing. All 6 checkpoints
+  (`R0`-`R5`) matched the live reference exactly (`cycles_run=45`,
+  `pc=158` on both sides).
+- `sprites_test.asm`: a 4x4 sprite with one transparent pixel blitted via
+  `SPBLIT` (checking top-left, the transparent pixel showing background
+  through, and bottom-right), a second sprite targeting layer 6 (flag bit
+  7) blitted via `SPBLITALL` alongside an *inactive* third sprite (flag
+  bit 0 clear) that must never appear anywhere. All 5 checkpoints (`R1`-
+  `R5`) matched exactly (`cycles_run=100`, `pc=439`) — but only *after*
+  fixing a real bug this test surfaced; see the next section.
+
+## A genuine port bug: MOV [mem], narrow-source write-width
+
+**Not a Star compiler bug** — a pre-existing logic bug in this port's own
+Nova-16 CPU model, found while writing `sprites_test.asm` above (which
+needed to poke 16 individual sprite-control-block bytes via `MOV [addr],
+R0`, the first real exercise this project gave a memory-destination `MOV`
+with a narrower source — every earlier round's test/demo programs only
+ever wrote memory via `SWRITE`/`MEMSET`/etc., never plain `MOV`). The
+symptom: every single byte written this way came back as `0`, as if
+nothing had ever been written at all.
+
+Root cause: `Cpu::operand_width(op)` (this port's "operand width is
+inferred from the destination's kind" rule, see the "Operand width..."
+section above) returns 16 for *any* non-register destination, including
+memory — and `op_mov` used that same `width` for both the read *and* the
+write. But `core/exec_handlers.py::_write_result`'s own docstring says the
+opposite for a memory destination specifically: *"For memory destinations,
+the write size is determined by the source operand when available (legacy
+behavior: MOV [mem], imm8 writes a byte, MOV [mem], imm16 writes a
+word)"* — an 8-bit register source also forces a 1-byte write, by the same
+logic. So `MOV [addr], R0` (an 8-bit `R` register source) should write
+exactly 1 byte, but this port's `width=16` made it write 2 bytes (a 0x00
+high byte plus the low byte) at every address — each subsequent sequential
+byte-write then clobbered the *previous* write's low byte with its own
+0x00 high byte, leaving every byte 0 except the very last one written.
+Confirmed against the live Python reference first (which produced the
+correct non-zero values for the identical assembled `.bin`), proving the
+test program itself was right and this port's execution was wrong.
+
+Fix, scoped deliberately narrow: a new `Cpu::write_width_for(dest, src) ->
+i32` implementing `_write_result`'s exact rule (immediate source uses its
+own encoded width — `Operand` gained an `imm_width: u8` field to remember
+whether an immediate was decoded via the 8-bit or 16-bit addressing mode,
+previously discarded; an 8-bit register source forces 8; anything else
+forces 16), wired into `MOV`/`MOVZ`/`MOVNZ`'s write (not their read, which
+still correctly uses the existing destination-based `operand_width`).
+**Deliberately not generalized to every opcode that can write a memory
+destination** (`ADD`/`SUB`/`AND`/`XCHNG`/... all share the same
+`_write_result` codepath in the reference, so in principle have the
+identical latent gap) — fixing this project-wide means threading a source
+operand through every one of ~90 handler call sites, a much larger, riskier
+change than this round's concretely-proven, highest-impact case (`MOV` is
+overwhelmingly how real programs — including both this port's own
+`sprites_test.asm` and the reference's own `docs/SPRITE_SYSTEM.md` example
+— actually poke individual memory-mapped bytes). Flagged here explicitly as
+a known, scoped gap rather than silently left non-matching: **any other
+opcode writing a memory destination from a narrower register/immediate
+source may still write a full 16-bit word where the reference would write
+fewer bytes.**
+
+### Verification
+
+A dedicated regression test, `tests/asm/mov_write_width_test.asm`, covering
+all four `_write_result` cases (imm8, an 8-bit `R` register, a 16-bit `P`
+register, imm16) with an untouched sentinel byte immediately after each
+narrow write (proving the write really was narrower, not just "happened to
+end in the right value") — 8 checkpoints, all matching the live Python
+reference exactly (`R2`=0xAB, `R3`=0xCD sentinel intact, `R4`=0x11, `R5`=
+0x22 sentinel intact, `R6:R7`=0x12:0x34 big-endian, `R8:R9`=0xBE:0xEF).
+
+## UART (0xA2-0xA5)
+
+Added in this round: `SERIN SEROUT SERSTAT SERCTRL`, ported from
+`nova_uart.py::NovaUART`'s raw-mode data path. Lives in its own file,
+`uart.star` (a `Uart` struct + methods, composed into `Cpu` the same way
+`Keyboard`/`Flags` already are), plumbed into `Cpu::check_interrupts` at
+vector 1 (Serial), between Timer (0, highest) and Keyboard (2) per
+`docs/CPU Specification.md`'s own priority table.
+
+Deliberately not ported: the host bridge (`LocalTerminalBridge`/
+`TCPSocketBridge`/`TCPServerBridge`) and framed-mode parsing. Both exist
+upstream purely to get bytes *into* the RX path from outside the running
+program — there is no opcode that lets a Nova-16 program push a byte into
+its own RX FIFO, so without a host bridge feeding it, `SERIN` always ends
+up reading back `data_register`, i.e. whatever `SEROUT` last wrote (the
+exact loopback-on-empty-RX-FIFO path `NovaUART.read_data()` already falls
+through to upstream, confirmed directly against `asm/
+uart_integration_test.asm`'s own `SEROUT`-then-`SERIN` check, which never
+touches a host bridge either). Same reasoning as `MOUSECTRL`'s register
+model being fully in place and testable long before real host mouse events
+existed (see "Mouse plumbing" below) — a future host bridge would slot in
+later without changing any opcode-facing surface.
+
+### Verification
+
+`tests/asm/uart_integration_test.asm`/`.bin`/`.org` are copied *verbatim*
+from the upstream Python repo (not authored for this port, not
+reassembled) — this is deliberately the strongest kind of test available:
+an independently-produced program neither side's author wrote to match
+the other. Loaded through this port's own binary loader (see "Binary
+program loading" above) and run to completion: `P0 == 0xBEEF` (the
+program's own PASS marker; `0xDEAD` would mean failure), matching what the
+program expects the *real* Python reference to produce, with zero changes
+needed on either side.
+
+## Mouse plumbing (MOUSECTRL, MX/MY/MB, interrupt vector 3)
+
+Added in this round: `MOUSECTRL` now really gates host mouse input instead
+of no-op'ing, `main.star`'s per-frame loop updates `MX`/`MY`/`MB` from the
+real host mouse (`mouse_x()`/`mouse_y()`/`mouse_button_down()`, already
+existing Star builtins — this needed no new language feature at all), and
+a mouse-changed-while-enabled event raises interrupt vector 3, mirroring
+`NovaMouse.move_to`/`set_buttons`'s own `if from_host and not self.
+enabled: return` guard and `_check_pending_interrupts`'s consume-on-
+dispatch (`Cpu::check_interrupts` clears `mouse_pending_irq` the same way
+it already does for the UART's `pending_interrupt`).
+
+`MX`/`MY`/`MB` were already ordinary readable/writable registers before
+this round (reachable via `MOV` like any other register) — what was
+missing was purely the host-input side: nothing fed them from the real
+mouse, and `MOUSECTRL`'s enable bit did nothing. Host window coordinates
+are halved before being clamped into Nova-16's 256x256 range, since
+`main.star`'s window renders at 2x the emulated resolution (`SCREEN_SIZE *
+2`); `MB`'s bit 0/1 map to SDL's left/right buttons (`mouse_button_down(1)`/
+`(3)`), matching `NovaMouse.LEFT_BUTTON_MASK`/`RIGHT_BUTTON_MASK` (there's
+no middle-button mask in the reference either).
+
+### Verification
+
+There's no way to drive a real host mouse event through a `.bin` (same
+"no opcode can inject this" situation as UART's RX FIFO), so this is
+verified two ways instead:
+
+1. **`tests/mouse_interrupt_test.star`**, a direct-field-poke headless
+   harness exercising `Cpu::check_interrupts`'s new mouse branch directly
+   (not through `step()`/a hand-encoded handler, since the thing under
+   test is purely the dispatch-gating logic): a pending mouse IRQ with
+   `mouse_enabled=false` must leave `PC`/the pending flag untouched; the
+   same pending IRQ with `mouse_enabled=true` must jump to the IVT vector-3
+   handler address and clear the pending flag; and a pending IRQ with the
+   CPU's own interrupt-disable flag (`I`) clear must not fire regardless of
+   `mouse_enabled`. All 5 checks pass.
+2. **Reading `NovaMouse`/`nova_cpu.py`'s dispatch logic directly** (not
+   executing it, since there's nothing to execute it *with* on either
+   side) to confirm the enable-gate-at-both-set-time-and-dispatch-time
+   behavior and the vector-3/priority assignment match.
+
 ## Ideas for future work
 
-- Layer compositing (backgrounds 1-4, sprites 5-8) and `SPBLIT`/
-  `SPBLITALL`/`LSWAP`/`LMOVE`/`LCOPY`.
 - Sound synthesis (waveform generation + mixing) behind the already-in-
-  place `SA`/`SF`/`SV`/`SW` register model.
-- The UART opcode group listed above (the math library, Q8.8 fixed-point
-  conversion, string library, integer/string conversion, and BCD
-  arithmetic are now done — see above).
-- A byte-accurate binary file loader (so a compiled `.bin` could be loaded
-  instead of a baked-in demo) — the language-level blocker is gone
-  (`file_read_bytes`/`file_write_bytes` now exist, see "Fixes applied to
-  this project"), and this round's own verification harness proved the
-  mechanics work end to end (loading a real assembled `.bin` via
-  `file_read_bytes` into `Cpu`'s memory) — but there's still no assembler
-  in this port to produce a `.bin` from source in the first place, which is
-  the actual remaining blocker for wiring this into `main.star` for real.
-- Blend modes (`SBLEND`) actually affecting `SWRITE`/`VWRITE`.
-- Real mouse-event plumbing behind `MOUSECTRL`/`MX`/`MY`/`MB`.
-- Splitting `cpu.star`'s ~90 opcode-handler methods across files by group
+  place `SA`/`SF`/`SV`/`SW` register model and the now-dispatched (but
+  audio-free) `SPLAY`/`SSTOP`/`STRIG` opcodes.
+- Generalizing the `MOV`-only fix in "A genuine port bug" above to every
+  opcode that can write a memory destination from a narrower source
+  (`ADD`/`SUB`/`AND`/`XCHNG`/...) — needs threading a source operand
+  through ~90 handler call sites; scoped out of this round as higher-risk
+  than its concretely-proven `MOV`-only impact justified.
+- A UART host bridge (local terminal or TCP, matching `nova_uart.py`'s
+  `LocalTerminalBridge`/`TCPSocketBridge`/`TCPServerBridge`) — would need
+  genuine host I/O (stdin/sockets) this project hasn't needed before.
+- Splitting `cpu.star`'s ~100 opcode-handler methods across files by group
   (arithmetic/bitwise/stack/control-flow/graphics/...) — unblocked now that
   `impl` can cross a module boundary (gotcha #6), not yet done.
+- An actual assembler, so a `.bin` could be produced from Star-authored
+  source rather than only loaded from the upstream Python toolchain's
+  output — the binary loader (this round) makes this more valuable than
+  before (there'd finally be somewhere for its output to go), not less.

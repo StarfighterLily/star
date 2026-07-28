@@ -1,0 +1,3 @@
+# Symbol table
+# Format: <symbol> <value>
+START 0x0000
