@@ -107,6 +107,12 @@ pub struct Parser {
     /// makes backtracking exactly as sound for a split `>>` as it already
     /// is for the cursor position itself.
     split_gt_pending: bool,
+    /// Monotonic counter for the synthetic tuple-holding temporary a
+    /// destructuring `let (a, b) = expr` desugars into (see
+    /// `Parser::parse_destructure_let`) -- incremented on every use so two
+    /// destructuring `let`s in the same function never share a temporary
+    /// name, even though plain `let`-shadowing would have tolerated it.
+    destructure_id: u32,
 }
 
 impl Parser {
@@ -123,6 +129,7 @@ impl Parser {
             match_depth: 0,
             file_id,
             split_gt_pending: false,
+            destructure_id: 0,
         }
     }
 
@@ -393,6 +400,18 @@ impl Parser {
             self.pos += 1;
         }
         tok
+    }
+
+    /// A fresh name (`__destructure_0`, `__destructure_1`, ...) for the tuple
+    /// temporary a destructuring `let` desugars into -- see
+    /// `Parser::parse_destructure_let`. Counter-based (rather than one fixed
+    /// name reused everywhere, the way `__try_val` is for `?`-desugaring in
+    /// `Checker::infer_try`) so two destructuring `let`s in the same
+    /// function never shadow each other's temporary.
+    fn fresh_destructure_name(&mut self) -> String {
+        let id = self.destructure_id;
+        self.destructure_id += 1;
+        format!("__destructure_{}", id)
     }
 
     fn eat(&mut self, kind: &TokenKind) -> bool {

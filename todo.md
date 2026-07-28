@@ -155,12 +155,43 @@ future `.star` project.
    test, an IR-shape assertion that a hex literal lowers to a plain `i32`
    constant, and runtime end-to-end coverage of a Nova-style register-mask
    program plus hex/decimal equivalence.
-5. **No destructuring `let`.** `let (a, b) = expr` doesn't parse — every
-   tuple-returning call (`decode_operands`, `vxy`, `pop_key`, ...) had to be
-   bound to a temporary and read back positionally (`ops.0`/`ops.1`). Cost
-   93 call sites a mechanical regex fixup in this one project; will keep
-   costing the same tax as more tuple-returning helpers get added for
-   sprites/layers/sound.
+5. **No destructuring `let`.** — **done**: `let [mut] (a, b, ...) [: (T1,
+   T2, ...)] = expr` (2+ names) now parses, as a pure parse-time desugaring
+   in the new `Parser::parse_destructure_let` (`src/parser/stmt.rs`) rather
+   than a new AST/`TypedStmt`/codegen shape — it rewrites to a synthetic
+   `let __destructure_N = expr` holding the whole tuple, plus one ordinary
+   `let <name> = __destructure_N.<i>` per pattern element, i.e. exactly the
+   hand-written `ops.0`/`ops.1` workaround this item's own 93 call sites
+   already used, just generated instead of typed out. Because the output is
+   plain `Stmt::Let`/`Expr::TupleIndex` nodes, every downstream pass (the
+   checker, `sequence`/`frame`/`par` analysis, codegen) needed zero new match
+   arms — they already handle both from ordinary tuple support. `mut` (when
+   present) applies uniformly to every bound name, matching the plain
+   single-name form's "the one `mut` covers the one name" rule — there's no
+   per-element `let (mut a, b) = ...` mixed-mutability spelling. `Parser::
+   parse_stmt` changed from `Option<Stmt>` to `Option<Vec<Stmt>>` to allow
+   this one-source-line-to-many-statements expansion (every other statement
+   kind still returns a single-element `Vec`); `Parser::fresh_destructure_name`
+   counters the synthetic temporary's name so two destructuring `let`s in one
+   function never collide. An explicit tuple type annotation is split
+   per-element onto each individual `let` *and* threaded onto the temporary
+   as a whole `Type::Tuple` — needed so a destructuring `let` at the top
+   level of a `sequence` body can still satisfy `sequence::desugar_sequence`'s
+   pre-existing "every hoisted local needs an explicit type" rule; the
+   unannotated form still can't (same as any other unannotated hoisted
+   local), a known, tested limitation rather than a silent gap. 24 new tests
+   in `tests/frontend_destructuring_let.rs`: parser/AST-shape coverage
+   (desugared statement count/order, 2- and 3-name patterns, `mut`
+   propagation, trailing comma, type-annotation splitting, two destructures'
+   temporaries staying distinct), parse-error coverage (single-name and empty
+   patterns, duplicate binding names, annotation arity/shape mismatches,
+   nested patterns failing cleanly instead of panicking), checker coverage
+   (element-type inference, non-tuple/arity-mismatch/type-mismatch
+   rejection, shadowing, `mut` enforcement), and runtime end-to-end coverage
+   (a destructured function return, a `mut` pair mutated after binding,
+   three-element destructuring, two destructures in one function, re-
+   evaluation inside a loop body, a struct-valued tuple element, and the
+   annotated-vs-unannotated `sequence`-hoisting cases).
 6. **`impl` can't reach into another module.** `impl imported::Type:` is a
    parse error — only a bare identifier is accepted, confirmed empirically
    (`impl cpu::Cpu:` fails with "expected ':', found '::'"). Every method on

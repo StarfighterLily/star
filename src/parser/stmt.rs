@@ -36,8 +36,8 @@ impl Parser {
         self.expect(&TokenKind::Indent)?;
         let mut stmts = Vec::new();
         while !self.at(&TokenKind::Dedent) && !self.at(&TokenKind::Eof) {
-            if let Some(stmt) = self.parse_stmt() {
-                stmts.push(stmt);
+            if let Some(mut stmt) = self.parse_stmt() {
+                stmts.append(&mut stmt);
             } else {
                 self.recover_to_newline();
             }
@@ -49,11 +49,20 @@ impl Parser {
         Some(Block { stmts, span })
     }
 
-    fn parse_stmt(&mut self) -> Option<Stmt> {
+    /// Returns a `Vec` rather than one `Stmt` solely because a destructuring
+    /// `let (a, b) = expr` (`Parser::parse_let` -> `Parser::
+    /// parse_destructure_let`) desugars into several ordinary `Stmt::Let`s at
+    /// parse time instead of getting its own AST variant -- every other arm
+    /// always returns exactly one element. Desugaring here, rather than
+    /// adding a new `Stmt` shape, means the checker, `sequence`/`frame`/`par`
+    /// analysis, and codegen need no new match arms at all: they see the same
+    /// `let tmp = expr; let a = tmp.0; let b = tmp.1` shape Nova's own call
+    /// sites already wrote out by hand (see `todo.md`'s P1 #5).
+    fn parse_stmt(&mut self) -> Option<Vec<Stmt>> {
         match self.peek_kind() {
             TokenKind::Let => self.parse_let(),
-            TokenKind::Return => self.parse_return(),
-            TokenKind::If => self.parse_if_stmt(),
+            TokenKind::Return => self.parse_return().map(|s| vec![s]),
+            TokenKind::If => self.parse_if_stmt().map(|s| vec![s]),
             // `match` is dispatched here rather than falling through to the
             // generic bare-expression case below: like `if`/`while`/`for`,
             // its own arm list ends in a `Dedent` (see `Parser::parse_match`)
@@ -62,18 +71,18 @@ impl Parser {
             // generic case does for an ordinary expression statement) would
             // look for a `Newline`/`Dedent` that was already consumed and
             // reject whatever token starts the *next* statement instead.
-            TokenKind::Match => self.parse_match_stmt(),
-            TokenKind::While => self.parse_while_stmt(),
-            TokenKind::For => self.parse_for_stmt(),
-            TokenKind::Break => self.parse_break_stmt(),
-            TokenKind::Continue => self.parse_continue_stmt(),
-            TokenKind::Frame => self.parse_frame_stmt(),
-            TokenKind::Yield => self.parse_yield_stmt(),
-            TokenKind::Par | TokenKind::Swarm => self.parse_par_stmt(),
-            TokenKind::Each => self.parse_each_stmt(),
-            TokenKind::Spawn => self.parse_spawn_stmt(),
-            TokenKind::Despawn => self.parse_despawn_stmt(),
-            TokenKind::Parallel => self.parse_parallel_stmt(),
+            TokenKind::Match => self.parse_match_stmt().map(|s| vec![s]),
+            TokenKind::While => self.parse_while_stmt().map(|s| vec![s]),
+            TokenKind::For => self.parse_for_stmt().map(|s| vec![s]),
+            TokenKind::Break => self.parse_break_stmt().map(|s| vec![s]),
+            TokenKind::Continue => self.parse_continue_stmt().map(|s| vec![s]),
+            TokenKind::Frame => self.parse_frame_stmt().map(|s| vec![s]),
+            TokenKind::Yield => self.parse_yield_stmt().map(|s| vec![s]),
+            TokenKind::Par | TokenKind::Swarm => self.parse_par_stmt().map(|s| vec![s]),
+            TokenKind::Each => self.parse_each_stmt().map(|s| vec![s]),
+            TokenKind::Spawn => self.parse_spawn_stmt().map(|s| vec![s]),
+            TokenKind::Despawn => self.parse_despawn_stmt().map(|s| vec![s]),
+            TokenKind::Parallel => self.parse_parallel_stmt().map(|s| vec![s]),
             _ => {
                 // Either an assignment or a bare expression.
                 let expr = self.parse_expr()?;
@@ -83,10 +92,10 @@ impl Parser {
                     let value = self.parse_expr()?;
                     self.expect_line_end()?;
                     let span = start.to(self.prev_span());
-                    return Some(Stmt::Assign { target: expr, op, value, span });
+                    return Some(vec![Stmt::Assign { target: expr, op, value, span }]);
                 }
                 self.expect_line_end()?;
-                Some(Stmt::Expr(expr))
+                Some(vec![Stmt::Expr(expr)])
             }
         }
     }
@@ -239,10 +248,13 @@ impl Parser {
         Some(Stmt::Despawn { arena, index, span })
     }
 
-    fn parse_let(&mut self) -> Option<Stmt> {
+    fn parse_let(&mut self) -> Option<Vec<Stmt>> {
         let start = self.peek_span();
         self.expect(&TokenKind::Let)?;
         let is_mut = self.eat(&TokenKind::Mut);
+        if self.at(&TokenKind::LParen) {
+            return self.parse_destructure_let(start, is_mut);
+        }
         let name = self.expect_ident()?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.parse_type()?)
@@ -260,7 +272,93 @@ impl Parser {
         let value = if self.at(&TokenKind::Spawn) { self.parse_spawn_expr()? } else { self.parse_expr()? };
         self.expect_line_end()?;
         let span = start.to(self.prev_span());
-        Some(Stmt::Let { is_mut, name, ty, value, span })
+        Some(vec![Stmt::Let { is_mut, name, ty, value, span }])
+    }
+
+    /// `let [mut] (a, b, ...) [: (T1, T2, ...)] = expr` -- desugars to a
+    /// synthetic `let __destructure_N = expr` holding the whole tuple, plus
+    /// one `let <name> = __destructure_N.<i>` per pattern element (see
+    /// `Parser::parse_stmt`'s doc comment for why this is a desugaring
+    /// rather than a new `Stmt`/`TypedStmt` variant). `is_mut` applies
+    /// uniformly to every bound name, mirroring the plain single-name form
+    /// where `mut` covers the one name it precedes; there's no per-element
+    /// `let (mut a, b) = ...` mixed-mutability spelling.
+    fn parse_destructure_let(&mut self, start: Span, is_mut: bool) -> Option<Vec<Stmt>> {
+        self.expect(&TokenKind::LParen)?;
+        let mut names: Vec<(String, Span)> = Vec::new();
+        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+            let name_span = self.peek_span();
+            let name = self.expect_ident()?;
+            if names.iter().any(|(n, _)| n == &name) {
+                self.error(format!("duplicate binding `{}` in destructuring `let`", name), name_span);
+            }
+            names.push((name, name_span));
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RParen)?;
+        if names.len() < 2 {
+            self.error(
+                "destructuring `let` needs at least 2 names in `(...)` -- use a plain `let name = expr` to bind just one",
+                start,
+            );
+            return None;
+        }
+        let elem_tys: Option<Vec<Type>> = if self.eat(&TokenKind::Colon) {
+            let ty_span = self.peek_span();
+            match self.parse_type()? {
+                Type::Tuple(elems) if elems.len() == names.len() => Some(elems),
+                Type::Tuple(elems) => {
+                    self.error(
+                        format!(
+                            "destructuring `let` binds {} name(s) but the type annotation has {} element(s)",
+                            names.len(),
+                            elems.len()
+                        ),
+                        ty_span,
+                    );
+                    return None;
+                }
+                other => {
+                    self.error(
+                        format!("destructuring `let` needs a tuple type annotation like `(T1, T2)`, found `{:?}`", other),
+                        ty_span,
+                    );
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
+        self.expect(&TokenKind::Assign)?;
+        let value = if self.at(&TokenKind::Spawn) { self.parse_spawn_expr()? } else { self.parse_expr()? };
+        self.expect_line_end()?;
+        let span = start.to(self.prev_span());
+
+        let tmp_name = self.fresh_destructure_name();
+        // If the user wrote an explicit tuple annotation, thread it onto the
+        // temporary too (not just the per-element `let`s below) -- otherwise
+        // a destructuring `let` at the top level of a `sequence` body could
+        // never satisfy the hoisted-local "needs an explicit type" rule
+        // (`sequence::desugar_sequence`), since that rule inspects each
+        // hoisted `Stmt::Let`'s own `ty` field directly and has no way to
+        // look through this temporary to the per-element annotations.
+        let tmp_ty = elem_tys.clone().map(Type::Tuple);
+        let mut stmts = Vec::with_capacity(names.len() + 1);
+        stmts.push(Stmt::Let { is_mut: false, name: tmp_name.clone(), ty: tmp_ty, value, span });
+        for (i, (name, name_span)) in names.into_iter().enumerate() {
+            let base = Box::new(Expr::Ident(tmp_name.clone(), name_span));
+            let ty = elem_tys.as_ref().map(|tys| tys[i].clone());
+            stmts.push(Stmt::Let {
+                is_mut,
+                name,
+                ty,
+                value: Expr::TupleIndex { base, index: i, span: name_span },
+                span: name_span,
+            });
+        }
+        Some(stmts)
     }
 
     /// Parse `spawn ArenaName(args...)` in expression position -- only ever
