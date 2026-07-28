@@ -129,3 +129,20 @@ impl Flags:
         self.set_p(bits::parity8(masked as u8))
         self.set_c(false)
         self.set_o(false)
+
+    # BCD ops (BCDA/BCDS/BCDCMP.../BCDADD/BCDSUB), ported from
+    # `core/flags.py::set_from_bcd` -- always 8-bit (a BCD byte packs
+    # exactly two decimal digits), unlike every other flag helper above
+    # which takes a `width`. `result` is the already-`& 0xFF`-masked BCD
+    # byte; `bcd_carry` is the caller's own decimal-adjust-overflow test
+    # (`result > 0x99`/`result < 0` before masking -- see op_bcda/op_bcds
+    # in cpu.star), written to both A (the dedicated BCD-carry flag) and
+    # C (kept in sync "for compatibility", matching the reference exactly).
+    # Overflow (O) is untouched, same as the reference.
+    fn apply_bcd(mut self, result: i32, bcd_carry: bool):
+        let r = (result as u8) as i32
+        self.set_z(r == 0)
+        self.set_a(bcd_carry)
+        self.set_c(bcd_carry)
+        self.set_s(bit_get(r, 7))
+        self.set_p(bits::parity8(r as u8))

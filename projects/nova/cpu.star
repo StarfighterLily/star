@@ -1045,6 +1045,188 @@ impl Cpu:
             raw = bits::popcount16(a as u16)
         self.operand_write(op1, width, raw)
 
+    # ── BCD operations (docs/nova16_instruction_reference.md 0x4B-0x54) ──
+    # Ported from core/exec_handlers.py's _sed/_cld/_cla/_bcda/.../_bcdsub.
+    # A BCD byte packs two decimal digits per byte (one per nibble), so
+    # unlike every other arithmetic op in this file, BCDA/BCDS/BCDCMP/
+    # BCDADD/BCDSUB always operate at a fixed 8-bit width -- even if op1
+    # happens to be a 16-bit destination (a P register or memory), only its
+    # low byte is read/written, matching `_write_result`'s `result & 0xFF`
+    # in the reference. SED/CLD/CLA are handled directly in `execute` (no
+    # operand at all, same as CLI/STI at 0x03/0x04) rather than as their
+    # own `op_*` methods.
+    #
+    # BCDA/BCDS are ported bug-for-bug: the "add/subtract 1 when the A
+    # flag is set but D (decimal mode) is *not*" step in `_bcda`/`_bcds`
+    # looks backwards for a carry-in (you'd expect it gated on D being
+    # set, or not gated on D at all) but that's what the reference
+    # actually does, confirmed against the live reference over MCP -- see
+    # NOTES.md.
+    fn op_bcda(mut self):
+        let (op1, op2, _op3) = self.decode_operands(2)
+        let a = self.operand_read(op1, 8)
+        let b = self.operand_read(op2, 8)
+        let mut raw = a + b
+        if !self.flags.d() and self.flags.a():
+            raw += 1
+        if self.flags.d():
+            if (raw & 0x0F) > 9:
+                raw += 0x06
+            if ((raw >> 4) & 0x0F) > 9:
+                raw += 0x60
+        # `result > 0x99` is checked *after* masking to 0xFF below, exactly
+        # matching `_bcda`'s own statement order -- not a simplification.
+        # Masking first means this can only ever see 0-255, so it only
+        # actually fires when the masked byte itself lands in 154-255 (this
+        # port's op_bcd2bin/op_bin2bcd's "post-mask can't differ from
+        # pre-mask" reasoning does NOT apply here, since BCDA's raw sum can
+        # be much larger than 255 before masking).
+        let result = raw & 0xFF
+        let carry = result > 0x99
+        self.operand_write(op1, 8, result)
+        self.flags.apply_bcd(result, carry)
+
+    fn op_bcds(mut self):
+        let (op1, op2, _op3) = self.decode_operands(2)
+        let a = self.operand_read(op1, 8)
+        let b = self.operand_read(op2, 8)
+        let mut raw = a - b
+        if !self.flags.d() and self.flags.a():
+            raw -= 1
+        if self.flags.d():
+            if (raw & 0x0F) > 9:
+                raw -= 0x06
+            if ((raw >> 4) & 0x0F) > 9:
+                raw -= 0x60
+        # `result < 0` is likewise checked *after* masking below, matching
+        # `_bcds`'s own statement order -- and since `& 0xFF` always
+        # produces a value in 0-255 (Star's bitwise `&`, like Python's,
+        # masks at the bit-pattern level regardless of `raw`'s sign), this
+        # comparison can never be true. BCDS's BCD-carry/A/C flags are
+        # therefore always cleared, confirmed against the live reference
+        # (`BCDS 0x42, 0x15` still reports C=0 even though it holds a real
+        # borrow) -- a real reference quirk (almost certainly an
+        # accidental order-of-operations bug upstream), ported as-is per
+        # this project's "port bug-for-bug" precedent (see NOTES.md).
+        let result = raw & 0xFF
+        let carry = result < 0
+        self.operand_write(op1, 8, result)
+        self.flags.apply_bcd(result, carry)
+
+    # Compares op1/op2 as plain numbers (no decimal-digit adjustment at
+    # all), setting Z on equality and, when op1 < op2, both S and C --
+    # ported exactly from `_bcdcmp`, which never touches S/C/Z the usual
+    # "sign of the result" way (e.g. S is 0 whenever op1 >= op2, even
+    # though op1 - op2 could still be read as "negative" if you squint at
+    # it as an 8-bit result -- this op just doesn't compute it that way).
+    fn op_bcdcmp(mut self):
+        let (op1, op2, _op3) = self.decode_operands(2)
+        let a = self.operand_read(op1, 8)
+        let b = self.operand_read(op2, 8)
+        if a == b:
+            self.flags.set_z(true)
+            self.flags.set_s(false)
+            self.flags.set_c(false)
+        elif a < b:
+            self.flags.set_z(false)
+            self.flags.set_s(true)
+            self.flags.set_c(true)
+        else:
+            self.flags.set_z(false)
+            self.flags.set_s(false)
+            self.flags.set_c(false)
+        self.flags.set_o(false)
+
+    # BCD2BIN/BIN2BCD convert op1 in place (same operand read as source and
+    # written as destination, like INC/DEC/NEG). Unlike BCDA/BCDS/BCDCMP/
+    # BCDADD/BCDSUB above, these use the *destination's own* width (8 or
+    # 16), matching this port's usual "infer width from the destination
+    # register's real kind" rule -- the reference always treats the value
+    # as 16-bit (4 nibbles) for both the digit walk and its flag
+    # computation, but since a valid packed-BCD result never exceeds 9999
+    # (well under the 15-bit sign threshold either width would check), an
+    # 8-bit destination register never observably differs: its top two
+    # nibbles are always 0, so this port's destination-driven width is
+    # "genuine machine architecture" here the same way the deviation
+    # in "Operand width is inferred..." above already reasoned -- confirmed
+    # with a dedicated equivalence check, see NOTES.md.
+    fn op_bcd2bin(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let bcd = self.operand_read(op1, width)
+        let mut valid = true
+        let mut i = 0
+        while i < 4:
+            let digit = (bcd >> (i * 4)) & 0x0F
+            if digit > 9:
+                valid = false
+            i += 1
+        let mut result = bcd
+        if valid:
+            result = 0
+            let mut pow10 = 1
+            let mut j = 0
+            while j < 4:
+                let digit = (bcd >> (j * 4)) & 0x0F
+                result += digit * pow10
+                pow10 *= 10
+                j += 1
+        let masked = self.mask_to_width(result, width)
+        self.operand_write(op1, width, masked)
+        self.flags.apply_logic(masked, width)
+
+    fn op_bin2bcd(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let width = self.operand_width(op1)
+        let bin_val = self.operand_read(op1, width)
+        let mut result = 0
+        let mut pow10 = 1
+        let mut i = 0
+        while i < 4:
+            let digit = (bin_val / pow10) % 10
+            result = result | (digit << (i * 4))
+            pow10 *= 10
+            i += 1
+        let masked = self.mask_to_width(result, width)
+        self.operand_write(op1, width, masked)
+        self.flags.apply_logic(masked, width)
+
+    # BCDADD/BCDSUB: like BCDA/BCDS but without the A-flag carry-in step
+    # (no "carry with"/"borrow with" -- these are the plain, non-chaining
+    # BCD add/subtract).
+    fn op_bcdadd(mut self):
+        let (op1, op2, _op3) = self.decode_operands(2)
+        let a = self.operand_read(op1, 8)
+        let b = self.operand_read(op2, 8)
+        let mut raw = a + b
+        if self.flags.d():
+            if (raw & 0x0F) > 9:
+                raw += 0x06
+            if ((raw >> 4) & 0x0F) > 9:
+                raw += 0x60
+        # Masked before the carry check, same reasoning as op_bcda above.
+        let result = raw & 0xFF
+        let carry = result > 0x99
+        self.operand_write(op1, 8, result)
+        self.flags.apply_bcd(result, carry)
+
+    fn op_bcdsub(mut self):
+        let (op1, op2, _op3) = self.decode_operands(2)
+        let a = self.operand_read(op1, 8)
+        let b = self.operand_read(op2, 8)
+        let mut raw = a - b
+        if self.flags.d():
+            if (raw & 0x0F) > 9:
+                raw -= 0x06
+            if ((raw >> 4) & 0x0F) > 9:
+                raw -= 0x60
+        # Masked before the carry check, same reasoning as op_bcds above --
+        # always false in practice, ported as-is.
+        let result = raw & 0xFF
+        let carry = result < 0
+        self.operand_write(op1, 8, result)
+        self.flags.apply_bcd(result, carry)
+
     # ── Math library (docs/nova16_instruction_reference.md 0x5B-0x6C) ──
     # Ported from core/exec_handlers.py's _powr/_sqrt/_log/.../_intgr. Every
     # one of these treats its operand as a 16-bit *signed* value via
@@ -2427,6 +2609,26 @@ impl Cpu:
                 self.op_rndr()
             0x4A ->
                 self.op_memcpy()
+            0x4B ->
+                self.flags.set_d(true)
+            0x4C ->
+                self.flags.set_d(false)
+            0x4D ->
+                self.flags.set_a(false)
+            0x4E ->
+                self.op_bcda()
+            0x4F ->
+                self.op_bcds()
+            0x50 ->
+                self.op_bcdcmp()
+            0x51 ->
+                self.op_bcd2bin()
+            0x52 ->
+                self.op_bin2bcd()
+            0x53 ->
+                self.op_bcdadd()
+            0x54 ->
+                self.op_bcdsub()
             0x5A ->
                 self.op_loop()
             0x5B ->

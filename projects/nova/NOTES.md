@@ -49,7 +49,7 @@ raw opcode bytes (see "Testing" below).
 - `cpu.star` — the CPU itself: registers, the register-code address space,
   operand decoding, the fetch-decode-execute cycle, every implemented
   instruction, interrupts, and the timer. Still the one large file in the
-  project (~2570 lines, register codes and opcodes now spelled in hex —
+  project (~2770 lines, register codes and opcodes now spelled in hex —
   see "Language gotchas" #6 and #2 below); splitting it by opcode group is
   now *possible* since `impl` can cross a module boundary, just not done yet.
 - `main.star` — SDL2 window, a small built-in demo program (there's no
@@ -601,7 +601,7 @@ mechanical version's and are identical.
 ## What's implemented
 
 The full CPU/memory/register-file/flags architecture, the fetch-decode-
-execute cycle, all four addressing modes, and roughly 115 opcodes:
+execute cycle, all four addressing modes, and roughly 125 opcodes:
 
 - No-operand: `HLT NOP RET IRET CLI STI`
 - Data movement: `MOV MOVZ MOVNZ XCHNG SWAP LEA`
@@ -610,6 +610,7 @@ execute cycle, all four addressing modes, and roughly 115 opcodes:
 - Math library: `POWR SQRT LOG EXP SIN COS TAN ATAN ASIN ACOS DEG RAD FLOOR
   CEIL ROUND TRUNC FRAC INTGR`
 - Fixed-point Q8.8: `FMUL FDIV FTOI ITOF`
+- BCD: `SED CLD CLA BCDA BCDS BCDCMP BCD2BIN BIN2BCD BCDADD BCDSUB`
 - Bitwise: `AND OR XOR NOT SHL SHR ROL ROR SAR SAL RCL RCR BTST BSET BCLR
   BFLIP`
 - String library: `STRCPY STRCAT STRCMP STRLEN STRUPR STRLWR STRREV STRFIND
@@ -637,9 +638,6 @@ execute cycle, all four addressing modes, and roughly 115 opcodes:
 Deliberately deferred, each documented at the point it would have plugged
 in:
 
-- **BCD arithmetic** (`SED CLD CLA BCDA BCDS BCDCMP BCD2BIN BIN2BCD BCDADD
-  BCDSUB`) — a self-contained subsystem, no interaction with anything
-  above; skipped for time.
 - **`STREXT`/`STREXTI`** specifically (unlike the rest of the string
   library, now implemented — see "String library and integer/string
   conversion" below) and **`MEMCMP`** — both 4-operand opcodes; see
@@ -735,6 +733,14 @@ wiring anything into the SDL window:
   hand-computed checks) and, separately, the same live-Python-reference
   process as the math library round — see "String library and
   integer/string conversion"'s own "Verification" section below.
+- The BCD opcodes (0x4B-0x54), checked by replaying the *exact same
+  machine-code bytes* through both the live Python reference (over MCP)
+  and this port's own `Cpu::step()`, checkpoint by checkpoint, rather than
+  hand-computing expected BCD values independently for each side — see
+  "BCD operations"'s own "Verification" section below for why (the
+  reference's own BCD algorithm turned out to have a real, non-obvious
+  quirk that hand-derivation from idealized decimal-adjust math got wrong
+  on the first pass here too).
 
 ## Math library / Q8.8 fixed-point (0x5B-0x6C, 0xAC-0xAF)
 
@@ -954,15 +960,126 @@ Checked two ways, matching (and extending) the math library round's own
    itself from this pass, giving real confidence the source-reading-only
    port above was accurate.
 
+## BCD operations (0x4B-0x54)
+
+Added in this round: `SED CLD CLA BCDA BCDS BCDCMP BCD2BIN BIN2BCD BCDADD
+BCDSUB`, ported from `core/exec_handlers.py`'s `_sed`/`_cld`/`_cla`/
+`_bcda`/.../`_bcdsub` and `core/flags.py::set_from_bcd`. Implementation
+lives in `cpu.star` right after `op_popcnt` (the BCD group sits between
+the bitwise/arithmetic block and the math library in the reference's own
+opcode numbering too), dispatched from `execute` the same way as every
+other opcode; `SED`/`CLD`/`CLA` (no operand at all) are handled inline in
+`execute`, same as `CLI`/`STI`, rather than as their own `op_*` methods.
+`flags.star` gained a new `Flags::apply_bcd(result, bcd_carry)`, mirroring
+`set_from_bcd` — the one flag helper in this file that's always 8-bit
+regardless of the destination's real width, since a BCD byte packs
+exactly two decimal digits no matter which register holds it.
+
+Notable decisions and quirks found while porting, each also called out at
+its point of use in `cpu.star`:
+
+- **BCDA/BCDS/BCDADD/BCDSUB always operate at a fixed 8-bit width**, even
+  when `op1` is a 16-bit destination (a `P` register or memory) — matching
+  `_write_result`'s own `result & 0xFF` in the reference. `BCD2BIN`/
+  `BIN2BCD` are the exception: they use this port's usual destination-
+  driven width (see the "Operand width is inferred..." deviation above),
+  which the reference doesn't do (it always treats the value as 16-bit,
+  4 nibbles) — but since a valid packed-BCD result never exceeds 9999,
+  well under either width's sign threshold, an 8-bit destination's flags
+  never actually differ from what the reference's always-16-bit
+  computation would produce; confirmed with a dedicated 8-bit-vs-16-bit
+  equivalence check in the verification harness below.
+- **BCDA/BCDS's "add/subtract 1 when the A flag is set" step is gated on
+  D (decimal mode) being *un*set** (`if not D and A: ...`) — backwards
+  from what "carry-in" would suggest (you'd expect it gated on D being
+  set, or applying unconditionally), but that's what `_bcda`/`_bcds`
+  actually do, confirmed against the live reference (checkpoints 4-5 in
+  the verification section below specifically isolate this gate in both
+  directions). `BCDADD`/`BCDSUB` don't have this step at all — they're the
+  plain, non-chaining add/subtract.
+- **A genuine reference bug found while verifying this round, not
+  guessed from reading the source alone**: `_bcda`/`_bcds`/`_bcdadd`/
+  `_bcdsub` all mask their raw result to `& 0xFF` *before* checking
+  whether to set the BCD-carry (A) flag (`result > 0x99`/`result < 0`
+  come after the mask, in that exact statement order). For BCDA/BCDADD
+  this means the carry check only fires when the *masked* byte itself
+  lands in 154-255 — not "the true pre-mask sum exceeded 0x99", which is
+  what a reader would reasonably assume `result > 0x99` means out of
+  context. For BCDS/BCDSUB it's worse: since `& 0xFF` (in Python and in
+  Star alike) always produces a value in 0-255, `result < 0` *can never
+  be true* — meaning BCDS/BCDSUB's BCD-carry/borrow flag is **always
+  cleared**, regardless of whether a real borrow occurred. This first
+  surfaced as a live-reference mismatch on this port's own first draft
+  (checkpoint 3 below reported C=0 where the pre-mask-checking draft
+  computed C=1) — caught by the byte-for-byte replay technique described
+  below, not by re-reading the Python source more carefully; the exact
+  masking order is easy to skim past in `core/exec_handlers.py` even when
+  looking right at it. Ported bug-for-bug once found, per this project's
+  established "port bug-for-bug" precedent (see the `TAN` scaling quirk
+  above).
+- **BCDCMP compares its two operands as plain numbers**, with no
+  decimal-digit adjustment at all, and its S flag is not "sign of the
+  subtraction" the way `apply_arith`'s CMP path computes it elsewhere in
+  this file — it's simply "1 iff op1 < op2", 0 in both the equal and
+  greater-than cases. Ported directly from `_bcdcmp`'s explicit three-way
+  if/elif/else rather than reused through `apply_arith`.
+- **`BCD2BIN` on an invalid packed-BCD value (any nibble > 9) leaves the
+  operand unchanged** rather than producing a garbage numeric result —
+  matches `_bcd2bin`'s own `valid` flag falling back to `bcd` itself.
+
+### Verification
+
+Following the same "don't just trust a hand read of the Python source"
+standard the math library and string library rounds established, but
+with a twist this round specifically needed: rather than hand-deriving
+expected BCD values independently and comparing both implementations
+against that derivation (the approach every earlier round used), this
+round assembled one `.asm` test program (16 checkpoints covering every
+new opcode, including the two aux-carry-gate checkpoints above and both a
+valid and an invalid packed-BCD `BCD2BIN` input), ran it on the live
+reference CPU via the Nova-16 MCP server (single-stepped, `R`/`P`
+registers and flags read directly from `get_cpu_state` — no memory writes
+or `HLT` needed, sidestepping the sticky-`halted` MCP quirk entirely),
+recorded the reference's own register/flag values at each checkpoint, and
+then **replayed the exact same assembled machine-code bytes** (copied
+byte-for-byte from the assembler's own output, not re-encoded by hand)
+through this port's `Cpu::step()` in a standalone headless harness,
+diffing against the recorded reference values. All 16 checkpoints matched
+— after the masking-order bug above was found and fixed by exactly this
+process (the harness's first draft, using the "obviously correct"
+pre-mask carry check, disagreed with the live reference at checkpoint 3;
+the reference was right, the harness's assumption was wrong).
+
+The byte-for-byte replay (rather than two independent hand-derivations)
+was deliberate: idealized BCD/DAA math is a well-known algorithm, and
+hand-deriving "the correct answer" for a tricky case risks silently
+reproducing the *idealized* algorithm instead of the reference's actual
+(buggy) one — exactly the trap the masking-order bug above would have
+hidden from a purely hand-computed test. Using the reference's own
+assembler output as the input to both sides removes that risk entirely:
+any mismatch can only mean this port's opcode handler itself is wrong,
+not that the expected value was mis-derived.
+
+One footgun hit again while writing the headless harness, already
+documented in the string-library round's own verification section above
+but easy to trip on independently: the harness's first draft used plain
+free functions taking `mut c: cpu::Cpu` for its `run_steps`/`checkpoint`
+helpers, and every single checkpoint silently reported the CPU as never
+having advanced (`R0`/`P0` stuck at 0 forever) — not because `step()`
+itself was broken, but because the free functions were mutating a
+throwaway *copy* of `c`. Fixed the same way as before: made both helpers
+`impl cpu::Cpu:` methods in the harness file so `self` carries the
+mutation back correctly.
+
 ## Ideas for future work
 
 - Layer compositing (backgrounds 1-4, sprites 5-8) and `SPBLIT`/
   `SPBLITALL`/`LSWAP`/`LMOVE`/`LCOPY`.
 - Sound synthesis (waveform generation + mixing) behind the already-in-
   place `SA`/`SF`/`SV`/`SW` register model.
-- The BCD/UART opcode groups listed above (the math library, Q8.8
-  fixed-point conversion, string library, and integer/string conversion
-  are now done — see above).
+- The UART opcode group listed above (the math library, Q8.8 fixed-point
+  conversion, string library, integer/string conversion, and BCD
+  arithmetic are now done — see above).
 - A byte-accurate binary file loader (so a compiled `.bin` could be loaded
   instead of a baked-in demo) — the language-level blocker is gone
   (`file_read_bytes`/`file_write_bytes` now exist, see "Fixes applied to
