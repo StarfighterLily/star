@@ -389,16 +389,33 @@ future `.star` project.
 ## P3 — Verify, don't just assume fixed
 
 11. **Confirm the trailing-`if`/`else` `phi` fix also covers `let`
-    initializers, not just function-final-expression position.** The fix
-    already landed for this project (`rsplit_once(' ')` instead of
-    `split_once(' ')` in `Codegen::emit_trailing_if_value`,
-    `src/codegen/stmt.rs`) and was verified against `Keyboard::pop_key`/
-    `Cpu::decode_operands`, both trailing-return-position tuples. Nova's
-    NOTES separately flagged `let x = if cond: <multi-stmt> else:
-    <multi-stmt>` (not a function's final expression, an explicit `let`
-    binding) as the same underlying shape, but that specific case was never
-    re-tested after the fix landed. Add a direct regression test for the
-    `let`-initializer form before assuming it's covered.
+    initializers, not just function-final-expression position.** — **done**:
+    confirming this turned up that `let x = if cond: .. else: ..` never
+    actually goes through `Codegen::emit_trailing_if_value`/its
+    `rsplit_once` fix at all -- it parses as a full `Expr::If`
+    (`Parser::parse_if_expr`) and codegens through the entirely separate
+    `TypedExpr::If` arm in `src/codegen/expr.rs`, which reads its merged
+    `phi` type directly off the checker's own `ty` field rather than
+    splitting a tagged value string, so it was never susceptible to that
+    particular bug. But auditing that arm turned up a real, different bug in
+    the same place: unlike every other `if` codegen path in the compiler, it
+    never wrapped either arm in its own `push_scope`/`pop_scope`, so an
+    RC-owning local declared inside an arm (a `str`, `List<T>`, ...) --
+    whether or not it was the arm's own trailing value -- got tracked in
+    whatever scope was already open *outside* the whole `if`. That
+    outer scope's eventual release fired unconditionally for *both* arms'
+    locals, including the untaken arm's, whose `alloca` was never stored to
+    and held uninitialized stack garbage -- releasing that garbage as a
+    supposed RC pointer segfaulted, confirmed with a real `star build`+run
+    repro before the fix. Fixed by giving each arm its own scope in
+    `Codegen::emit_expr`'s `TypedExpr::If` case, exactly matching
+    `emit_trailing_if_value`/`TypedStmt::If`'s existing pattern. 8 new tests
+    in `tests/frontend_closures_higher_order.rs`: the original multi-statement
+    scalar and tuple-typed `let`-initializer shapes, the segfault repro (an
+    unused RC-owning arm-local, and one where the trailing value itself is
+    an RC-owning arm-local), a `List<T>`-typed arm-local, a multi-statement
+    `elif` chain, and a sustained-iteration leak check (`assert_no_leak`)
+    alternating branches across 400,000 iterations.
 
 # Previous Work
 file_read_bytes(handle) -> Bytes and file_write_bytes(handle, data: Bytes) -> bool (src/codegen/file_io.rs) — binary-safe siblings of file_read/file_write that never call @strlen or append a NUL terminator. They reuse the Ty::Bytes explicit-length {u8*, i64, i64} payload that already existed but had no non-strlen way to load real binary data into it.

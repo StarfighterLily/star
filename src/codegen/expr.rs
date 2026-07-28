@@ -1717,6 +1717,23 @@ impl Codegen {
             }
             TypedExpr::If { cond, then_block, else_block, ty, .. } => {
                 let ty_str = self.llvm_ty(ty);
+                // Each arm gets its own RC-tracking scope (`push_scope`/
+                // `pop_scope`), exactly like every other `if` codegen path
+                // (`Codegen::emit_trailing_if_value`, `TypedStmt::If`'s own
+                // statement-form handling) -- *not* previously true here.
+                // Without it, a `let`/intermediate RC-owning local declared
+                // inside either arm (e.g. `let x = if cond: let s: str =
+                // "a"; s else: let s: str = "b"; s`) got `track_owned`'d into
+                // whatever scope frame was already open *outside* the whole
+                // `if` (there was no frame of its own to land in), so the
+                // eventual `pop_scope` released *both* arms' locals
+                // unconditionally -- including the arm that never ran, whose
+                // `alloca` was never stored to. Releasing that uninitialized
+                // stack garbage as if it were a real RC pointer segfaulted
+                // (confirmed empirically, not just in theory) the moment the
+                // untaken arm's slot didn't happen to already be zero.
+                let then_terminates = Self::body_terminates(&then_block.stmts);
+                let else_terminates = else_block.as_ref().map(|b| Self::body_terminates(&b.stmts)).unwrap_or(false);
                 if ty_str == "void" {
                     // A value-less `if` (used for side effects): run both blocks
                     // without a phi merge, returning `%undef` as a value.
@@ -1727,12 +1744,16 @@ impl Codegen {
                     let end_label = self.block_label("if_end");
                     self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, then_label, else_label));
                     self.open_block(&then_label);
+                    self.push_scope();
                     self.emit_block_value(then_block);
+                    self.pop_scope(!then_terminates);
                     self.line(&format!("  br label %{}", end_label));
                     self.open_block(&else_label);
+                    self.push_scope();
                     if let Some(else_b) = else_block {
                         self.emit_block_value(else_b);
                     }
+                    self.pop_scope(!else_terminates);
                     self.line(&format!("  br label %{}", end_label));
                     self.open_block(&end_label);
                     "%undef".into()
@@ -1746,8 +1767,19 @@ impl Codegen {
                     let end_label = self.block_label("if_end");
                     self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, then_label, else_label));
                     self.open_block(&then_label);
+                    self.push_scope();
                     let then_val = self.emit_block_value(then_block);
                     let then_reg = then_val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "%undef".to_string());
+                    // The trailing value is read out (and, if RC-owning,
+                    // retained -- `emit_expr`'s `TypedExpr::Ident` case
+                    // already does this for any read of a tracked local) into
+                    // `then_reg` *before* `pop_scope` below releases this
+                    // arm's own locals, so a trailing `s` that's also one of
+                    // this arm's `let`s survives its own scope's release with
+                    // a correctly-balanced refcount, the same "read retains,
+                    // scope-exit releases" pattern every other scope in this
+                    // codegen already relies on.
+                    self.pop_scope(!then_terminates);
                     // The block actually falling through to `end_label` isn't
                     // necessarily `then_label` itself anymore: evaluating the
                     // branch's trailing value may have opened further blocks
@@ -1763,8 +1795,10 @@ impl Codegen {
                     let then_pred = self.current_label.clone();
                     self.line(&format!("  br label %{}", end_label));
                     self.open_block(&else_label);
+                    self.push_scope();
                     let else_val = else_block.as_ref().and_then(|b| self.emit_block_value(b));
                     let else_reg = else_val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "%undef".to_string());
+                    self.pop_scope(!else_terminates);
                     let else_pred = self.current_label.clone();
                     self.line(&format!("  br label %{}", end_label));
                     self.open_block(&end_label);

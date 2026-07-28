@@ -799,3 +799,140 @@ fn runtime_method_calls_end_to_end() {
     assert!(stdout.contains("remaining: 100"), "method call used as a value: {}", stdout);
     assert!(stdout.contains("Hero has perished."), "method call used as a bare statement: {}", stdout);
 }
+
+// ===== `let x = if cond: <multi-stmt> else: <multi-stmt>` as a `let`
+// ===== initializer (todo.md P3 #11) ========================================
+//
+// The trailing-`if`/`else`-as-a-value `phi` fix above (`Codegen::
+// emit_trailing_if_value`'s `rsplit_once` fix, exercised by the bare-
+// trailing-if/else tests just above) only ever runs for `TypedStmt::If` --
+// an `if` in trailing *statement* position (a function's implicit return, or
+// a `frame:` block's own trailing statement). `let x = if cond: .. else:
+// ..`, by contrast, parses `if` as a full expression (`Expr::If` via
+// `Parser::parse_if_expr`) and type-checks/codegens through the entirely
+// separate `TypedExpr::If` arm (`Codegen::emit_expr`, `src/codegen/expr.rs`)
+// -- which reads its merged `phi` type directly off the checker-computed
+// `ty` field rather than splitting a tagged value string, so it was never
+// susceptible to the `rsplit_once`/`split_once` bug in the first place.
+// `projects/nova/NOTES.md` section 10 flagged this shape as suspect anyway
+// ("a bare multi-statement if/else doesn't work as a let initializer") but
+// never pinned down *why*, and P3 #11 asks to confirm rather than assume.
+//
+// Confirming it turned up a real, different bug in that same `TypedExpr::If`
+// arm: unlike every other `if` codegen path in this compiler (`TypedStmt::
+// If`'s own statement-form handling, `Codegen::emit_trailing_if_value`, the
+// `while`/`match`/arena/closure/system bodies all listed at the top of
+// `Codegen::push_scope`'s call sites), it never wrapped either arm in its
+// own `push_scope`/`pop_scope` pair. Any RC-owning local declared inside an
+// arm (a `str`, `List<T>`, etc. -- not necessarily the arm's own trailing
+// value) was `track_owned`'d into whatever scope was already open *outside*
+// the whole `if`, so that enclosing scope's eventual `pop_scope` released
+// *both* arms' locals unconditionally -- including the arm that never ran,
+// whose `alloca` was never stored to and so held uninitialized stack
+// garbage. Calling `star_rc_release` on that garbage (dereferencing it as an
+// RC header) segfaulted; confirmed with a real `star build`+run before this
+// fix landed (`Codegen::emit_expr`'s `TypedExpr::If` arm now pushes/pops a
+// scope around each arm exactly like the other paths already did).
+
+/// The exact shape `projects/nova/flags.star` used successfully (a single
+/// expression per arm) still works, now with each arm expanded to multiple
+/// statements -- the base case P3 #11 asks to confirm, no RC types involved
+/// so it never touched the scope bug above; guards the plain scalar path
+/// stays correct alongside the fix below.
+#[test]
+fn runtime_let_initializer_if_else_multi_statement_arms_scalar_end_to_end() {
+    let src = "fn classify(cond: bool) -> i32:\n    let x = if cond:\n        let a = 1\n        let b = 2\n        a + b\n    else:\n        let a = 10\n        let b = 20\n        a + b\n    x\n\nfn main():\n    println(f\"{classify(true)}\")\n    println(f\"{classify(false)}\")\n";
+    let output = compile_and_run("let_if_multi_stmt_scalar", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["3", "30"], "{}", stdout);
+}
+
+/// Same shape with an aggregate (tuple) arm type -- guards that
+/// `TypedExpr::If`'s `ty_str = self.llvm_ty(ty)` (reading the merged `phi`
+/// type off the checker's own field) handles a type whose LLVM spelling
+/// contains internal spaces (`{ i32, i1 }`) correctly for a multi-statement
+/// `let`-initializer arm, the same aggregate-`phi` shape the
+/// `rsplit_once` fix targeted for the statement-form sibling.
+#[test]
+fn runtime_let_initializer_if_else_multi_statement_arms_tuple_type_end_to_end() {
+    let src = "fn pick(cond: bool) -> (i32, bool):\n    let x = if cond:\n        let a: i32 = 1\n        let b: bool = true\n        (a, b)\n    else:\n        let a: i32 = 10\n        let b: bool = false\n        (a, b)\n    x\n\nfn main():\n    let p = pick(true)\n    let q = pick(false)\n    println(f\"{p.0} {p.1} {q.0} {q.1}\")\n";
+    let output = compile_and_run("let_if_multi_stmt_tuple", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "1 true 10 false");
+}
+
+/// Regression for the segfault described above: an RC-owning local (`str`)
+/// declared inside each arm but *not* the arm's own trailing value. Before
+/// the `push_scope`/`pop_scope` fix, this crashed with SIGSEGV on both
+/// `cond` values (the untaken arm's own `alloca` was always uninitialized
+/// garbage, regardless of which branch ran) -- confirmed via a real
+/// `star build`+run repro before writing this test.
+#[test]
+fn runtime_let_initializer_if_else_multi_statement_arms_with_unused_rc_local_end_to_end() {
+    let src = "fn pick(cond: bool) -> str:\n    let x = if cond:\n        let unused: str = \"alpha\"\n        \"then-value\"\n    else:\n        let unused: str = \"beta\"\n        \"else-value\"\n    x\n\nfn main():\n    println(pick(true))\n    println(pick(false))\n";
+    let output = compile_and_run("let_if_multi_stmt_unused_rc_local", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["then-value", "else-value"], "{}", stdout);
+}
+
+/// Same bug, but the trailing value *is* one of the arm's own RC-owning
+/// locals (read out, not a fresh literal) -- exercises the "read retains,
+/// scope-exit releases" balance: `a`'s own arm-scope `pop_scope` must not
+/// release the last reference out from under the value this `if`-expression
+/// is about to hand back to its `let` binding.
+#[test]
+fn runtime_let_initializer_if_else_multi_statement_arms_trailing_rc_local_end_to_end() {
+    let src = "fn pick(cond: bool) -> str:\n    let x = if cond:\n        let a: str = \"alpha\"\n        let b: str = \"beta\"\n        a\n    else:\n        let a: str = \"gamma\"\n        let b: str = \"delta\"\n        a\n    x\n\nfn main():\n    println(pick(true))\n    println(pick(false))\n";
+    let output = compile_and_run("let_if_multi_stmt_trailing_rc_local", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["alpha", "gamma"], "{}", stdout);
+}
+
+/// Same bug, a collection type (`List<i32>`) rather than `str` -- exercises
+/// the generated list-release thunk (`crate::codegen::list`) rather than the
+/// plain `str` release path, guarding the scope fix isn't narrowly
+/// specialized to one RC-owning type.
+#[test]
+fn runtime_let_initializer_if_else_multi_statement_arms_with_list_local_end_to_end() {
+    let src = "fn pick(cond: bool) -> i32:\n    let x = if cond:\n        let mut lst: List<i32> = List<i32>()\n        lst.push(1)\n        lst.push(2)\n        42\n    else:\n        let mut lst: List<i32> = List<i32>()\n        lst.push(3)\n        -1\n    x\n\nfn main():\n    println(f\"{pick(true)}\")\n    println(f\"{pick(false)}\")\n";
+    let output = compile_and_run("let_if_multi_stmt_list_local", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["42", "-1"], "{}", stdout);
+}
+
+/// An `elif` chain (which desugars to a nested `Expr::If` held in the outer
+/// arm's `else_block`, per `Parser::parse_if_else_tail_expr`) as a `let`
+/// initializer, each arm multi-statement with its own RC-owning local --
+/// guards that the scope fix applies at every nesting level the desugaring
+/// produces, not just a single top-level `if`/`else`.
+#[test]
+fn runtime_let_initializer_elif_chain_multi_statement_arms_with_rc_locals_end_to_end() {
+    let src = "fn classify(x: i32) -> str:\n    let label = if x > 100:\n        let tag: str = \"big-tag\"\n        \"big\"\n    elif x > 0:\n        let tag: str = \"small-tag\"\n        \"small\"\n    else:\n        let tag: str = \"non-positive-tag\"\n        \"non-positive\"\n    label\n\nfn main():\n    println(classify(500))\n    println(classify(5))\n    println(classify(-5))\n";
+    let output = compile_and_run("let_if_elif_multi_stmt_rc_locals", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["big", "small", "non-positive"], "{}", stdout);
+}
+
+/// Sustained-iteration leak check (same `assert_no_leak` Working-Set-delta
+/// technique as the round-2/round-3 bug-hunt files): a `let`-initializer
+/// `if`/`else` with a multi-statement, RC-owning-local-bearing arm on *both*
+/// sides, alternating which branch runs every iteration, must not leak --
+/// i.e. the per-arm `push_scope`/`pop_scope` fix releases the untaken arm's
+/// (never-allocated-this-iteration) locals correctly and the taken arm's
+/// locals exactly once, not zero or two times, across many iterations of
+/// each branch.
+#[test]
+fn runtime_let_initializer_if_else_multi_statement_arms_rc_locals_sustained_no_leak_end_to_end() {
+    let src = "fn main():\n    let mut i: i32 = 0\n    while i < 400000:\n        let cond = i % 2 == 0\n        let x = if cond:\n            let a: str = concat(\"hello\", \"-a\")\n            let b: str = concat(\"world\", \"-b\")\n            a\n        else:\n            let a: str = concat(\"foo\", \"-a\")\n            let b: str = concat(\"bar\", \"-b\")\n            b\n        i += 1\n    println(\"done\")\n";
+    assert_no_leak("let_if_multi_stmt_rc_locals_sustained_leak", src, 20 * 1024 * 1024);
+}
