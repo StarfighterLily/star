@@ -336,6 +336,16 @@ pub enum TypedExpr {
     /// `[value; N]`, see [`crate::ast::Expr::ArrayRepeat`]. `elem_ty` is
     /// `value`'s own inferred type; `ty` is always `Ty::Array(elem_ty, count)`.
     ArrayRepeat { value: Box<TypedExpr>, count: u64, elem_ty: Ty, span: Span },
+    /// A bracket literal `[e1, e2, ...]` coerced to a fixed-size `[T; N]`
+    /// array by an expected type known at its construction site (a `let`
+    /// annotation, a struct field, a `return`) instead of the default
+    /// `List<T>` -- see `Checker::try_infer_array_lit`, `todo.md` P2 #10.
+    /// Distinct from `ArrayRepeat` (one expression evaluated once and
+    /// copied into every slot): here every slot is its own expression,
+    /// evaluated and stored independently, exactly like `TupleLit` against
+    /// `[N x T]` instead of `{T0, T1, ...}`. `ty` is always
+    /// `Ty::Array(elem_ty, elems.len())`.
+    ArrayLit { elems: Vec<TypedExpr>, elem_ty: Ty, span: Span },
     /// `arr[idx]`: a bounds-checked fixed-size array element access, sharing
     /// `Expr::GenRefIndex`'s syntax the same way `ListIndex`/`GenRefIndex`/
     /// `StrIndex` already do (see `Checker::infer_expr`'s dispatch on the
@@ -510,6 +520,7 @@ impl TypedExpr {
             TypedExpr::TupleIndex { ty, .. } => ty,
             TypedExpr::ArrayIndex { ty, .. } => ty,
             TypedExpr::ArrayRepeat { count, elem_ty, .. } => Ty::Array(Box::new(elem_ty), count),
+            TypedExpr::ArrayLit { elems, elem_ty, .. } => Ty::Array(Box::new(elem_ty), elems.len() as u64),
             TypedExpr::ArrayLen { .. } => Ty::Int,
             TypedExpr::RingNew { elem_ty, count, .. } => Ty::Ring(Box::new(elem_ty), count),
             TypedExpr::RingMethod { ty, .. } => ty,
@@ -536,7 +547,7 @@ impl TypedExpr {
             | TypedExpr::StrIndex { span, .. } | TypedExpr::MapNew { span, .. } | TypedExpr::SetNew { span, .. }
             | TypedExpr::MapMethod { span, .. } | TypedExpr::SetMethod { span, .. }
             | TypedExpr::TupleLit { span, .. } | TypedExpr::TupleIndex { span, .. }
-            | TypedExpr::ArrayRepeat { span, .. } | TypedExpr::ArrayIndex { span, .. }
+            | TypedExpr::ArrayRepeat { span, .. } | TypedExpr::ArrayLit { span, .. } | TypedExpr::ArrayIndex { span, .. }
             | TypedExpr::ArrayLen { span, .. } | TypedExpr::RingNew { span, .. }
             | TypedExpr::RingMethod { span, .. } | TypedExpr::RingIndex { span, .. }
             | TypedExpr::TableNew { span, .. } | TypedExpr::TableMethod { span, .. }

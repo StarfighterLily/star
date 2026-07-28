@@ -2017,6 +2017,7 @@ impl Codegen {
             TypedExpr::TupleLit { ty, .. } => ty.clone(),
             TypedExpr::TupleIndex { ty, .. } => ty.clone(),
             TypedExpr::ArrayRepeat { count, elem_ty, .. } => Ty::Array(Box::new(elem_ty.clone()), *count),
+            TypedExpr::ArrayLit { elems, elem_ty, .. } => Ty::Array(Box::new(elem_ty.clone()), elems.len() as u64),
             TypedExpr::ArrayIndex { ty, .. } => ty.clone(),
             TypedExpr::ArrayLen { .. } => Ty::Int,
             TypedExpr::RingNew { elem_ty, count, .. } => Ty::Ring(Box::new(elem_ty.clone()), *count),

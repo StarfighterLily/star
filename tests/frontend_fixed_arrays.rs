@@ -12,12 +12,16 @@ use common::*;
 // ===== "fixed-size arrays" -- the last of that section's lowest-effort
 // ===== slice, after Option/Result/Map/Set). `[T; N]` lowers to an inline
 // ===== LLVM `[N x T]` array (like `Ty::Tuple`, no RC header, no heap
-// ===== allocation). The *only* literal form is the `[value; N]` repeat
-// ===== (a new `;` token, `TokenKind::Semi` -- the only place the grammar
-// ===== ever uses one, see `Lexer`'s doc comment on it): a distinct-elements
-// ===== form (`[e1, e2, e3]`) would collide with `List<T>`'s existing
-// ===== `ListLit` syntax, and this checker has no expected-type propagation
-// ===== to disambiguate the two by context. Indexing shares `Expr::GenRefIndex`'s
+// ===== allocation). `[value; N]` (a new `;` token, `TokenKind::Semi` -- the
+// ===== only place the grammar ever uses one, see `Lexer`'s doc comment on
+// ===== it) repeats one value into every slot. A *distinct*-elements literal
+// ===== (`[e1, e2, e3]`) shares `List<T>`'s existing `ListLit` syntax --
+// ===== disambiguated not by the parser but by the checker, which coerces it
+// ===== to a fixed array only when an expected `[T; N]` type is reachable
+// ===== from context and the element count matches (`Checker::
+// ===== try_infer_array_lit`, `todo.md` P2 #10); see
+// ===== `tests/frontend_array_literal_coercion.rs` for that literal form's
+// ===== own dedicated coverage. Indexing shares `Expr::GenRefIndex`'s
 // ===== `[..]` syntax with `GenRef<T>`/`List<T>`/`str` (dispatched on the
 // ===== base's resolved type), with the same bounds-checked, fails-safe
 // ===== convention as `List<T>`: a zero value out of bounds on read, a

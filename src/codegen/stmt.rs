@@ -306,6 +306,9 @@ impl Codegen {
             TypedExpr::ArrayRepeat { value, count, elem_ty, .. } => {
                 self.emit_array_repeat_into(dest_ptr, value, *count, elem_ty);
             }
+            TypedExpr::ArrayLit { elems, elem_ty, .. } => {
+                self.emit_array_lit_into(dest_ptr, elems, elem_ty);
+            }
             TypedExpr::Call { callee, args, .. } => {
                 self.emit_call_into(dest_ptr, callee, args, ty);
             }
@@ -602,6 +605,15 @@ impl Codegen {
                     let ptr = self.tmp_name();
                     self.line(&format!("  {} = alloca {}", ptr, ty));
                     self.emit_array_repeat_into(&ptr, rep_val, *count, elem_ty);
+                    self.symbols.push((name.clone(), ptr.clone(), vty.clone()));
+                    self.track_owned(&ptr, &vty);
+                } else if let TypedExpr::ArrayLit { elems, elem_ty, .. } = value {
+                    // Same idea for `let a: [T; N] = [e1, e2, ...]` --
+                    // mirrors the `ArrayRepeat` branch just above, see
+                    // `Codegen::emit_array_lit_into`'s doc comment.
+                    let ptr = self.tmp_name();
+                    self.line(&format!("  {} = alloca {}", ptr, ty));
+                    self.emit_array_lit_into(&ptr, elems, elem_ty);
                     self.symbols.push((name.clone(), ptr.clone(), vty.clone()));
                     self.track_owned(&ptr, &vty);
                 } else if let TypedExpr::StructLit { name: struct_name, args, ty: Ty::Named(_), .. } = value {

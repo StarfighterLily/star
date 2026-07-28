@@ -142,6 +142,56 @@ impl Codegen {
         }
     }
 
+    /// `[e1, e2, ..., eN]` coerced to `[T; N]` (see
+    /// `Checker::try_infer_array_lit`, `todo.md` P2 #10): unlike
+    /// `emit_array_repeat`, there's no single value to loop-copy -- every
+    /// slot is its own distinct expression, evaluated and stored exactly
+    /// once, so this unrolls into `N` static GEP+store pairs instead of a
+    /// runtime loop (mirrors `TupleLit`'s codegen shape, `Codegen::emit_expr`'s
+    /// `TypedExpr::TupleLit` arm, against `[N x T]` instead of `{T0, T1,
+    /// ...}`). No retain is needed on any slot -- each element's own
+    /// evaluation is a fresh value whose ownership moves straight into its
+    /// slot, unlike `emit_array_repeat`'s slots `1..N`, which are `N`
+    /// independent owners of the *same* one evaluation and so must each
+    /// retain their own copy.
+    pub(super) fn emit_array_lit(&mut self, elems: &[TypedExpr], elem_ty: &Ty) -> String {
+        let elem_llvm = self.llvm_ty(elem_ty);
+        let count = elems.len() as u64;
+        let arr_ty = format!("[{} x {}]", count, elem_llvm);
+        let ptr = self.tmp_name();
+        self.line(&format!("  {} = alloca {}", ptr, arr_ty));
+        for (i, e) in elems.iter().enumerate() {
+            let val = self.emit_expr(e);
+            let clean_val = self.untag(&val, elem_ty);
+            let gep = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i64 {}", gep, arr_ty, arr_ty, ptr, i));
+            self.line(&format!("  store {} {}, {}* {}", elem_llvm, clean_val, elem_llvm, gep));
+        }
+        let loaded = self.tmp_name();
+        self.line(&format!("  {} = load {}, {}* {}", loaded, arr_ty, arr_ty, ptr));
+        format!("{} {}", arr_ty, loaded)
+    }
+
+    /// `[e1, e2, ..., eN]`, written directly into a destination the caller
+    /// already owns (a fresh `let` binding's own alloca, or a
+    /// struct-literal field's GEP) -- mirrors `emit_array_repeat_into`'s
+    /// identical reasoning (this module's own doc comment above): avoids
+    /// ever materializing a whole `[N x T]`-typed SSA value, a real `clang`
+    /// crash/hang risk once `N` gets large (e.g. Nova's 2048-byte
+    /// `FontData.glyphs`).
+    pub(super) fn emit_array_lit_into(&mut self, dest_ptr: &str, elems: &[TypedExpr], elem_ty: &Ty) {
+        let elem_llvm = self.llvm_ty(elem_ty);
+        let count = elems.len() as u64;
+        let arr_ty = format!("[{} x {}]", count, elem_llvm);
+        for (i, e) in elems.iter().enumerate() {
+            let val = self.emit_expr(e);
+            let clean_val = self.untag(&val, elem_ty);
+            let gep = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i32 0, i64 {}", gep, arr_ty, arr_ty, dest_ptr, i));
+            self.line(&format!("  store {} {}, {}* {}", elem_llvm, clean_val, elem_llvm, gep));
+        }
+    }
+
     /// Bounds-checked pointer to `base_ptr`'s element at `index`: a real GEP
     /// into the array's own storage when in bounds, or a fresh, zeroed,
     /// disconnected alloca when not (so a read through it sees a well-defined

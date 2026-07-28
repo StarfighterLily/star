@@ -433,6 +433,10 @@ impl Codegen {
                 self.emit_array_repeat_into(&gep, value, *count, elem_ty);
                 continue;
             }
+            if let TypedExpr::ArrayLit { elems, elem_ty, .. } = a {
+                self.emit_array_lit_into(&gep, elems, elem_ty);
+                continue;
+            }
             // A nested plain-struct literal (e.g. `Cpu(mem = Memory(bytes =
             // [0 as u8; 65536]), ...)`) recurses the same direct-into
             // treatment instead of falling through to `emit_expr`, which
@@ -619,6 +623,7 @@ impl Codegen {
                 reg
             }
             TypedExpr::ArrayRepeat { value, count, elem_ty, .. } => self.emit_array_repeat(value, *count, elem_ty),
+            TypedExpr::ArrayLit { elems, elem_ty, .. } => self.emit_array_lit(elems, elem_ty),
             TypedExpr::ArrayIndex { base, index, ty, .. } => {
                 let Ty::Array(_, count) = self.expr_ty(base) else { unreachable!("ArrayIndex base must be Ty::Array") };
                 self.emit_array_index(base, index, ty, count)

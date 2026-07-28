@@ -43,6 +43,62 @@ impl Checker {
         }
     }
 
+    /// Try to type a bracket literal `elems` directly as a fixed-size
+    /// `[T; N]` array under an expected type known from context (a `let`'s
+    /// own annotation, a struct field's declared type, or a function's
+    /// declared return type) -- `None` when `expected` isn't `Ty::Array` or
+    /// the element count doesn't match `N`, letting the caller fall through
+    /// to the ordinary `Expr::ListLit` path (a heap `List<T>`) unchanged.
+    /// This is the one place this checker looks at an expected type before
+    /// inferring an expression, mirroring `cast_literal_magnitude`'s sibling
+    /// special-cases' "peek at the raw `Expr` node before falling into
+    /// `infer_expr`" pattern rather than threading a general expected-type
+    /// parameter through every expression kind -- deliberately narrow: three
+    /// call sites only (`Stmt::Let`, struct-literal field arguments,
+    /// `Stmt::Return`). See `todo.md` P2 #10.
+    pub(super) fn try_infer_array_lit(&mut self, elems: &[Expr], expected: &Ty, vars: &mut HashMap<String, Ty>, span: Span) -> Option<TypedExpr> {
+        let Ty::Array(elem_ty, count) = expected else { return None };
+        if elems.is_empty() || elems.len() as u64 != *count {
+            return None;
+        }
+        let elem_ty = elem_ty.as_ref().clone();
+        let typed: Vec<TypedExpr> = elems.iter().map(|e| self.infer_array_lit_elem(e, &elem_ty, vars)).collect();
+        Some(TypedExpr::ArrayLit { elems: typed, elem_ty, span })
+    }
+
+    /// A single `[a, b, c]` -> `[T; N]` element: a bare integer literal (or
+    /// a directly-negated one) that fits `elem_ty`'s range is typed with
+    /// `elem_ty` directly, mirroring `Expr::WrappingNew`/`Expr::BitFieldNew`'s
+    /// identical literal fast path -- otherwise a plain `let glyphs: [u8; N]
+    /// = [0, 1, 2, ...]` would reject every element (a bare literal defaults
+    /// to `Ty::Int`) and force an explicit `as u8` on each one, defeating
+    /// most of the ergonomic point of this literal form. Any other
+    /// expression shape is inferred normally and checked against `elem_ty`.
+    fn infer_array_lit_elem(&mut self, e: &Expr, elem_ty: &Ty, vars: &mut HashMap<String, Ty>) -> TypedExpr {
+        if let Some(v) = Self::cast_literal_magnitude(e) {
+            if let Some((width, signed)) = elem_ty.int_shape() {
+                let (lo, hi) = Self::int_shape_range(width, signed);
+                if v >= lo && v <= hi {
+                    return TypedExpr::Int(v, elem_ty.clone(), e.span());
+                }
+                self.error(
+                    format!("integer literal `{}` does not fit in `{:?}` (range {}..={})", v, elem_ty, lo, hi),
+                    e.span(),
+                );
+                return TypedExpr::Int(v, elem_ty.clone(), e.span());
+            }
+        }
+        let typed = self.infer_expr(e, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
+        let actual = typed.clone().into_ty();
+        if !Self::types_compatible(elem_ty, &actual) {
+            self.error(
+                format!("array literal element expects type `{:?}`, found `{:?}`", elem_ty, actual),
+                e.span(),
+            );
+        }
+        typed
+    }
+
     pub(super) fn check_expr_infer(&mut self, expr: &Expr) -> TypedExpr {
         let mut dummy_vars = HashMap::new();
         self.infer_expr(expr, &mut dummy_vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))
@@ -531,7 +587,28 @@ impl Checker {
                     }
                 };
                 let args = &resolved_args;
-                let arg_exprs: Vec<TypedExpr> = args.iter().map(|a| self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))).collect();
+                // A plain user struct's declared field types, resolved up
+                // front so a bracket-literal argument (`FontData(glyphs =
+                // [0, 1, 2, ...])`) can be coerced to that field's `[T; N]`
+                // array type below -- see `Checker::try_infer_array_lit`,
+                // `todo.md` P2 #10. `None` for a builtin construction
+                // (`List`/`Map`/`Set`/`Table`/`Flags`) or a generic struct
+                // (those go through `infer_generic_struct_lit`'s own
+                // dedicated arg handling instead, dispatched further below),
+                // in which case every arg just falls through to the
+                // ordinary `infer_expr` call this always ran.
+                let field_tys: Option<Vec<Type>> = self.structs.get(name).map(|sdef| sdef.fields.iter().map(|f| f.ty.clone()).collect());
+                let field_tys: Option<Vec<Ty>> = field_tys.map(|tys| tys.iter().map(|t| self.resolve_type(t).unwrap_or(Ty::Named("unknown".into()))).collect());
+                let arg_exprs: Vec<TypedExpr> = args.iter().enumerate().map(|(i, a)| {
+                    if let (Expr::ListLit(elems, lspan), Some(tys)) = (a, &field_tys) {
+                        if let Some(expected) = tys.get(i) {
+                            if let Some(coerced) = self.try_infer_array_lit(elems, expected, vars, *lspan) {
+                                return coerced;
+                            }
+                        }
+                    }
+                    self.infer_expr(a, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))
+                }).collect();
                 if name == "List" {
                     return Ok(self.infer_list_new(type_args, &arg_exprs, *span));
                 }

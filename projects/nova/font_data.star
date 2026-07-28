@@ -1,9 +1,13 @@
 # Nova-16 8x8 1bpp font glyph table (256 glyphs * 8 bytes), mechanically
 # generated from the upstream reference font.py so the exact bitmap data
-# matches (hand-typing 2048 literal bytes is not practical, and Star has no
-# array-of-differing-values literal -- only the [value; N] repeat form -- so
-# this is built as indexed assignments on a zero-initialized array instead of
-# a literal). See projects/nova/NOTES.md.
+# matches (hand-typing 2048 literal bytes is not practical). Originally built
+# as indexed assignments on a zero-initialized array because Star had no
+# array-of-differing-values literal -- only the [value; N] repeat form; a
+# real `glyphs = [b0, b1, b2, ...]` literal now exists (todo.md P2 #10,
+# coerced from a bracket literal against this field's declared [u8; 2048]
+# type) and would be the better shape for a regenerated version of this file,
+# but this one predates that fix and hasn't been rewritten. See
+# projects/nova/NOTES.md.
 
 struct FontData:
     mut glyphs: [u8; 2048]

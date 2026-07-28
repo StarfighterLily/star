@@ -457,6 +457,7 @@ fn frame_escape_source(expr: &TypedExpr, frame_locals: &HashSet<String>, local_s
         // either. `ArrayLen`'s result is always `Ty::Int`, irrelevant here
         // regardless of what its `base` is.
         | TypedExpr::ArrayRepeat { .. }
+        | TypedExpr::ArrayLit { .. }
         | TypedExpr::ArrayLen { .. }
         // `TypedExpr::Spawn`'s own result is always `Ty::Int` (the raw slot
         // index, or `-1` on drop -- see its doc comment), never `Ty::Named`,

@@ -445,7 +445,7 @@ impl Checker {
             // the way `par_analysis` must (there, a closure might be called
             // from a completely different, unprovable context).
             TypedExpr::Closure { body, .. } => self.walk_system_stmts(sys_name, ctx, &body.stmts),
-            TypedExpr::ListLit { elems, .. } => {
+            TypedExpr::ListLit { elems, .. } | TypedExpr::ArrayLit { elems, .. } => {
                 for e in elems {
                     self.walk_system_expr(sys_name, ctx, e);
                 }

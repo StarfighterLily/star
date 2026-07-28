@@ -328,13 +328,63 @@ future `.star` project.
    confirming the real `Flags<E>` builtin — both its "needs an explicit
    type argument" diagnostic and full runtime bitset behavior — is
    unaffected in any module that never declares a colliding struct.
-10. **No fixed-size array literal with differing values.** `[a, b, c]` is
-    always a `List<T>`; the only `[T; N]` literal form is the `[value; N]`
-    repeat. Nova's 256-glyph font table (`font_data.star`) had no way to be
-    written as a literal at all and is instead ~1500 mechanical
-    `f.glyphs[i] = v as u8` assignments generated from the upstream source.
-    Worth a real `[a, b, c, ...]` fixed-array literal syntax that coerces to
-    `[T; N]` when the element count matches.
+10. **No fixed-size array literal with differing values.** — **done**: no
+    new syntax and no new AST node -- `[a, b, c]` still parses to the exact
+    same `Expr::ListLit` it always has (`src/parser/expr.rs`). What changed
+    is that the checker now coerces it to a fixed `[T; N]` array instead of
+    its default `List<T>` whenever an *expected* type is reachable from
+    context and the element count matches `N` (`Checker::
+    try_infer_array_lit`, `src/types/expr.rs`), producing a new
+    `TypedExpr::ArrayLit { elems, elem_ty, span }` HIR node
+    (`src/types/hir.rs`) instead of `TypedExpr::ListLit`. This is
+    deliberately narrow rather than a general expected-type-propagation
+    pass threaded through every expression kind (this checker has never had
+    one -- see the removed doc comment this same fix updated in
+    `tests/frontend_fixed_arrays.rs`): exactly three call sites peek at the
+    raw, not-yet-typed `Expr::ListLit` node before falling into ordinary
+    `infer_expr`, mirroring the existing "peek at the raw literal shape"
+    pattern `Expr::Cast`/`Expr::WrappingNew`/`Expr::BitFieldNew` already
+    established for their own literal-fits-narrower-width fast path
+    (`Checker::cast_literal_magnitude`) --
+    `Stmt::Let`'s own `[T; N]` annotation, a struct-literal field whose
+    declared type is `[T; N]` (`FontData(glyphs = [0, 1, 2, ...])`, the
+    exact motivating Nova case), and `Stmt::Return` against a `[T; N]`
+    -declared function. Function-call arguments, enum-variant payloads, and
+    generic-struct fields are a deliberate scope cut, not a gap that was
+    missed -- documented and regression-tested
+    (`function_call_argument_position_is_not_a_coercion_site`). A bare
+    integer literal element (which would otherwise default to `i32`) is
+    typed directly as the array's own narrower declared element type when
+    it fits, reusing `Wrapping<T>`/`BitField<N>`'s identical literal-narrowing
+    logic (`Checker::int_shape_range`) -- without this, every one of Nova's
+    2048 font bytes would still need its own explicit `as u8`, defeating
+    most of the ergonomic point. Codegen (`src/codegen/array.rs`'s
+    `emit_array_lit`/`emit_array_lit_into`) mirrors `TupleLit`'s shape, not
+    `ArrayRepeat`'s: since every slot is a distinct expression rather than
+    one value copied `N` times, there's no runtime loop to write, just `N`
+    static GEP+store pairs -- and, mirroring `emit_array_repeat_into`'s own
+    reasoning (`todo.md` P0 #2), a struct field or `let` binding gets the
+    literal written directly into its own storage rather than materializing
+    a whole `[N x T]` SSA value and copying it a second time, avoiding the
+    same real `clang` hang/crash risk at Nova's actual 2048-byte
+    `FontData.glyphs` size. `TypedExpr::ArrayLit` was threaded through every
+    other exhaustive match over `TypedExpr` this required
+    (`system_analysis.rs`/`par_analysis.rs`/`frame_analysis.rs`/
+    `codegen/mod.rs`'s `expr_ty`), confirmed by a clean build with zero
+    other match arms needing changes. 24 new tests in
+    `tests/frontend_array_literal_coercion.rs`: coercion at each of the
+    three call sites plus each one's non-coercing fallback (no annotation,
+    wrong element count, a non-array annotation/field/return type), bare
+    and negated integer literal narrowing (including an out-of-range
+    rejection reusing `Wrapping<T>`'s own diagnostic wording), a non-literal
+    element type mismatch, an array of a struct-typed element, the
+    documented function-argument scope cut, IR-shape assertions (no
+    runtime-loop block label, no whole-array `load` at Nova's real
+    2048-element field size), and full runtime round trips (mutable
+    indexing, the exact Nova struct-field shape, `return`, and a 300-element
+    stress case). `projects/nova/font_data.star`'s own doc comment is
+    updated to note the literal now exists, though the file itself is left
+    as its original mechanical-assignment form rather than regenerated.
 
 ## P3 — Verify, don't just assume fixed
 

@@ -573,6 +573,11 @@ impl Checker {
             }
             TypedExpr::TupleIndex { base, .. } => self.walk_par_expr(base, locals),
             TypedExpr::ArrayRepeat { value, .. } => self.walk_par_expr(value, locals),
+            TypedExpr::ArrayLit { elems, .. } => {
+                for e in elems {
+                    self.walk_par_expr(e, locals);
+                }
+            }
             // A read is always fine to walk into (mirrors `ListIndex`
             // above); there's no `push`/`pop`-style mutating method to gate
             // here at all -- array element writes go through a plain

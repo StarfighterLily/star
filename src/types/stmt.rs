@@ -11,8 +11,23 @@ impl Checker {
     pub(super) fn check_stmt(&mut self, stmt: &Stmt, vars: &mut HashMap<String, Ty>) -> Option<TypedStmt> {
         Some(match stmt {
             Stmt::Let { is_mut, name, ty, value, span } => {
-                let value_typed = self.infer_expr(value, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
                 let annotated_ty = ty.as_ref().and_then(|t| self.resolve_type(t));
+                // A bracket literal (`[a, b, c]`) against a `[T; N]`
+                // annotation with a matching element count is coerced to a
+                // fixed-size array instead of falling into `Expr::ListLit`'s
+                // default `List<T>` inference -- see
+                // `Checker::try_infer_array_lit`'s doc comment, `todo.md` P2
+                // #10. Anything that doesn't match (no annotation, a
+                // non-array annotation, a count mismatch) falls straight
+                // through to the exact same `infer_expr` call this always
+                // ran, so `let l = [1, 2, 3]` and `let l: List<i32> = [1, 2,
+                // 3]` are both unaffected.
+                let value_typed = match (value, &annotated_ty) {
+                    (Expr::ListLit(elems, lspan), Some(expected)) => self
+                        .try_infer_array_lit(elems, expected, vars, *lspan)
+                        .unwrap_or_else(|| self.infer_expr(value, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))),
+                    _ => self.infer_expr(value, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into()))),
+                };
                 // §1.1: the annotation, if present, was previously resolved
                 // and used as the variable's tracked type with *no*
                 // comparison against the value's actual inferred type at
@@ -147,7 +162,18 @@ impl Checker {
                 TypedStmt::Assign { target: target_typed, op: *op, value: value_typed, span: *span }
             }
             Stmt::Return { value, span } => {
-                let value_typed = value.as_ref().map(|v| self.infer_expr(v, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into()))));
+                // Mirrors `Stmt::Let`'s identical array-literal coercion
+                // (`Checker::try_infer_array_lit`, `todo.md` P2 #10):
+                // `return [a, b, c]` against a `[T; N]`-returning function
+                // with a matching element count is coerced to a fixed-size
+                // array instead of `Expr::ListLit`'s default `List<T>`.
+                let value_typed = match (value, self.current_ret_ty.clone()) {
+                    (Some(Expr::ListLit(elems, lspan)), Some(Some(expected))) => Some(
+                        self.try_infer_array_lit(elems, &expected, vars, *lspan)
+                            .unwrap_or_else(|| self.infer_expr(value.as_ref().unwrap(), vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))),
+                    ),
+                    _ => value.as_ref().map(|v| self.infer_expr(v, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))),
+                };
                 if let Some(expected) = self.current_ret_ty.clone() {
                     match (&value_typed, &expected) {
                         (Some(v), Some(expected_ty)) => {
