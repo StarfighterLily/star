@@ -556,6 +556,30 @@ impl<'src> Lexer<'src> {
                 self.pos += 1;
             }
         }
+        // Scientific-notation exponent suffix (`1e10`, `3.0e38`, `1E-5`):
+        // `[eE][+-]?[0-9]+`, mirroring Rust's own float-literal grammar. Only
+        // consumed when a digit actually follows the optional sign -- `1e`
+        // with nothing after it, or `1eXYZ`, leaves `pos` untouched so the
+        // `e`/`E` is left to be scanned as its own identifier token next,
+        // exactly like an unfollowed `.` already falls through above.
+        // Excluded after a member-access dot for the same reason the `.`
+        // fraction check above is: `t.0e3` is a tuple index (`0`) followed by
+        // an identifier (`e3`), never a float, since Star has no float
+        // literal that can start right after a `Dot` token.
+        if !follows_member_dot && self.pos < self.bytes.len() && matches!(self.bytes[self.pos], b'e' | b'E') {
+            let mut exp_end = self.pos + 1;
+            if exp_end < self.bytes.len() && matches!(self.bytes[exp_end], b'+' | b'-') {
+                exp_end += 1;
+            }
+            let digits_start = exp_end;
+            while exp_end < self.bytes.len() && self.bytes[exp_end].is_ascii_digit() {
+                exp_end += 1;
+            }
+            if exp_end > digits_start {
+                is_float = true;
+                self.pos = exp_end;
+            }
+        }
         let text = &self.src[start..self.pos];
         let kind = if is_float {
             TokenKind::Float(text.parse().unwrap_or(0.0))

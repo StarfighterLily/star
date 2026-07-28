@@ -126,7 +126,7 @@ a special-cased decode path for this pass).
 
 These weren't bugs — they were real constraints of the Star language/
 compiler at the time this project was first written, and they shaped how it
-was structured. All ten were subsequently fixed at the compiler level
+was structured. All eleven were subsequently fixed at the compiler level
 (tracked in [`todo.md`](../../todo.md), prioritized directly off this list)
 and this project has now been updated to use every fix that has a genuine
 call site here — see "Fixes applied to this project" below for the concrete
@@ -304,6 +304,17 @@ see both what the constraint used to be *and* what replaced it.
     for real in this project: `Cpu::op_rcl`/`op_rcr` (see #4 above) bind a
     2-tuple from a multi-statement `if`/`else`, one `let` inside each arm
     before the trailing tuple value.
+
+11. **No scientific-notation float literal syntax.** `3.0e38` lexed as the
+    two tokens `Float(3.0)` and the bare identifier `e38`, not one float
+    token (confirmed the hard way: first draft of `op_exp`/`op_tan`'s
+    overflow-guard threshold hit a parse error, not a lexer one). Worked
+    around with a `const MATH_OVERFLOW_GUARD: f32 =
+    300000000000000000000000000000000000000.0` (the full 39-zero expansion
+    of `3e38`) rather than reaching for a `f32::INFINITY`/`is_infinite`
+    builtin, neither of which exist either. **Fixed:** `Lexer::scan_number`
+    now recognizes an `[eE][+-]?[0-9]+` exponent suffix (`todo.md` P3 #12).
+    `cpu.star`'s `MATH_OVERFLOW_GUARD` is now spelled `3.0e38` directly.
 
 ## Three Star compiler bugs found and fixed
 
@@ -498,6 +509,8 @@ updated in place. Summary, file by file:
   - File header comment updated: no longer claims decimal-only register
     codes or a hard "`impl` can't cross modules" constraint, since both are
     fixed; notes the opcode-group file split is now *possible* but not done.
+  - `MATH_OVERFLOW_GUARD`'s 39-zero decimal expansion replaced with `3.0e38`
+    directly (gotcha #11).
 - **`main.star`** — `demo_program()`'s hand-encoded opcode/register/mode
   bytes converted decimal → hex (gotcha #2; the byte-offset address
   comments alongside them stay decimal, since those count bytes rather than
@@ -731,18 +744,19 @@ its point of use in `cpu.star`:
   raising (Python's `_fdiv` raises `RuntimeError`), matching the existing
   `DIV`/`MOD`/`DIVH`-by-zero precedent elsewhere in this port (see "Known
   simplifications" below) instead of introducing a second by-zero policy.
-- **Star's float lexer has no scientific-notation literal syntax**
-  (`3.0e38` lexes as the two tokens `3.0` and the bare identifier `e38`,
+- **Star's float lexer had no scientific-notation literal syntax**
+  (`3.0e38` lexed as the two tokens `3.0` and the bare identifier `e38`,
   not one float token — confirmed the hard way, first draft of `op_exp`/
-  `op_tan`'s overflow-guard threshold). Worked around with a `const
-  MATH_OVERFLOW_GUARD: f32 = 300000000000000000000000000000000000000.0`
-  (the full expansion of `3e38`) rather than reaching for a
-  `f32::INFINITY`/`is_infinite` builtin, neither of which exist either.
-  Not filed as a numbered "Language gotcha" above (that list is closed out
-  — every entry there was fixed at the compiler level and swept back
-  through this project) since nothing here was actually *fixed*, just
-  worked around; flagged instead as a plain gap worth a future compiler
-  pass if a project ever needs a literal magnitude this unwieldy again.
+  `op_tan`'s overflow-guard threshold). Originally worked around with a
+  `const MATH_OVERFLOW_GUARD: f32 =
+  300000000000000000000000000000000000000.0` (the full expansion of
+  `3e38`) rather than reaching for a `f32::INFINITY`/`is_infinite` builtin,
+  neither of which exist either. **Fixed** at the compiler level (gotcha
+  #11 above, `todo.md` P3 #12): `MATH_OVERFLOW_GUARD` is now spelled
+  `3.0e38` directly in `cpu.star`. There's still no `f32::INFINITY`/
+  `is_infinite` builtin — unneeded here since the guard-threshold
+  comparison already achieves the same effect, but a future project could
+  still hit that gap on its own.
 
 ### Verification
 

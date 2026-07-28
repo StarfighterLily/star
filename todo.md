@@ -417,24 +417,50 @@ future `.star` project.
     `elif` chain, and a sustained-iteration leak check (`assert_no_leak`)
     alternating branches across 400,000 iterations.
 
-12. **No scientific-notation float literals (`1e10`/`3.0e38`).** Found
-    porting Nova's math-library opcodes (`projects/nova/NOTES.md`'s "Math
-    library / Q8.8 fixed-point" section): `Lexer::scan_number`'s float path
-    only ever scans digits, an optional `.`, then more digits — no `e`/`E`
-    exponent suffix at all. `3.0e38` lexes as two tokens, the float `3.0`
-    then the bare identifier `e38`, which fails to parse as a standalone
-    expression right after it (confirmed the hard way: `let x = 3.0e38`
-    errored `expected ':', found identifier`, not a lexer error, which is
-    what made this non-obvious at first). No workaround short of spelling
-    the literal out in full (Nova's `op_exp`/`op_tan` overflow-guard needed
-    `const MATH_OVERFLOW_GUARD: f32 = 3000...0.0`, 39 zeros written out by
-    hand) — there's also no `f32::INFINITY`/`f32::MAX`/`is_infinite`
-    builtin that could have sidestepped needing the literal at all. Not
-    urgent (every call site so far has had a "spell it out" escape hatch),
-    but worth a small lexer addition (an optional `[eE][+-]?[0-9]+` suffix
-    on the existing float-scanning path, parsed the same way Rust's own
-    float-literal grammar does) the next time a project needs a magnitude
-    this unwieldy, or needs one that isn't a round power of ten.
+12. **No scientific-notation float literals (`1e10`/`3.0e38`).** — **done**:
+    `Lexer::scan_number` (`src/lexer.rs`) now recognizes an optional
+    `[eE][+-]?[0-9]+` exponent suffix immediately after the pre-existing
+    integer-and-optional-`.`-fraction scan, parsed the same way Rust's own
+    float-literal grammar does. Because the token produced is still the
+    exact same `TokenKind::Float(f64)` a plain decimal float already
+    produces, every downstream stage — parser, checker, const-folding,
+    codegen — needed zero changes: a scientific-notation literal is simply
+    an alternate spelling of `Expr::Float`, exactly like the hex-literal fix
+    (`todo.md` P1 #4) was for `Expr::Int`. The exponent is only consumed when
+    a digit genuinely follows the optional sign — `1e` alone, or `1eXYZ`,
+    leaves `pos` completely untouched so the `e`/`E` is left to be scanned as
+    its own identifier token next, mirroring exactly how an unfollowed `.`
+    already falls through to being its own `Dot` rather than starting a
+    float; a bare mantissa immediately after a member-access `.` (`t.0e3`)
+    is excluded from the check for the same reason the fraction check is —
+    nothing right after a tuple-index `Dot` can ever be a float. An exponent
+    large enough to overflow even `f64` (`1e400`) parses to `f64::INFINITY`
+    via plain IEEE-754 overflow-to-infinity semantics rather than an error,
+    since Rust's own `f64::from_str` already treats that as legitimate
+    rather than a parse failure — no new lexer diagnostic needed. This
+    directly gives Nova's math library the literal magnitude its `op_exp`/
+    `op_tan` overflow-guard constant needed without spelling it out by hand:
+    `MATH_OVERFLOW_GUARD: f32 = 3.0e38` now replaces the 39-zero decimal
+    expansion (`projects/nova/cpu.star`). 23 new tests in
+    `tests/frontend_scientific_float_literals.rs`: lexer-token coverage
+    (integer and decimal mantissas, uppercase/lowercase `e`, explicit `+`/
+    implicit-negative exponent signs, stopping at a non-digit boundary, the
+    no-digits-after-`e`/after-`e`-and-sign fallback leaving a separate
+    identifier token, an ordinary identifier starting with `e` right after an
+    int not being confused for an exponent, the tuple-index-after-dot
+    exclusion, `f64`-overflow-to-infinity, and plain decimal/integer literals
+    staying unaffected), parser/AST-shape coverage (a scientific literal as
+    `Expr::Float`, a negated scientific literal under ordinary unary-negation
+    grammar), checker coverage (default-`Ty::Float` typing, widening via
+    `as f64`, rejecting assignment to an `i32`-typed `let`, and a clean parse
+    error rather than a panic for the malformed no-exponent-digits `1e`
+    case), a `const`-folding runtime test reproducing Nova's own
+    `MATH_OVERFLOW_GUARD` shape, an IR-shape assertion that a scientific
+    literal lowers to the exact same `f32` constant bit pattern the
+    equivalent plain-decimal literal would, and runtime end-to-end coverage
+    (a realistic overflow-guard comparison against a value that genuinely
+    overflows `f32`, scientific-vs-decimal equivalence, and negative-exponent
+    arithmetic).
 
 # Previous Work
 file_read_bytes(handle) -> Bytes and file_write_bytes(handle, data: Bytes) -> bool (src/codegen/file_io.rs) — binary-safe siblings of file_read/file_write that never call @strlen or append a NUL terminator. They reuse the Ty::Bytes explicit-length {u8*, i64, i64} payload that already existed but had no non-strlen way to load real binary data into it.
@@ -445,3 +471,5 @@ Added 37 new tests across tests/frontend_file_io.rs and tests/frontend_method_ca
 Pointer-passing calling convention for large struct/array function parameters and return values (Codegen::is_large_aggregate_ty gating, src/codegen/mod.rs), fixing the by-value-return/by-value-parameter clang hang todo.md P0 #2 described. A parameter above the 512-byte threshold arrives as a pointer and is memcpy'd into a private local (emit_fn's prologue, src/codegen/stmt.rs); a matching return type gets a hidden sret out-pointer (%.sret) instead of a by-value ret, filled by the new Codegen::emit_into_ptr, which special-cases a fresh literal (no copy), a nested call (forwards %.sret straight through, zero copies through a whole constructor chain), and a read of existing storage (retain + one memcpy) — used by TypedStmt::Let/TypedStmt::Return/emit_fn's tail logic and the new Codegen::emit_call_arg/emit_aggregate_place pair for call arguments (src/codegen/expr.rs). Size-gated (not unconditional) specifically to leave every existing small struct, and anything passed through a first-class function value/closure (emit_fn_value/emit_closure_call, not updated by this fix), on the pre-existing by-value convention untouched — confirmed by the full pre-existing test suite passing with zero changes needed. Added 11 new tests in tests/frontend_large_aggregate_by_value.rs: IR-shape/compile-time-budget assertions (no clang) for the sret/pointer-param/zero-copy-chained-constructor shapes at a 1,000,000-byte field, plus real clang-compiled runtime tests at 8192 bytes covering constructor-return, parameter value-independence (mutation inside the callee doesn't leak back to the caller), let-copy independence, a method returning a large struct by value, and an RC-bearing (str) field mixed with a large array field round-tripped through both return and parameter across 20 iterations.
 
 Real bitwise/shift operator grammar (`&`/`|`/`^`/`~`/`<<`/`>>`, plus `&=`/`|=`/`^=`/`<<=`/`>>=`), fixing todo.md P0 #3. New lexer tokens (src/lexer.rs), new BinOp::BitAnd/BitOr/BitXor/Shl/Shr and UnOp::BitNot AST variants with a new Parser::peek_binop precedence tier, and dedicated Checker::infer_bitwise_combine_ty/infer_shift_ty (src/types/expr.rs) and Codegen::emit_bitwise_binop/emit_shift_binop (src/codegen/bitfield.rs) dispatch reusing the pre-existing Ty::bit_shape()/bitwise_combine_shape() legality the bit_get/bit_and/etc. free functions already established, so the operators work on plain integers of any width, Wrapping<T>, BitField<N>, and (for &/|/^ only) Flags<E>. >> dispatches to ashr (signed) or lshr (unsigned) — the real hardware-matching arithmetic/logical distinction Nova's bit-manipulation code needs, which truncating-division could never substitute for — and the shift count is masked mod the operand's width (Codegen::emit_shift_amount, factored out of bit_get's existing masking helper) to avoid an LLVM poison value on an out-of-range count. const initializers fold all six operators at compile time too (src/types/mod.rs). Adding real `<`/`>`-adjacent tokens reopened the C++/Rust "nested generic closing bracket" ambiguity (List<List<i32>>'s trailing `>>` now lexes as one Shr token) — fixed by Parser::at_close_generic/eat_close_generic/expect_close_generic (src/parser/mod.rs) transparently splitting a Shr via a split_gt_pending flag (not a token mutation, so it composes safely with every existing speculative/backtracking turbofish parse). Added 37 new tests in tests/frontend_bitwise_shift_operators.rs: lexer-token, parser-precedence/AST-shape, nested-generic-splitting regressions (including the abandoned-turbofish-then-real-shift-then-later-nested-generic corruption scenario the split_gt_pending checkpoint fix specifically prevents), positive/negative type-checking across every accepted/rejected type, IR-shape assertions for the real opcodes, and runtime end-to-end coverage (arithmetic-vs-logical shift, mod-width masking, compound assignment onto a narrower-than-int target, precedence, const folding, and a realistic Nova-style 8-bit rotate built from the new operators).
+
+Scientific-notation float literal exponent suffix (`1e10`/`3.0e38`/`1E-5`), fixing todo.md P3 #12. `Lexer::scan_number` (src/lexer.rs) now recognizes an optional `[eE][+-]?[0-9]+` suffix right after the pre-existing integer-and-optional-fraction scan, only consuming it when a digit genuinely follows the optional sign — `1e`/`1eXYZ` leave `pos` untouched so the `e`/`E` lexes as its own identifier token next, and a mantissa right after a member-access `.` (`t.0e3`) is excluded the same way the fraction check already is. Because the token produced is still the same TokenKind::Float(f64) a plain decimal float already produces, no parser/checker/codegen changes were needed at all — a scientific literal is just an alternate spelling of Expr::Float. An exponent large enough to overflow f64 (`1e400`) parses to f64::INFINITY via ordinary IEEE-754 semantics rather than erroring. Nova's `MATH_OVERFLOW_GUARD: f32 = 3.0e38` (projects/nova/cpu.star) now replaces the 39-zero decimal expansion this gap had forced. Added 23 new tests in tests/frontend_scientific_float_literals.rs: lexer-token coverage (integer/decimal mantissas, upper/lowercase `e`, explicit sign, negative exponent, non-digit-boundary stopping, the no-exponent-digits/no-digits-after-sign fallback to a separate identifier token, an `e`-prefixed identifier not being confused for an exponent, the tuple-index-after-dot exclusion, f64-overflow-to-infinity, and unaffected plain literals), parser/AST-shape coverage (scientific literal as Expr::Float, negated scientific literal), checker coverage (default Ty::Float typing, widening via `as f64`, int-typed-let rejection, clean parse error for malformed `1e`), a const-folding runtime test reproducing Nova's own overflow-guard shape, an IR-shape assertion that a scientific literal lowers to the identical f32 constant bit pattern a plain decimal literal would, and runtime end-to-end coverage (a realistic overflow-guard comparison, scientific-vs-decimal equivalence, negative-exponent arithmetic).

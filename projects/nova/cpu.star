@@ -68,11 +68,8 @@ fn floor_div16(a: i32, b: i32) -> i32:
 const PI: f32 = 3.14159265
 
 # ~3e38, just under `f32::MAX` (~3.4028e38) -- an EXP/TAN overflow-to-+inf
-# guard threshold (see their comments below). Spelled without an exponent:
-# Star's float lexer has no `1e10`-style scientific notation (confirmed the
-# hard way -- `3.0e38` lexes as the two tokens `3.0` and the identifier
-# `e38`, a parse error).
-const MATH_OVERFLOW_GUARD: f32 = 300000000000000000000000000000000000000.0
+# guard threshold (see their comments below).
+const MATH_OVERFLOW_GUARD: f32 = 3.0e38
 
 # Interrupt vector table: 8 vectors x 4 bytes at 0x0100-0x011F.
 const IVT_BASE: i32 = 256
