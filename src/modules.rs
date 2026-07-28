@@ -328,9 +328,41 @@ fn resolve_inner(
                 provenance.extend(child_provenance);
             }
             other => {
-                let prov = match (item_top_level_name(&other), own_path) {
-                    (Some(name), Some(path)) => Some((path.to_path_buf(), name.to_string(), this_call_id)),
-                    _ => None,
+                let prov = match (&other, own_path) {
+                    // `Item::Impl` declares no top-level name (`item_top_level_name`
+                    // returns `None` for it -- `collect_names` relies on exactly
+                    // that to skip mangling it), so it was previously never
+                    // entered into `groups` at all and fell through to a
+                    // separate, over-eager `seen_impls` sweep in
+                    // `dedupe_by_origin` that collapsed *any* two impl blocks
+                    // sharing a `(trait_name, type_name)` pair -- including two
+                    // genuinely different, both-legitimately-authored impl
+                    // blocks for the same type (e.g. splitting a struct's
+                    // methods across files, exactly todo.md P1 #6's motivating
+                    // case), as soon as *any* unrelated diamond import existed
+                    // anywhere else in the module. A synthetic identity keyed
+                    // on the impl's own byte-offset span stands in for a real
+                    // name here: a genuine diamond re-visit re-parses the same
+                    // source text and produces the same `span.start..span.end`
+                    // every time (even though `span.file_id` itself differs
+                    // per visit -- each import edge allocates a fresh file id),
+                    // while two independently-authored impl blocks for the same
+                    // type necessarily have different spans and so are never
+                    // grouped together.
+                    (Item::Impl(blk), Some(path)) => {
+                        let synthetic = format!(
+                            "impl#{}#{}#{}..{}",
+                            blk.trait_name.as_deref().unwrap_or(""),
+                            blk.type_name,
+                            blk.span.start,
+                            blk.span.end
+                        );
+                        Some((path.to_path_buf(), synthetic, this_call_id))
+                    }
+                    _ => match (item_top_level_name(&other), own_path) {
+                        (Some(name), Some(path)) => Some((path.to_path_buf(), name.to_string(), this_call_id)),
+                        _ => None,
+                    },
                 };
                 provenance.push(prov);
                 items.push(other);
@@ -378,11 +410,17 @@ fn item_top_level_name(item: &Item) -> Option<&str> {
 /// the exact same substitution machinery (`rename_item` et al.) that
 /// alias-mangling itself uses, just with a name->name substitution instead
 /// of a name->`alias__name` one. `impl` blocks (which declare no name of
-/// their own -- see [`item_top_level_name`]) are deduplicated too: once two
-/// `impl` blocks' `type_name`s substitute to the same canonical type, they
-/// are, by construction, independent re-resolutions of the very same source
-/// `impl` block, so only the first is kept (the checker/LLVM would
-/// otherwise see the same method defined twice for one type).
+/// their own -- see [`item_top_level_name`]) are deduplicated too, keyed on a
+/// synthetic `(trait_name, type_name, span)` identity built in
+/// `resolve_inner`'s own `other =>` arm instead of a real name: once two
+/// `impl` blocks share that identity, they are, by construction, independent
+/// re-resolutions of the very same source `impl` block, so only the first is
+/// kept (the checker/LLVM would otherwise see the same method defined twice
+/// for one type). Keying on the span (not just `type_name`) matters --
+/// keying on `type_name` alone previously collapsed two *different*,
+/// both-legitimately-authored `impl` blocks for the same type (e.g. a
+/// struct's methods deliberately split across files) the moment any
+/// unrelated diamond import existed anywhere else in the module.
 ///
 /// Entries sharing both the group's `(path, name)` *and* the same
 /// `CallId` are left untouched instead -- they came from one single pass
@@ -427,17 +465,20 @@ fn dedupe_by_origin(module: Module, provenance: &ItemProvenance) -> Module {
         return module;
     }
 
-    let mut seen_impls: HashSet<(Option<String>, String)> = HashSet::new();
+    // `Item::Impl` entries are now tracked in `groups`/`drop` above via their
+    // own span-based synthetic identity (see the `other =>` arm in
+    // `resolve_inner`), so a genuine diamond-duplicated impl block is already
+    // gone from `drop` by this point -- no separate `(trait_name, type_name)`
+    // sweep is needed (and one previously here wrongly collapsed two
+    // legitimately different impl blocks for the same type -- e.g. a struct's
+    // methods split across files -- the moment *any* unrelated diamond import
+    // existed anywhere else in the module; see this function's doc comment).
     let items = module
         .items
         .into_iter()
         .enumerate()
         .filter(|(idx, _)| !drop.contains(idx))
         .map(|(_, item)| rename_item(&item, &subst))
-        .filter(|item| match item {
-            Item::Impl(blk) => seen_impls.insert((blk.trait_name.clone(), blk.type_name.clone())),
-            _ => true,
-        })
         .collect();
     Module { items }
 }

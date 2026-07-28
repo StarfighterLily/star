@@ -49,7 +49,7 @@ raw opcode bytes (see "Testing" below).
 - `cpu.star` — the CPU itself: registers, the register-code address space,
   operand decoding, the fetch-decode-execute cycle, every implemented
   instruction, interrupts, and the timer. Still the one large file in the
-  project (~1800 lines, register codes and opcodes now spelled in hex —
+  project (~2570 lines, register codes and opcodes now spelled in hex —
   see "Language gotchas" #6 and #2 below); splitting it by opcode group is
   now *possible* since `impl` can cross a module boundary, just not done yet.
 - `main.star` — SDL2 window, a small built-in demo program (there's no
@@ -316,7 +316,7 @@ see both what the constraint used to be *and* what replaced it.
     now recognizes an `[eE][+-]?[0-9]+` exponent suffix (`todo.md` P3 #12).
     `cpu.star`'s `MATH_OVERFLOW_GUARD` is now spelled `3.0e38` directly.
 
-## Three Star compiler bugs found and fixed
+## Four Star compiler bugs found and fixed
 
 Building this project's very first smoke test (a struct holding a
 `[u8; 65536]` array — the whole reason a Nova-16 port needs 64KB of
@@ -463,6 +463,61 @@ same headless check used for gotcha #1's operator conversions, and by the
 compiler's own dedicated regression tests (`tests/frontend_closures_higher_order.rs`,
 including a sustained 400,000-iteration leak check alternating branches).
 
+### 4. A diamond import silently deleted a cross-module `impl` block
+
+Found while writing a standalone headless test harness for the string-
+library opcodes below (not this project's own source, but the harness
+still needed a real multi-file Star build to exercise `Cpu`). The harness
+put its test-only helper methods in a second file via `impl cpu::Cpu:`
+(gotcha #6's cross-module-`impl` fix — `cpu.star` itself keeps its own
+bare `impl Cpu:`), the same shape `todo.md` P1 #6 cites as *this project's
+own* motivating future use case for splitting `cpu.star`'s opcode handlers
+across files. Every method the harness added this way silently failed to
+resolve (`no field 't_write_str' on 'cpu__Cpu'`) — but only once the
+harness's `main` file imported `cpu.star` *and* one of `cpu.star`'s own
+leaf dependencies a second time under a different alias (needed to
+construct a `Cpu` literal's fields directly). Bisected down to a genuinely
+minimal, project-independent repro: a struct `Top` with two fields from
+two *sibling* modules that both import one common leaf module (an
+ordinary, entirely unrelated diamond dependency — no relation to `Top`
+itself) is enough to make a *separate file's* `impl Top:` block vanish
+entirely, even though `Top` is declared only once and isn't part of the
+diamond at all.
+
+Root cause, in `src/modules.rs`: `dedupe_by_origin`'s main mechanism
+(tracking each top-level item's `(source file, name, import-call-id)`
+provenance to tell a genuine diamond re-visit of the same declaration apart
+from two independently-authored items that happen to share a name) already
+handles diamonds correctly for named items — this is the exact machinery
+`projects/snake/NOTES.md` section 1.1 describes fixing. But `impl` blocks
+declare no name of their own (`item_top_level_name` returns `None` for
+`Item::Impl`, by design — `collect_names` relies on that to skip mangling
+them), so they were never entered into that provenance-tracked mechanism
+at all. Instead, a separate, later, unconditional sweep collapsed *any* two
+`impl` blocks sharing a `(trait_name, type_name)` pair down to one — with
+no check that they were actually the same source declaration re-visited
+via two import paths, rather than two genuinely different `impl` blocks
+for the same type. That sweep only ran when `dedupe_by_origin`'s main
+mechanism had already found *some* diamond to collapse elsewhere in the
+module (an early return skipped it entirely otherwise) — which is exactly
+why an unrelated diamond (through `flags.star`/`memory.star` both
+importing `bits.star`, in this project's real `cpu.star`) was enough to
+trigger it against a completely unrelated `impl cpu::Cpu:` block.
+
+Fix: give `impl` blocks a synthetic identity in the same provenance
+mechanism named items already use, built from `(trait_name, type_name,
+span.start..span.end)` instead of a real name. A genuine diamond re-visit
+re-parses the identical source text and produces the identical byte-offset
+span every time (even though `span.file_id` itself differs per visit, since
+each import edge allocates a fresh file id), while two independently-
+authored `impl` blocks for the same type necessarily have different spans
+and so are never grouped together. This subsumes the old blanket sweep
+entirely, so it was deleted rather than left as a redundant (and, as this
+bug showed, actively harmful) second pass. Verified against the minimal
+repro above (now fixed) and the full `cargo test` suite (no regressions —
+including the pre-existing diamond-import tests this mechanism was
+originally built for).
+
 ## Fixes applied to this project
 
 Once all ten gotchas above were fixed at the compiler level (tracked in
@@ -546,7 +601,7 @@ mechanical version's and are identical.
 ## What's implemented
 
 The full CPU/memory/register-file/flags architecture, the fetch-decode-
-execute cycle, all four addressing modes, and roughly 100 opcodes:
+execute cycle, all four addressing modes, and roughly 115 opcodes:
 
 - No-operand: `HLT NOP RET IRET CLI STI`
 - Data movement: `MOV MOVZ MOVNZ XCHNG SWAP LEA`
@@ -557,6 +612,9 @@ execute cycle, all four addressing modes, and roughly 100 opcodes:
 - Fixed-point Q8.8: `FMUL FDIV FTOI ITOF`
 - Bitwise: `AND OR XOR NOT SHL SHR ROL ROR SAR SAL RCL RCR BTST BSET BCLR
   BFLIP`
+- String library: `STRCPY STRCAT STRCMP STRLEN STRUPR STRLWR STRREV STRFIND
+  STRFINDI`
+- Integer/string conversion: `ITOB BTOI ITOS STOI`
 - Stack: `PUSH POP PUSHF POPF PUSHA POPA ENTER LEAVE`
 - Control flow: `JMP` + all 12 conditional jumps, `BR BRZ BRNZ CMP CALL
   CALLZ CALLNZ RETN LOOP LOOPZ WHILE INT`
@@ -582,11 +640,10 @@ in:
 - **BCD arithmetic** (`SED CLD CLA BCDA BCDS BCDCMP BCD2BIN BIN2BCD BCDADD
   BCDSUB`) — a self-contained subsystem, no interaction with anything
   above; skipped for time.
-- **String library** (`STRCPY STRCAT STRCMP STRLEN STREXT STREXTI STRUPR
-  STRLWR STRREV STRFIND STRFINDI`) and **type conversion** (`ITOB BTOI ITOS
-  STOI`) — operate on raw memory bytes, moderate complexity, not reached.
-- **`MEMCMP`** specifically (unlike its 3-operand siblings above) — a
-  4-operand opcode; see "4-operand instructions are out of scope" above.
+- **`STREXT`/`STREXTI`** specifically (unlike the rest of the string
+  library, now implemented — see "String library and integer/string
+  conversion" below) and **`MEMCMP`** — both 4-operand opcodes; see
+  "4-operand instructions are out of scope" above.
 - **Sprites** (`SPBLIT SPBLITALL`) and **layers** (`LSWAP LMOVE LCOPY`,
   and `VL`/layer-switching generally) — the real machine composites 9
   layers (1 base + 4 background + 4 sprite); this port only implements
@@ -673,6 +730,11 @@ wiring anything into the SDL window:
   Nova-16 MCP server) rather than hand-computed expectations — see "Math
   library / Q8.8 fixed-point"'s own "Verification" section below for the
   full process.
+- The string library and integer/string conversion opcodes (0x71-0x7B,
+  0x83-0x86), checked two ways: a standalone headless Star harness (19
+  hand-computed checks) and, separately, the same live-Python-reference
+  process as the math library round — see "String library and
+  integer/string conversion"'s own "Verification" section below.
 
 ## Math library / Q8.8 fixed-point (0x5B-0x6C, 0xAC-0xAF)
 
@@ -795,14 +857,112 @@ thing with `cpu_step(count=N)` where `N` is each block's own known
 instruction count, checking state between calls instead of relying on
 `HLT`+resume.
 
+## String library and integer/string conversion (0x71-0x7B, 0x83-0x86)
+
+Added in this round: the string library (`STRCPY STRCAT STRCMP STRLEN
+STRUPR STRLWR STRREV STRFIND STRFINDI`) and integer/string conversion
+(`ITOB BTOI ITOS STOI`), ported from `core/exec_handlers.py`'s `_strcpy`/
+`_strcat`/.../`_stoi`. Implementation lives in `cpu.star`'s "String
+operations"/"Integer/string conversion" sections (right before the
+dispatch table), dispatched from `execute` the same way as every other
+opcode. `STREXT`/`STREXTI` (0x75/0x76) stay unimplemented — 4-operand
+opcodes, see "4-operand instructions are out of scope" above.
+
+Notable decisions and quirks found while porting, each also called out at
+its point of use in `cpu.star`:
+
+- **Every string/address operand resolves through the exact same
+  `operand_read(op, 16)` convention `MEMCPY`/`MEMSET`/etc. already use**:
+  a register or immediate operand's own value *is* the address; a
+  memory-mode operand's contents are dereferenced once more as a 16-bit
+  pointer. Matches `core/exec.py::_resolve_single_operand`'s `is_memory`
+  case exactly — nothing string-specific needed inventing here.
+- **`STRCMP`/`STRLEN`/`STRFIND`/`STRFINDI` write their result straight to
+  `R0`, bypassing the destination-operand mechanism entirely** — matches
+  `_strcmp`/`_strlen`/`_strfind`/`_strfindi`'s own `cpu.regfile.set('R', 0,
+  ...)` calls, which the `Instruction.execute` wrapper's usual
+  `_write_result(cpu, 0, ...)` writeback path never touches for these four
+  opcodes (no `flags_fn`/writeback is registered for them in
+  `core/exec.py`'s dispatch table). Easy to misread from the operand list
+  alone: none of `STRCMP`'s three operands (`str1`, `str2`, `length`) is a
+  "destination" in the usual sense.
+- **`STRCPY`/`STRCAT`/`STRUPR`/`STRLWR`/`STRREV` set no flags at all** —
+  confirmed by their handlers never calling `_set_arith_flags`, unlike
+  every arithmetic/comparison opcode ported so far in this project.
+- **`ITOS` always writes its decimal string to the fixed static buffer
+  `0xA000`**, never wherever its own destination operand points —
+  `_itos` hardcodes `buffer_addr = 0xA000` rather than deriving it from an
+  operand; the destination operand only ever receives that fixed address
+  back as a pointer. Easy to misread as "write the string at the
+  destination address" from the opcode name alone.
+- **`STOI`'s decimal parser is a deliberate simplification of Python's
+  `int(str)`**: an optional leading `+`/`-` then one or more ASCII digits,
+  requiring the *entire* string to match (any other character anywhere, or
+  an empty string, yields 0) — covers every string `ITOS` itself can
+  produce and anything a real assembler would encode, without reproducing
+  `int()`'s whitespace-stripping (`" 5 "` parses to `5` in Python; this
+  port's `STOI` treats it as invalid and yields 0). Not reachable from any
+  test vector exercised here, but worth knowing before relying on it
+  against a hand-crafted string with leading/trailing whitespace.
+- **`ITOB`'s bit string is built most-significant-bit first**, matching
+  `_itob`'s own "prepend each new bit" construction — easy to get backwards
+  if translated as "append each bit as it's produced" instead (which would
+  emit least-significant-bit first).
+
+### Verification
+
+Checked two ways, matching (and extending) the math library round's own
+"don't just trust a hand read of the Python source" standard:
+
+1. **A standalone headless Star harness** (not checked in — see "Testing"
+   above for why this project keeps none of these), 19 checks covering
+   every opcode in this group against hand-computed expected values
+   (`"Hello"` + `" World"` → `STRCPY`/`STRCAT` → `"Hello World"`; `STRCMP`
+   at two different lengths to exercise both the equal-prefix and the
+   mismatch-after-shared-prefix path; `STRFIND`/`STRFINDI` found and
+   not-found; `ITOB(13)`/`ITOB(0)` round-tripped through `BTOI`; `ITOS`
+   of a negative value round-tripped through `STOI`; `STOI` on an invalid
+   and an empty string). All 19 passed.
+
+   One real Star-specific pitfall hit while writing this harness, worth
+   recording since it'll bite the next one too: the harness's first draft
+   used ordinary free functions taking `mut c: cpu::Cpu` to write test
+   strings into memory and hand-encode instructions. Every single check
+   silently failed — not because the opcodes were wrong, but because a
+   `Cpu`-by-value parameter is a *real copy* even now that large-aggregate
+   by-value parameters compile without hanging `clang` (todo.md P0 #2):
+   the free functions were mutating a throwaway copy's memory, never the
+   caller's actual `Cpu`. Fixed by making every mutating helper a method
+   on `Cpu` (`impl cpu::Cpu:` in the harness file) instead, so `self` — the
+   one parameter kind this compiler pointer-passes — carries the mutation
+   back correctly. See "Four Star compiler bugs found and fixed" #4 above
+   for a second, subtler bug this same harness turned up while doing this
+   (a diamond import silently deleting a cross-module `impl` block
+   entirely) — now fixed at the compiler level, verified with the full
+   `cargo test` suite (0 regressions across all suites).
+
+2. **The actual running Python reference** (via the Nova-16 MCP server),
+   the same process the math library round established: a real `.asm`
+   test program (`STRCPY`/`STRCAT`/`STRLEN`/`STRCMP`/`STRUPR`/`STRLWR`/
+   `STRREV`/`STRFIND`/`STRFINDI`/`ITOB`/`BTOI`/`ITOS`/`STOI`, independent
+   test vectors from the headless harness above) assembled and run on the
+   live reference CPU with no intermediate `HLT` (avoiding the sticky-
+   `halted` MCP quirk the math library round already found), then every
+   `R`/`P` register and every string buffer's memory contents checked
+   against the reference's actual post-run state. All checks matched
+   exactly on the first attempt — no corrections needed to `cpu.star`
+   itself from this pass, giving real confidence the source-reading-only
+   port above was accurate.
+
 ## Ideas for future work
 
 - Layer compositing (backgrounds 1-4, sprites 5-8) and `SPBLIT`/
   `SPBLITALL`/`LSWAP`/`LMOVE`/`LCOPY`.
 - Sound synthesis (waveform generation + mixing) behind the already-in-
   place `SA`/`SF`/`SV`/`SW` register model.
-- The string/BCD/type-conversion/UART opcode groups listed above (the math
-  library and Q8.8 fixed-point conversion are now done — see above).
+- The BCD/UART opcode groups listed above (the math library, Q8.8
+  fixed-point conversion, string library, and integer/string conversion
+  are now done — see above).
 - A byte-accurate binary file loader (so a compiled `.bin` could be loaded
   instead of a baked-in demo) — the language-level blocker is gone
   (`file_read_bytes`/`file_write_bytes` now exist, see "Fixes applied to
