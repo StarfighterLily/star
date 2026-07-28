@@ -20,11 +20,10 @@ struct Screen:
     mut vram: [u8; 65536]
     mut font: fontdata::FontData
 
-# No `fn new_screen() -> Screen` constructor, for the same reason
-# memory.star's Memory has none: returning a struct embedding two 64KB
-# arrays by value hangs `clang` (confirmed -- see NOTES.md). Build
-# `Screen(...)` directly inline inside cpu.star's top-level `let mut cpu =
-# Cpu(...)`.
+# `new_screen()` returns `Screen` (two 64KB arrays plus the font) by value --
+# same fix as `memory.star`'s `new_memory()`, see its comment and NOTES.md.
+fn new_screen() -> Screen:
+    Screen(screen = [0 as u8; 65536], vram = [0 as u8; 65536], font = fontdata::new_font_data())
 
 fn in_bounds(x: i32, y: i32) -> bool:
     x >= 0 and x < WIDTH and y >= 0 and y < HEIGHT
@@ -76,7 +75,7 @@ impl Screen:
     fn sinv(mut self):
         let mut i = 0
         while i < 65536:
-            self.screen[i] = bit_not(self.screen[i])
+            self.screen[i] = (~self.screen[i])
             i += 1
 
     fn sline(mut self, x0: i32, y0: i32, x1: i32, y1: i32, color: u8):
@@ -346,11 +345,10 @@ fn abs_i32(x: i32) -> i32:
 fn clamp_i32(x: i32, lo: i32, hi: i32) -> i32:
     if x < lo:
         lo
+    elif x > hi:
+        hi
     else:
-        if x > hi:
-            hi
-        else:
-            x
+        x
 
 fn min_i32(a: i32, b: i32) -> i32:
     if a < b:

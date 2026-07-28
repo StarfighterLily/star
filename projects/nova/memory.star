@@ -25,15 +25,18 @@ struct Memory:
     mut bank_ram: [u8; 245760]   # 15 banks * 16384 bytes (banks 1-15; bank 0 has no storage here)
     mut bank: u8
 
-# No `fn new_memory() -> Memory` constructor on purpose: a plain function
-# returning a struct *by value* forces the exact same "materialize the whole
-# aggregate as one SSA value" codegen this port otherwise routes around --
-# only `TypedStmt::Let`'s direct-construction fast path (and struct-literal
-# fields nested inside one, recursively) was fixed at the compiler level, not
-# function returns (a confirmed hang, see NOTES.md). `Memory(...)` must be
-# built directly inline as part of the top-level `let mut cpu = Cpu(mem =
-# Memory(ram = [0 as u8; 65536], ...), ...)` in cpu.star, never behind a
-# helper function.
+# `new_memory()` returns `Memory` (~300KB: two fixed arrays plus the bank
+# byte) by value. This used to be impossible -- a plain function returning a
+# large struct/array by value hung `clang` outright, the exact bug NOTES.md
+# documents under "Two Star compiler bugs found and fixed" -- so `Memory(...)`
+# had to be built directly inline at the one `let mut cpu = Cpu(mem =
+# Memory(...), ...)` call site in main.star. Fixed at the compiler level by
+# todo.md P0 #2 (large struct/array return now uses a hidden `sret`
+# out-pointer instead of a by-value `ret`, so this constructor's body -- a
+# fresh struct literal -- gets built directly into the caller's storage, zero
+# copies of the whole aggregate). Confirmed with a real `star build`.
+fn new_memory() -> Memory:
+    Memory(ram = [0 as u8; 65536], bank_ram = [0 as u8; 245760], bank = 0 as u8)
 
 impl Memory:
     fn read_byte(self, addr: i32) -> u8:
@@ -58,10 +61,10 @@ impl Memory:
     fn read_word(self, addr: i32) -> u16:
         let hi = self.read_byte(addr) as u16
         let lo = self.read_byte(addr + 1) as u16
-        bit_or(bits::shl16(hi, 8), lo)
+        (hi << 8) | lo
 
     fn write_word(mut self, addr: i32, v: u16):
-        let hi = bits::shr16(v, 8) as u8
+        let hi = (v >> 8) as u8
         let lo = v as u8
         self.write_byte(addr, hi)
         self.write_byte(addr + 1, lo)

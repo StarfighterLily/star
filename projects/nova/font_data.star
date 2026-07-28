@@ -2,1526 +2,272 @@
 # generated from the upstream reference font.py so the exact bitmap data
 # matches (hand-typing 2048 literal bytes is not practical). Originally built
 # as indexed assignments on a zero-initialized array because Star had no
-# array-of-differing-values literal -- only the [value; N] repeat form; a
-# real `glyphs = [b0, b1, b2, ...]` literal now exists (todo.md P2 #10,
-# coerced from a bracket literal against this field's declared [u8; 2048]
-# type) and would be the better shape for a regenerated version of this file,
-# but this one predates that fix and hasn't been rewritten. See
-# projects/nova/NOTES.md.
+# array-of-differing-values literal -- only the [value; N] repeat form. Now
+# regenerated as a real `glyphs = [b0, b1, b2, ...]` array literal (todo.md
+# P2 #10 / NOTES.md gotcha #5), coerced to this field's declared [u8; 2048]
+# type by the checker's array-literal coercion. One row per glyph (8 bytes),
+# labeled with its character code for lookup.
 
 struct FontData:
-    mut glyphs: [u8; 2048]
+    glyphs: [u8; 2048]
 
 fn new_font_data() -> FontData:
-    let mut f = FontData(glyphs = [0 as u8; 2048])
-    f.glyphs[8] = 112 as u8
-    f.glyphs[9] = 64 as u8
-    f.glyphs[10] = 112 as u8
-    f.glyphs[11] = 26 as u8
-    f.glyphs[12] = 122 as u8
-    f.glyphs[13] = 14 as u8
-    f.glyphs[14] = 10 as u8
-    f.glyphs[15] = 10 as u8
-    f.glyphs[16] = 112 as u8
-    f.glyphs[17] = 64 as u8
-    f.glyphs[18] = 112 as u8
-    f.glyphs[19] = 18 as u8
-    f.glyphs[20] = 116 as u8
-    f.glyphs[21] = 8 as u8
-    f.glyphs[22] = 20 as u8
-    f.glyphs[23] = 34 as u8
-    f.glyphs[24] = 112 as u8
-    f.glyphs[25] = 64 as u8
-    f.glyphs[26] = 112 as u8
-    f.glyphs[27] = 66 as u8
-    f.glyphs[28] = 116 as u8
-    f.glyphs[29] = 8 as u8
-    f.glyphs[30] = 20 as u8
-    f.glyphs[31] = 34 as u8
-    f.glyphs[32] = 112 as u8
-    f.glyphs[33] = 64 as u8
-    f.glyphs[34] = 112 as u8
-    f.glyphs[35] = 64 as u8
-    f.glyphs[36] = 126 as u8
-    f.glyphs[37] = 4 as u8
-    f.glyphs[38] = 4 as u8
-    f.glyphs[39] = 4 as u8
-    f.glyphs[40] = 224 as u8
-    f.glyphs[41] = 128 as u8
-    f.glyphs[42] = 224 as u8
-    f.glyphs[43] = 140 as u8
-    f.glyphs[44] = 242 as u8
-    f.glyphs[45] = 18 as u8
-    f.glyphs[46] = 18 as u8
-    f.glyphs[47] = 13 as u8
-    f.glyphs[48] = 32 as u8
-    f.glyphs[49] = 80 as u8
-    f.glyphs[50] = 112 as u8
-    f.glyphs[51] = 82 as u8
-    f.glyphs[52] = 84 as u8
-    f.glyphs[53] = 24 as u8
-    f.glyphs[54] = 20 as u8
-    f.glyphs[55] = 18 as u8
-    f.glyphs[56] = 112 as u8
-    f.glyphs[57] = 72 as u8
-    f.glyphs[58] = 112 as u8
-    f.glyphs[59] = 72 as u8
-    f.glyphs[60] = 116 as u8
-    f.glyphs[61] = 4 as u8
-    f.glyphs[62] = 4 as u8
-    f.glyphs[63] = 7 as u8
-    f.glyphs[64] = 112 as u8
-    f.glyphs[65] = 72 as u8
-    f.glyphs[66] = 112 as u8
-    f.glyphs[67] = 79 as u8
-    f.glyphs[68] = 116 as u8
-    f.glyphs[69] = 7 as u8
-    f.glyphs[70] = 1 as u8
-    f.glyphs[71] = 7 as u8
-    f.glyphs[72] = 80 as u8
-    f.glyphs[73] = 80 as u8
-    f.glyphs[74] = 112 as u8
-    f.glyphs[75] = 80 as u8
-    f.glyphs[76] = 94 as u8
-    f.glyphs[77] = 4 as u8
-    f.glyphs[78] = 4 as u8
-    f.glyphs[79] = 4 as u8
-    f.glyphs[80] = 64 as u8
-    f.glyphs[81] = 64 as u8
-    f.glyphs[82] = 64 as u8
-    f.glyphs[83] = 78 as u8
-    f.glyphs[84] = 120 as u8
-    f.glyphs[85] = 12 as u8
-    f.glyphs[86] = 8 as u8
-    f.glyphs[87] = 8 as u8
-    f.glyphs[88] = 80 as u8
-    f.glyphs[89] = 80 as u8
-    f.glyphs[90] = 112 as u8
-    f.glyphs[91] = 80 as u8
-    f.glyphs[92] = 81 as u8
-    f.glyphs[93] = 27 as u8
-    f.glyphs[94] = 21 as u8
-    f.glyphs[95] = 17 as u8
-    f.glyphs[96] = 60 as u8
-    f.glyphs[97] = 64 as u8
-    f.glyphs[98] = 64 as u8
-    f.glyphs[99] = 68 as u8
-    f.glyphs[100] = 56 as u8
-    f.glyphs[101] = 8 as u8
-    f.glyphs[102] = 8 as u8
-    f.glyphs[103] = 15 as u8
-    f.glyphs[104] = 56 as u8
-    f.glyphs[105] = 64 as u8
-    f.glyphs[106] = 64 as u8
-    f.glyphs[107] = 62 as u8
-    f.glyphs[108] = 9 as u8
-    f.glyphs[109] = 14 as u8
-    f.glyphs[110] = 10 as u8
-    f.glyphs[111] = 9 as u8
-    f.glyphs[112] = 112 as u8
-    f.glyphs[113] = 64 as u8
-    f.glyphs[114] = 112 as u8
-    f.glyphs[115] = 16 as u8
-    f.glyphs[116] = 124 as u8
-    f.glyphs[117] = 18 as u8
-    f.glyphs[118] = 18 as u8
-    f.glyphs[119] = 12 as u8
-    f.glyphs[120] = 112 as u8
-    f.glyphs[121] = 64 as u8
-    f.glyphs[122] = 112 as u8
-    f.glyphs[123] = 16 as u8
-    f.glyphs[124] = 126 as u8
-    f.glyphs[125] = 4 as u8
-    f.glyphs[126] = 4 as u8
-    f.glyphs[127] = 14 as u8
-    f.glyphs[128] = 112 as u8
-    f.glyphs[129] = 72 as u8
-    f.glyphs[130] = 72 as u8
-    f.glyphs[131] = 79 as u8
-    f.glyphs[132] = 116 as u8
-    f.glyphs[133] = 7 as u8
-    f.glyphs[134] = 4 as u8
-    f.glyphs[135] = 7 as u8
-    f.glyphs[136] = 112 as u8
-    f.glyphs[137] = 72 as u8
-    f.glyphs[138] = 72 as u8
-    f.glyphs[139] = 74 as u8
-    f.glyphs[140] = 118 as u8
-    f.glyphs[141] = 2 as u8
-    f.glyphs[142] = 2 as u8
-    f.glyphs[143] = 7 as u8
-    f.glyphs[144] = 112 as u8
-    f.glyphs[145] = 72 as u8
-    f.glyphs[146] = 72 as u8
-    f.glyphs[147] = 78 as u8
-    f.glyphs[148] = 113 as u8
-    f.glyphs[149] = 6 as u8
-    f.glyphs[150] = 8 as u8
-    f.glyphs[151] = 15 as u8
-    f.glyphs[152] = 112 as u8
-    f.glyphs[153] = 72 as u8
-    f.glyphs[154] = 72 as u8
-    f.glyphs[155] = 79 as u8
-    f.glyphs[156] = 113 as u8
-    f.glyphs[157] = 7 as u8
-    f.glyphs[158] = 1 as u8
-    f.glyphs[159] = 15 as u8
-    f.glyphs[160] = 112 as u8
-    f.glyphs[161] = 72 as u8
-    f.glyphs[162] = 72 as u8
-    f.glyphs[163] = 74 as u8
-    f.glyphs[164] = 118 as u8
-    f.glyphs[165] = 10 as u8
-    f.glyphs[166] = 31 as u8
-    f.glyphs[167] = 2 as u8
-    f.glyphs[168] = 72 as u8
-    f.glyphs[169] = 104 as u8
-    f.glyphs[170] = 88 as u8
-    f.glyphs[171] = 73 as u8
-    f.glyphs[172] = 74 as u8
-    f.glyphs[173] = 12 as u8
-    f.glyphs[174] = 10 as u8
-    f.glyphs[175] = 9 as u8
-    f.glyphs[176] = 112 as u8
-    f.glyphs[177] = 64 as u8
-    f.glyphs[178] = 112 as u8
-    f.glyphs[179] = 16 as u8
-    f.glyphs[180] = 121 as u8
-    f.glyphs[181] = 13 as u8
-    f.glyphs[182] = 11 as u8
-    f.glyphs[183] = 9 as u8
-    f.glyphs[184] = 112 as u8
-    f.glyphs[185] = 64 as u8
-    f.glyphs[186] = 112 as u8
-    f.glyphs[187] = 78 as u8
-    f.glyphs[188] = 121 as u8
-    f.glyphs[189] = 14 as u8
-    f.glyphs[190] = 9 as u8
-    f.glyphs[191] = 14 as u8
-    f.glyphs[192] = 56 as u8
-    f.glyphs[193] = 64 as u8
-    f.glyphs[194] = 64 as u8
-    f.glyphs[195] = 56 as u8
-    f.glyphs[196] = 9 as u8
-    f.glyphs[197] = 13 as u8
-    f.glyphs[198] = 11 as u8
-    f.glyphs[199] = 9 as u8
-    f.glyphs[200] = 112 as u8
-    f.glyphs[201] = 64 as u8
-    f.glyphs[202] = 112 as u8
-    f.glyphs[203] = 64 as u8
-    f.glyphs[204] = 113 as u8
-    f.glyphs[205] = 27 as u8
-    f.glyphs[206] = 21 as u8
-    f.glyphs[207] = 17 as u8
-    f.glyphs[208] = 112 as u8
-    f.glyphs[209] = 64 as u8
-    f.glyphs[210] = 112 as u8
-    f.glyphs[211] = 28 as u8
-    f.glyphs[212] = 114 as u8
-    f.glyphs[213] = 28 as u8
-    f.glyphs[214] = 18 as u8
-    f.glyphs[215] = 28 as u8
-    f.glyphs[216] = 112 as u8
-    f.glyphs[217] = 64 as u8
-    f.glyphs[218] = 112 as u8
-    f.glyphs[219] = 64 as u8
-    f.glyphs[220] = 126 as u8
-    f.glyphs[221] = 16 as u8
-    f.glyphs[222] = 16 as u8
-    f.glyphs[223] = 14 as u8
-    f.glyphs[225] = 8 as u8
-    f.glyphs[226] = 4 as u8
-    f.glyphs[227] = 126 as u8
-    f.glyphs[228] = 4 as u8
-    f.glyphs[229] = 8 as u8
-    f.glyphs[233] = 16 as u8
-    f.glyphs[234] = 32 as u8
-    f.glyphs[235] = 126 as u8
-    f.glyphs[236] = 32 as u8
-    f.glyphs[237] = 16 as u8
-    f.glyphs[241] = 8 as u8
-    f.glyphs[242] = 28 as u8
-    f.glyphs[243] = 42 as u8
-    f.glyphs[244] = 8 as u8
-    f.glyphs[245] = 8 as u8
-    f.glyphs[246] = 8 as u8
-    f.glyphs[249] = 8 as u8
-    f.glyphs[250] = 8 as u8
-    f.glyphs[251] = 8 as u8
-    f.glyphs[252] = 42 as u8
-    f.glyphs[253] = 28 as u8
-    f.glyphs[254] = 8 as u8
-    f.glyphs[264] = 8 as u8
-    f.glyphs[265] = 8 as u8
-    f.glyphs[266] = 8 as u8
-    f.glyphs[267] = 8 as u8
-    f.glyphs[270] = 8 as u8
-    f.glyphs[272] = 36 as u8
-    f.glyphs[273] = 36 as u8
-    f.glyphs[274] = 36 as u8
-    f.glyphs[280] = 36 as u8
-    f.glyphs[281] = 36 as u8
-    f.glyphs[282] = 126 as u8
-    f.glyphs[283] = 36 as u8
-    f.glyphs[284] = 126 as u8
-    f.glyphs[285] = 36 as u8
-    f.glyphs[286] = 36 as u8
-    f.glyphs[288] = 8 as u8
-    f.glyphs[289] = 30 as u8
-    f.glyphs[290] = 40 as u8
-    f.glyphs[291] = 28 as u8
-    f.glyphs[292] = 10 as u8
-    f.glyphs[293] = 60 as u8
-    f.glyphs[294] = 8 as u8
-    f.glyphs[297] = 98 as u8
-    f.glyphs[298] = 100 as u8
-    f.glyphs[299] = 8 as u8
-    f.glyphs[300] = 16 as u8
-    f.glyphs[301] = 38 as u8
-    f.glyphs[302] = 70 as u8
-    f.glyphs[304] = 48 as u8
-    f.glyphs[305] = 72 as u8
-    f.glyphs[306] = 72 as u8
-    f.glyphs[307] = 48 as u8
-    f.glyphs[308] = 74 as u8
-    f.glyphs[309] = 68 as u8
-    f.glyphs[310] = 58 as u8
-    f.glyphs[312] = 4 as u8
-    f.glyphs[313] = 8 as u8
-    f.glyphs[314] = 16 as u8
-    f.glyphs[320] = 4 as u8
-    f.glyphs[321] = 8 as u8
-    f.glyphs[322] = 16 as u8
-    f.glyphs[323] = 16 as u8
-    f.glyphs[324] = 16 as u8
-    f.glyphs[325] = 8 as u8
-    f.glyphs[326] = 4 as u8
-    f.glyphs[328] = 32 as u8
-    f.glyphs[329] = 16 as u8
-    f.glyphs[330] = 8 as u8
-    f.glyphs[331] = 8 as u8
-    f.glyphs[332] = 8 as u8
-    f.glyphs[333] = 16 as u8
-    f.glyphs[334] = 32 as u8
-    f.glyphs[336] = 8 as u8
-    f.glyphs[337] = 42 as u8
-    f.glyphs[338] = 28 as u8
-    f.glyphs[339] = 62 as u8
-    f.glyphs[340] = 28 as u8
-    f.glyphs[341] = 42 as u8
-    f.glyphs[342] = 8 as u8
-    f.glyphs[345] = 8 as u8
-    f.glyphs[346] = 8 as u8
-    f.glyphs[347] = 62 as u8
-    f.glyphs[348] = 8 as u8
-    f.glyphs[349] = 8 as u8
-    f.glyphs[357] = 8 as u8
-    f.glyphs[358] = 8 as u8
-    f.glyphs[359] = 16 as u8
-    f.glyphs[363] = 126 as u8
-    f.glyphs[373] = 24 as u8
-    f.glyphs[374] = 24 as u8
-    f.glyphs[377] = 2 as u8
-    f.glyphs[378] = 4 as u8
-    f.glyphs[379] = 8 as u8
-    f.glyphs[380] = 16 as u8
-    f.glyphs[381] = 32 as u8
-    f.glyphs[382] = 64 as u8
-    f.glyphs[384] = 60 as u8
-    f.glyphs[385] = 66 as u8
-    f.glyphs[386] = 70 as u8
-    f.glyphs[387] = 90 as u8
-    f.glyphs[388] = 98 as u8
-    f.glyphs[389] = 66 as u8
-    f.glyphs[390] = 60 as u8
-    f.glyphs[392] = 8 as u8
-    f.glyphs[393] = 24 as u8
-    f.glyphs[394] = 40 as u8
-    f.glyphs[395] = 8 as u8
-    f.glyphs[396] = 8 as u8
-    f.glyphs[397] = 8 as u8
-    f.glyphs[398] = 62 as u8
-    f.glyphs[400] = 60 as u8
-    f.glyphs[401] = 66 as u8
-    f.glyphs[402] = 2 as u8
-    f.glyphs[403] = 12 as u8
-    f.glyphs[404] = 48 as u8
-    f.glyphs[405] = 64 as u8
-    f.glyphs[406] = 126 as u8
-    f.glyphs[408] = 60 as u8
-    f.glyphs[409] = 66 as u8
-    f.glyphs[410] = 2 as u8
-    f.glyphs[411] = 28 as u8
-    f.glyphs[412] = 2 as u8
-    f.glyphs[413] = 66 as u8
-    f.glyphs[414] = 60 as u8
-    f.glyphs[416] = 4 as u8
-    f.glyphs[417] = 12 as u8
-    f.glyphs[418] = 20 as u8
-    f.glyphs[419] = 36 as u8
-    f.glyphs[420] = 126 as u8
-    f.glyphs[421] = 4 as u8
-    f.glyphs[422] = 4 as u8
-    f.glyphs[424] = 126 as u8
-    f.glyphs[425] = 64 as u8
-    f.glyphs[426] = 120 as u8
-    f.glyphs[427] = 4 as u8
-    f.glyphs[428] = 2 as u8
-    f.glyphs[429] = 68 as u8
-    f.glyphs[430] = 56 as u8
-    f.glyphs[432] = 28 as u8
-    f.glyphs[433] = 32 as u8
-    f.glyphs[434] = 64 as u8
-    f.glyphs[435] = 124 as u8
-    f.glyphs[436] = 66 as u8
-    f.glyphs[437] = 66 as u8
-    f.glyphs[438] = 60 as u8
-    f.glyphs[440] = 126 as u8
-    f.glyphs[441] = 66 as u8
-    f.glyphs[442] = 4 as u8
-    f.glyphs[443] = 8 as u8
-    f.glyphs[444] = 16 as u8
-    f.glyphs[445] = 16 as u8
-    f.glyphs[446] = 16 as u8
-    f.glyphs[448] = 60 as u8
-    f.glyphs[449] = 66 as u8
-    f.glyphs[450] = 66 as u8
-    f.glyphs[451] = 60 as u8
-    f.glyphs[452] = 66 as u8
-    f.glyphs[453] = 66 as u8
-    f.glyphs[454] = 60 as u8
-    f.glyphs[456] = 60 as u8
-    f.glyphs[457] = 66 as u8
-    f.glyphs[458] = 66 as u8
-    f.glyphs[459] = 62 as u8
-    f.glyphs[460] = 2 as u8
-    f.glyphs[461] = 4 as u8
-    f.glyphs[462] = 56 as u8
-    f.glyphs[466] = 8 as u8
-    f.glyphs[469] = 8 as u8
-    f.glyphs[474] = 8 as u8
-    f.glyphs[477] = 8 as u8
-    f.glyphs[478] = 8 as u8
-    f.glyphs[479] = 16 as u8
-    f.glyphs[480] = 14 as u8
-    f.glyphs[481] = 24 as u8
-    f.glyphs[482] = 48 as u8
-    f.glyphs[483] = 96 as u8
-    f.glyphs[484] = 48 as u8
-    f.glyphs[485] = 24 as u8
-    f.glyphs[486] = 14 as u8
-    f.glyphs[490] = 126 as u8
-    f.glyphs[492] = 126 as u8
-    f.glyphs[496] = 112 as u8
-    f.glyphs[497] = 24 as u8
-    f.glyphs[498] = 12 as u8
-    f.glyphs[499] = 6 as u8
-    f.glyphs[500] = 12 as u8
-    f.glyphs[501] = 24 as u8
-    f.glyphs[502] = 112 as u8
-    f.glyphs[504] = 60 as u8
-    f.glyphs[505] = 66 as u8
-    f.glyphs[506] = 2 as u8
-    f.glyphs[507] = 12 as u8
-    f.glyphs[508] = 16 as u8
-    f.glyphs[510] = 16 as u8
-    f.glyphs[512] = 28 as u8
-    f.glyphs[513] = 34 as u8
-    f.glyphs[514] = 74 as u8
-    f.glyphs[515] = 86 as u8
-    f.glyphs[516] = 76 as u8
-    f.glyphs[517] = 32 as u8
-    f.glyphs[518] = 30 as u8
-    f.glyphs[520] = 24 as u8
-    f.glyphs[521] = 36 as u8
-    f.glyphs[522] = 66 as u8
-    f.glyphs[523] = 126 as u8
-    f.glyphs[524] = 66 as u8
-    f.glyphs[525] = 66 as u8
-    f.glyphs[526] = 66 as u8
-    f.glyphs[528] = 124 as u8
-    f.glyphs[529] = 34 as u8
-    f.glyphs[530] = 34 as u8
-    f.glyphs[531] = 60 as u8
-    f.glyphs[532] = 34 as u8
-    f.glyphs[533] = 34 as u8
-    f.glyphs[534] = 124 as u8
-    f.glyphs[536] = 28 as u8
-    f.glyphs[537] = 34 as u8
-    f.glyphs[538] = 64 as u8
-    f.glyphs[539] = 64 as u8
-    f.glyphs[540] = 64 as u8
-    f.glyphs[541] = 34 as u8
-    f.glyphs[542] = 28 as u8
-    f.glyphs[544] = 120 as u8
-    f.glyphs[545] = 36 as u8
-    f.glyphs[546] = 34 as u8
-    f.glyphs[547] = 34 as u8
-    f.glyphs[548] = 34 as u8
-    f.glyphs[549] = 36 as u8
-    f.glyphs[550] = 120 as u8
-    f.glyphs[552] = 126 as u8
-    f.glyphs[553] = 64 as u8
-    f.glyphs[554] = 64 as u8
-    f.glyphs[555] = 120 as u8
-    f.glyphs[556] = 64 as u8
-    f.glyphs[557] = 64 as u8
-    f.glyphs[558] = 126 as u8
-    f.glyphs[560] = 126 as u8
-    f.glyphs[561] = 64 as u8
-    f.glyphs[562] = 64 as u8
-    f.glyphs[563] = 120 as u8
-    f.glyphs[564] = 64 as u8
-    f.glyphs[565] = 64 as u8
-    f.glyphs[566] = 64 as u8
-    f.glyphs[568] = 28 as u8
-    f.glyphs[569] = 34 as u8
-    f.glyphs[570] = 64 as u8
-    f.glyphs[571] = 78 as u8
-    f.glyphs[572] = 66 as u8
-    f.glyphs[573] = 34 as u8
-    f.glyphs[574] = 28 as u8
-    f.glyphs[576] = 66 as u8
-    f.glyphs[577] = 66 as u8
-    f.glyphs[578] = 66 as u8
-    f.glyphs[579] = 126 as u8
-    f.glyphs[580] = 66 as u8
-    f.glyphs[581] = 66 as u8
-    f.glyphs[582] = 66 as u8
-    f.glyphs[584] = 28 as u8
-    f.glyphs[585] = 8 as u8
-    f.glyphs[586] = 8 as u8
-    f.glyphs[587] = 8 as u8
-    f.glyphs[588] = 8 as u8
-    f.glyphs[589] = 8 as u8
-    f.glyphs[590] = 28 as u8
-    f.glyphs[592] = 14 as u8
-    f.glyphs[593] = 4 as u8
-    f.glyphs[594] = 4 as u8
-    f.glyphs[595] = 4 as u8
-    f.glyphs[596] = 4 as u8
-    f.glyphs[597] = 68 as u8
-    f.glyphs[598] = 56 as u8
-    f.glyphs[600] = 66 as u8
-    f.glyphs[601] = 68 as u8
-    f.glyphs[602] = 72 as u8
-    f.glyphs[603] = 112 as u8
-    f.glyphs[604] = 72 as u8
-    f.glyphs[605] = 68 as u8
-    f.glyphs[606] = 66 as u8
-    f.glyphs[608] = 64 as u8
-    f.glyphs[609] = 64 as u8
-    f.glyphs[610] = 64 as u8
-    f.glyphs[611] = 64 as u8
-    f.glyphs[612] = 64 as u8
-    f.glyphs[613] = 64 as u8
-    f.glyphs[614] = 126 as u8
-    f.glyphs[616] = 66 as u8
-    f.glyphs[617] = 102 as u8
-    f.glyphs[618] = 90 as u8
-    f.glyphs[619] = 90 as u8
-    f.glyphs[620] = 66 as u8
-    f.glyphs[621] = 66 as u8
-    f.glyphs[622] = 66 as u8
-    f.glyphs[624] = 66 as u8
-    f.glyphs[625] = 98 as u8
-    f.glyphs[626] = 82 as u8
-    f.glyphs[627] = 74 as u8
-    f.glyphs[628] = 70 as u8
-    f.glyphs[629] = 66 as u8
-    f.glyphs[630] = 66 as u8
-    f.glyphs[632] = 24 as u8
-    f.glyphs[633] = 36 as u8
-    f.glyphs[634] = 66 as u8
-    f.glyphs[635] = 66 as u8
-    f.glyphs[636] = 66 as u8
-    f.glyphs[637] = 36 as u8
-    f.glyphs[638] = 24 as u8
-    f.glyphs[640] = 124 as u8
-    f.glyphs[641] = 66 as u8
-    f.glyphs[642] = 66 as u8
-    f.glyphs[643] = 124 as u8
-    f.glyphs[644] = 64 as u8
-    f.glyphs[645] = 64 as u8
-    f.glyphs[646] = 64 as u8
-    f.glyphs[648] = 24 as u8
-    f.glyphs[649] = 36 as u8
-    f.glyphs[650] = 66 as u8
-    f.glyphs[651] = 66 as u8
-    f.glyphs[652] = 74 as u8
-    f.glyphs[653] = 36 as u8
-    f.glyphs[654] = 26 as u8
-    f.glyphs[656] = 124 as u8
-    f.glyphs[657] = 66 as u8
-    f.glyphs[658] = 66 as u8
-    f.glyphs[659] = 124 as u8
-    f.glyphs[660] = 72 as u8
-    f.glyphs[661] = 68 as u8
-    f.glyphs[662] = 66 as u8
-    f.glyphs[664] = 60 as u8
-    f.glyphs[665] = 66 as u8
-    f.glyphs[666] = 64 as u8
-    f.glyphs[667] = 60 as u8
-    f.glyphs[668] = 2 as u8
-    f.glyphs[669] = 66 as u8
-    f.glyphs[670] = 60 as u8
-    f.glyphs[672] = 62 as u8
-    f.glyphs[673] = 8 as u8
-    f.glyphs[674] = 8 as u8
-    f.glyphs[675] = 8 as u8
-    f.glyphs[676] = 8 as u8
-    f.glyphs[677] = 8 as u8
-    f.glyphs[678] = 8 as u8
-    f.glyphs[680] = 66 as u8
-    f.glyphs[681] = 66 as u8
-    f.glyphs[682] = 66 as u8
-    f.glyphs[683] = 66 as u8
-    f.glyphs[684] = 66 as u8
-    f.glyphs[685] = 66 as u8
-    f.glyphs[686] = 60 as u8
-    f.glyphs[688] = 66 as u8
-    f.glyphs[689] = 66 as u8
-    f.glyphs[690] = 66 as u8
-    f.glyphs[691] = 36 as u8
-    f.glyphs[692] = 36 as u8
-    f.glyphs[693] = 24 as u8
-    f.glyphs[694] = 24 as u8
-    f.glyphs[696] = 66 as u8
-    f.glyphs[697] = 66 as u8
-    f.glyphs[698] = 66 as u8
-    f.glyphs[699] = 90 as u8
-    f.glyphs[700] = 90 as u8
-    f.glyphs[701] = 102 as u8
-    f.glyphs[702] = 66 as u8
-    f.glyphs[704] = 66 as u8
-    f.glyphs[705] = 66 as u8
-    f.glyphs[706] = 36 as u8
-    f.glyphs[707] = 24 as u8
-    f.glyphs[708] = 36 as u8
-    f.glyphs[709] = 66 as u8
-    f.glyphs[710] = 66 as u8
-    f.glyphs[712] = 34 as u8
-    f.glyphs[713] = 34 as u8
-    f.glyphs[714] = 34 as u8
-    f.glyphs[715] = 28 as u8
-    f.glyphs[716] = 8 as u8
-    f.glyphs[717] = 8 as u8
-    f.glyphs[718] = 8 as u8
-    f.glyphs[720] = 126 as u8
-    f.glyphs[721] = 2 as u8
-    f.glyphs[722] = 4 as u8
-    f.glyphs[723] = 24 as u8
-    f.glyphs[724] = 32 as u8
-    f.glyphs[725] = 64 as u8
-    f.glyphs[726] = 126 as u8
-    f.glyphs[728] = 60 as u8
-    f.glyphs[729] = 32 as u8
-    f.glyphs[730] = 32 as u8
-    f.glyphs[731] = 32 as u8
-    f.glyphs[732] = 32 as u8
-    f.glyphs[733] = 32 as u8
-    f.glyphs[734] = 60 as u8
-    f.glyphs[736] = 34 as u8
-    f.glyphs[737] = 34 as u8
-    f.glyphs[738] = 20 as u8
-    f.glyphs[739] = 62 as u8
-    f.glyphs[740] = 8 as u8
-    f.glyphs[741] = 62 as u8
-    f.glyphs[742] = 8 as u8
-    f.glyphs[744] = 60 as u8
-    f.glyphs[745] = 4 as u8
-    f.glyphs[746] = 4 as u8
-    f.glyphs[747] = 4 as u8
-    f.glyphs[748] = 4 as u8
-    f.glyphs[749] = 4 as u8
-    f.glyphs[750] = 60 as u8
-    f.glyphs[752] = 8 as u8
-    f.glyphs[753] = 20 as u8
-    f.glyphs[754] = 34 as u8
-    f.glyphs[766] = 126 as u8
-    f.glyphs[778] = 60 as u8
-    f.glyphs[779] = 4 as u8
-    f.glyphs[780] = 60 as u8
-    f.glyphs[781] = 68 as u8
-    f.glyphs[782] = 58 as u8
-    f.glyphs[784] = 64 as u8
-    f.glyphs[785] = 64 as u8
-    f.glyphs[786] = 92 as u8
-    f.glyphs[787] = 98 as u8
-    f.glyphs[788] = 66 as u8
-    f.glyphs[789] = 98 as u8
-    f.glyphs[790] = 92 as u8
-    f.glyphs[794] = 60 as u8
-    f.glyphs[795] = 66 as u8
-    f.glyphs[796] = 64 as u8
-    f.glyphs[797] = 66 as u8
-    f.glyphs[798] = 60 as u8
-    f.glyphs[800] = 2 as u8
-    f.glyphs[801] = 2 as u8
-    f.glyphs[802] = 58 as u8
-    f.glyphs[803] = 70 as u8
-    f.glyphs[804] = 66 as u8
-    f.glyphs[805] = 70 as u8
-    f.glyphs[806] = 58 as u8
-    f.glyphs[810] = 60 as u8
-    f.glyphs[811] = 66 as u8
-    f.glyphs[812] = 126 as u8
-    f.glyphs[813] = 64 as u8
-    f.glyphs[814] = 60 as u8
-    f.glyphs[816] = 12 as u8
-    f.glyphs[817] = 18 as u8
-    f.glyphs[818] = 16 as u8
-    f.glyphs[819] = 124 as u8
-    f.glyphs[820] = 16 as u8
-    f.glyphs[821] = 16 as u8
-    f.glyphs[822] = 16 as u8
-    f.glyphs[826] = 58 as u8
-    f.glyphs[827] = 70 as u8
-    f.glyphs[828] = 70 as u8
-    f.glyphs[829] = 58 as u8
-    f.glyphs[830] = 2 as u8
-    f.glyphs[831] = 60 as u8
-    f.glyphs[832] = 64 as u8
-    f.glyphs[833] = 64 as u8
-    f.glyphs[834] = 92 as u8
-    f.glyphs[835] = 98 as u8
-    f.glyphs[836] = 66 as u8
-    f.glyphs[837] = 66 as u8
-    f.glyphs[838] = 66 as u8
-    f.glyphs[840] = 8 as u8
-    f.glyphs[842] = 24 as u8
-    f.glyphs[843] = 8 as u8
-    f.glyphs[844] = 8 as u8
-    f.glyphs[845] = 8 as u8
-    f.glyphs[846] = 28 as u8
-    f.glyphs[848] = 4 as u8
-    f.glyphs[850] = 12 as u8
-    f.glyphs[851] = 4 as u8
-    f.glyphs[852] = 4 as u8
-    f.glyphs[853] = 4 as u8
-    f.glyphs[854] = 68 as u8
-    f.glyphs[855] = 56 as u8
-    f.glyphs[856] = 64 as u8
-    f.glyphs[857] = 64 as u8
-    f.glyphs[858] = 68 as u8
-    f.glyphs[859] = 72 as u8
-    f.glyphs[860] = 80 as u8
-    f.glyphs[861] = 104 as u8
-    f.glyphs[862] = 68 as u8
-    f.glyphs[864] = 24 as u8
-    f.glyphs[865] = 8 as u8
-    f.glyphs[866] = 8 as u8
-    f.glyphs[867] = 8 as u8
-    f.glyphs[868] = 8 as u8
-    f.glyphs[869] = 8 as u8
-    f.glyphs[870] = 28 as u8
-    f.glyphs[874] = 118 as u8
-    f.glyphs[875] = 73 as u8
-    f.glyphs[876] = 73 as u8
-    f.glyphs[877] = 73 as u8
-    f.glyphs[878] = 73 as u8
-    f.glyphs[882] = 92 as u8
-    f.glyphs[883] = 98 as u8
-    f.glyphs[884] = 66 as u8
-    f.glyphs[885] = 66 as u8
-    f.glyphs[886] = 66 as u8
-    f.glyphs[890] = 60 as u8
-    f.glyphs[891] = 66 as u8
-    f.glyphs[892] = 66 as u8
-    f.glyphs[893] = 66 as u8
-    f.glyphs[894] = 60 as u8
-    f.glyphs[898] = 92 as u8
-    f.glyphs[899] = 98 as u8
-    f.glyphs[900] = 98 as u8
-    f.glyphs[901] = 92 as u8
-    f.glyphs[902] = 64 as u8
-    f.glyphs[903] = 64 as u8
-    f.glyphs[906] = 58 as u8
-    f.glyphs[907] = 70 as u8
-    f.glyphs[908] = 70 as u8
-    f.glyphs[909] = 58 as u8
-    f.glyphs[910] = 2 as u8
-    f.glyphs[911] = 2 as u8
-    f.glyphs[914] = 92 as u8
-    f.glyphs[915] = 98 as u8
-    f.glyphs[916] = 64 as u8
-    f.glyphs[917] = 64 as u8
-    f.glyphs[918] = 64 as u8
-    f.glyphs[922] = 62 as u8
-    f.glyphs[923] = 64 as u8
-    f.glyphs[924] = 60 as u8
-    f.glyphs[925] = 2 as u8
-    f.glyphs[926] = 124 as u8
-    f.glyphs[928] = 16 as u8
-    f.glyphs[929] = 16 as u8
-    f.glyphs[930] = 124 as u8
-    f.glyphs[931] = 16 as u8
-    f.glyphs[932] = 16 as u8
-    f.glyphs[933] = 18 as u8
-    f.glyphs[934] = 12 as u8
-    f.glyphs[938] = 66 as u8
-    f.glyphs[939] = 66 as u8
-    f.glyphs[940] = 66 as u8
-    f.glyphs[941] = 70 as u8
-    f.glyphs[942] = 58 as u8
-    f.glyphs[946] = 66 as u8
-    f.glyphs[947] = 66 as u8
-    f.glyphs[948] = 66 as u8
-    f.glyphs[949] = 36 as u8
-    f.glyphs[950] = 24 as u8
-    f.glyphs[954] = 65 as u8
-    f.glyphs[955] = 73 as u8
-    f.glyphs[956] = 73 as u8
-    f.glyphs[957] = 73 as u8
-    f.glyphs[958] = 54 as u8
-    f.glyphs[962] = 66 as u8
-    f.glyphs[963] = 36 as u8
-    f.glyphs[964] = 24 as u8
-    f.glyphs[965] = 36 as u8
-    f.glyphs[966] = 66 as u8
-    f.glyphs[970] = 66 as u8
-    f.glyphs[971] = 66 as u8
-    f.glyphs[972] = 70 as u8
-    f.glyphs[973] = 58 as u8
-    f.glyphs[974] = 2 as u8
-    f.glyphs[975] = 60 as u8
-    f.glyphs[978] = 126 as u8
-    f.glyphs[979] = 4 as u8
-    f.glyphs[980] = 24 as u8
-    f.glyphs[981] = 32 as u8
-    f.glyphs[982] = 126 as u8
-    f.glyphs[984] = 14 as u8
-    f.glyphs[985] = 16 as u8
-    f.glyphs[986] = 16 as u8
-    f.glyphs[987] = 32 as u8
-    f.glyphs[988] = 16 as u8
-    f.glyphs[989] = 16 as u8
-    f.glyphs[990] = 14 as u8
-    f.glyphs[992] = 8 as u8
-    f.glyphs[993] = 8 as u8
-    f.glyphs[997] = 8 as u8
-    f.glyphs[998] = 8 as u8
-    f.glyphs[1000] = 112 as u8
-    f.glyphs[1001] = 8 as u8
-    f.glyphs[1002] = 8 as u8
-    f.glyphs[1003] = 4 as u8
-    f.glyphs[1004] = 8 as u8
-    f.glyphs[1005] = 8 as u8
-    f.glyphs[1006] = 112 as u8
-    f.glyphs[1008] = 48 as u8
-    f.glyphs[1009] = 73 as u8
-    f.glyphs[1010] = 6 as u8
-    f.glyphs[1031] = 255 as u8
-    f.glyphs[1038] = 255 as u8
-    f.glyphs[1039] = 255 as u8
-    f.glyphs[1045] = 255 as u8
-    f.glyphs[1046] = 255 as u8
-    f.glyphs[1047] = 255 as u8
-    f.glyphs[1052] = 255 as u8
-    f.glyphs[1053] = 255 as u8
-    f.glyphs[1054] = 255 as u8
-    f.glyphs[1055] = 255 as u8
-    f.glyphs[1059] = 255 as u8
-    f.glyphs[1060] = 255 as u8
-    f.glyphs[1061] = 255 as u8
-    f.glyphs[1062] = 255 as u8
-    f.glyphs[1063] = 255 as u8
-    f.glyphs[1066] = 255 as u8
-    f.glyphs[1067] = 255 as u8
-    f.glyphs[1068] = 255 as u8
-    f.glyphs[1069] = 255 as u8
-    f.glyphs[1070] = 255 as u8
-    f.glyphs[1071] = 255 as u8
-    f.glyphs[1073] = 255 as u8
-    f.glyphs[1074] = 255 as u8
-    f.glyphs[1075] = 255 as u8
-    f.glyphs[1076] = 255 as u8
-    f.glyphs[1077] = 255 as u8
-    f.glyphs[1078] = 255 as u8
-    f.glyphs[1079] = 255 as u8
-    f.glyphs[1080] = 255 as u8
-    f.glyphs[1081] = 255 as u8
-    f.glyphs[1082] = 255 as u8
-    f.glyphs[1083] = 255 as u8
-    f.glyphs[1084] = 255 as u8
-    f.glyphs[1085] = 255 as u8
-    f.glyphs[1086] = 255 as u8
-    f.glyphs[1087] = 255 as u8
-    f.glyphs[1088] = 128 as u8
-    f.glyphs[1089] = 128 as u8
-    f.glyphs[1090] = 128 as u8
-    f.glyphs[1091] = 128 as u8
-    f.glyphs[1092] = 128 as u8
-    f.glyphs[1093] = 128 as u8
-    f.glyphs[1094] = 128 as u8
-    f.glyphs[1095] = 128 as u8
-    f.glyphs[1096] = 192 as u8
-    f.glyphs[1097] = 192 as u8
-    f.glyphs[1098] = 192 as u8
-    f.glyphs[1099] = 192 as u8
-    f.glyphs[1100] = 192 as u8
-    f.glyphs[1101] = 192 as u8
-    f.glyphs[1102] = 192 as u8
-    f.glyphs[1103] = 192 as u8
-    f.glyphs[1104] = 224 as u8
-    f.glyphs[1105] = 224 as u8
-    f.glyphs[1106] = 224 as u8
-    f.glyphs[1107] = 224 as u8
-    f.glyphs[1108] = 224 as u8
-    f.glyphs[1109] = 224 as u8
-    f.glyphs[1110] = 224 as u8
-    f.glyphs[1111] = 224 as u8
-    f.glyphs[1112] = 240 as u8
-    f.glyphs[1113] = 240 as u8
-    f.glyphs[1114] = 240 as u8
-    f.glyphs[1115] = 240 as u8
-    f.glyphs[1116] = 240 as u8
-    f.glyphs[1117] = 240 as u8
-    f.glyphs[1118] = 240 as u8
-    f.glyphs[1119] = 240 as u8
-    f.glyphs[1120] = 248 as u8
-    f.glyphs[1121] = 248 as u8
-    f.glyphs[1122] = 248 as u8
-    f.glyphs[1123] = 248 as u8
-    f.glyphs[1124] = 248 as u8
-    f.glyphs[1125] = 248 as u8
-    f.glyphs[1126] = 248 as u8
-    f.glyphs[1127] = 248 as u8
-    f.glyphs[1128] = 252 as u8
-    f.glyphs[1129] = 252 as u8
-    f.glyphs[1130] = 252 as u8
-    f.glyphs[1131] = 252 as u8
-    f.glyphs[1132] = 252 as u8
-    f.glyphs[1133] = 252 as u8
-    f.glyphs[1134] = 252 as u8
-    f.glyphs[1135] = 252 as u8
-    f.glyphs[1136] = 254 as u8
-    f.glyphs[1137] = 254 as u8
-    f.glyphs[1138] = 254 as u8
-    f.glyphs[1139] = 254 as u8
-    f.glyphs[1140] = 254 as u8
-    f.glyphs[1141] = 254 as u8
-    f.glyphs[1142] = 254 as u8
-    f.glyphs[1143] = 254 as u8
-    f.glyphs[1144] = 8 as u8
-    f.glyphs[1145] = 8 as u8
-    f.glyphs[1146] = 8 as u8
-    f.glyphs[1147] = 8 as u8
-    f.glyphs[1148] = 255 as u8
-    f.glyphs[1149] = 8 as u8
-    f.glyphs[1150] = 8 as u8
-    f.glyphs[1151] = 8 as u8
-    f.glyphs[1152] = 8 as u8
-    f.glyphs[1153] = 8 as u8
-    f.glyphs[1154] = 8 as u8
-    f.glyphs[1155] = 8 as u8
-    f.glyphs[1156] = 255 as u8
-    f.glyphs[1164] = 255 as u8
-    f.glyphs[1165] = 8 as u8
-    f.glyphs[1166] = 8 as u8
-    f.glyphs[1167] = 8 as u8
-    f.glyphs[1168] = 8 as u8
-    f.glyphs[1169] = 8 as u8
-    f.glyphs[1170] = 8 as u8
-    f.glyphs[1171] = 8 as u8
-    f.glyphs[1172] = 248 as u8
-    f.glyphs[1173] = 8 as u8
-    f.glyphs[1174] = 8 as u8
-    f.glyphs[1175] = 8 as u8
-    f.glyphs[1176] = 8 as u8
-    f.glyphs[1177] = 8 as u8
-    f.glyphs[1178] = 8 as u8
-    f.glyphs[1179] = 8 as u8
-    f.glyphs[1180] = 15 as u8
-    f.glyphs[1181] = 8 as u8
-    f.glyphs[1182] = 8 as u8
-    f.glyphs[1183] = 8 as u8
-    f.glyphs[1184] = 255 as u8
-    f.glyphs[1196] = 255 as u8
-    f.glyphs[1200] = 8 as u8
-    f.glyphs[1201] = 8 as u8
-    f.glyphs[1202] = 8 as u8
-    f.glyphs[1203] = 8 as u8
-    f.glyphs[1204] = 8 as u8
-    f.glyphs[1205] = 8 as u8
-    f.glyphs[1206] = 8 as u8
-    f.glyphs[1207] = 8 as u8
-    f.glyphs[1208] = 1 as u8
-    f.glyphs[1209] = 1 as u8
-    f.glyphs[1210] = 1 as u8
-    f.glyphs[1211] = 1 as u8
-    f.glyphs[1212] = 1 as u8
-    f.glyphs[1213] = 1 as u8
-    f.glyphs[1214] = 1 as u8
-    f.glyphs[1215] = 1 as u8
-    f.glyphs[1220] = 15 as u8
-    f.glyphs[1221] = 8 as u8
-    f.glyphs[1222] = 8 as u8
-    f.glyphs[1223] = 8 as u8
-    f.glyphs[1228] = 248 as u8
-    f.glyphs[1229] = 8 as u8
-    f.glyphs[1230] = 8 as u8
-    f.glyphs[1231] = 8 as u8
-    f.glyphs[1232] = 8 as u8
-    f.glyphs[1233] = 8 as u8
-    f.glyphs[1234] = 8 as u8
-    f.glyphs[1235] = 8 as u8
-    f.glyphs[1236] = 15 as u8
-    f.glyphs[1240] = 8 as u8
-    f.glyphs[1241] = 8 as u8
-    f.glyphs[1242] = 8 as u8
-    f.glyphs[1243] = 8 as u8
-    f.glyphs[1244] = 248 as u8
-    f.glyphs[1252] = 3 as u8
-    f.glyphs[1253] = 4 as u8
-    f.glyphs[1254] = 8 as u8
-    f.glyphs[1255] = 8 as u8
-    f.glyphs[1260] = 224 as u8
-    f.glyphs[1261] = 16 as u8
-    f.glyphs[1262] = 8 as u8
-    f.glyphs[1263] = 8 as u8
-    f.glyphs[1264] = 8 as u8
-    f.glyphs[1265] = 8 as u8
-    f.glyphs[1266] = 8 as u8
-    f.glyphs[1267] = 4 as u8
-    f.glyphs[1268] = 3 as u8
-    f.glyphs[1272] = 8 as u8
-    f.glyphs[1273] = 8 as u8
-    f.glyphs[1274] = 8 as u8
-    f.glyphs[1275] = 16 as u8
-    f.glyphs[1276] = 224 as u8
-    f.glyphs[1292] = 56 as u8
-    f.glyphs[1293] = 40 as u8
-    f.glyphs[1294] = 56 as u8
-    f.glyphs[1296] = 28 as u8
-    f.glyphs[1297] = 16 as u8
-    f.glyphs[1298] = 16 as u8
-    f.glyphs[1299] = 16 as u8
-    f.glyphs[1307] = 8 as u8
-    f.glyphs[1308] = 8 as u8
-    f.glyphs[1309] = 8 as u8
-    f.glyphs[1310] = 56 as u8
-    f.glyphs[1316] = 32 as u8
-    f.glyphs[1317] = 16 as u8
-    f.glyphs[1318] = 8 as u8
-    f.glyphs[1323] = 24 as u8
-    f.glyphs[1324] = 24 as u8
-    f.glyphs[1329] = 126 as u8
-    f.glyphs[1330] = 2 as u8
-    f.glyphs[1331] = 126 as u8
-    f.glyphs[1332] = 2 as u8
-    f.glyphs[1333] = 4 as u8
-    f.glyphs[1334] = 56 as u8
-    f.glyphs[1338] = 62 as u8
-    f.glyphs[1339] = 2 as u8
-    f.glyphs[1340] = 12 as u8
-    f.glyphs[1341] = 8 as u8
-    f.glyphs[1342] = 16 as u8
-    f.glyphs[1346] = 4 as u8
-    f.glyphs[1347] = 8 as u8
-    f.glyphs[1348] = 24 as u8
-    f.glyphs[1349] = 40 as u8
-    f.glyphs[1350] = 8 as u8
-    f.glyphs[1354] = 8 as u8
-    f.glyphs[1355] = 62 as u8
-    f.glyphs[1356] = 34 as u8
-    f.glyphs[1357] = 2 as u8
-    f.glyphs[1358] = 12 as u8
-    f.glyphs[1363] = 62 as u8
-    f.glyphs[1364] = 8 as u8
-    f.glyphs[1365] = 8 as u8
-    f.glyphs[1366] = 62 as u8
-    f.glyphs[1370] = 4 as u8
-    f.glyphs[1371] = 62 as u8
-    f.glyphs[1372] = 12 as u8
-    f.glyphs[1373] = 20 as u8
-    f.glyphs[1374] = 36 as u8
-    f.glyphs[1378] = 16 as u8
-    f.glyphs[1379] = 62 as u8
-    f.glyphs[1380] = 18 as u8
-    f.glyphs[1381] = 20 as u8
-    f.glyphs[1382] = 16 as u8
-    f.glyphs[1387] = 28 as u8
-    f.glyphs[1388] = 4 as u8
-    f.glyphs[1389] = 4 as u8
-    f.glyphs[1390] = 62 as u8
-    f.glyphs[1394] = 60 as u8
-    f.glyphs[1395] = 4 as u8
-    f.glyphs[1396] = 60 as u8
-    f.glyphs[1397] = 4 as u8
-    f.glyphs[1398] = 60 as u8
-    f.glyphs[1403] = 42 as u8
-    f.glyphs[1404] = 42 as u8
-    f.glyphs[1405] = 2 as u8
-    f.glyphs[1406] = 12 as u8
-    f.glyphs[1411] = 62 as u8
-    f.glyphs[1416] = 126 as u8
-    f.glyphs[1417] = 2 as u8
-    f.glyphs[1418] = 2 as u8
-    f.glyphs[1419] = 20 as u8
-    f.glyphs[1420] = 24 as u8
-    f.glyphs[1421] = 16 as u8
-    f.glyphs[1422] = 32 as u8
-    f.glyphs[1424] = 2 as u8
-    f.glyphs[1425] = 4 as u8
-    f.glyphs[1426] = 8 as u8
-    f.glyphs[1427] = 24 as u8
-    f.glyphs[1428] = 40 as u8
-    f.glyphs[1429] = 72 as u8
-    f.glyphs[1430] = 8 as u8
-    f.glyphs[1432] = 8 as u8
-    f.glyphs[1433] = 126 as u8
-    f.glyphs[1434] = 66 as u8
-    f.glyphs[1435] = 66 as u8
-    f.glyphs[1436] = 2 as u8
-    f.glyphs[1437] = 4 as u8
-    f.glyphs[1438] = 56 as u8
-    f.glyphs[1441] = 62 as u8
-    f.glyphs[1442] = 8 as u8
-    f.glyphs[1443] = 8 as u8
-    f.glyphs[1444] = 8 as u8
-    f.glyphs[1445] = 8 as u8
-    f.glyphs[1446] = 62 as u8
-    f.glyphs[1448] = 8 as u8
-    f.glyphs[1449] = 126 as u8
-    f.glyphs[1450] = 8 as u8
-    f.glyphs[1451] = 24 as u8
-    f.glyphs[1452] = 40 as u8
-    f.glyphs[1453] = 72 as u8
-    f.glyphs[1454] = 8 as u8
-    f.glyphs[1456] = 16 as u8
-    f.glyphs[1457] = 126 as u8
-    f.glyphs[1458] = 18 as u8
-    f.glyphs[1459] = 18 as u8
-    f.glyphs[1460] = 18 as u8
-    f.glyphs[1461] = 18 as u8
-    f.glyphs[1462] = 36 as u8
-    f.glyphs[1464] = 8 as u8
-    f.glyphs[1465] = 62 as u8
-    f.glyphs[1466] = 8 as u8
-    f.glyphs[1467] = 62 as u8
-    f.glyphs[1468] = 8 as u8
-    f.glyphs[1469] = 8 as u8
-    f.glyphs[1470] = 8 as u8
-    f.glyphs[1472] = 30 as u8
-    f.glyphs[1473] = 34 as u8
-    f.glyphs[1474] = 66 as u8
-    f.glyphs[1475] = 4 as u8
-    f.glyphs[1476] = 8 as u8
-    f.glyphs[1477] = 16 as u8
-    f.glyphs[1478] = 96 as u8
-    f.glyphs[1480] = 32 as u8
-    f.glyphs[1481] = 62 as u8
-    f.glyphs[1482] = 72 as u8
-    f.glyphs[1483] = 8 as u8
-    f.glyphs[1484] = 8 as u8
-    f.glyphs[1485] = 8 as u8
-    f.glyphs[1486] = 16 as u8
-    f.glyphs[1489] = 126 as u8
-    f.glyphs[1490] = 2 as u8
-    f.glyphs[1491] = 2 as u8
-    f.glyphs[1492] = 2 as u8
-    f.glyphs[1493] = 2 as u8
-    f.glyphs[1494] = 126 as u8
-    f.glyphs[1496] = 36 as u8
-    f.glyphs[1497] = 126 as u8
-    f.glyphs[1498] = 36 as u8
-    f.glyphs[1499] = 36 as u8
-    f.glyphs[1500] = 4 as u8
-    f.glyphs[1501] = 8 as u8
-    f.glyphs[1502] = 16 as u8
-    f.glyphs[1505] = 112 as u8
-    f.glyphs[1507] = 114 as u8
-    f.glyphs[1508] = 2 as u8
-    f.glyphs[1509] = 4 as u8
-    f.glyphs[1510] = 120 as u8
-    f.glyphs[1512] = 126 as u8
-    f.glyphs[1513] = 2 as u8
-    f.glyphs[1514] = 4 as u8
-    f.glyphs[1515] = 8 as u8
-    f.glyphs[1516] = 24 as u8
-    f.glyphs[1517] = 36 as u8
-    f.glyphs[1518] = 66 as u8
-    f.glyphs[1520] = 32 as u8
-    f.glyphs[1521] = 126 as u8
-    f.glyphs[1522] = 34 as u8
-    f.glyphs[1523] = 36 as u8
-    f.glyphs[1524] = 32 as u8
-    f.glyphs[1525] = 32 as u8
-    f.glyphs[1526] = 30 as u8
-    f.glyphs[1528] = 66 as u8
-    f.glyphs[1529] = 66 as u8
-    f.glyphs[1530] = 34 as u8
-    f.glyphs[1531] = 2 as u8
-    f.glyphs[1532] = 4 as u8
-    f.glyphs[1533] = 8 as u8
-    f.glyphs[1534] = 48 as u8
-    f.glyphs[1536] = 30 as u8
-    f.glyphs[1537] = 34 as u8
-    f.glyphs[1538] = 98 as u8
-    f.glyphs[1539] = 20 as u8
-    f.glyphs[1540] = 8 as u8
-    f.glyphs[1541] = 16 as u8
-    f.glyphs[1542] = 96 as u8
-    f.glyphs[1544] = 4 as u8
-    f.glyphs[1545] = 56 as u8
-    f.glyphs[1546] = 8 as u8
-    f.glyphs[1547] = 126 as u8
-    f.glyphs[1548] = 8 as u8
-    f.glyphs[1549] = 8 as u8
-    f.glyphs[1550] = 112 as u8
-    f.glyphs[1553] = 82 as u8
-    f.glyphs[1554] = 82 as u8
-    f.glyphs[1555] = 82 as u8
-    f.glyphs[1556] = 4 as u8
-    f.glyphs[1557] = 8 as u8
-    f.glyphs[1558] = 112 as u8
-    f.glyphs[1560] = 60 as u8
-    f.glyphs[1562] = 126 as u8
-    f.glyphs[1563] = 8 as u8
-    f.glyphs[1564] = 8 as u8
-    f.glyphs[1565] = 16 as u8
-    f.glyphs[1566] = 32 as u8
-    f.glyphs[1568] = 16 as u8
-    f.glyphs[1569] = 16 as u8
-    f.glyphs[1570] = 16 as u8
-    f.glyphs[1571] = 24 as u8
-    f.glyphs[1572] = 20 as u8
-    f.glyphs[1573] = 16 as u8
-    f.glyphs[1574] = 16 as u8
-    f.glyphs[1576] = 8 as u8
-    f.glyphs[1577] = 8 as u8
-    f.glyphs[1578] = 126 as u8
-    f.glyphs[1579] = 8 as u8
-    f.glyphs[1580] = 8 as u8
-    f.glyphs[1581] = 16 as u8
-    f.glyphs[1582] = 32 as u8
-    f.glyphs[1585] = 60 as u8
-    f.glyphs[1590] = 126 as u8
-    f.glyphs[1593] = 62 as u8
-    f.glyphs[1594] = 2 as u8
-    f.glyphs[1595] = 20 as u8
-    f.glyphs[1596] = 8 as u8
-    f.glyphs[1597] = 20 as u8
-    f.glyphs[1598] = 32 as u8
-    f.glyphs[1600] = 8 as u8
-    f.glyphs[1601] = 62 as u8
-    f.glyphs[1602] = 4 as u8
-    f.glyphs[1603] = 8 as u8
-    f.glyphs[1604] = 28 as u8
-    f.glyphs[1605] = 42 as u8
-    f.glyphs[1606] = 8 as u8
-    f.glyphs[1608] = 2 as u8
-    f.glyphs[1609] = 2 as u8
-    f.glyphs[1610] = 2 as u8
-    f.glyphs[1611] = 4 as u8
-    f.glyphs[1612] = 8 as u8
-    f.glyphs[1613] = 16 as u8
-    f.glyphs[1614] = 32 as u8
-    f.glyphs[1616] = 16 as u8
-    f.glyphs[1617] = 8 as u8
-    f.glyphs[1618] = 4 as u8
-    f.glyphs[1619] = 66 as u8
-    f.glyphs[1620] = 66 as u8
-    f.glyphs[1621] = 66 as u8
-    f.glyphs[1622] = 66 as u8
-    f.glyphs[1624] = 64 as u8
-    f.glyphs[1625] = 64 as u8
-    f.glyphs[1626] = 126 as u8
-    f.glyphs[1627] = 64 as u8
-    f.glyphs[1628] = 64 as u8
-    f.glyphs[1629] = 64 as u8
-    f.glyphs[1630] = 62 as u8
-    f.glyphs[1633] = 126 as u8
-    f.glyphs[1634] = 2 as u8
-    f.glyphs[1635] = 2 as u8
-    f.glyphs[1636] = 4 as u8
-    f.glyphs[1637] = 8 as u8
-    f.glyphs[1638] = 48 as u8
-    f.glyphs[1641] = 16 as u8
-    f.glyphs[1642] = 40 as u8
-    f.glyphs[1643] = 68 as u8
-    f.glyphs[1644] = 2 as u8
-    f.glyphs[1645] = 2 as u8
-    f.glyphs[1648] = 8 as u8
-    f.glyphs[1649] = 62 as u8
-    f.glyphs[1650] = 8 as u8
-    f.glyphs[1651] = 8 as u8
-    f.glyphs[1652] = 42 as u8
-    f.glyphs[1653] = 42 as u8
-    f.glyphs[1654] = 8 as u8
-    f.glyphs[1656] = 126 as u8
-    f.glyphs[1657] = 2 as u8
-    f.glyphs[1658] = 2 as u8
-    f.glyphs[1659] = 4 as u8
-    f.glyphs[1660] = 40 as u8
-    f.glyphs[1661] = 16 as u8
-    f.glyphs[1662] = 8 as u8
-    f.glyphs[1665] = 60 as u8
-    f.glyphs[1667] = 60 as u8
-    f.glyphs[1669] = 124 as u8
-    f.glyphs[1670] = 2 as u8
-    f.glyphs[1672] = 4 as u8
-    f.glyphs[1673] = 8 as u8
-    f.glyphs[1674] = 16 as u8
-    f.glyphs[1675] = 32 as u8
-    f.glyphs[1676] = 72 as u8
-    f.glyphs[1677] = 124 as u8
-    f.glyphs[1678] = 2 as u8
-    f.glyphs[1681] = 2 as u8
-    f.glyphs[1682] = 2 as u8
-    f.glyphs[1683] = 20 as u8
-    f.glyphs[1684] = 8 as u8
-    f.glyphs[1685] = 20 as u8
-    f.glyphs[1686] = 96 as u8
-    f.glyphs[1689] = 126 as u8
-    f.glyphs[1690] = 16 as u8
-    f.glyphs[1691] = 126 as u8
-    f.glyphs[1692] = 16 as u8
-    f.glyphs[1693] = 16 as u8
-    f.glyphs[1694] = 30 as u8
-    f.glyphs[1696] = 32 as u8
-    f.glyphs[1697] = 32 as u8
-    f.glyphs[1698] = 126 as u8
-    f.glyphs[1699] = 34 as u8
-    f.glyphs[1700] = 36 as u8
-    f.glyphs[1701] = 32 as u8
-    f.glyphs[1702] = 32 as u8
-    f.glyphs[1705] = 56 as u8
-    f.glyphs[1706] = 8 as u8
-    f.glyphs[1707] = 8 as u8
-    f.glyphs[1708] = 8 as u8
-    f.glyphs[1709] = 8 as u8
-    f.glyphs[1710] = 126 as u8
-    f.glyphs[1712] = 126 as u8
-    f.glyphs[1713] = 2 as u8
-    f.glyphs[1714] = 2 as u8
-    f.glyphs[1715] = 126 as u8
-    f.glyphs[1716] = 2 as u8
-    f.glyphs[1717] = 2 as u8
-    f.glyphs[1718] = 126 as u8
-    f.glyphs[1720] = 60 as u8
-    f.glyphs[1722] = 126 as u8
-    f.glyphs[1723] = 2 as u8
-    f.glyphs[1724] = 4 as u8
-    f.glyphs[1725] = 8 as u8
-    f.glyphs[1726] = 16 as u8
-    f.glyphs[1728] = 66 as u8
-    f.glyphs[1729] = 66 as u8
-    f.glyphs[1730] = 66 as u8
-    f.glyphs[1731] = 66 as u8
-    f.glyphs[1732] = 2 as u8
-    f.glyphs[1733] = 4 as u8
-    f.glyphs[1734] = 24 as u8
-    f.glyphs[1736] = 40 as u8
-    f.glyphs[1737] = 40 as u8
-    f.glyphs[1738] = 40 as u8
-    f.glyphs[1739] = 42 as u8
-    f.glyphs[1740] = 42 as u8
-    f.glyphs[1741] = 44 as u8
-    f.glyphs[1742] = 72 as u8
-    f.glyphs[1744] = 32 as u8
-    f.glyphs[1745] = 32 as u8
-    f.glyphs[1746] = 32 as u8
-    f.glyphs[1747] = 34 as u8
-    f.glyphs[1748] = 36 as u8
-    f.glyphs[1749] = 40 as u8
-    f.glyphs[1750] = 48 as u8
-    f.glyphs[1753] = 126 as u8
-    f.glyphs[1754] = 66 as u8
-    f.glyphs[1755] = 66 as u8
-    f.glyphs[1756] = 66 as u8
-    f.glyphs[1757] = 66 as u8
-    f.glyphs[1758] = 126 as u8
-    f.glyphs[1761] = 126 as u8
-    f.glyphs[1762] = 66 as u8
-    f.glyphs[1763] = 66 as u8
-    f.glyphs[1764] = 2 as u8
-    f.glyphs[1765] = 4 as u8
-    f.glyphs[1766] = 24 as u8
-    f.glyphs[1769] = 112 as u8
-    f.glyphs[1770] = 2 as u8
-    f.glyphs[1771] = 2 as u8
-    f.glyphs[1772] = 4 as u8
-    f.glyphs[1773] = 8 as u8
-    f.glyphs[1774] = 112 as u8
-    f.glyphs[1776] = 16 as u8
-    f.glyphs[1777] = 72 as u8
-    f.glyphs[1778] = 32 as u8
-    f.glyphs[1784] = 112 as u8
-    f.glyphs[1785] = 80 as u8
-    f.glyphs[1786] = 112 as u8
-    f.glyphs[1794] = 255 as u8
-    f.glyphs[1797] = 255 as u8
-    f.glyphs[1800] = 8 as u8
-    f.glyphs[1801] = 8 as u8
-    f.glyphs[1802] = 15 as u8
-    f.glyphs[1803] = 8 as u8
-    f.glyphs[1804] = 8 as u8
-    f.glyphs[1805] = 15 as u8
-    f.glyphs[1806] = 8 as u8
-    f.glyphs[1807] = 8 as u8
-    f.glyphs[1808] = 8 as u8
-    f.glyphs[1809] = 8 as u8
-    f.glyphs[1810] = 255 as u8
-    f.glyphs[1811] = 8 as u8
-    f.glyphs[1812] = 8 as u8
-    f.glyphs[1813] = 255 as u8
-    f.glyphs[1814] = 8 as u8
-    f.glyphs[1815] = 8 as u8
-    f.glyphs[1816] = 8 as u8
-    f.glyphs[1817] = 8 as u8
-    f.glyphs[1818] = 248 as u8
-    f.glyphs[1819] = 8 as u8
-    f.glyphs[1820] = 8 as u8
-    f.glyphs[1821] = 248 as u8
-    f.glyphs[1822] = 8 as u8
-    f.glyphs[1823] = 8 as u8
-    f.glyphs[1824] = 1 as u8
-    f.glyphs[1825] = 3 as u8
-    f.glyphs[1826] = 7 as u8
-    f.glyphs[1827] = 15 as u8
-    f.glyphs[1828] = 31 as u8
-    f.glyphs[1829] = 63 as u8
-    f.glyphs[1830] = 127 as u8
-    f.glyphs[1831] = 255 as u8
-    f.glyphs[1832] = 128 as u8
-    f.glyphs[1833] = 192 as u8
-    f.glyphs[1834] = 224 as u8
-    f.glyphs[1835] = 240 as u8
-    f.glyphs[1836] = 248 as u8
-    f.glyphs[1837] = 252 as u8
-    f.glyphs[1838] = 254 as u8
-    f.glyphs[1839] = 255 as u8
-    f.glyphs[1840] = 255 as u8
-    f.glyphs[1841] = 127 as u8
-    f.glyphs[1842] = 63 as u8
-    f.glyphs[1843] = 31 as u8
-    f.glyphs[1844] = 15 as u8
-    f.glyphs[1845] = 7 as u8
-    f.glyphs[1846] = 3 as u8
-    f.glyphs[1847] = 1 as u8
-    f.glyphs[1848] = 255 as u8
-    f.glyphs[1849] = 254 as u8
-    f.glyphs[1850] = 252 as u8
-    f.glyphs[1851] = 248 as u8
-    f.glyphs[1852] = 240 as u8
-    f.glyphs[1853] = 224 as u8
-    f.glyphs[1854] = 192 as u8
-    f.glyphs[1855] = 128 as u8
-    f.glyphs[1856] = 8 as u8
-    f.glyphs[1857] = 28 as u8
-    f.glyphs[1858] = 62 as u8
-    f.glyphs[1859] = 127 as u8
-    f.glyphs[1860] = 127 as u8
-    f.glyphs[1861] = 28 as u8
-    f.glyphs[1862] = 62 as u8
-    f.glyphs[1864] = 54 as u8
-    f.glyphs[1865] = 127 as u8
-    f.glyphs[1866] = 127 as u8
-    f.glyphs[1867] = 127 as u8
-    f.glyphs[1868] = 62 as u8
-    f.glyphs[1869] = 28 as u8
-    f.glyphs[1870] = 8 as u8
-    f.glyphs[1872] = 8 as u8
-    f.glyphs[1873] = 28 as u8
-    f.glyphs[1874] = 62 as u8
-    f.glyphs[1875] = 127 as u8
-    f.glyphs[1876] = 62 as u8
-    f.glyphs[1877] = 28 as u8
-    f.glyphs[1878] = 8 as u8
-    f.glyphs[1880] = 28 as u8
-    f.glyphs[1881] = 28 as u8
-    f.glyphs[1882] = 127 as u8
-    f.glyphs[1883] = 127 as u8
-    f.glyphs[1884] = 107 as u8
-    f.glyphs[1885] = 8 as u8
-    f.glyphs[1886] = 62 as u8
-    f.glyphs[1889] = 60 as u8
-    f.glyphs[1890] = 126 as u8
-    f.glyphs[1891] = 126 as u8
-    f.glyphs[1892] = 126 as u8
-    f.glyphs[1893] = 126 as u8
-    f.glyphs[1894] = 60 as u8
-    f.glyphs[1897] = 60 as u8
-    f.glyphs[1898] = 66 as u8
-    f.glyphs[1899] = 66 as u8
-    f.glyphs[1900] = 66 as u8
-    f.glyphs[1901] = 66 as u8
-    f.glyphs[1902] = 60 as u8
-    f.glyphs[1904] = 1 as u8
-    f.glyphs[1905] = 2 as u8
-    f.glyphs[1906] = 4 as u8
-    f.glyphs[1907] = 8 as u8
-    f.glyphs[1908] = 16 as u8
-    f.glyphs[1909] = 32 as u8
-    f.glyphs[1910] = 64 as u8
-    f.glyphs[1911] = 128 as u8
-    f.glyphs[1912] = 128 as u8
-    f.glyphs[1913] = 64 as u8
-    f.glyphs[1914] = 32 as u8
-    f.glyphs[1915] = 16 as u8
-    f.glyphs[1916] = 8 as u8
-    f.glyphs[1917] = 4 as u8
-    f.glyphs[1918] = 2 as u8
-    f.glyphs[1919] = 1 as u8
-    f.glyphs[1920] = 129 as u8
-    f.glyphs[1921] = 66 as u8
-    f.glyphs[1922] = 36 as u8
-    f.glyphs[1923] = 24 as u8
-    f.glyphs[1924] = 24 as u8
-    f.glyphs[1925] = 36 as u8
-    f.glyphs[1926] = 66 as u8
-    f.glyphs[1927] = 129 as u8
-    f.glyphs[1928] = 127 as u8
-    f.glyphs[1929] = 73 as u8
-    f.glyphs[1930] = 73 as u8
-    f.glyphs[1931] = 127 as u8
-    f.glyphs[1932] = 65 as u8
-    f.glyphs[1933] = 65 as u8
-    f.glyphs[1934] = 65 as u8
-    f.glyphs[1936] = 64 as u8
-    f.glyphs[1937] = 126 as u8
-    f.glyphs[1938] = 72 as u8
-    f.glyphs[1939] = 60 as u8
-    f.glyphs[1940] = 40 as u8
-    f.glyphs[1941] = 126 as u8
-    f.glyphs[1942] = 8 as u8
-    f.glyphs[1944] = 63 as u8
-    f.glyphs[1945] = 33 as u8
-    f.glyphs[1946] = 63 as u8
-    f.glyphs[1947] = 33 as u8
-    f.glyphs[1948] = 63 as u8
-    f.glyphs[1949] = 33 as u8
-    f.glyphs[1950] = 65 as u8
-    f.glyphs[1952] = 127 as u8
-    f.glyphs[1953] = 65 as u8
-    f.glyphs[1954] = 65 as u8
-    f.glyphs[1955] = 127 as u8
-    f.glyphs[1956] = 65 as u8
-    f.glyphs[1957] = 65 as u8
-    f.glyphs[1958] = 127 as u8
-    f.glyphs[1960] = 4 as u8
-    f.glyphs[1961] = 238 as u8
-    f.glyphs[1962] = 164 as u8
-    f.glyphs[1963] = 239 as u8
-    f.glyphs[1964] = 162 as u8
-    f.glyphs[1965] = 239 as u8
-    f.glyphs[1966] = 10 as u8
-    f.glyphs[1967] = 2 as u8
-    f.glyphs[1969] = 24 as u8
-    f.glyphs[1970] = 36 as u8
-    f.glyphs[1971] = 66 as u8
-    f.glyphs[1972] = 60 as u8
-    f.glyphs[1973] = 20 as u8
-    f.glyphs[1974] = 36 as u8
-    f.glyphs[1976] = 58 as u8
-    f.glyphs[1977] = 18 as u8
-    f.glyphs[1978] = 127 as u8
-    f.glyphs[1979] = 23 as u8
-    f.glyphs[1980] = 59 as u8
-    f.glyphs[1981] = 82 as u8
-    f.glyphs[1982] = 20 as u8
-    f
+    FontData(glyphs = [
+        0, 0, 0, 0, 0, 0, 0, 0,  # 0 code 0
+        112, 64, 112, 26, 122, 14, 10, 10,  # 1 code 1
+        112, 64, 112, 18, 116, 8, 20, 34,  # 2 code 2
+        112, 64, 112, 66, 116, 8, 20, 34,  # 3 code 3
+        112, 64, 112, 64, 126, 4, 4, 4,  # 4 code 4
+        224, 128, 224, 140, 242, 18, 18, 13,  # 5 code 5
+        32, 80, 112, 82, 84, 24, 20, 18,  # 6 code 6
+        112, 72, 112, 72, 116, 4, 4, 7,  # 7 code 7
+        112, 72, 112, 79, 116, 7, 1, 7,  # 8 code 8
+        80, 80, 112, 80, 94, 4, 4, 4,  # 9 code 9
+        64, 64, 64, 78, 120, 12, 8, 8,  # 10 code 10
+        80, 80, 112, 80, 81, 27, 21, 17,  # 11 code 11
+        60, 64, 64, 68, 56, 8, 8, 15,  # 12 code 12
+        56, 64, 64, 62, 9, 14, 10, 9,  # 13 code 13
+        112, 64, 112, 16, 124, 18, 18, 12,  # 14 code 14
+        112, 64, 112, 16, 126, 4, 4, 14,  # 15 code 15
+        112, 72, 72, 79, 116, 7, 4, 7,  # 16 code 16
+        112, 72, 72, 74, 118, 2, 2, 7,  # 17 code 17
+        112, 72, 72, 78, 113, 6, 8, 15,  # 18 code 18
+        112, 72, 72, 79, 113, 7, 1, 15,  # 19 code 19
+        112, 72, 72, 74, 118, 10, 31, 2,  # 20 code 20
+        72, 104, 88, 73, 74, 12, 10, 9,  # 21 code 21
+        112, 64, 112, 16, 121, 13, 11, 9,  # 22 code 22
+        112, 64, 112, 78, 121, 14, 9, 14,  # 23 code 23
+        56, 64, 64, 56, 9, 13, 11, 9,  # 24 code 24
+        112, 64, 112, 64, 113, 27, 21, 17,  # 25 code 25
+        112, 64, 112, 28, 114, 28, 18, 28,  # 26 code 26
+        112, 64, 112, 64, 126, 16, 16, 14,  # 27 code 27
+        0, 8, 4, 126, 4, 8, 0, 0,  # 28 code 28
+        0, 16, 32, 126, 32, 16, 0, 0,  # 29 code 29
+        0, 8, 28, 42, 8, 8, 8, 0,  # 30 code 30
+        0, 8, 8, 8, 42, 28, 8, 0,  # 31 code 31
+        0, 0, 0, 0, 0, 0, 0, 0,  # 32 ' '
+        8, 8, 8, 8, 0, 0, 8, 0,  # 33 '!'
+        36, 36, 36, 0, 0, 0, 0, 0,  # 34 '"'
+        36, 36, 126, 36, 126, 36, 36, 0,  # 35 '#'
+        8, 30, 40, 28, 10, 60, 8, 0,  # 36 '$'
+        0, 98, 100, 8, 16, 38, 70, 0,  # 37 '%'
+        48, 72, 72, 48, 74, 68, 58, 0,  # 38 '&'
+        4, 8, 16, 0, 0, 0, 0, 0,  # 39 '\''
+        4, 8, 16, 16, 16, 8, 4, 0,  # 40 '('
+        32, 16, 8, 8, 8, 16, 32, 0,  # 41 ')'
+        8, 42, 28, 62, 28, 42, 8, 0,  # 42 '*'
+        0, 8, 8, 62, 8, 8, 0, 0,  # 43 '+'
+        0, 0, 0, 0, 0, 8, 8, 16,  # 44 ','
+        0, 0, 0, 126, 0, 0, 0, 0,  # 45 '-'
+        0, 0, 0, 0, 0, 24, 24, 0,  # 46 '.'
+        0, 2, 4, 8, 16, 32, 64, 0,  # 47 '/'
+        60, 66, 70, 90, 98, 66, 60, 0,  # 48 '0'
+        8, 24, 40, 8, 8, 8, 62, 0,  # 49 '1'
+        60, 66, 2, 12, 48, 64, 126, 0,  # 50 '2'
+        60, 66, 2, 28, 2, 66, 60, 0,  # 51 '3'
+        4, 12, 20, 36, 126, 4, 4, 0,  # 52 '4'
+        126, 64, 120, 4, 2, 68, 56, 0,  # 53 '5'
+        28, 32, 64, 124, 66, 66, 60, 0,  # 54 '6'
+        126, 66, 4, 8, 16, 16, 16, 0,  # 55 '7'
+        60, 66, 66, 60, 66, 66, 60, 0,  # 56 '8'
+        60, 66, 66, 62, 2, 4, 56, 0,  # 57 '9'
+        0, 0, 8, 0, 0, 8, 0, 0,  # 58 ':'
+        0, 0, 8, 0, 0, 8, 8, 16,  # 59 ';'
+        14, 24, 48, 96, 48, 24, 14, 0,  # 60 '<'
+        0, 0, 126, 0, 126, 0, 0, 0,  # 61 '='
+        112, 24, 12, 6, 12, 24, 112, 0,  # 62 '>'
+        60, 66, 2, 12, 16, 0, 16, 0,  # 63 '?'
+        28, 34, 74, 86, 76, 32, 30, 0,  # 64 '@'
+        24, 36, 66, 126, 66, 66, 66, 0,  # 65 'A'
+        124, 34, 34, 60, 34, 34, 124, 0,  # 66 'B'
+        28, 34, 64, 64, 64, 34, 28, 0,  # 67 'C'
+        120, 36, 34, 34, 34, 36, 120, 0,  # 68 'D'
+        126, 64, 64, 120, 64, 64, 126, 0,  # 69 'E'
+        126, 64, 64, 120, 64, 64, 64, 0,  # 70 'F'
+        28, 34, 64, 78, 66, 34, 28, 0,  # 71 'G'
+        66, 66, 66, 126, 66, 66, 66, 0,  # 72 'H'
+        28, 8, 8, 8, 8, 8, 28, 0,  # 73 'I'
+        14, 4, 4, 4, 4, 68, 56, 0,  # 74 'J'
+        66, 68, 72, 112, 72, 68, 66, 0,  # 75 'K'
+        64, 64, 64, 64, 64, 64, 126, 0,  # 76 'L'
+        66, 102, 90, 90, 66, 66, 66, 0,  # 77 'M'
+        66, 98, 82, 74, 70, 66, 66, 0,  # 78 'N'
+        24, 36, 66, 66, 66, 36, 24, 0,  # 79 'O'
+        124, 66, 66, 124, 64, 64, 64, 0,  # 80 'P'
+        24, 36, 66, 66, 74, 36, 26, 0,  # 81 'Q'
+        124, 66, 66, 124, 72, 68, 66, 0,  # 82 'R'
+        60, 66, 64, 60, 2, 66, 60, 0,  # 83 'S'
+        62, 8, 8, 8, 8, 8, 8, 0,  # 84 'T'
+        66, 66, 66, 66, 66, 66, 60, 0,  # 85 'U'
+        66, 66, 66, 36, 36, 24, 24, 0,  # 86 'V'
+        66, 66, 66, 90, 90, 102, 66, 0,  # 87 'W'
+        66, 66, 36, 24, 36, 66, 66, 0,  # 88 'X'
+        34, 34, 34, 28, 8, 8, 8, 0,  # 89 'Y'
+        126, 2, 4, 24, 32, 64, 126, 0,  # 90 'Z'
+        60, 32, 32, 32, 32, 32, 60, 0,  # 91 '['
+        34, 34, 20, 62, 8, 62, 8, 0,  # 92 '\\'
+        60, 4, 4, 4, 4, 4, 60, 0,  # 93 ']'
+        8, 20, 34, 0, 0, 0, 0, 0,  # 94 '^'
+        0, 0, 0, 0, 0, 0, 126, 0,  # 95 '_'
+        0, 0, 0, 0, 0, 0, 0, 0,  # 96 '`'
+        0, 0, 60, 4, 60, 68, 58, 0,  # 97 'a'
+        64, 64, 92, 98, 66, 98, 92, 0,  # 98 'b'
+        0, 0, 60, 66, 64, 66, 60, 0,  # 99 'c'
+        2, 2, 58, 70, 66, 70, 58, 0,  # 100 'd'
+        0, 0, 60, 66, 126, 64, 60, 0,  # 101 'e'
+        12, 18, 16, 124, 16, 16, 16, 0,  # 102 'f'
+        0, 0, 58, 70, 70, 58, 2, 60,  # 103 'g'
+        64, 64, 92, 98, 66, 66, 66, 0,  # 104 'h'
+        8, 0, 24, 8, 8, 8, 28, 0,  # 105 'i'
+        4, 0, 12, 4, 4, 4, 68, 56,  # 106 'j'
+        64, 64, 68, 72, 80, 104, 68, 0,  # 107 'k'
+        24, 8, 8, 8, 8, 8, 28, 0,  # 108 'l'
+        0, 0, 118, 73, 73, 73, 73, 0,  # 109 'm'
+        0, 0, 92, 98, 66, 66, 66, 0,  # 110 'n'
+        0, 0, 60, 66, 66, 66, 60, 0,  # 111 'o'
+        0, 0, 92, 98, 98, 92, 64, 64,  # 112 'p'
+        0, 0, 58, 70, 70, 58, 2, 2,  # 113 'q'
+        0, 0, 92, 98, 64, 64, 64, 0,  # 114 'r'
+        0, 0, 62, 64, 60, 2, 124, 0,  # 115 's'
+        16, 16, 124, 16, 16, 18, 12, 0,  # 116 't'
+        0, 0, 66, 66, 66, 70, 58, 0,  # 117 'u'
+        0, 0, 66, 66, 66, 36, 24, 0,  # 118 'v'
+        0, 0, 65, 73, 73, 73, 54, 0,  # 119 'w'
+        0, 0, 66, 36, 24, 36, 66, 0,  # 120 'x'
+        0, 0, 66, 66, 70, 58, 2, 60,  # 121 'y'
+        0, 0, 126, 4, 24, 32, 126, 0,  # 122 'z'
+        14, 16, 16, 32, 16, 16, 14, 0,  # 123 '{'
+        8, 8, 0, 0, 0, 8, 8, 0,  # 124 '|'
+        112, 8, 8, 4, 8, 8, 112, 0,  # 125 '}'
+        48, 73, 6, 0, 0, 0, 0, 0,  # 126 '~'
+        0, 0, 0, 0, 0, 0, 0, 0,  # 127 code 127
+        0, 0, 0, 0, 0, 0, 0, 255,  # 128 code 128
+        0, 0, 0, 0, 0, 0, 255, 255,  # 129 code 129
+        0, 0, 0, 0, 0, 255, 255, 255,  # 130 code 130
+        0, 0, 0, 0, 255, 255, 255, 255,  # 131 code 131
+        0, 0, 0, 255, 255, 255, 255, 255,  # 132 code 132
+        0, 0, 255, 255, 255, 255, 255, 255,  # 133 code 133
+        0, 255, 255, 255, 255, 255, 255, 255,  # 134 code 134
+        255, 255, 255, 255, 255, 255, 255, 255,  # 135 code 135
+        128, 128, 128, 128, 128, 128, 128, 128,  # 136 code 136
+        192, 192, 192, 192, 192, 192, 192, 192,  # 137 code 137
+        224, 224, 224, 224, 224, 224, 224, 224,  # 138 code 138
+        240, 240, 240, 240, 240, 240, 240, 240,  # 139 code 139
+        248, 248, 248, 248, 248, 248, 248, 248,  # 140 code 140
+        252, 252, 252, 252, 252, 252, 252, 252,  # 141 code 141
+        254, 254, 254, 254, 254, 254, 254, 254,  # 142 code 142
+        8, 8, 8, 8, 255, 8, 8, 8,  # 143 code 143
+        8, 8, 8, 8, 255, 0, 0, 0,  # 144 code 144
+        0, 0, 0, 0, 255, 8, 8, 8,  # 145 code 145
+        8, 8, 8, 8, 248, 8, 8, 8,  # 146 code 146
+        8, 8, 8, 8, 15, 8, 8, 8,  # 147 code 147
+        255, 0, 0, 0, 0, 0, 0, 0,  # 148 code 148
+        0, 0, 0, 0, 255, 0, 0, 0,  # 149 code 149
+        8, 8, 8, 8, 8, 8, 8, 8,  # 150 code 150
+        1, 1, 1, 1, 1, 1, 1, 1,  # 151 code 151
+        0, 0, 0, 0, 15, 8, 8, 8,  # 152 code 152
+        0, 0, 0, 0, 248, 8, 8, 8,  # 153 code 153
+        8, 8, 8, 8, 15, 0, 0, 0,  # 154 code 154
+        8, 8, 8, 8, 248, 0, 0, 0,  # 155 code 155
+        0, 0, 0, 0, 3, 4, 8, 8,  # 156 code 156
+        0, 0, 0, 0, 224, 16, 8, 8,  # 157 code 157
+        8, 8, 8, 4, 3, 0, 0, 0,  # 158 code 158
+        8, 8, 8, 16, 224, 0, 0, 0,  # 159 code 159
+        0, 0, 0, 0, 0, 0, 0, 0,  # 160 code 160
+        0, 0, 0, 0, 56, 40, 56, 0,  # 161 code 161
+        28, 16, 16, 16, 0, 0, 0, 0,  # 162 code 162
+        0, 0, 0, 8, 8, 8, 56, 0,  # 163 code 163
+        0, 0, 0, 0, 32, 16, 8, 0,  # 164 code 164
+        0, 0, 0, 24, 24, 0, 0, 0,  # 165 code 165
+        0, 126, 2, 126, 2, 4, 56, 0,  # 166 code 166
+        0, 0, 62, 2, 12, 8, 16, 0,  # 167 code 167
+        0, 0, 4, 8, 24, 40, 8, 0,  # 168 code 168
+        0, 0, 8, 62, 34, 2, 12, 0,  # 169 code 169
+        0, 0, 0, 62, 8, 8, 62, 0,  # 170 code 170
+        0, 0, 4, 62, 12, 20, 36, 0,  # 171 code 171
+        0, 0, 16, 62, 18, 20, 16, 0,  # 172 code 172
+        0, 0, 0, 28, 4, 4, 62, 0,  # 173 code 173
+        0, 0, 60, 4, 60, 4, 60, 0,  # 174 code 174
+        0, 0, 0, 42, 42, 2, 12, 0,  # 175 code 175
+        0, 0, 0, 62, 0, 0, 0, 0,  # 176 code 176
+        126, 2, 2, 20, 24, 16, 32, 0,  # 177 code 177
+        2, 4, 8, 24, 40, 72, 8, 0,  # 178 code 178
+        8, 126, 66, 66, 2, 4, 56, 0,  # 179 code 179
+        0, 62, 8, 8, 8, 8, 62, 0,  # 180 code 180
+        8, 126, 8, 24, 40, 72, 8, 0,  # 181 code 181
+        16, 126, 18, 18, 18, 18, 36, 0,  # 182 code 182
+        8, 62, 8, 62, 8, 8, 8, 0,  # 183 code 183
+        30, 34, 66, 4, 8, 16, 96, 0,  # 184 code 184
+        32, 62, 72, 8, 8, 8, 16, 0,  # 185 code 185
+        0, 126, 2, 2, 2, 2, 126, 0,  # 186 code 186
+        36, 126, 36, 36, 4, 8, 16, 0,  # 187 code 187
+        0, 112, 0, 114, 2, 4, 120, 0,  # 188 code 188
+        126, 2, 4, 8, 24, 36, 66, 0,  # 189 code 189
+        32, 126, 34, 36, 32, 32, 30, 0,  # 190 code 190
+        66, 66, 34, 2, 4, 8, 48, 0,  # 191 code 191
+        30, 34, 98, 20, 8, 16, 96, 0,  # 192 code 192
+        4, 56, 8, 126, 8, 8, 112, 0,  # 193 code 193
+        0, 82, 82, 82, 4, 8, 112, 0,  # 194 code 194
+        60, 0, 126, 8, 8, 16, 32, 0,  # 195 code 195
+        16, 16, 16, 24, 20, 16, 16, 0,  # 196 code 196
+        8, 8, 126, 8, 8, 16, 32, 0,  # 197 code 197
+        0, 60, 0, 0, 0, 0, 126, 0,  # 198 code 198
+        0, 62, 2, 20, 8, 20, 32, 0,  # 199 code 199
+        8, 62, 4, 8, 28, 42, 8, 0,  # 200 code 200
+        2, 2, 2, 4, 8, 16, 32, 0,  # 201 code 201
+        16, 8, 4, 66, 66, 66, 66, 0,  # 202 code 202
+        64, 64, 126, 64, 64, 64, 62, 0,  # 203 code 203
+        0, 126, 2, 2, 4, 8, 48, 0,  # 204 code 204
+        0, 16, 40, 68, 2, 2, 0, 0,  # 205 code 205
+        8, 62, 8, 8, 42, 42, 8, 0,  # 206 code 206
+        126, 2, 2, 4, 40, 16, 8, 0,  # 207 code 207
+        0, 60, 0, 60, 0, 124, 2, 0,  # 208 code 208
+        4, 8, 16, 32, 72, 124, 2, 0,  # 209 code 209
+        0, 2, 2, 20, 8, 20, 96, 0,  # 210 code 210
+        0, 126, 16, 126, 16, 16, 30, 0,  # 211 code 211
+        32, 32, 126, 34, 36, 32, 32, 0,  # 212 code 212
+        0, 56, 8, 8, 8, 8, 126, 0,  # 213 code 213
+        126, 2, 2, 126, 2, 2, 126, 0,  # 214 code 214
+        60, 0, 126, 2, 4, 8, 16, 0,  # 215 code 215
+        66, 66, 66, 66, 2, 4, 24, 0,  # 216 code 216
+        40, 40, 40, 42, 42, 44, 72, 0,  # 217 code 217
+        32, 32, 32, 34, 36, 40, 48, 0,  # 218 code 218
+        0, 126, 66, 66, 66, 66, 126, 0,  # 219 code 219
+        0, 126, 66, 66, 2, 4, 24, 0,  # 220 code 220
+        0, 112, 2, 2, 4, 8, 112, 0,  # 221 code 221
+        16, 72, 32, 0, 0, 0, 0, 0,  # 222 code 222
+        112, 80, 112, 0, 0, 0, 0, 0,  # 223 code 223
+        0, 0, 255, 0, 0, 255, 0, 0,  # 224 code 224
+        8, 8, 15, 8, 8, 15, 8, 8,  # 225 code 225
+        8, 8, 255, 8, 8, 255, 8, 8,  # 226 code 226
+        8, 8, 248, 8, 8, 248, 8, 8,  # 227 code 227
+        1, 3, 7, 15, 31, 63, 127, 255,  # 228 code 228
+        128, 192, 224, 240, 248, 252, 254, 255,  # 229 code 229
+        255, 127, 63, 31, 15, 7, 3, 1,  # 230 code 230
+        255, 254, 252, 248, 240, 224, 192, 128,  # 231 code 231
+        8, 28, 62, 127, 127, 28, 62, 0,  # 232 code 232
+        54, 127, 127, 127, 62, 28, 8, 0,  # 233 code 233
+        8, 28, 62, 127, 62, 28, 8, 0,  # 234 code 234
+        28, 28, 127, 127, 107, 8, 62, 0,  # 235 code 235
+        0, 60, 126, 126, 126, 126, 60, 0,  # 236 code 236
+        0, 60, 66, 66, 66, 66, 60, 0,  # 237 code 237
+        1, 2, 4, 8, 16, 32, 64, 128,  # 238 code 238
+        128, 64, 32, 16, 8, 4, 2, 1,  # 239 code 239
+        129, 66, 36, 24, 24, 36, 66, 129,  # 240 code 240
+        127, 73, 73, 127, 65, 65, 65, 0,  # 241 code 241
+        64, 126, 72, 60, 40, 126, 8, 0,  # 242 code 242
+        63, 33, 63, 33, 63, 33, 65, 0,  # 243 code 243
+        127, 65, 65, 127, 65, 65, 127, 0,  # 244 code 244
+        4, 238, 164, 239, 162, 239, 10, 2,  # 245 code 245
+        0, 24, 36, 66, 60, 20, 36, 0,  # 246 code 246
+        58, 18, 127, 23, 59, 82, 20, 0,  # 247 code 247
+        0, 0, 0, 0, 0, 0, 0, 0,  # 248 code 248
+        0, 0, 0, 0, 0, 0, 0, 0,  # 249 code 249
+        0, 0, 0, 0, 0, 0, 0, 0,  # 250 code 250
+        0, 0, 0, 0, 0, 0, 0, 0,  # 251 code 251
+        0, 0, 0, 0, 0, 0, 0, 0,  # 252 code 252
+        0, 0, 0, 0, 0, 0, 0, 0,  # 253 code 253
+        0, 0, 0, 0, 0, 0, 0, 0,  # 254 code 254
+        0, 0, 0, 0, 0, 0, 0, 0  # 255 code 255
+    ])
 

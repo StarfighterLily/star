@@ -1,15 +1,19 @@
 # Nova-16 CPU core: registers, flags, the unified register-code address
 # space (docs/CPU Specification.md / docs/nova16_instruction_reference.md),
-# operand decoding, and the fetch-decode-execute cycle. This is the one file
-# every mutating operation on the machine's state lives in: `impl` blocks
-# can't reach across a module boundary to extend a struct declared
-# elsewhere (`impl cpu::Cpu:` from another file is a parse error -- confirmed
-# empirically, see NOTES.md "Language gotchas"), so `Cpu`'s struct and all
-# of its methods have to live together in one file. `Memory`/`Screen`/
-# `Keyboard`/`StatusFlags` stay in their own files and are reached as plain
-# fields (composition, not inheritance) -- calling a method on
+# operand decoding, and the fetch-decode-execute cycle. This is still the one
+# file every mutating operation on the machine's state lives in: `Cpu`'s
+# struct and all of its ~90 opcode-handler methods live together here even
+# though the language gap that originally forced that (`impl` couldn't reach
+# across a module boundary to extend a struct declared elsewhere) is fixed
+# now -- see NOTES.md "Two Star compiler bugs found and fixed" / "Language
+# gotchas". Splitting the opcode handlers across files by group (arithmetic/
+# bitwise/stack/control-flow/graphics/...) is now possible but hasn't been
+# done; would need each split-out `impl Cpu:` block to live in its own file
+# and import `cpu.star` for the `Cpu` type. `Memory`/`Screen`/`Keyboard`/
+# `Flags` still stay in their own files and are reached as plain fields
+# (composition, not inheritance) -- calling a method on
 # `self.mem`/`self.screen`/`self.kbd`/`self.flags` works fine across the
-# module boundary; only *defining new methods* on an imported type doesn't.
+# module boundary either way.
 #
 # Register storage widths: every register that participates in arithmetic
 # is `Wrapping<u8>`/`Wrapping<u16>`, not a plain `u8`/`u16` -- explicit-width
@@ -22,9 +26,11 @@
 # RTC regs, and P0:-P9:/:P0-:P9 byte-halves) is reachable through the same
 # flat 8-bit register-code space (0x00-0xFF) the operand decoder uses --
 # `get_reg_value`/`set_reg_value` below are that space's single source of
-# truth, built to mirror `core/regfile.py::_build_register_code_map` exactly
-# (register codes are spelled as decimal, not hex: Star's lexer has no `0x`
-# literal syntax at all -- see NOTES.md).
+# truth, built to mirror `core/regfile.py::_build_register_code_map` exactly.
+# Register codes and opcode numbers are spelled as hex literals (`0xC2`,
+# `0x10`, ...), matching docs/nova16_instruction_reference.md's own opcode
+# table -- Star's lexer gained `0x`-prefixed integer literals since this file
+# was first written decimal-only (see NOTES.md).
 
 import "memory.star" as mem
 import "screen.star" as screen
@@ -51,7 +57,7 @@ struct Cpu:
     mut mem: mem::Memory
     mut screen: screen::Screen
     mut kbd: keyboard::Keyboard
-    mut flags: flg::StatusFlags
+    mut flags: flg::Flags
 
     mut r: [Wrapping<u8>; 10]
     mut p: [Wrapping<u16>; 10]
@@ -89,334 +95,334 @@ impl Cpu:
 
     fn get_reg_value(self, code: u8) -> i32:
         match code as i32:
-            194 ->
+            0xC2 ->
                 self.mem.bank as i32
-            195 ->
+            0xC3 ->
                 (self.c0 as u16) as i32
-            196 ->
+            0xC4 ->
                 (self.c1 as u16) as i32
-            197 ->
+            0xC5 ->
                 (self.mx as u8) as i32
-            198 ->
+            0xC6 ->
                 (self.my as u8) as i32
-            199 ->
+            0xC7 ->
                 (self.mb as u8) as i32
-            200 ->
+            0xC8 ->
                 (self.vc as u8) as i32
-            201 ->
+            0xC9 ->
                 let cur = self.p[0] as u16
-                (bits::shr16(cur, 8)) as i32
-            202 ->
+                ((cur >> 8)) as i32
+            0xCA ->
                 let cur = self.p[1] as u16
-                (bits::shr16(cur, 8)) as i32
-            203 ->
+                ((cur >> 8)) as i32
+            0xCB ->
                 let cur = self.p[2] as u16
-                (bits::shr16(cur, 8)) as i32
-            204 ->
+                ((cur >> 8)) as i32
+            0xCC ->
                 let cur = self.p[3] as u16
-                (bits::shr16(cur, 8)) as i32
-            205 ->
+                ((cur >> 8)) as i32
+            0xCD ->
                 let cur = self.p[4] as u16
-                (bits::shr16(cur, 8)) as i32
-            206 ->
+                ((cur >> 8)) as i32
+            0xCE ->
                 let cur = self.p[5] as u16
-                (bits::shr16(cur, 8)) as i32
-            207 ->
+                ((cur >> 8)) as i32
+            0xCF ->
                 let cur = self.p[6] as u16
-                (bits::shr16(cur, 8)) as i32
-            208 ->
+                ((cur >> 8)) as i32
+            0xD0 ->
                 let cur = self.p[7] as u16
-                (bits::shr16(cur, 8)) as i32
-            209 ->
+                ((cur >> 8)) as i32
+            0xD1 ->
                 let cur = self.p[8] as u16
-                (bits::shr16(cur, 8)) as i32
-            210 ->
+                ((cur >> 8)) as i32
+            0xD2 ->
                 let cur = self.p[9] as u16
-                (bits::shr16(cur, 8)) as i32
-            211 ->
+                ((cur >> 8)) as i32
+            0xD3 ->
                 let cur = self.p[0] as u16
                 (cur as u8) as i32
-            212 ->
+            0xD4 ->
                 let cur = self.p[1] as u16
                 (cur as u8) as i32
-            213 ->
+            0xD5 ->
                 let cur = self.p[2] as u16
                 (cur as u8) as i32
-            214 ->
+            0xD6 ->
                 let cur = self.p[3] as u16
                 (cur as u8) as i32
-            215 ->
+            0xD7 ->
                 let cur = self.p[4] as u16
                 (cur as u8) as i32
-            216 ->
+            0xD8 ->
                 let cur = self.p[5] as u16
                 (cur as u8) as i32
-            217 ->
+            0xD9 ->
                 let cur = self.p[6] as u16
                 (cur as u8) as i32
-            218 ->
+            0xDA ->
                 let cur = self.p[7] as u16
                 (cur as u8) as i32
-            219 ->
+            0xDB ->
                 let cur = self.p[8] as u16
                 (cur as u8) as i32
-            220 ->
+            0xDC ->
                 let cur = self.p[9] as u16
                 (cur as u8) as i32
-            221 ->
+            0xDD ->
                 (self.sa as u16) as i32
-            222 ->
+            0xDE ->
                 (self.sf as u8) as i32
-            223 ->
+            0xDF ->
                 (self.sv as u8) as i32
-            224 ->
+            0xE0 ->
                 (self.sw as u8) as i32
-            225 ->
+            0xE1 ->
                 self.vm as i32
-            226 ->
+            0xE2 ->
                 self.vl as i32
-            227 ->
+            0xE3 ->
                 (self.tt as u8) as i32
-            228 ->
+            0xE4 ->
                 (self.tm as u8) as i32
-            229 ->
+            0xE5 ->
                 (self.tc as u8) as i32
-            230 ->
+            0xE6 ->
                 (self.ts as u8) as i32
-            231 ->
+            0xE7 ->
                 (self.r[0] as u8) as i32
-            232 ->
+            0xE8 ->
                 (self.r[1] as u8) as i32
-            233 ->
+            0xE9 ->
                 (self.r[2] as u8) as i32
-            234 ->
+            0xEA ->
                 (self.r[3] as u8) as i32
-            235 ->
+            0xEB ->
                 (self.r[4] as u8) as i32
-            236 ->
+            0xEC ->
                 (self.r[5] as u8) as i32
-            237 ->
+            0xED ->
                 (self.r[6] as u8) as i32
-            238 ->
+            0xEE ->
                 (self.r[7] as u8) as i32
-            239 ->
+            0xEF ->
                 (self.r[8] as u8) as i32
-            240 ->
+            0xF0 ->
                 (self.r[9] as u8) as i32
-            241 ->
+            0xF1 ->
                 (self.p[0] as u16) as i32
-            242 ->
+            0xF2 ->
                 (self.p[1] as u16) as i32
-            243 ->
+            0xF3 ->
                 (self.p[2] as u16) as i32
-            244 ->
+            0xF4 ->
                 (self.p[3] as u16) as i32
-            245 ->
+            0xF5 ->
                 (self.p[4] as u16) as i32
-            246 ->
+            0xF6 ->
                 (self.p[5] as u16) as i32
-            247 ->
+            0xF7 ->
                 (self.p[6] as u16) as i32
-            248 ->
+            0xF8 ->
                 (self.p[7] as u16) as i32
-            249 ->
+            0xF9 ->
                 (self.p[8] as u16) as i32
-            250 ->
+            0xFA ->
                 (self.p[9] as u16) as i32
-            251 ->
+            0xFB ->
                 (self.p[8] as u16) as i32
-            252 ->
+            0xFC ->
                 (self.p[9] as u16) as i32
-            253 ->
+            0xFD ->
                 (self.vx as u8) as i32
-            254 ->
+            0xFE ->
                 (self.vy as u8) as i32
             _ ->
                 0
 
     fn set_reg_value(mut self, code: u8, val: i32):
         match code as i32:
-            194 ->
+            0xC2 ->
                 self.mem.bank = val as u8
-            195 ->
+            0xC3 ->
                 self.c0 = Wrapping<u16>(val as u16)
-            196 ->
+            0xC4 ->
                 self.c1 = Wrapping<u16>(val as u16)
-            197 ->
+            0xC5 ->
                 self.mx = Wrapping<u8>(val as u8)
-            198 ->
+            0xC6 ->
                 self.my = Wrapping<u8>(val as u8)
-            199 ->
+            0xC7 ->
                 self.mb = Wrapping<u8>(val as u8)
-            200 ->
+            0xC8 ->
                 self.vc = Wrapping<u8>(val as u8)
-            201 ->
+            0xC9 ->
                 let cur = self.p[0] as u16
                 let newhigh = val as u8
-                let combined = bit_or(bits::shl16(newhigh as u16, 8), (cur as u8) as u16)
+                let combined = ((newhigh as u16 << 8) | (cur as u8) as u16)
                 self.p[0] = Wrapping<u16>(combined)
-            202 ->
+            0xCA ->
                 let cur = self.p[1] as u16
                 let newhigh = val as u8
-                let combined = bit_or(bits::shl16(newhigh as u16, 8), (cur as u8) as u16)
+                let combined = ((newhigh as u16 << 8) | (cur as u8) as u16)
                 self.p[1] = Wrapping<u16>(combined)
-            203 ->
+            0xCB ->
                 let cur = self.p[2] as u16
                 let newhigh = val as u8
-                let combined = bit_or(bits::shl16(newhigh as u16, 8), (cur as u8) as u16)
+                let combined = ((newhigh as u16 << 8) | (cur as u8) as u16)
                 self.p[2] = Wrapping<u16>(combined)
-            204 ->
+            0xCC ->
                 let cur = self.p[3] as u16
                 let newhigh = val as u8
-                let combined = bit_or(bits::shl16(newhigh as u16, 8), (cur as u8) as u16)
+                let combined = ((newhigh as u16 << 8) | (cur as u8) as u16)
                 self.p[3] = Wrapping<u16>(combined)
-            205 ->
+            0xCD ->
                 let cur = self.p[4] as u16
                 let newhigh = val as u8
-                let combined = bit_or(bits::shl16(newhigh as u16, 8), (cur as u8) as u16)
+                let combined = ((newhigh as u16 << 8) | (cur as u8) as u16)
                 self.p[4] = Wrapping<u16>(combined)
-            206 ->
+            0xCE ->
                 let cur = self.p[5] as u16
                 let newhigh = val as u8
-                let combined = bit_or(bits::shl16(newhigh as u16, 8), (cur as u8) as u16)
+                let combined = ((newhigh as u16 << 8) | (cur as u8) as u16)
                 self.p[5] = Wrapping<u16>(combined)
-            207 ->
+            0xCF ->
                 let cur = self.p[6] as u16
                 let newhigh = val as u8
-                let combined = bit_or(bits::shl16(newhigh as u16, 8), (cur as u8) as u16)
+                let combined = ((newhigh as u16 << 8) | (cur as u8) as u16)
                 self.p[6] = Wrapping<u16>(combined)
-            208 ->
+            0xD0 ->
                 let cur = self.p[7] as u16
                 let newhigh = val as u8
-                let combined = bit_or(bits::shl16(newhigh as u16, 8), (cur as u8) as u16)
+                let combined = ((newhigh as u16 << 8) | (cur as u8) as u16)
                 self.p[7] = Wrapping<u16>(combined)
-            209 ->
+            0xD1 ->
                 let cur = self.p[8] as u16
                 let newhigh = val as u8
-                let combined = bit_or(bits::shl16(newhigh as u16, 8), (cur as u8) as u16)
+                let combined = ((newhigh as u16 << 8) | (cur as u8) as u16)
                 self.p[8] = Wrapping<u16>(combined)
-            210 ->
+            0xD2 ->
                 let cur = self.p[9] as u16
                 let newhigh = val as u8
-                let combined = bit_or(bits::shl16(newhigh as u16, 8), (cur as u8) as u16)
+                let combined = ((newhigh as u16 << 8) | (cur as u8) as u16)
                 self.p[9] = Wrapping<u16>(combined)
-            211 ->
+            0xD3 ->
                 let cur = self.p[0] as u16
                 let newlow = val as u8
-                let combined = bit_or(bits::shl16(bits::shr16(cur,8), 8), newlow as u16)
+                let combined = ((cur >> 8) << 8) | newlow as u16
                 self.p[0] = Wrapping<u16>(combined)
-            212 ->
+            0xD4 ->
                 let cur = self.p[1] as u16
                 let newlow = val as u8
-                let combined = bit_or(bits::shl16(bits::shr16(cur,8), 8), newlow as u16)
+                let combined = ((cur >> 8) << 8) | newlow as u16
                 self.p[1] = Wrapping<u16>(combined)
-            213 ->
+            0xD5 ->
                 let cur = self.p[2] as u16
                 let newlow = val as u8
-                let combined = bit_or(bits::shl16(bits::shr16(cur,8), 8), newlow as u16)
+                let combined = ((cur >> 8) << 8) | newlow as u16
                 self.p[2] = Wrapping<u16>(combined)
-            214 ->
+            0xD6 ->
                 let cur = self.p[3] as u16
                 let newlow = val as u8
-                let combined = bit_or(bits::shl16(bits::shr16(cur,8), 8), newlow as u16)
+                let combined = ((cur >> 8) << 8) | newlow as u16
                 self.p[3] = Wrapping<u16>(combined)
-            215 ->
+            0xD7 ->
                 let cur = self.p[4] as u16
                 let newlow = val as u8
-                let combined = bit_or(bits::shl16(bits::shr16(cur,8), 8), newlow as u16)
+                let combined = ((cur >> 8) << 8) | newlow as u16
                 self.p[4] = Wrapping<u16>(combined)
-            216 ->
+            0xD8 ->
                 let cur = self.p[5] as u16
                 let newlow = val as u8
-                let combined = bit_or(bits::shl16(bits::shr16(cur,8), 8), newlow as u16)
+                let combined = ((cur >> 8) << 8) | newlow as u16
                 self.p[5] = Wrapping<u16>(combined)
-            217 ->
+            0xD9 ->
                 let cur = self.p[6] as u16
                 let newlow = val as u8
-                let combined = bit_or(bits::shl16(bits::shr16(cur,8), 8), newlow as u16)
+                let combined = ((cur >> 8) << 8) | newlow as u16
                 self.p[6] = Wrapping<u16>(combined)
-            218 ->
+            0xDA ->
                 let cur = self.p[7] as u16
                 let newlow = val as u8
-                let combined = bit_or(bits::shl16(bits::shr16(cur,8), 8), newlow as u16)
+                let combined = ((cur >> 8) << 8) | newlow as u16
                 self.p[7] = Wrapping<u16>(combined)
-            219 ->
+            0xDB ->
                 let cur = self.p[8] as u16
                 let newlow = val as u8
-                let combined = bit_or(bits::shl16(bits::shr16(cur,8), 8), newlow as u16)
+                let combined = ((cur >> 8) << 8) | newlow as u16
                 self.p[8] = Wrapping<u16>(combined)
-            220 ->
+            0xDC ->
                 let cur = self.p[9] as u16
                 let newlow = val as u8
-                let combined = bit_or(bits::shl16(bits::shr16(cur,8), 8), newlow as u16)
+                let combined = ((cur >> 8) << 8) | newlow as u16
                 self.p[9] = Wrapping<u16>(combined)
-            221 ->
+            0xDD ->
                 self.sa = Wrapping<u16>(val as u16)
-            222 ->
+            0xDE ->
                 self.sf = Wrapping<u8>(val as u8)
-            223 ->
+            0xDF ->
                 self.sv = Wrapping<u8>(val as u8)
-            224 ->
+            0xE0 ->
                 self.sw = Wrapping<u8>(val as u8)
-            225 ->
+            0xE1 ->
                 self.vm = val as u8
-            226 ->
+            0xE2 ->
                 self.vl = val as u8
-            227 ->
+            0xE3 ->
                 self.tt = Wrapping<u8>(val as u8)
-            228 ->
+            0xE4 ->
                 self.tm = Wrapping<u8>(val as u8)
-            229 ->
+            0xE5 ->
                 self.tc = Wrapping<u8>(val as u8)
-            230 ->
+            0xE6 ->
                 self.ts = Wrapping<u8>(val as u8)
-            231 ->
+            0xE7 ->
                 self.r[0] = Wrapping<u8>(val as u8)
-            232 ->
+            0xE8 ->
                 self.r[1] = Wrapping<u8>(val as u8)
-            233 ->
+            0xE9 ->
                 self.r[2] = Wrapping<u8>(val as u8)
-            234 ->
+            0xEA ->
                 self.r[3] = Wrapping<u8>(val as u8)
-            235 ->
+            0xEB ->
                 self.r[4] = Wrapping<u8>(val as u8)
-            236 ->
+            0xEC ->
                 self.r[5] = Wrapping<u8>(val as u8)
-            237 ->
+            0xED ->
                 self.r[6] = Wrapping<u8>(val as u8)
-            238 ->
+            0xEE ->
                 self.r[7] = Wrapping<u8>(val as u8)
-            239 ->
+            0xEF ->
                 self.r[8] = Wrapping<u8>(val as u8)
-            240 ->
+            0xF0 ->
                 self.r[9] = Wrapping<u8>(val as u8)
-            241 ->
+            0xF1 ->
                 self.p[0] = Wrapping<u16>(val as u16)
-            242 ->
+            0xF2 ->
                 self.p[1] = Wrapping<u16>(val as u16)
-            243 ->
+            0xF3 ->
                 self.p[2] = Wrapping<u16>(val as u16)
-            244 ->
+            0xF4 ->
                 self.p[3] = Wrapping<u16>(val as u16)
-            245 ->
+            0xF5 ->
                 self.p[4] = Wrapping<u16>(val as u16)
-            246 ->
+            0xF6 ->
                 self.p[5] = Wrapping<u16>(val as u16)
-            247 ->
+            0xF7 ->
                 self.p[6] = Wrapping<u16>(val as u16)
-            248 ->
+            0xF8 ->
                 self.p[7] = Wrapping<u16>(val as u16)
-            249 ->
+            0xF9 ->
                 self.p[8] = Wrapping<u16>(val as u16)
-            250 ->
+            0xFA ->
                 self.p[9] = Wrapping<u16>(val as u16)
-            251 ->
+            0xFB ->
                 self.p[8] = Wrapping<u16>(val as u16)
-            252 ->
+            0xFC ->
                 self.p[9] = Wrapping<u16>(val as u16)
-            253 ->
+            0xFD ->
                 self.vx = Wrapping<u8>(val as u8)
-            254 ->
+            0xFE ->
                 self.vy = Wrapping<u8>(val as u8)
             _ ->
                 self.halted = self.halted
@@ -447,7 +453,7 @@ impl Cpu:
     fn fetch_u16(mut self) -> u16:
         let hi = self.fetch_u8()
         let lo = self.fetch_u8()
-        bit_or(bits::shl16(hi as u16, 8), lo as u16)
+        (hi as u16 << 8) | lo as u16
 
     # ── Operand decoding (docs/Operand prefix system.md) ────────────────
     # Mode byte: bits0-1 = op1 mode, bits2-3 = op2 mode, bits4-5 = op3 mode,
@@ -473,25 +479,23 @@ impl Cpu:
                     let code = self.fetch_u8()
                     let base = self.get_reg_value(code)
                     Operand(kind = 2 as u8, reg_code = 0 as u8, imm = 0 as u16, addr = (wrap_addr(base)) as u16)
+                elif !direct and indexed:
+                    # [reg+offset]
+                    let code = self.fetch_u8()
+                    let off = self.fetch_u8()
+                    let base = self.get_reg_value(code)
+                    let addr = base + bits::sign_extend8(off)
+                    Operand(kind = 2 as u8, reg_code = 0 as u8, imm = 0 as u16, addr = (wrap_addr(addr)) as u16)
+                elif direct and !indexed:
+                    # [addr16]
+                    let a = self.fetch_u16()
+                    Operand(kind = 2 as u8, reg_code = 0 as u8, imm = 0 as u16, addr = a)
                 else:
-                    if !direct and indexed:
-                        # [reg+offset]
-                        let code = self.fetch_u8()
-                        let off = self.fetch_u8()
-                        let base = self.get_reg_value(code)
-                        let addr = base + bits::sign_extend8(off)
-                        Operand(kind = 2 as u8, reg_code = 0 as u8, imm = 0 as u16, addr = (wrap_addr(addr)) as u16)
-                    else:
-                        if direct and !indexed:
-                            # [addr16]
-                            let a = self.fetch_u16()
-                            Operand(kind = 2 as u8, reg_code = 0 as u8, imm = 0 as u16, addr = a)
-                        else:
-                            # [addr16+offset]
-                            let a = self.fetch_u16()
-                            let off = self.fetch_u8()
-                            let addr = (a as i32) + bits::sign_extend8(off)
-                            Operand(kind = 2 as u8, reg_code = 0 as u8, imm = 0 as u16, addr = (wrap_addr(addr)) as u16)
+                    # [addr16+offset]
+                    let a = self.fetch_u16()
+                    let off = self.fetch_u8()
+                    let addr = (a as i32) + bits::sign_extend8(off)
+                    Operand(kind = 2 as u8, reg_code = 0 as u8, imm = 0 as u16, addr = (wrap_addr(addr)) as u16)
 
     # Decodes exactly `count` operands (0-3; every base-machine opcode this
     # port implements fits, see NOTES.md on the 4-operand string ops this
@@ -520,67 +524,67 @@ impl Cpu:
 
     fn reg_width(self, code: u8) -> i32:
         match code as i32:
-            194 -> 8
-            195 -> 16
-            196 -> 16
-            197 -> 8
-            198 -> 8
-            199 -> 8
-            200 -> 8
-            201 -> 8
-            202 -> 8
-            203 -> 8
-            204 -> 8
-            205 -> 8
-            206 -> 8
-            207 -> 8
-            208 -> 8
-            209 -> 8
-            210 -> 8
-            211 -> 8
-            212 -> 8
-            213 -> 8
-            214 -> 8
-            215 -> 8
-            216 -> 8
-            217 -> 8
-            218 -> 8
-            219 -> 8
-            220 -> 8
-            221 -> 16
-            222 -> 8
-            223 -> 8
-            224 -> 8
-            225 -> 8
-            226 -> 8
-            227 -> 8
-            228 -> 8
-            229 -> 8
-            230 -> 8
-            231 -> 8
-            232 -> 8
-            233 -> 8
-            234 -> 8
-            235 -> 8
-            236 -> 8
-            237 -> 8
-            238 -> 8
-            239 -> 8
-            240 -> 8
-            241 -> 16
-            242 -> 16
-            243 -> 16
-            244 -> 16
-            245 -> 16
-            246 -> 16
-            247 -> 16
-            248 -> 16
-            249 -> 16
-            250 -> 16
-            251 -> 16
-            252 -> 16
-            253 -> 8
-            254 -> 8
+            0xC2 -> 8
+            0xC3 -> 16
+            0xC4 -> 16
+            0xC5 -> 8
+            0xC6 -> 8
+            0xC7 -> 8
+            0xC8 -> 8
+            0xC9 -> 8
+            0xCA -> 8
+            0xCB -> 8
+            0xCC -> 8
+            0xCD -> 8
+            0xCE -> 8
+            0xCF -> 8
+            0xD0 -> 8
+            0xD1 -> 8
+            0xD2 -> 8
+            0xD3 -> 8
+            0xD4 -> 8
+            0xD5 -> 8
+            0xD6 -> 8
+            0xD7 -> 8
+            0xD8 -> 8
+            0xD9 -> 8
+            0xDA -> 8
+            0xDB -> 8
+            0xDC -> 8
+            0xDD -> 16
+            0xDE -> 8
+            0xDF -> 8
+            0xE0 -> 8
+            0xE1 -> 8
+            0xE2 -> 8
+            0xE3 -> 8
+            0xE4 -> 8
+            0xE5 -> 8
+            0xE6 -> 8
+            0xE7 -> 8
+            0xE8 -> 8
+            0xE9 -> 8
+            0xEA -> 8
+            0xEB -> 8
+            0xEC -> 8
+            0xED -> 8
+            0xEE -> 8
+            0xEF -> 8
+            0xF0 -> 8
+            0xF1 -> 16
+            0xF2 -> 16
+            0xF3 -> 16
+            0xF4 -> 16
+            0xF5 -> 16
+            0xF6 -> 16
+            0xF7 -> 16
+            0xF8 -> 16
+            0xF9 -> 16
+            0xFA -> 16
+            0xFB -> 16
+            0xFC -> 16
+            0xFD -> 8
+            0xFE -> 8
             _ ->
                 16
 
@@ -651,7 +655,7 @@ impl Cpu:
         if self.vm == (0 as u8):
             (((self.vx as u8) as i32), ((self.vy as u8) as i32))
         else:
-            let addr = (bit_or(bits::shl16((self.vx as u8) as u16, 8), (self.vy as u8) as u16)) as i32
+            let addr = ((((self.vx as u8) as u16 << 8)) | (self.vy as u8) as u16) as i32
             (addr % 256, addr / 256)
 
     # TEXT: reads a null-terminated string starting at `addr` and draws it
@@ -670,23 +674,20 @@ impl Cpu:
             let code = self.mem.read_byte(a)
             if code == (0 as u8):
                 going = false
+            elif code == (9 as u8):
+                cx += 32
+            elif code == (10 as u8):
+                cx = 0
+                cy += 8
+            elif code == (13 as u8):
+                cx = 0
             else:
-                if code == (9 as u8):
-                    cx += 32
-                else:
-                    if code == (10 as u8):
-                        cx = 0
-                        cy += 8
-                    else:
-                        if code == (13 as u8):
-                            cx = 0
-                        else:
-                            self.screen.draw_char(code, cx, cy, color)
-                            cx += 8
-                            if cx + 8 > 256:
-                                cx = 0
-                                cy += 8
-                a += 1
+                self.screen.draw_char(code, cx, cy, color)
+                cx += 8
+                if cx + 8 > 256:
+                    cx = 0
+                    cy += 8
+            a += 1
         (cx, cy)
 
     # ── Interrupts (docs/CPU Specification.md interrupt vector table) ──
@@ -707,9 +708,8 @@ impl Cpu:
             if self.pending_timer_irq:
                 self.pending_timer_irq = false
                 self.trigger_interrupt(0)
-            else:
-                if self.kbd.irq_pending():
-                    self.trigger_interrupt(2)
+            elif self.kbd.irq_pending():
+                self.trigger_interrupt(2)
 
     # ── Timer (docs/CPU Specification.md; TC bit0 enable, bit1 IRQ-enable,
     # divisor = TS+1). Ticked once per instruction rather than once per
@@ -752,35 +752,27 @@ impl Cpu:
     # ── Data movement ────────────────────────────────────────────────────
 
     fn op_mov(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let v = self.operand_read(op2, width)
         self.operand_write(op1, width, self.mask_to_width(v, width))
 
     fn op_movz(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         if self.flags.z():
             let v = self.operand_read(op2, width)
             self.operand_write(op1, width, self.mask_to_width(v, width))
 
     fn op_movnz(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         if !self.flags.z():
             let v = self.operand_read(op2, width)
             self.operand_write(op1, width, self.mask_to_width(v, width))
 
     fn op_xchng(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
@@ -788,30 +780,27 @@ impl Cpu:
         self.operand_write(op2, width, a)
 
     fn op_swap(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         if width == 8:
             let au8 = a as u8
             let hi_n = bits::shr8(au8, 4)
-            let lo_n = bit_and(au8, 15 as u8)
-            let swapped = bit_or(bits::shl8(lo_n, 4), hi_n)
+            let lo_n = (au8 & 15 as u8)
+            let swapped = ((lo_n << 4) | hi_n)
             self.operand_write(op1, 8, swapped as i32)
         else:
             let au16 = a as u16
-            let hi_b = bits::shr16(au16, 8)
-            let lo_b = bit_and(au16, 255 as u16)
-            let swapped = bit_or(bits::shl16(lo_b, 8), hi_b)
+            let hi_b = (au16 >> 8)
+            let lo_b = (au16 & 255 as u16)
+            let swapped = (lo_b << 8) | hi_b
             self.operand_write(op1, 16, swapped as i32)
 
     # LEA: dest = the *address* a memory-mode source operand resolved to,
     # not the value stored there (register/immediate sources fall back to
     # their ordinary resolved value, matching a degenerate `LEA reg, reg`).
     fn op_lea(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let mut addr_val = 0
         if op2.kind == (2 as u8):
@@ -823,9 +812,7 @@ impl Cpu:
     # ── Arithmetic ───────────────────────────────────────────────────────
 
     fn op_add(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
@@ -834,9 +821,7 @@ impl Cpu:
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_adc(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
@@ -848,9 +833,7 @@ impl Cpu:
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_sub(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
@@ -859,9 +842,7 @@ impl Cpu:
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_sbc(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
@@ -873,9 +854,7 @@ impl Cpu:
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_cmp(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
@@ -883,9 +862,7 @@ impl Cpu:
         self.flags.apply_arith(raw, a, b, width, true, true)
 
     fn op_mul(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
@@ -894,9 +871,7 @@ impl Cpu:
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_mulh(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
@@ -909,9 +884,7 @@ impl Cpu:
         self.operand_write(op1, width, self.mask_to_width(hi as i32, width))
 
     fn op_div(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
@@ -923,9 +896,7 @@ impl Cpu:
             self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_divh(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
@@ -943,9 +914,7 @@ impl Cpu:
             self.operand_write(op1, width, self.mask_to_width(q as i32, width))
 
     fn op_mod(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
@@ -957,8 +926,7 @@ impl Cpu:
             self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_inc(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let raw = a + 1
@@ -966,8 +934,7 @@ impl Cpu:
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_dec(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let raw = a - 1
@@ -975,8 +942,7 @@ impl Cpu:
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_neg(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let signed = self.to_signed(a, width)
@@ -985,8 +951,7 @@ impl Cpu:
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_abs(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let signed = self.to_signed(a, width)
@@ -997,9 +962,7 @@ impl Cpu:
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_min(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
@@ -1010,9 +973,7 @@ impl Cpu:
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_max(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
@@ -1023,8 +984,7 @@ impl Cpu:
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_clz(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let mut raw = 0
@@ -1035,8 +995,7 @@ impl Cpu:
         self.operand_write(op1, width, raw)
 
     fn op_ctz(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let mut raw = 0
@@ -1047,8 +1006,7 @@ impl Cpu:
         self.operand_write(op1, width, raw)
 
     fn op_popcnt(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let mut raw = 0
@@ -1061,51 +1019,42 @@ impl Cpu:
     # ── Bitwise ──────────────────────────────────────────────────────────
 
     fn op_and(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
-        let raw = bit_and(a, b)
+        let raw = (a & b)
         self.flags.apply_logic(raw, width)
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_or(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
-        let raw = bit_or(a, b)
+        let raw = (a | b)
         self.flags.apply_logic(raw, width)
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_xor(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
-        let raw = bit_xor(a, b)
+        let raw = (a ^ b)
         self.flags.apply_logic(raw, width)
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_not(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
-        let raw = bit_not(a)
+        let raw = (~a)
         self.flags.apply_logic(raw, width)
         self.operand_write(op1, width, self.mask_to_width(raw, width))
 
     fn op_shl(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let amt = self.operand_read(op2, width)
@@ -1118,9 +1067,7 @@ impl Cpu:
         self.operand_write(op1, width, raw)
 
     fn op_shr(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let amt = self.operand_read(op2, width)
@@ -1133,9 +1080,7 @@ impl Cpu:
         self.operand_write(op1, width, raw)
 
     fn op_sar(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let amt = self.operand_read(op2, width)
@@ -1148,9 +1093,7 @@ impl Cpu:
         self.operand_write(op1, width, raw)
 
     fn op_rol(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let amt = self.operand_read(op2, width)
@@ -1163,9 +1106,7 @@ impl Cpu:
         self.operand_write(op1, width, raw)
 
     fn op_ror(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let amt = self.operand_read(op2, width)
@@ -1178,78 +1119,58 @@ impl Cpu:
         self.operand_write(op1, width, raw)
 
     fn op_rcl(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let amt = self.operand_read(op2, width)
         let carry_in = self.flags.c()
-        let mut raw = 0
-        let mut carry_out = carry_in
-        if width == 8:
-            let pair = bits::rcl8(a as u8, carry_in, amt)
-            raw = pair.0 as i32
-            carry_out = pair.1
+        let (raw, carry_out) = if width == 8:
+            let (r, c) = bits::rcl8(a as u8, carry_in, amt)
+            (r as i32, c)
         else:
-            let pair = bits::rcl16(a as u16, carry_in, amt)
-            raw = pair.0 as i32
-            carry_out = pair.1
+            let (r, c) = bits::rcl16(a as u16, carry_in, amt)
+            (r as i32, c)
         self.flags.apply_rotate(raw, width, carry_out)
         self.operand_write(op1, width, raw)
 
     fn op_rcr(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let amt = self.operand_read(op2, width)
         let carry_in = self.flags.c()
-        let mut raw = 0
-        let mut carry_out = carry_in
-        if width == 8:
-            let pair = bits::rcr8(a as u8, carry_in, amt)
-            raw = pair.0 as i32
-            carry_out = pair.1
+        let (raw, carry_out) = if width == 8:
+            let (r, c) = bits::rcr8(a as u8, carry_in, amt)
+            (r as i32, c)
         else:
-            let pair = bits::rcr16(a as u16, carry_in, amt)
-            raw = pair.0 as i32
-            carry_out = pair.1
+            let (r, c) = bits::rcr16(a as u16, carry_in, amt)
+            (r as i32, c)
         self.flags.apply_rotate(raw, width, carry_out)
         self.operand_write(op1, width, raw)
 
     fn op_btst(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let bitidx = (self.operand_read(op2, width)) % width
         self.flags.set_z(!bit_get(a, bitidx))
 
     fn op_bset(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let bitidx = (self.operand_read(op2, width)) % width
         self.operand_write(op1, width, bit_set(a, bitidx))
 
     fn op_bclr(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let bitidx = (self.operand_read(op2, width)) % width
         self.operand_write(op1, width, bit_clear(a, bitidx))
 
     fn op_bflip(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let bitidx = (self.operand_read(op2, width)) % width
@@ -1258,15 +1179,13 @@ impl Cpu:
     # ── Stack ────────────────────────────────────────────────────────────
 
     fn op_push(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let v = self.operand_read(op1, width)
         self.push16(v)
 
     fn op_pop(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let v = self.pop16()
         self.operand_write(op1, width, self.mask_to_width(v, width))
@@ -1310,8 +1229,7 @@ impl Cpu:
         self.vc = Wrapping<u8>(vcv as u8)
 
     fn op_enter(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let size = self.operand_read(op1, width)
         self.push16((self.p[9] as u16) as i32)
@@ -1327,31 +1245,27 @@ impl Cpu:
     # ── Control flow ─────────────────────────────────────────────────────
 
     fn op_jmp(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let target = self.operand_read(op1, width)
         self.pc = Wrapping<u16>((wrap_addr(target)) as u16)
 
     fn jump_if(mut self, cond: bool):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let target = self.operand_read(op1, width)
         if cond:
             self.pc = Wrapping<u16>((wrap_addr(target)) as u16)
 
     fn op_br(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let raw = self.operand_read(op1, width)
         let offset = self.to_signed16(raw)
         self.pc = Wrapping<u16>((wrap_addr(((self.pc as u16) as i32) + offset)) as u16)
 
     fn op_brz(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let raw = self.operand_read(op1, width)
         if self.flags.z():
@@ -1359,8 +1273,7 @@ impl Cpu:
             self.pc = Wrapping<u16>((wrap_addr(((self.pc as u16) as i32) + offset)) as u16)
 
     fn op_brnz(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let raw = self.operand_read(op1, width)
         if !self.flags.z():
@@ -1368,16 +1281,14 @@ impl Cpu:
             self.pc = Wrapping<u16>((wrap_addr(((self.pc as u16) as i32) + offset)) as u16)
 
     fn op_call(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let target = self.operand_read(op1, width)
         self.push16((self.pc as u16) as i32)
         self.pc = Wrapping<u16>((wrap_addr(target)) as u16)
 
     fn op_callz(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let target = self.operand_read(op1, width)
         if self.flags.z():
@@ -1385,8 +1296,7 @@ impl Cpu:
             self.pc = Wrapping<u16>((wrap_addr(target)) as u16)
 
     fn op_callnz(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let target = self.operand_read(op1, width)
         if !self.flags.z():
@@ -1398,8 +1308,7 @@ impl Cpu:
         self.pc = Wrapping<u16>((wrap_addr(v)) as u16)
 
     fn op_retn(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let result = self.operand_read(op1, width)
         self.r[0] = Wrapping<u8>(result as u8)
@@ -1415,17 +1324,14 @@ impl Cpu:
         self.pc = Wrapping<u16>((wrap_addr(pcv)) as u16)
 
     fn op_int(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let vector = self.operand_read(op1, width)
         if self.flags.i():
             self.trigger_interrupt(vector)
 
     fn op_loop(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let newval = self.mask_to_width(a - 1, width)
@@ -1435,9 +1341,7 @@ impl Cpu:
             self.pc = Wrapping<u16>((wrap_addr(target)) as u16)
 
     fn op_loopz(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let newval = self.mask_to_width(a - 1, width)
@@ -1447,8 +1351,7 @@ impl Cpu:
             self.pc = Wrapping<u16>((wrap_addr(target)) as u16)
 
     fn op_while(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         self.flags.apply_arith(a, 0, 0, width, false, false)
@@ -1456,10 +1359,7 @@ impl Cpu:
     # ── Memory bulk ops ──────────────────────────────────────────────────
 
     fn op_memcpy(mut self):
-        let ops = self.decode_operands(3)
-        let op1 = ops.0
-        let op2 = ops.1
-        let op3 = ops.2
+        let (op1, op2, op3) = self.decode_operands(3)
         let dest = self.operand_read(op1, 16)
         let src = self.operand_read(op2, 16)
         let len = self.operand_read(op3, 16)
@@ -1470,10 +1370,7 @@ impl Cpu:
             i += 1
 
     fn op_memset(mut self):
-        let ops = self.decode_operands(3)
-        let op1 = ops.0
-        let op2 = ops.1
-        let op3 = ops.2
+        let (op1, op2, op3) = self.decode_operands(3)
         let dest = self.operand_read(op1, 16)
         let value = self.operand_read(op2, 16)
         let len = self.operand_read(op3, 16)
@@ -1483,10 +1380,7 @@ impl Cpu:
             i += 1
 
     fn op_memmove(mut self):
-        let ops = self.decode_operands(3)
-        let op1 = ops.0
-        let op2 = ops.1
-        let op3 = ops.2
+        let (op1, op2, op3) = self.decode_operands(3)
         let dest = self.operand_read(op1, 16)
         let src = self.operand_read(op2, 16)
         let len = self.operand_read(op3, 16)
@@ -1504,10 +1398,7 @@ impl Cpu:
                 i -= 1
 
     fn op_memswap(mut self):
-        let ops = self.decode_operands(3)
-        let op1 = ops.0
-        let op2 = ops.1
-        let op3 = ops.2
+        let (op1, op2, op3) = self.decode_operands(3)
         let a1 = self.operand_read(op1, 16)
         let a2 = self.operand_read(op2, 16)
         let len = self.operand_read(op3, 16)
@@ -1520,10 +1411,7 @@ impl Cpu:
             i += 1
 
     fn op_memtest(mut self):
-        let ops = self.decode_operands(3)
-        let op1 = ops.0
-        let op2 = ops.1
-        let op3 = ops.2
+        let (op1, op2, op3) = self.decode_operands(3)
         let a1 = self.operand_read(op1, 16)
         let a2 = self.operand_read(op2, 16)
         let len = self.operand_read(op3, 16)
@@ -1538,8 +1426,7 @@ impl Cpu:
     # ── Random ───────────────────────────────────────────────────────────
 
     fn op_rnd(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let mut maxval = 256.0
         if width != 8:
@@ -1548,10 +1435,7 @@ impl Cpu:
         self.operand_write(op1, width, self.mask_to_width(r, width))
 
     fn op_rndr(mut self):
-        let ops = self.decode_operands(3)
-        let op1 = ops.0
-        let op2 = ops.1
-        let op3 = ops.2
+        let (op1, op2, op3) = self.decode_operands(3)
         let width = self.operand_width(op1)
         let lo = self.operand_read(op2, width)
         let hi = self.operand_read(op3, width)
@@ -1568,74 +1452,49 @@ impl Cpu:
         self.halted = self.halted
 
     fn op_sread(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
-        let xy = self.vxy()
-        let x = xy.0
-        let y = xy.1
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let (x, y) = self.vxy()
         let v = self.screen.get_screen(x, y)
         self.operand_write(op1, 8, v as i32)
 
     fn op_swrite(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let v = self.operand_read(op1, 8)
-        let xy = self.vxy()
-        let x = xy.0
-        let y = xy.1
+        let (x, y) = self.vxy()
         self.screen.set_screen(x, y, v as u8)
 
     fn op_vread(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
-        let xy = self.vxy()
-        let x = xy.0
-        let y = xy.1
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let (x, y) = self.vxy()
         let v = self.screen.get_vram(x, y)
         self.operand_write(op1, 8, v as i32)
 
     fn op_vwrite(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let v = self.operand_read(op1, 8)
-        let xy = self.vxy()
-        let x = xy.0
-        let y = xy.1
+        let (x, y) = self.vxy()
         self.screen.set_vram(x, y, v as u8)
 
     fn op_sline(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let x1 = self.operand_read(op1, 8)
         let y1 = self.operand_read(op2, 8)
-        let xy0 = self.vxy()
-        let x0 = xy0.0
-        let y0 = xy0.1
+        let (x0, y0) = self.vxy()
         self.screen.sline(x0, y0, x1, y1, (self.vc as u8))
 
     fn op_srect(mut self):
-        let ops = self.decode_operands(3)
-        let op1 = ops.0
-        let op2 = ops.1
-        let op3 = ops.2
+        let (op1, op2, op3) = self.decode_operands(3)
         let x1 = self.operand_read(op1, 8)
         let y1 = self.operand_read(op2, 8)
         let filled = (self.operand_read(op3, 8)) != 0
-        let xy0 = self.vxy()
-        let x0 = xy0.0
-        let y0 = xy0.1
+        let (x0, y0) = self.vxy()
         self.screen.srect(x0, y0, x1, y1, (self.vc as u8), filled)
 
     fn op_scirc(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let radius = self.operand_read(op1, 8)
         let filled = (self.operand_read(op2, 8)) != 0
-        let cxy = self.vxy()
-        let cx = cxy.0
-        let cy = cxy.1
+        let (cx, cy) = self.vxy()
         self.screen.scirc(cx, cy, radius, (self.vc as u8), filled)
 
     fn op_sinv(mut self):
@@ -1648,15 +1507,12 @@ impl Cpu:
         self.screen.vblit()
 
     fn op_sfill(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let v = self.operand_read(op1, 8)
         self.screen.sfill(v as u8)
 
     fn op_srol(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let axis = self.operand_read(op1, 8)
         let amount = self.operand_read(op2, 8)
         if axis == 0:
@@ -1665,9 +1521,7 @@ impl Cpu:
             self.screen.roll_y(0 - amount)
 
     fn op_srot(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let direction = self.operand_read(op1, 8)
         let amount = self.operand_read(op2, 8)
         if direction == 0:
@@ -1676,9 +1530,7 @@ impl Cpu:
             self.screen.rotate_right(amount)
 
     fn op_sshft(mut self):
-        let ops = self.decode_operands(2)
-        let op1 = ops.0
-        let op2 = ops.1
+        let (op1, op2, _op3) = self.decode_operands(2)
         let axis = self.operand_read(op1, 8)
         let amount = self.operand_read(op2, 8)
         if axis == 0:
@@ -1687,8 +1539,7 @@ impl Cpu:
             self.screen.shift_y(amount)
 
     fn op_sflip(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let axis = self.operand_read(op1, 8)
         if axis == 0:
             self.screen.flip_x()
@@ -1696,22 +1547,16 @@ impl Cpu:
             self.screen.flip_y()
 
     fn op_char(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let code = self.operand_read(op1, 8)
-        let xy = self.vxy()
-        let x = xy.0
-        let y = xy.1
+        let (x, y) = self.vxy()
         self.screen.draw_char(code as u8, x, y, (self.vc as u8))
         self.vx = Wrapping<u8>(((x + 8) % 256) as u8)
 
     fn op_text(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let addr = self.operand_read(op1, 16)
-        let xy = self.vxy()
-        let x = xy.0
-        let y = xy.1
+        let (x, y) = self.vxy()
         let result = self.draw_text(addr, x, y, (self.vc as u8))
         self.vx = Wrapping<u8>((result.0 % 256) as u8)
         self.vy = Wrapping<u8>((result.1 % 256) as u8)
@@ -1719,30 +1564,24 @@ impl Cpu:
     # ── Keyboard ─────────────────────────────────────────────────────────
 
     fn op_keyin(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
-        let vh = self.kbd.pop_key()
-        let v = vh.0
-        let had = vh.1
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let (v, had) = self.kbd.pop_key()
         self.flags.set_z(!had)
         self.operand_write(op1, 8, v as i32)
 
     fn op_keystat(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         self.operand_write(op1, 8, (self.kbd.keystat()) as i32)
 
     fn op_keycount(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         self.operand_write(op1, 8, (self.kbd.keycount()) as i32)
 
     fn op_keyclear(mut self):
         self.kbd.keyclear()
 
     fn op_keyctrl(mut self):
-        let ops = self.decode_operands(1)
-        let op1 = ops.0
+        let (op1, _op2, _op3) = self.decode_operands(1)
         let v = self.operand_read(op1, 8)
         self.kbd.keyctrl(v as u8)
 
@@ -1758,225 +1597,225 @@ impl Cpu:
 
     fn execute(mut self, opcode: u8):
         match opcode as i32:
-            0 ->
+            0x00 ->
                 self.halted = true
-            255 ->
+            0xFF ->
                 self.halted = self.halted
-            1 ->
+            0x01 ->
                 self.op_ret()
-            2 ->
+            0x02 ->
                 self.op_iret()
-            3 ->
+            0x03 ->
                 self.flags.set_i(false)
-            4 ->
+            0x04 ->
                 self.flags.set_i(true)
-            6 ->
+            0x06 ->
                 self.op_mov()
-            7 ->
+            0x07 ->
                 self.op_add()
-            8 ->
+            0x08 ->
                 self.op_sub()
-            9 ->
+            0x09 ->
                 self.op_mul()
-            10 ->
+            0x0A ->
                 self.op_div()
-            11 ->
+            0x0B ->
                 self.op_inc()
-            12 ->
+            0x0C ->
                 self.op_dec()
-            13 ->
+            0x0D ->
                 self.op_mod()
-            14 ->
+            0x0E ->
                 self.op_neg()
-            15 ->
+            0x0F ->
                 self.op_abs()
-            16 ->
+            0x10 ->
                 self.op_and()
-            17 ->
+            0x11 ->
                 self.op_or()
-            18 ->
+            0x12 ->
                 self.op_xor()
-            19 ->
+            0x13 ->
                 self.op_not()
-            20 ->
+            0x14 ->
                 self.op_shl()
-            21 ->
+            0x15 ->
                 self.op_shr()
-            22 ->
+            0x16 ->
                 self.op_rol()
-            23 ->
+            0x17 ->
                 self.op_ror()
-            24 ->
+            0x18 ->
                 self.op_push()
-            25 ->
+            0x19 ->
                 self.op_pop()
-            26 ->
+            0x1A ->
                 self.op_pushf()
-            27 ->
+            0x1B ->
                 self.op_popf()
-            28 ->
+            0x1C ->
                 self.op_pusha()
-            29 ->
+            0x1D ->
                 self.op_popa()
-            30 ->
+            0x1E ->
                 self.op_jmp()
-            31 ->
+            0x1F ->
                 self.jump_if(self.flags.z())
-            32 ->
+            0x20 ->
                 self.jump_if(!self.flags.z())
-            33 ->
+            0x21 ->
                 self.jump_if(self.flags.o())
-            34 ->
+            0x22 ->
                 self.jump_if(!self.flags.o())
-            35 ->
+            0x23 ->
                 self.jump_if(self.flags.c())
-            36 ->
+            0x24 ->
                 self.jump_if(!self.flags.c())
-            37 ->
+            0x25 ->
                 self.jump_if(self.flags.s())
-            38 ->
+            0x26 ->
                 self.jump_if(!self.flags.s())
-            39 ->
+            0x27 ->
                 self.jump_if(!self.flags.z() and self.flags.s() == self.flags.o())
-            40 ->
+            0x28 ->
                 self.jump_if(self.flags.s() != self.flags.o())
-            41 ->
+            0x29 ->
                 self.jump_if(self.flags.s() == self.flags.o())
-            42 ->
+            0x2A ->
                 self.jump_if(self.flags.z() or self.flags.s() != self.flags.o())
-            43 ->
+            0x2B ->
                 self.op_br()
-            44 ->
+            0x2C ->
                 self.op_brz()
-            45 ->
+            0x2D ->
                 self.op_brnz()
-            46 ->
+            0x2E ->
                 self.op_cmp()
-            47 ->
+            0x2F ->
                 self.op_call()
-            48 ->
+            0x30 ->
                 self.op_int()
-            49 ->
+            0x31 ->
                 self.op_sblend()
-            50 ->
+            0x32 ->
                 self.op_sread()
-            51 ->
+            0x33 ->
                 self.op_swrite()
-            52 ->
+            0x34 ->
                 self.op_srol()
-            53 ->
+            0x35 ->
                 self.op_srot()
-            54 ->
+            0x36 ->
                 self.op_sshft()
-            55 ->
+            0x37 ->
                 self.op_sflip()
-            56 ->
+            0x38 ->
                 self.op_sline()
-            57 ->
+            0x39 ->
                 self.op_srect()
-            58 ->
+            0x3A ->
                 self.op_scirc()
-            59 ->
+            0x3B ->
                 self.op_sinv()
-            60 ->
+            0x3C ->
                 self.op_sblit()
-            61 ->
+            0x3D ->
                 self.op_sfill()
-            62 ->
+            0x3E ->
                 self.op_vread()
-            63 ->
+            0x3F ->
                 self.op_vwrite()
-            64 ->
+            0x40 ->
                 self.op_vblit()
-            65 ->
+            0x41 ->
                 self.op_char()
-            66 ->
+            0x42 ->
                 self.op_text()
-            67 ->
+            0x43 ->
                 self.op_keyin()
-            68 ->
+            0x44 ->
                 self.op_keystat()
-            69 ->
+            0x45 ->
                 self.op_keycount()
-            70 ->
+            0x46 ->
                 self.op_keyclear()
-            71 ->
+            0x47 ->
                 self.op_keyctrl()
-            72 ->
+            0x48 ->
                 self.op_rnd()
-            73 ->
+            0x49 ->
                 self.op_rndr()
-            74 ->
+            0x4A ->
                 self.op_memcpy()
-            90 ->
+            0x5A ->
                 self.op_loop()
-            109 ->
+            0x6D ->
                 self.op_btst()
-            110 ->
+            0x6E ->
                 self.op_bset()
-            111 ->
+            0x6F ->
                 self.op_bclr()
-            112 ->
+            0x70 ->
                 self.op_bflip()
-            124 ->
+            0x7C ->
                 self.op_memset()
-            125 ->
+            0x7D ->
                 self.op_memtest()
-            126 ->
+            0x7E ->
                 self.op_memmove()
-            135 ->
+            0x87 ->
                 self.op_adc()
-            136 ->
+            0x88 ->
                 self.op_sbc()
-            137 ->
+            0x89 ->
                 self.op_mulh()
-            138 ->
+            0x8A ->
                 self.op_divh()
-            139 ->
+            0x8B ->
                 self.op_min()
-            140 ->
+            0x8C ->
                 self.op_max()
-            141 ->
+            0x8D ->
                 self.op_clz()
-            142 ->
+            0x8E ->
                 self.op_ctz()
-            143 ->
+            0x8F ->
                 self.op_popcnt()
-            144 ->
+            0x90 ->
                 self.op_sar()
-            145 ->
+            0x91 ->
                 self.op_shl()
-            146 ->
+            0x92 ->
                 self.op_rcl()
-            147 ->
+            0x93 ->
                 self.op_rcr()
-            148 ->
+            0x94 ->
                 self.op_swap()
-            149 ->
+            0x95 ->
                 self.op_xchng()
-            150 ->
+            0x96 ->
                 self.op_movz()
-            151 ->
+            0x97 ->
                 self.op_movnz()
-            152 ->
+            0x98 ->
                 self.op_lea()
-            154 ->
+            0x9A ->
                 self.op_memswap()
-            155 ->
+            0x9B ->
                 self.op_enter()
-            156 ->
+            0x9C ->
                 self.op_leave()
-            157 ->
+            0x9D ->
                 self.op_callz()
-            158 ->
+            0x9E ->
                 self.op_callnz()
-            159 ->
+            0x9F ->
                 self.op_retn()
-            160 ->
+            0xA0 ->
                 self.op_loopz()
-            161 ->
+            0xA1 ->
                 self.op_while()
-            179 ->
+            0xB3 ->
                 self.op_mousectrl()
             _ ->
                 self.unimplemented_opcode(opcode)

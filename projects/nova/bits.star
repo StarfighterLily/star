@@ -1,11 +1,21 @@
-# Bit-level helpers the Nova-16 CPU needs that the language doesn't provide
-# as operators: there is no `<<`/`>>`/`&`/`|`/`^`/`~` in Star at all (see
-# NOTES.md "No bitwise shift operators") -- only the free-function surface
-# `bit_get`/`bit_set`/`bit_clear`/`bit_toggle`/`bit_and`/`bit_or`/`bit_xor`/
-# `bit_not`, which read/flip *one* bit or combine two whole registers, with
-# no general "shift a value left/right by N" primitive. Every shift/rotate
-# instruction (SHL/SHR/SAR/SAL/ROL/ROR/RCL/RCR) is therefore built here,
-# bit-by-bit, once per width, rather than assumed available.
+# Bit-level shift/rotate helpers for the Nova-16 CPU's dynamic-shift-amount
+# instructions (SHL/SHR/SAR/SAL/ROL/ROR/RCL/RCR, where the amount is a
+# runtime operand that can be any 0-255 value, not a fixed constant). Star
+# gained real `<<`/`>>`/`&`/`|`/`^`/`~` operators after this file was written
+# (see NOTES.md "Language gotchas" / todo.md P0 #3), and every *fixed*-amount
+# shift/combine elsewhere in this project (byte-half register packing,
+# `SWAP`'s nibble swap, `read_word`/`write_word`) was switched over to them
+# directly -- safe there because the amount is always a compile-time literal
+# already in range. This file's functions stay hand-rolled because their
+# amount-clamping semantics are Nova-specific and deliberately differ from
+# the new operators' behavior: `<<`/`>>` mask the shift count mod the
+# operand's width (so shifting a `u8` by 8 is a no-op, matching x86 hardware
+# masking), while Nova-16's ISA -- ported from `core/exec.py` -- clamps
+# instead: a shift amount >= the operand's width zeroes the result entirely
+# (or fills with the sign bit for `SAR`/`SAL`), not "shift by amount mod
+# width". Replacing these with the native operators would silently change
+# behavior for any program that shifts by >= 8 (or >= 16), so the bit-by-bit
+# construction from `bit_get`/`bit_set` stays.
 #
 # Multiply/divide-by-power-of-two was considered and rejected for the
 # arithmetic-shift-right case: dividing a negative `Wrapping<iN>` truncates

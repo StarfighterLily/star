@@ -22,10 +22,15 @@ raw opcode bytes (see "Testing" below).
   monitor-tool READMEs, and anything assembler/debugger-specific were
   deliberately not copied — they document tooling and Python-side
   refactors, not the machine.
-- `bits.star` — shift/rotate/parity/popcount/clz/ctz helpers. Exists solely
-  because Star has no bitwise shift operator or function (see below).
-- `flags.star` — the 12-bit status register (`StatusFlags` — not `Flags`,
-  see "Gotchas") and the arithmetic/logic/rotate flag-setting rules, ported
+- `bits.star` — shift/rotate/parity/popcount/clz/ctz helpers for the CPU's
+  *dynamic*-shift-amount instructions. Originally existed solely because
+  Star had no bitwise/shift operators at all; now that it does (see
+  "Language gotchas" #1 below), every *fixed*-amount shift/combine elsewhere
+  in this project uses the real operators directly, and this file only
+  covers the runtime-operand-amount case, whose clamping semantics
+  deliberately differ from the operators' mod-width masking.
+- `flags.star` — the 12-bit status register (`Flags`) and the
+  arithmetic/logic/rotate flag-setting rules, ported
   from `core/flags.py::set_from_operation` directly (read from source, not
   guessed from the higher-level docs, which don't spell out the CMP-vs-SUB
   carry distinction).
@@ -34,7 +39,8 @@ raw opcode bytes (see "Testing" below).
 - `memory.star` — the 64KB unified address space plus the bank-switched
   0x8000-0xBFFF expansion window.
 - `font_data.star` — the 8x8 1bpp font glyph table, mechanically generated
-  from the upstream `font.py` (see "No literal array-of-values" below).
+  from the upstream `font.py`, now as a real fixed-size array literal (see
+  "Language gotchas" #5 below).
 - `screen.star` — the 256x256 8bpp screen + VRAM buffers, drawing
   primitives (line/rect/circle/char/text/roll/shift/flip/rotate), and the
   font.
@@ -42,9 +48,10 @@ raw opcode bytes (see "Testing" below).
   register model.
 - `cpu.star` — the CPU itself: registers, the register-code address space,
   operand decoding, the fetch-decode-execute cycle, every implemented
-  instruction, interrupts, and the timer. This is the one large file in the
-  project (~1500 lines) — see "impl blocks can't cross files" below for why
-  it isn't split further.
+  instruction, interrupts, and the timer. Still the one large file in the
+  project (~1800 lines, register codes and opcodes now spelled in hex —
+  see "Language gotchas" #6 and #2 below); splitting it by opcode group is
+  now *possible* since `impl` can cross a module boundary, just not done yet.
 - `main.star` — SDL2 window, a small built-in demo program (there's no
   assembler to produce anything else — see "Loading programs" below), the
   main loop, and keyboard-event plumbing.
@@ -115,112 +122,196 @@ indexed/direct for every memory-mode operand in the instruction. The only
 all skipped (string library is deferred anyway; `MEMCMP` alone wasn't worth
 a special-cased decode path for this pass).
 
-## Language gotchas hit along the way
+## Language gotchas hit along the way (and their fixes, applied here)
 
-These aren't bugs — they're real constraints of the current Star language/
-compiler that shaped how this project is structured. Written down so a
-future session doesn't have to rediscover them.
+These weren't bugs — they were real constraints of the Star language/
+compiler at the time this project was first written, and they shaped how it
+was structured. All ten were subsequently fixed at the compiler level
+(tracked in [`todo.md`](../../todo.md), prioritized directly off this list)
+and this project has now been updated to use every fix that has a genuine
+call site here — see "Fixes applied to this project" below for the concrete
+diff-level summary. Left in place (not just deleted) so a future session can
+see both what the constraint used to be *and* what replaced it.
 
 1. **No bitwise operators or shift functions at all.** No `& | ^ ~ << >>`.
    The free-function surface (`bit_get`/`bit_set`/`bit_clear`/`bit_toggle`/
    `bit_and`/`bit_or`/`bit_xor`/`bit_not`) covers single-bit ops and whole-
-   register AND/OR/XOR/NOT, but there's no general "shift by N" primitive.
-   `bits.star` builds every shift/rotate (SHL/SHR/SAR/SAL/ROL/ROR/RCL/RCR)
+   register AND/OR/XOR/NOT, but there was no general "shift by N" primitive.
+   `bits.star` built every shift/rotate (SHL/SHR/SAR/SAL/ROL/ROR/RCL/RCR)
    bit-by-bit from `bit_get`/`bit_set` instead of `<<`/`>>`. Multiply/divide
    by a power of two was considered and rejected for the arithmetic-
    right-shift case specifically: dividing a negative value truncates
    toward zero, not toward -infinity, so it doesn't reproduce sign-extending
-   shift semantics.
+   shift semantics. **Fixed:** real `&`/`|`/`^`/`~`/`<<`/`>>` operators now
+   exist. Every *fixed*-amount shift/combine in this project (`bit_and`/
+   `bit_or`/`bit_xor`/`bit_not` call sites, and `bits::shl16`/`shr16`/`shl8`
+   calls whose amount was a compile-time-in-range literal — byte-half
+   register packing, `SWAP`'s nibble swap, `read_word`/`write_word`) now
+   uses the operators directly. `bits.star` itself is deliberately
+   unchanged: its *runtime*-shift-amount functions (used by the actual
+   `SHL`/`SHR`/`SAR`/`ROL`/`ROR`/`RCL`/`RCR` opcodes, whose amount is a
+   CPU-supplied operand that can be any 0-255 value) have out-of-range
+   clamping semantics ported from `core/exec.py` that deliberately differ
+   from the new operators' mod-width masking — see `bits.star`'s own header
+   comment for the full reasoning. Verified against a small headless check
+   program exercising the P0 byte-half write/read, `vxy()`'s packed address
+   calc, `AND`/`OR`/`XOR`/`NOT`/`SWAP` opcodes, and `SINV`, all matching
+   hand-computed expected values.
 
-2. **No hex integer literals.** `0x1F`-style literals don't exist in the
+2. **No hex integer literals.** `0x1F`-style literals didn't exist in the
    lexer at all — every register code, opcode number, and address constant
-   in this project is written in decimal (with a `# 0x..` comment for
-   readability where it helps).
+   in this project was written in decimal. **Fixed:** `0x`-prefixed literals
+   now exist. `cpu.star`'s `get_reg_value`/`set_reg_value`/`reg_width`
+   register-code matches and `execute`'s opcode dispatch (293 match-arm keys
+   total) are now spelled in hex, matching
+   `docs/nova16_instruction_reference.md`'s own opcode table directly
+   instead of needing a decimal-to-hex lookup by hand. `main.star`'s
+   hand-encoded demo program's opcode/register/mode bytes are hex too (the
+   byte-offset address comments alongside them stay decimal — they're
+   counting bytes, not encoding a register/opcode).
 
-3. **`elif` doesn't exist.** Only `if`/`else`, so a multi-way branch is
+3. **`elif` doesn't exist.** Only `if`/`else`, so a multi-way branch was
    either a `match` with comparison-guard arms (`<= 15 ->`, works for
    ranges) or explicit `else:` + nested `if`. `match` with bare integer
-   literal arms (`43 -> ...`) works fine and is what `Cpu::execute`'s ~100-
-   entry opcode dispatch and the register-code `match` blocks are built
-   from — confirmed against the existing `examples/brainfuck.star` before
-   relying on it for this project's own dispatch table.
+   literal arms (`0x43 -> ...`) works fine and is what `Cpu::execute`'s
+   ~100-entry opcode dispatch and the register-code `match` blocks are
+   built from — confirmed against the existing `examples/brainfuck.star`
+   before relying on it for this project's own dispatch table. **Fixed:**
+   `elif` now exists. Every genuine same-subject `else:` + nested-`if`
+   cascade in this project was flattened: `Cpu::decode_operand`'s
+   4-way addressing-mode fallback, `Cpu::draw_text`'s control-code dispatch
+   (NUL/tab/newline/CR/printable), `Cpu::check_interrupts`'s
+   timer-then-keyboard priority check, and `screen::clamp_i32`. Nested
+   `if`/`else` pairs that branch on *different* subjects (e.g.
+   `Cpu::to_signed`'s width-then-sign check, `bits::sar8`'s
+   range-then-sign check) were deliberately left alone — `elif` is for a
+   cascade of alternatives on one decision, not unrelated nested ones.
 
-4. **No destructuring `let`.** `let (a, b) = expr` does not parse — every
+4. **No destructuring `let`.** `let (a, b) = expr` did not parse — every
    tuple-returning call in this project (`decode_operands`, `vxy`,
-   `pop_key`, ...) is bound to a temporary and then read back positionally:
+   `pop_key`, ...) was bound to a temporary and then read back positionally:
    `let ops = self.decode_operands(2)` / `let op1 = ops.0` / `let op2 =
    ops.1`. Cost 93 call sites a mechanical regex fixup after discovering it
    partway through writing `cpu.star` — see the compiler-bug section below
    for the *other*, more subtle tuple-related issue this project also hit.
+   **Fixed:** `let (a, b, ...) = expr` now exists. All 90 of those call
+   sites (81 `decode_operands` sites, 6 `vxy()` sites, 2 `xy0`/`cxy`
+   variants, and `pop_key()`) were converted to destructuring `let`,
+   including binding an intentionally-unused trailing element as
+   `_op2`/`_op3` where a 1- or 2-operand instruction only needs the first
+   name or two (`decode_operands` always returns a 3-tuple regardless of
+   how many operands the instruction actually decodes). `op_rcl`/`op_rcr`
+   went a step further, replacing a `let mut raw = 0; let mut carry_out =
+   ...; if width == 8: raw = ...; carry_out = ... else: ...` reassignment
+   pattern with `let (raw, carry_out) = if width == 8: ... else: ...` — a
+   multi-statement `if`/`else` `let` initializer returning a tuple, exactly
+   the shape gotcha #10 below covers, now confirmed working.
 
-5. **No array-literal-of-differing-values.** `[a, b, c]` is a `List<T>`
+5. **No array-literal-of-differing-values.** `[a, b, c]` was a `List<T>`
    literal (heap/RC-backed, fine to return by value); the *only* fixed-size
-   `[T; N]` array literal form is the `[value; N]` repeat. This mattered
+   `[T; N]` array literal form was the `[value; N]` repeat. This mattered
    for the font glyph table (256 glyphs x 8 bytes, virtually all distinct
-   values): there is no way to spell that as an array literal at all.
-   `font_data.star` is mechanically generated from the upstream Python
+   values): there was no way to spell that as an array literal at all.
+   `font_data.star` was mechanically generated from the upstream Python
    `font.py` as ~1500 individual `f.glyphs[i] = v as u8` assignments on a
    zero-initialized array (skipping the ~500 already-zero bytes) — slower
-   to type than a literal would have been, but there's no other option
-   short of runtime file I/O (see below for why that's also not viable for
-   binary data yet).
+   to type than a literal would have been, and there was no other option
+   short of runtime file I/O (see #9 below for why that wasn't viable for
+   binary data either). **Fixed:** a `[a, b, c]` literal now coerces to a
+   fixed `[T; N]` array when an expected `[T; N]` type is reachable from
+   context (a struct field's declared type, here). `font_data.star` was
+   regenerated as a single `glyphs = [0, 0, ..., 255, ...]` literal — 273
+   lines instead of 1527, one row of 8 bytes per glyph, each row commented
+   with its character code — with the `mut` dropped from the `glyphs` field
+   since it's never written after construction. Round-tripped against the
+   original mechanical version (`FontData(...).glyphs[65*8 .. 65*8+8]` for
+   `'A'`, code 65) to confirm the regenerated data is byte-identical.
 
-6. **`impl` can't reach into another module.** `impl SomeImportedType:` is
-   a parse error (`impl` only takes a bare identifier, confirmed empirically
-   — `impl cpu::Cpu:` fails with "expected ':', found '::'"). Every method
-   on a struct must live in the same file as that struct's own definition;
-   there's no way to split `Cpu`'s ~90 opcode handler methods across
-   multiple files the way, say, C splits a big `struct` across translation
-   units. This is why `cpu.star` is one ~1500-line file rather than several
-   smaller ones. What *does* work, and is used throughout this project:
-   composition — `Cpu` holds `mem: memory::Memory`, `screen: screen::Screen`,
-   `kbd: keyboard::Keyboard`, `flags: flags::StatusFlags` as plain fields,
-   each with their own methods defined in their own file, called through
+6. **`impl` can't reach into another module.** `impl SomeImportedType:` was
+   a parse error (`impl` only took a bare identifier, confirmed empirically
+   — `impl cpu::Cpu:` failed with "expected ':', found '::'"). Every method
+   on a struct had to live in the same file as that struct's own
+   definition; there was no way to split `Cpu`'s ~90 opcode handler methods
+   across multiple files the way, say, C splits a big `struct` across
+   translation units. This is why `cpu.star` was (and, pending an actual
+   split, still is) one large file rather than several smaller ones. What
+   already worked, and is used throughout this project: composition —
+   `Cpu` holds `mem: memory::Memory`, `screen: screen::Screen`,
+   `kbd: keyboard::Keyboard`, `flags: flags::Flags` as plain fields, each
+   with their own methods defined in their own file, called through
    `self.mem.read_byte(...)` etc. Method resolution across the module
-   boundary works fine for *calling* a type's existing methods — it's only
-   *defining new methods* on an imported type that's unsupported.
+   boundary always worked fine for *calling* a type's existing methods —
+   it was only *defining new methods* on an imported type that didn't.
+   **Fixed:** `impl mod::Type:` (and `impl mod::Trait: for Type`/etc., any
+   combination) now resolves the qualified name correctly. This directly
+   unblocks splitting `cpu.star`'s opcode handlers across files by group —
+   genuinely useful for this project specifically, since `cpu.star` is
+   still its one ~1800-line file — but that split hasn't been done in this
+   pass; it's scoped as its own follow-up (see "Ideas for future work").
 
-7. **`Flags` is a reserved builtin generic name.** `struct Flags:` collides
+7. **`Flags` is a reserved builtin generic name.** `struct Flags:` collided
    with the builtin `Flags<E>` (a typed bitset over a fieldless enum) and
-   fails with a confusing "needs an explicit type argument" error at the
-   *construction* site, not the declaration. Renamed to `StatusFlags`.
+   failed with a confusing "needs an explicit type argument" error at the
+   *construction* site, not the declaration. Renamed to `StatusFlags` to
+   work around it. **Fixed:** a declared struct now shadows the builtin
+   generic of the same name (matching how `Vec2`/`Tick`/etc. already
+   shadowed builtin scalars), so `struct Flags:` works standalone. Renamed
+   back from `StatusFlags` to `Flags` in `flags.star` and its two call
+   sites (`cpu.star`'s `Cpu.flags` field type, `main.star`'s construction).
 
 8. **Single-line `fn foo(): body` doesn't parse.** A function/method body
-   must be on its own indented line(s) below the `fn ... :` header, even
-   for a one-expression body — `fn t(self) -> bool: self.get(T_BIT)` is a
-   parse error; it has to be
+   had to be on its own indented line(s) below the `fn ... :` header, even
+   for a one-expression body — `fn t(self) -> bool: self.get(T_BIT)` was a
+   parse error; it had to be
    ```
    fn t(self) -> bool:
        self.get(T_BIT)
    ```
    Hit repeatedly while writing `flags.star`'s named bit accessors.
+   **Fixed:** the compact single-line form now parses. `flags.star`'s 22
+   one-line bit accessors/setters (`t`/`s`/`o`/.../`set_t`/`set_s`/...) were
+   collapsed onto their `fn` line, cutting that block from 48 lines to 22.
 
 9. **`file_read`'s `str` result silently truncates at the first embedded
    NUL byte.** Confirmed empirically: a 6-byte binary file with a 0x00 in
-   the middle comes back with `len() == 1`. This makes `file_read` unusable
+   the middle comes back with `len() == 1`. This made `file_read` unusable
    for loading an arbitrary compiled Nova-16 program — `HLT` alone is
    opcode 0, so *any* real program is virtually guaranteed to contain
    embedded zero bytes. This is why `main.star` has a hand-encoded demo
-   program baked in rather than a "load a .bin" option; a byte-accurate
-   binary file reader (an `extern "C" fn`-based `fread` into a `Bytes`,
-   or a compiler-level fix to `file_read`) is future work, not attempted
-   here.
+   program baked in rather than a "load a .bin" option. **Fixed** at the
+   compiler level: `file_read_bytes(handle) -> Bytes`/`file_write_bytes`
+   now exist as genuinely binary-safe siblings of `file_read`/`file_write`,
+   built on the pre-existing length-prefixed `Bytes` type rather than a
+   NUL-terminated `str`. **Not wired up in this project**, though: there's
+   still no assembler in this port (out of scope per the brief) to produce
+   a real compiled `.bin` to load, so there's nothing to feed a byte-loader
+   that the baked-in demo program doesn't already cover. `main.star`'s
+   header comment now points at `file_read_bytes` for whenever that
+   changes.
 
 10. **A bare multi-statement `if`/`else` doesn't work as a `let`
-    initializer.** `let x = if cond: <expr> else: <expr>` works fine when
-    each arm is a *single* expression (used successfully in `flags.star`'s
-    `sign_idx`/`overflow` calculations). The moment either arm becomes
+    initializer.** `let x = if cond: <expr> else: <expr>` worked fine when
+    each arm was a *single* expression (used successfully in `flags.star`'s
+    `sign_idx`/`overflow` calculations). The moment either arm became
     multiple statements (its own `let`s before a trailing value), binding
-    the whole thing to a `let` breaks — this turned out to be the exact
-    shape of a real compiler bug, not just a style limitation; see below.
+    the whole thing to a `let` broke — suspected at the time to be the same
+    underlying issue as the function-trailing-`if`/`else` `phi` bug this
+    project had already found and reported fixed (see "Two Star compiler
+    bugs found and fixed" #2 below). **That assumption turned out to be
+    wrong**, and chasing it down (todo.md P3 #11, prompted directly by this
+    gotcha) found a real, different, previously-unknown bug — see "Two
+    Star compiler bugs found and fixed" #3 below. Now fixed and exercised
+    for real in this project: `Cpu::op_rcl`/`op_rcr` (see #4 above) bind a
+    2-tuple from a multi-statement `if`/`else`, one `let` inside each arm
+    before the trailing tuple value.
 
-## Two Star compiler bugs found and fixed
+## Three Star compiler bugs found and fixed
 
 Building this project's very first smoke test (a struct holding a
 `[u8; 65536]` array — the whole reason a Nova-16 port needs 64KB of
-addressable memory) immediately hung `clang`. Both fixes below are in
-`src/codegen/`, not in this project, and both were verified against the
-full `cargo test` suite (no regressions) before continuing.
+addressable memory) immediately hung `clang`. All three fixes below are in
+`src/codegen/`, not in this project, and each was verified against the full
+`cargo test` suite (no regressions) before continuing.
 
 ### 1. Large fixed-array/struct construction crashed or hung `clang`
 
@@ -250,21 +341,21 @@ struct-literal codegen, now recursing into nested struct-literal fields and
 routing array-typed fields through `emit_array_repeat_into`). `TypedStmt
 ::Let` now special-cases a directly-assigned `ArrayRepeat` or `StructLit`
 initializer to build straight into the binding's own `alloca` instead of a
-temp-then-copy. This is **not** a general fix — it only covers `let x =
+temp-then-copy. This was **not** a general fix — it only covered `let x =
 <array-repeat-or-struct-literal>` (recursively through nested struct-
-literal fields). Two shapes remain unfixed, deliberately avoided everywhere
-in this project instead of chased further:
-- **A struct/array returned *by value* from an ordinary function** still
-  crashes/hangs identically (confirmed: a function returning a
-  `struct { data: [u8; 65536] }` hangs `clang` the same way). This is why
-  `memory.star`/`screen.star` have no `fn new_memory() -> Memory`-style
-  constructors — `Memory`/`Screen`/`Cpu` are only ever built as one big
+literal fields). Two shapes were left unfixed, deliberately avoided
+everywhere in this project instead of chased further at the time:
+- **A struct/array returned *by value* from an ordinary function** crashed/
+  hung identically (confirmed: a function returning a
+  `struct { data: [u8; 65536] }` hung `clang` the same way). This is why
+  `memory.star`/`screen.star` originally had no `fn new_memory() -> Memory`-
+  style constructors — `Memory`/`Screen`/`Cpu` had to be built as one big
   literal directly at their `let mut cpu = Cpu(mem = Memory(...), screen =
   Screen(...), ...)` call site in `main.star`, relying on the recursive
-  struct-literal fix. `FontData` (2048 bytes) is small enough to return by
-  value safely and does have its own constructor function.
-- **A plain (non-`self`) function parameter of a large struct type** is
-  passed *by value* and hits the same wall — confirmed the hard way:
+  struct-literal fix. `FontData` (2048 bytes) was small enough to return by
+  value safely and had its own constructor function even then.
+- **A plain (non-`self`) function parameter of a large struct type** was
+  passed *by value* and hit the same wall — confirmed the hard way:
   `Screen::draw_text(mut self, m: mem::Memory, ...)` taking `Memory`
   (~300KB) as an ordinary parameter hung `clang` even though every
   individual piece involved (two 64KB arrays plus a small nested struct)
@@ -275,11 +366,31 @@ in this project instead of chased further:
   the one parameter kind that's pointer-passed, never copied, in this
   compiler (confirmed in `codegen/stmt.rs::emit_fn`).
 
-  General takeaway adopted for the rest of this project: **any struct
-  embedding a "large" fixed array only ever gets constructed once, directly
-  into a `let` binding via a literal, and is only ever passed around
-  afterward as an implicit `self` on a method call — never as an ordinary
-  parameter, and never returned by value.**
+  General takeaway adopted for the rest of this project at the time: **any
+  struct embedding a "large" fixed array only ever gets constructed once,
+  directly into a `let` binding via a literal, and is only ever passed
+  around afterward as an implicit `self` on a method call — never as an
+  ordinary parameter, and never returned by value.**
+
+**Both remaining shapes are now fixed** (todo.md P0 #2): a large struct/
+array return now uses a hidden `sret` out-pointer instead of a by-value
+`ret`, and a large ordinary parameter arrives as a pointer and is
+`memcpy`'d into a private local — both gated on a 512-byte size threshold,
+so every existing small struct keeps its old by-value convention unchanged.
+`memory.star` and `screen.star` now have real `new_memory()`/`new_screen()`
+constructors, used from `main.star`'s `let mut cpu = Cpu(mem = mem::
+new_memory(), screen = screen::new_screen(), ...)`, confirmed with a real
+`star build` + a headless run (and the SDL window staying up, not crashing,
+for a live smoke test). `draw_text` stays on `Cpu` rather than moving back
+to taking `Memory` as an ordinary parameter — pointer-passing `self` is
+still strictly cheaper than pointer-passing-plus-`memcpy`'ing an ordinary
+large parameter, so there's no reason to revert it now that both work.
+One caveat found while verifying this: the fix places a large by-value
+return in the *caller's own stack frame* (that's what `sret` means), so
+several such structs alive as separate locals in one function can still
+overflow the stack even though a single one is fine — not a regression in
+this project (only one `Cpu` is ever live at a time here), but worth
+knowing before leaning on this pattern more heavily.
 
 ### 2. Malformed `phi` for a trailing `if`/`else` returning a tuple or struct
 
@@ -307,6 +418,117 @@ type needs.
 
 Both fixes are narrowly scoped and were re-verified against the full test
 suite twice (once per fix) with zero regressions.
+
+### 3. RC-owning locals leaked/segfaulted from an untaken `let x = if/else` arm
+
+Gotcha #10 above assumed a `let x = if cond: <multi-statement> else:
+<multi-statement>` `let`-initializer failure was the same bug as #2 above
+(both are "a trailing `if`/`else` with a non-trivial arm produces bad
+codegen"). Confirming that assumption (todo.md P3 #11) found it was
+actually wrong: a `let`-initializer `if`/`else` parses as a full `Expr::If`
+and codegens through an entirely separate `TypedExpr::If` arm in
+`src/codegen/expr.rs`, which reads its merged `phi` type directly off the
+checker's own `ty` field rather than splitting a tagged value string — so
+it was never susceptible to fix #2's particular bug at all.
+
+But auditing that arm while checking turned up a real, different bug in
+the same neighborhood: unlike every other `if` codegen path in the
+compiler, `TypedExpr::If` never wrapped either arm in its own
+`push_scope`/`pop_scope`. An RC-owning local declared inside an arm (a
+`str`, `List<T>`, ...) — whether or not it was the arm's own trailing
+value — got tracked in whatever scope was already open *outside* the whole
+`if`. That outer scope's eventual release fired unconditionally for
+*both* arms' locals, including the untaken arm's, whose `alloca` was never
+stored to and held uninitialized stack garbage — releasing that garbage as
+a supposed RC pointer segfaulted, confirmed with a real `star build` + run
+repro before the fix.
+
+Fix: give each arm its own scope in `Codegen::emit_expr`'s `TypedExpr::If`
+case, exactly matching `emit_trailing_if_value`/`TypedStmt::If`'s existing
+pattern. Not a shape this project's own multi-statement `let x = if/else`
+usage (`Cpu::op_rcl`/`op_rcr`, see gotcha #4/#10 above) actually triggers —
+neither arm there declares an RC-owning local — but confirmed safe by the
+same headless check used for gotcha #1's operator conversions, and by the
+compiler's own dedicated regression tests (`tests/frontend_closures_higher_order.rs`,
+including a sustained 400,000-iteration leak check alternating branches).
+
+## Fixes applied to this project
+
+Once all ten gotchas above were fixed at the compiler level (tracked in
+[`todo.md`](../../todo.md)), this project was swept for real call sites and
+updated in place. Summary, file by file:
+
+- **`font_data.star`** — regenerated from ~1500 individual
+  `f.glyphs[i] = v as u8` assignments into one `glyphs = [...]` fixed-size
+  array literal (gotcha #5); 1527 lines → 273. `mut` dropped from the
+  `glyphs` field (never written after construction).
+- **`flags.star`** — struct renamed `StatusFlags` → `Flags` (gotcha #7); 22
+  one-line bit accessors/setters collapsed onto their `fn` line (gotcha #8);
+  `bit_xor(a, b)` → `a ^ b` in `apply_arith` (gotcha #1).
+- **`bits.star`** — header comment updated to explain why its bit-by-bit
+  shift/rotate functions are *kept* rather than replaced by the new
+  operators (gotcha #1): they serve the CPU's runtime-shift-amount opcodes,
+  whose clamping semantics deliberately differ from the operators' mod-width
+  masking.
+- **`memory.star`** — `read_word`/`write_word` use `<<`/`>>`/`|` directly
+  instead of `bits::shl16`/`bits::shr16`/`bit_or` (gotcha #1, fixed shift
+  amount); gained a real `new_memory()` constructor (large-aggregate
+  by-value return fix, "Three Star compiler bugs" #1).
+- **`screen.star`** — `sinv()`'s `bit_not` → `~`; `clamp_i32` flattened to
+  `if`/`elif`/`else` (gotcha #3); gained a real `new_screen()` constructor
+  (same fix as `memory.star`).
+- **`cpu.star`** — the big one:
+  - `get_reg_value`/`set_reg_value`/`reg_width`'s register-code `match`
+    arms and `execute`'s opcode dispatch: 293 match-arm keys converted
+    decimal → hex (gotcha #2), now matching
+    `docs/nova16_instruction_reference.md`'s own numbering.
+  - `decode_operand`'s 4-way addressing-mode fallback, `draw_text`'s
+    control-code dispatch, and `check_interrupts`'s interrupt-priority
+    check flattened to `elif` (gotcha #3).
+  - 90 tuple-returning call sites (`decode_operands`, `vxy`, `pop_key`)
+    converted from positional `let ops = ...; let op1 = ops.0; ...` to
+    destructuring `let (op1, op2, op3) = ...` (gotcha #4); `op_rcl`/`op_rcr`
+    additionally restructured around a multi-statement `if`/`else` `let`
+    initializer returning a tuple (gotcha #10).
+  - `Cpu.flags`'s field type updated for the `Flags` rename (gotcha #7).
+  - `bit_or`/`bit_and`/`bit_xor`/`bit_not` calls and fixed-amount
+    `bits::shl16`/`shr16`/`shl8` calls (byte-half register packing, `SWAP`'s
+    nibble swap, `vxy()`'s packed-address calc) converted to `<<`/`>>`/`&`/
+    `|`/`^`/`~` (gotcha #1).
+  - File header comment updated: no longer claims decimal-only register
+    codes or a hard "`impl` can't cross modules" constraint, since both are
+    fixed; notes the opcode-group file split is now *possible* but not done.
+- **`main.star`** — `demo_program()`'s hand-encoded opcode/register/mode
+  bytes converted decimal → hex (gotcha #2; the byte-offset address
+  comments alongside them stay decimal, since those count bytes rather than
+  encode a register/opcode); `Cpu(...)` construction switched to
+  `mem::new_memory()`/`screen::new_screen()`; unused `font_data.star` import
+  removed (folded into `new_screen()`); header comment updated to mention
+  `file_read_bytes` as the now-available (if not yet wired up) binary-safe
+  loader path.
+
+Not changed, on purpose:
+- **No opcode-group file split for `cpu.star`** (gotcha #6 unblocks this,
+  but it's a substantial restructuring on its own — scoped as future work,
+  not bundled into this sweep).
+- **No binary `.bin` program loader** (gotcha #9 unblocks the *language*
+  side of this, but there's still no assembler in this port to produce a
+  `.bin` to load — the actual blocker is unrelated to the language gap).
+- **`bits.star`'s runtime-shift-amount functions** stay bit-by-bit rather
+  than switching to the new operators — see gotcha #1 and `bits.star`'s own
+  header comment for why that's a deliberate semantics-preserving choice,
+  not an oversight.
+
+Verification: a full `star build projects/nova/main.star -L sdl/lib/x64 -l
+SDL2 -o projects/nova/nova16.exe` succeeds; the built binary runs without
+crashing (confirmed headlessly with a timed run, no error output, exits
+only when killed); a standalone headless check program (not checked in)
+exercised the P0 byte-half register write/read, `vxy()`'s packed address
+calc, the `AND`/`OR`/`XOR`/`NOT`/`SWAP` opcodes end to end via `Cpu::step()`,
+and `SINV`, all matching hand-computed expected values — covering every
+`bit_*`-to-operator conversion in `cpu.star`/`screen.star`. The regenerated
+`font_data.star`'s glyph 65 (`'A'`) bytes were diffed against the original
+mechanical version's and are identical.
 
 ## What's implemented
 
@@ -409,7 +631,7 @@ wiring anything into the SDL window:
 
 - Register-code round trips (`get_reg_value`/`set_reg_value` for `R0`,
   `P0`, and `P0:`/`:P0` byte-halves) against known bit patterns.
-- Flag computation (`StatusFlags::apply_arith`) against hand-checked
+- Flag computation (`Flags::apply_arith`) against hand-checked
   expected Z/C/S/O for unsigned wraparound, signed overflow, `CMP`
   equal/borrow, and plain `SUB`'s wider carry rule vs. `CMP`'s narrower one.
 - Palette output for `BLACK`/`WHITE`/`RED`/`GREEN` against the documented
@@ -440,7 +662,12 @@ wiring anything into the SDL window:
   place `SA`/`SF`/`SV`/`SW` register model.
 - The math/string/BCD/type-conversion/UART opcode groups listed above.
 - A byte-accurate binary file loader (so a compiled `.bin` could be loaded
-  instead of a baked-in demo), which needs either a `Bytes`/raw-`fread`-
-  based reader or a compiler-level fix to `file_read`'s NUL-truncation.
+  instead of a baked-in demo) — the language-level blocker is gone
+  (`file_read_bytes`/`file_write_bytes` now exist, see "Fixes applied to
+  this project"), but there's still no assembler in this port to produce a
+  `.bin` to load in the first place, which is the actual remaining blocker.
 - Blend modes (`SBLEND`) actually affecting `SWRITE`/`VWRITE`.
 - Real mouse-event plumbing behind `MOUSECTRL`/`MX`/`MY`/`MB`.
+- Splitting `cpu.star`'s ~90 opcode-handler methods across files by group
+  (arithmetic/bitwise/stack/control-flow/graphics/...) — unblocked now that
+  `impl` can cross a module boundary (gotcha #6), not yet done.

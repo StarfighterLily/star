@@ -31,13 +31,13 @@ const H_BIT: i32 = 9
 const A_BIT: i32 = 10
 const E_BIT: i32 = 11
 
-struct StatusFlags:
+struct Flags:
     mut bits: BitField<16>
 
-fn new_flags() -> StatusFlags:
-    StatusFlags(bits = BitField<16>(0))
+fn new_flags() -> Flags:
+    Flags(bits = BitField<16>(0))
 
-impl StatusFlags:
+impl Flags:
     fn get(self, i: i32) -> bool:
         bit_get(self.bits, i)
 
@@ -47,51 +47,29 @@ impl StatusFlags:
         else:
             self.bits = bit_clear(self.bits, i)
 
-    fn t(self) -> bool:
-        self.get(T_BIT)
-    fn s(self) -> bool:
-        self.get(S_BIT)
-    fn o(self) -> bool:
-        self.get(O_BIT)
-    fn b(self) -> bool:
-        self.get(B_BIT)
-    fn d(self) -> bool:
-        self.get(D_BIT)
-    fn i(self) -> bool:
-        self.get(I_BIT)
-    fn c(self) -> bool:
-        self.get(C_BIT)
-    fn z(self) -> bool:
-        self.get(Z_BIT)
-    fn p(self) -> bool:
-        self.get(P_BIT)
-    fn h(self) -> bool:
-        self.get(H_BIT)
-    fn a(self) -> bool:
-        self.get(A_BIT)
-    fn e(self) -> bool:
-        self.get(E_BIT)
+    fn t(self) -> bool: self.get(T_BIT)
+    fn s(self) -> bool: self.get(S_BIT)
+    fn o(self) -> bool: self.get(O_BIT)
+    fn b(self) -> bool: self.get(B_BIT)
+    fn d(self) -> bool: self.get(D_BIT)
+    fn i(self) -> bool: self.get(I_BIT)
+    fn c(self) -> bool: self.get(C_BIT)
+    fn z(self) -> bool: self.get(Z_BIT)
+    fn p(self) -> bool: self.get(P_BIT)
+    fn h(self) -> bool: self.get(H_BIT)
+    fn a(self) -> bool: self.get(A_BIT)
+    fn e(self) -> bool: self.get(E_BIT)
 
-    fn set_t(mut self, v: bool):
-        self.set_bit(T_BIT, v)
-    fn set_s(mut self, v: bool):
-        self.set_bit(S_BIT, v)
-    fn set_o(mut self, v: bool):
-        self.set_bit(O_BIT, v)
-    fn set_b(mut self, v: bool):
-        self.set_bit(B_BIT, v)
-    fn set_d(mut self, v: bool):
-        self.set_bit(D_BIT, v)
-    fn set_i(mut self, v: bool):
-        self.set_bit(I_BIT, v)
-    fn set_c(mut self, v: bool):
-        self.set_bit(C_BIT, v)
-    fn set_z(mut self, v: bool):
-        self.set_bit(Z_BIT, v)
-    fn set_p(mut self, v: bool):
-        self.set_bit(P_BIT, v)
-    fn set_a(mut self, v: bool):
-        self.set_bit(A_BIT, v)
+    fn set_t(mut self, v: bool): self.set_bit(T_BIT, v)
+    fn set_s(mut self, v: bool): self.set_bit(S_BIT, v)
+    fn set_o(mut self, v: bool): self.set_bit(O_BIT, v)
+    fn set_b(mut self, v: bool): self.set_bit(B_BIT, v)
+    fn set_d(mut self, v: bool): self.set_bit(D_BIT, v)
+    fn set_i(mut self, v: bool): self.set_bit(I_BIT, v)
+    fn set_c(mut self, v: bool): self.set_bit(C_BIT, v)
+    fn set_z(mut self, v: bool): self.set_bit(Z_BIT, v)
+    fn set_p(mut self, v: bool): self.set_bit(P_BIT, v)
+    fn set_a(mut self, v: bool): self.set_bit(A_BIT, v)
 
     fn pack(self) -> u16:
         self.bits as u16
@@ -110,8 +88,8 @@ impl StatusFlags:
         let sign_idx = if width == 8: 7 else: 15
         let mask = if width == 8: 255 else: 65535
 
-        let signs_differ = bit_get(bit_xor(op1, op2), sign_idx)
-        let result_sign_flip = bit_get(bit_xor(op1, result), sign_idx)
+        let signs_differ = bit_get((op1 ^ op2), sign_idx)
+        let result_sign_flip = bit_get((op1 ^ result), sign_idx)
         let overflow = if is_cmp or is_subtraction:
             signs_differ and result_sign_flip
         else:

@@ -1,13 +1,13 @@
 # Nova-16 fantasy computer -- native emulator entry point: opens the host
 # window, builds the CPU/memory/screen/keyboard state, loads a small
-# built-in demo program (see NOTES.md -- there's no assembler in this port,
-# and reading an arbitrary compiled `.bin` isn't safe yet either: Star's
-# `file_read` returns a `str`, whose `len()`/indexing appear to rely on
-# `strlen` under the hood and truncate at the first embedded 0x00 byte,
-# which any real Nova-16 program is virtually guaranteed to contain --
-# HLT alone is opcode 0. A byte-count-based binary reader is future work),
-# and runs the fetch-decode-execute loop, presenting the 256x256 indexed
-# screen through the palette every frame.
+# built-in demo program (see NOTES.md -- there's still no assembler in this
+# port to produce a real compiled `.bin` from). Loading one, if it existed,
+# is no longer blocked at the language level: `file_read`'s `str` result still
+# truncates at the first embedded 0x00 byte (any real Nova-16 program is
+# virtually guaranteed to contain one -- HLT alone is opcode 0), but
+# `file_read_bytes(handle) -> Bytes` now exists as a genuinely binary-safe
+# alternative (todo.md P0 #1) and isn't wired up here only because there's
+# still no assembler output to test it against.
 #
 # Build (from the repo root, SDL2 must be linked explicitly):
 #   star build projects/nova/main.star -L sdl/lib/x64 -l SDL2 -o projects/nova/nova16.exe
@@ -18,7 +18,6 @@ import "memory.star" as mem
 import "screen.star" as screen
 import "keyboard.star" as keyboard
 import "flags.star" as flg
-import "font_data.star" as fontdata
 import "palette.star" as pal
 
 const SCREEN_SIZE: i32 = 256
@@ -37,29 +36,29 @@ const SCREEN_SIZE: i32 = 256
 fn demo_program() -> List<i32>:
     let prog: List<i32> = [
         # R0 = 0 (x), R1 = 0 (y)                                   addr
-        6, 4, 231, 0,                                              # 0
-        6, 4, 232, 0,                                              # 4
+        0x06, 0x04, 0xE7, 0x00,                                              # 0
+        0x06, 0x04, 0xE8, 0x00,                                              # 4
         # outer_y: MOV VY, R1                                      8
-        6, 0, 254, 232,
+        0x06, 0x00, 0xFE, 0xE8,
         # R0 = 0 (reset x at the start of every row)               12
-        6, 4, 231, 0,
+        0x06, 0x04, 0xE7, 0x00,
         # inner_x: MOV VX, R0                                      16
-        6, 0, 253, 231,
+        0x06, 0x00, 0xFD, 0xE7,
         # R2 = R0 + R1 (color = x + y, wraps to a diagonal ramp)    20
-        6, 4, 233, 0,
-        7, 0, 233, 231,
-        7, 0, 233, 232,
+        0x06, 0x04, 0xE9, 0x00,
+        0x07, 0x00, 0xE9, 0xE7,
+        0x07, 0x00, 0xE9, 0xE8,
         # SWRITE R2                                                32
-        51, 0, 233,
+        0x33, 0x00, 0xE9,
         # INC R0 ; JNZ inner_x (addr 16, i.e. loop while x != 0     35
         # after the increment -- covers all 256 values via wraparound)
-        11, 0, 231,
-        32, 2, 0, 16,
+        0x0B, 0x00, 0xE7,
+        0x20, 0x02, 0x00, 0x10,
         # INC R1 ; JNZ outer_y (addr 8, same wraparound idiom)      42
-        11, 0, 232,
-        32, 2, 0, 8,
+        0x0B, 0x00, 0xE8,
+        0x20, 0x02, 0x00, 0x08,
         # JMP back to addr 0 (redraw forever)                      49
-        30, 2, 0, 0,
+        0x1E, 0x02, 0x00, 0x00,
     ]
     prog
 
@@ -70,10 +69,10 @@ fn main():
         return
 
     let mut c = cpu::Cpu(
-        mem = mem::Memory(ram = [0 as u8; 65536], bank_ram = [0 as u8; 245760], bank = 0 as u8),
-        screen = screen::Screen(screen = [0 as u8; 65536], vram = [0 as u8; 65536], font = fontdata::new_font_data()),
+        mem = mem::new_memory(),
+        screen = screen::new_screen(),
         kbd = keyboard::Keyboard(buffer = [0 as u8; 64], head = 0, tail = 0, count = 0, status = 0 as u8, control = 0 as u8),
-        flags = flg::StatusFlags(bits = BitField<16>(0)),
+        flags = flg::Flags(bits = BitField<16>(0)),
         r = [Wrapping<u8>(0 as u8); 10],
         p = [Wrapping<u16>(0 as u16); 10],
         pc = Wrapping<u16>(0 as u16),
