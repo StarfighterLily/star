@@ -445,11 +445,28 @@ impl Parser {
         Some(Param { is_self: false, is_mut, name, ty: Some(ty), span })
     }
 
+    /// A function/method body is either a full indented block, or -- mirroring
+    /// `parse_lambda`'s and `parse_if_expr_arm`'s identical compact-arm
+    /// grammar -- a single inline trailing expression on the same line as the
+    /// `:` when it isn't immediately followed by a `Newline`. Unlike those two
+    /// (an expression-position body that might sit nested inside a call's
+    /// argument list, or an `if` arm whose own enclosing chain defers
+    /// `expect_line_end` until the whole `if`/`elif`/`else` tail resolves), a
+    /// function/method definition is always a standalone item/statement, so
+    /// this consumes its own trailing line end directly rather than leaving
+    /// it for a caller.
     fn parse_fn(&mut self) -> Option<FnDef> {
         let start = self.peek_span();
         let sig = self.parse_fn_sig()?;
         self.expect(&TokenKind::Colon)?;
-        let body = self.parse_block()?;
+        let body = if self.at(&TokenKind::Newline) {
+            self.parse_block()?
+        } else {
+            let expr = self.parse_expr()?;
+            let span = expr.span();
+            self.expect_line_end()?;
+            Block { stmts: vec![Stmt::Expr(expr)], span }
+        };
         let span = start.to(self.prev_span());
         Some(FnDef { sig, body, span })
     }

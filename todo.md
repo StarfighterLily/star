@@ -267,8 +267,43 @@ future `.star` project.
    across loop iterations, a Nova-style opcode-dispatch chain mutating outer
    state per branch, and an ordinary nested `if`/`else` correctly unaffected
    when it sits inside one branch of an outer `elif` chain).
-8. **Single-line `fn foo(): body` doesn't parse.** A function/method body
-   must be on its own indented line(s) even for a one-expression body.
+8. **Single-line `fn foo(): body` doesn't parse.** — **done**: `Parser::
+   parse_fn` (`src/parser/items.rs`) now mirrors the exact compact-arm
+   grammar `parse_lambda` (closure literals) and `parse_if_expr_arm`
+   (`if`/`elif` arms) already established elsewhere in the parser: when the
+   `:` isn't immediately followed by a `Newline`, the body is a single
+   inline expression parsed via `parse_expr()` and wrapped in a
+   one-statement `Block { stmts: vec![Stmt::Expr(expr)] }` — the identical
+   shape a full-block function whose only statement is a trailing
+   expression already produces — instead of unconditionally calling
+   `parse_block()`. No new AST/`TypedStmt`/codegen variant exists anywhere,
+   so the checker, `sequence`/`frame`/`par` analysis, and codegen need zero
+   new match arms, confirmed by the full pre-existing test suite passing
+   unmodified. Because `parse_fn` is shared by both top-level `fn` items and
+   `impl` methods, both get the compact form for free. Unlike `parse_lambda`
+   (whose inline body doesn't consume its own trailing line end, since a
+   lambda can sit nested inside a call's argument list) and
+   `parse_if_expr_arm` (whose caller defers `expect_line_end` until an
+   entire `if`/`elif`/`else` chain resolves), a function/method definition
+   is always a standalone item, so `parse_fn` consumes its own trailing line
+   end directly. Scope is deliberately narrow, matching the precedent: the
+   compact form accepts exactly one *expression*, not an arbitrary
+   statement — `while`/`for` never grew a compact form either, so an inline
+   assignment (`fn bump(mut self): self.x += 1`) or inline `return` don't
+   parse as a compact body, just a clean parse error. 23 new tests in
+   `tests/frontend_single_line_fn_body.rs`: parser/AST-shape coverage
+   (bare literal and compound-expression bodies, params + return type,
+   methods inside `impl` blocks, back-to-back single-line functions,
+   nesting a compact `if`/`else` or lambda inside the compact fn body, and
+   the full-block form staying unaffected), parse-error coverage (trailing
+   garbage after the inline body, the assignment/`return`-statement scope
+   boundary), checker coverage (return-type matching/mismatch, a void
+   function's discarded call-expression body, `self`-field resolution
+   inside an inline method body), and runtime end-to-end coverage
+   (arithmetic one-liners, a one-liner method reading struct fields, an
+   inline `if`/`elif`/`else`-expression body, one single-line function
+   calling another, single-line and full-block functions freely mixed and
+   calling each other, and a recursive single-line factorial).
 9. **`Flags` is a reserved builtin generic name with a misleading error.**
    `struct Flags:` collides with the builtin `Flags<E>` bitset and fails
    with a confusing "needs an explicit type argument" error *at the
