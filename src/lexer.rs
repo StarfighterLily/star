@@ -487,6 +487,43 @@ impl<'src> Lexer<'src> {
 
     fn scan_number(&mut self) {
         let start = self.pos;
+        // `0x`/`0X`-prefixed hex literals (`0x1F`) -- checked ahead of the
+        // plain decimal scan below since both start on a `0` byte. Digits
+        // are parsed as `u64` (not `i64`, unlike the decimal path) and the
+        // bit pattern reinterpreted via `as i64`: a hex literal spells a bit
+        // pattern, not a signed magnitude, so `0xFFFFFFFF` (all bits of a
+        // 32-bit register set) must be accepted here even though it's larger
+        // than `i32::MAX` -- the same deferred-to-the-checker legality
+        // `Checker::infer_expr`'s `Expr::Cast` arm already applies to an
+        // oversized decimal literal cast into a wider type applies here too.
+        if self.bytes[self.pos] == b'0' && matches!(self.peek(1), Some(b'x') | Some(b'X')) {
+            self.pos += 2;
+            let digits_start = self.pos;
+            while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_hexdigit() {
+                self.pos += 1;
+            }
+            let digits = &self.src[digits_start..self.pos];
+            let kind = if digits.is_empty() {
+                self.errors.push(Diagnostic::error(
+                    "hex literal must have at least one digit after '0x'",
+                    self.span(start, self.pos),
+                ));
+                TokenKind::Int(0)
+            } else {
+                match u64::from_str_radix(digits, 16) {
+                    Ok(v) => TokenKind::Int(v as i64),
+                    Err(_) => {
+                        self.errors.push(Diagnostic::error(
+                            format!("hex integer literal `{}` is too large (max 16 hex digits)", &self.src[start..self.pos]),
+                            self.span(start, self.pos),
+                        ));
+                        TokenKind::Int(0)
+                    }
+                }
+            };
+            self.push(kind, start, self.pos);
+            return;
+        }
         while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
             self.pos += 1;
         }

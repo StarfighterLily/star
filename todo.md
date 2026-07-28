@@ -128,10 +128,33 @@ future `.star` project.
 
 ## P1 — Ergonomics that scale badly as the project grows
 
-4. **No hex integer literals.** `0x1F`-style literals don't exist in the
-   lexer; every register code, opcode number, and address constant in Nova
-   is written in decimal with a `# 0x..` comment for readability. Cheap fix,
-   high nuisance across any project working with fixed hardware constants.
+4. **No hex integer literals.** — **done**: `Lexer::scan_number`
+   (`src/lexer.rs`) now special-cases a `0x`/`0X` prefix ahead of the plain
+   decimal scan (both start on a `0` byte), parsing the following hex digits
+   as a `u64` bit pattern and bit-reinterpreting it via `as i64` into the
+   exact same `TokenKind::Int(i64)` a decimal literal produces — a hex
+   literal spells a bit pattern rather than a signed decimal magnitude, so
+   `0xFFFFFFFF` (all bits of a 32-bit register set) is accepted here even
+   though it exceeds `i32::MAX`, deferring the "does this fit the type it's
+   actually used as" question to the checker exactly like an oversized
+   decimal literal already does. Because the token produced is identical to
+   a decimal one, every downstream stage — parser, checker's default-`i32`/
+   widening-`as`-cast-fast-path rules, `const`-initializer folding, codegen —
+   needed no changes at all; a hex literal is simply an alternate spelling
+   of `Expr::Int`. `0x` with no digits after it, and a literal spanning more
+   than 16 hex digits (doesn't fit any `u64` bit pattern), are both clean
+   lexer diagnostics rather than a panic or silent truncation. 22 new tests
+   in `tests/frontend_hex_integer_literals.rs`: lexer-token coverage
+   (lowercase/uppercase digits and prefix, `0x0`, stopping at a non-hex-digit
+   boundary, the empty-digits and >16-digit error cases, the `0xFFFF...FFFF`
+   → `-1` bit-pattern boundary, and a regression that plain/leading-zero
+   decimals and float literals are unaffected), parser/AST-shape assertions,
+   checker coverage (default-`i32` typing, the oversized-without-cast
+   rejection, the widening-cast and all-bits-set-`u32`-cast acceptance
+   cases, and interop with the bitwise operators), a `const`-folding runtime
+   test, an IR-shape assertion that a hex literal lowers to a plain `i32`
+   constant, and runtime end-to-end coverage of a Nova-style register-mask
+   program plus hex/decimal equivalence.
 5. **No destructuring `let`.** `let (a, b) = expr` doesn't parse — every
    tuple-returning call (`decode_operands`, `vxy`, `pop_key`, ...) had to be
    bound to a temporary and read back positionally (`ops.0`/`ops.1`). Cost
