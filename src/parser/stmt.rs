@@ -427,12 +427,7 @@ impl Parser {
         let cond = self.parse_expr()?;
         self.expect(&TokenKind::Colon)?;
         let then_block = self.parse_if_expr_arm()?;
-        let else_block = if self.eat(&TokenKind::Else) {
-            self.expect(&TokenKind::Colon)?;
-            Some(self.parse_if_expr_arm()?)
-        } else {
-            None
-        };
+        let else_block = self.parse_if_else_tail()?;
         // A full-indented-block arm already consumed through its own
         // `Dedent` (`block_just_closed` is set, so this is a no-op); a
         // compact inline arm left its own trailing `Newline` unconsumed --
@@ -440,6 +435,41 @@ impl Parser {
         self.expect_line_end()?;
         let span = start.to(self.prev_span());
         Some(Stmt::If { cond, then_block, else_block, span })
+    }
+
+    /// Parse the `else:` / `elif <cond>:` / end-of-chain tail that follows an
+    /// `if`'s (or an outer `elif`'s) `then` arm, returning the resulting
+    /// `else_block`.
+    ///
+    /// `elif <cond>:` is pure parser-level sugar for `else:` immediately
+    /// followed by a nested `if <cond>:` -- it desugars right here into a
+    /// synthetic `Stmt::If` wrapped in a single-statement `Block`, recursing
+    /// into this same function for its own tail so an arbitrary `if`/`elif`/
+    /// .../`elif`/`else` chain collapses into ordinary right-nested
+    /// `Stmt::If`s. Because the output is exactly the `else: if ...: ...`
+    /// shape callers already had to spell out by hand (this item's own
+    /// motivating workaround), no downstream pass -- checker, `sequence`/
+    /// `frame`/`par` analysis, codegen -- needs a new match arm; `elif` never
+    /// exists past this point. The outer `Option` is this function's own
+    /// parse-failure signal (propagated with `?` by callers); the inner
+    /// `Option<Block>` is the real `else_block` value, `None` when the chain
+    /// ends without an `else`.
+    fn parse_if_else_tail(&mut self) -> Option<Option<Block>> {
+        if self.at(&TokenKind::Elif) {
+            let elif_start = self.peek_span();
+            self.advance();
+            let cond = self.parse_expr()?;
+            self.expect(&TokenKind::Colon)?;
+            let then_block = self.parse_if_expr_arm()?;
+            let else_block = self.parse_if_else_tail()?;
+            let span = elif_start.to(self.prev_span());
+            Some(Some(Block { stmts: vec![Stmt::If { cond, then_block, else_block, span }], span }))
+        } else if self.eat(&TokenKind::Else) {
+            self.expect(&TokenKind::Colon)?;
+            Some(Some(self.parse_if_expr_arm()?))
+        } else {
+            Some(None)
+        }
     }
 
     /// Parse a `match` used as a bare statement: shares `Parser::parse_match`

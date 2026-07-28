@@ -988,14 +988,37 @@ impl Parser {
         let cond = Box::new(self.parse_expr()?);
         self.expect(&TokenKind::Colon)?;
         let then_block = self.parse_if_expr_arm()?;
-        let else_block = if self.eat(&TokenKind::Else) {
-            self.expect(&TokenKind::Colon)?;
-            Some(self.parse_if_expr_arm()?)
-        } else {
-            None
-        };
+        let else_block = self.parse_if_else_tail_expr()?;
         let span = start.to(self.prev_span());
         Some(Expr::If { cond, then_block, else_block, span })
+    }
+
+    /// Expression-form counterpart of `Parser::parse_if_else_tail`: same
+    /// `else:` / `elif <cond>:` / end-of-chain grammar, but an `elif`
+    /// desugars into a nested `Expr::If` (not `Stmt::If`) held as the
+    /// trailing -- and only -- statement of a synthetic `Block`, exactly the
+    /// shape `parse_if_expr_arm`'s own inline-expression arm already
+    /// produces. That keeps a chained `if a: 1 elif b: 2 else: 3` a value
+    /// usable on a `let`'s RHS, with the nested `Expr::If` picked up as the
+    /// block's yielded value the same way any other trailing-expression
+    /// block already is.
+    fn parse_if_else_tail_expr(&mut self) -> Option<Option<Block>> {
+        if self.at(&TokenKind::Elif) {
+            let elif_start = self.peek_span();
+            self.advance();
+            let cond = Box::new(self.parse_expr()?);
+            self.expect(&TokenKind::Colon)?;
+            let then_block = self.parse_if_expr_arm()?;
+            let else_block = self.parse_if_else_tail_expr()?;
+            let span = elif_start.to(self.prev_span());
+            let nested = Expr::If { cond, then_block, else_block, span };
+            Some(Some(Block { stmts: vec![Stmt::Expr(nested)], span }))
+        } else if self.eat(&TokenKind::Else) {
+            self.expect(&TokenKind::Colon)?;
+            Some(Some(self.parse_if_expr_arm()?))
+        } else {
+            Some(None)
+        }
     }
 
     /// One arm of an `if`-expression: an indented block when the `:` is

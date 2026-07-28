@@ -236,8 +236,37 @@ future `.star` project.
 
 ## P2 — Smaller friction, worth batching with the above
 
-7. **`elif` doesn't exist.** Only `if`/`else`; a multi-way branch needs a
-   `match` with comparison-guard arms or nested `else:` + `if`.
+7. **`elif` doesn't exist.** — **done**: a new `elif <cond>:` keyword/token
+   (`TokenKind::Elif`, `src/lexer.rs`) is pure parser-level sugar for the
+   `else:` + nested `if` workaround this item itself named — `Parser::
+   parse_if_else_tail` (statement form, `src/parser/stmt.rs`) and `Parser::
+   parse_if_else_tail_expr` (expression form, `src/parser/expr.rs`) desugar
+   an `elif` arm into a synthetic nested `Stmt::If`/`Expr::If` held as the
+   sole contents of the enclosing arm's `else_block` (the expression form
+   wraps its nested `Expr::If` in a `Stmt::Expr`, the same shape any other
+   trailing-expression block already uses), recursing into the same
+   function for the next `elif`/`else`/end-of-chain — so an arbitrary
+   `if`/`elif`/.../`elif`/`else` chain collapses into ordinary right-nested
+   `if`s before the checker ever sees it. No new AST/`TypedStmt`/`TypedExpr`
+   variant exists anywhere, and `elif` never reaches past the parser, so the
+   checker, `sequence`/`frame`/`par` analysis, and codegen needed zero new
+   match arms — confirmed by the full pre-existing test suite passing
+   unmodified. Both the full-indented-block and compact single-line arm
+   forms work (`if a: 1 elif b: 2 else: 3` all on one line, mirroring
+   `parse_if_expr_arm`'s existing two shapes). 14 new tests in
+   `tests/frontend_elif.rs`: parser/AST-shape coverage (the nested-`else_block`
+   desugaring shape, a 3-way `if`/`elif`/`elif`/`else` chain nesting in
+   order, the compact inline form, the expression form's `Stmt::Expr`-wrapped
+   nesting, and clean parse errors — not panics — for a missing `:`/missing
+   condition), checker coverage (non-`bool` `elif` condition rejected the
+   same as a non-`bool` `if` condition, a full chain with agreeing arm types
+   inferring the common type, and `elif` with no trailing `else` still
+   checking fine), and runtime end-to-end coverage (a multi-way chain
+   picking exactly the first matching branch, an `elif` chain with no
+   `else` falling through cleanly, `elif` as an expression value re-evaluated
+   across loop iterations, a Nova-style opcode-dispatch chain mutating outer
+   state per branch, and an ordinary nested `if`/`else` correctly unaffected
+   when it sits inside one branch of an outer `elif` chain).
 8. **Single-line `fn foo(): body` doesn't parse.** A function/method body
    must be on its own indented line(s) even for a one-expression body.
 9. **`Flags` is a reserved builtin generic name with a misleading error.**

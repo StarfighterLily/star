@@ -48,6 +48,12 @@ pub enum TokenKind {
     Return,
     If,
     Else,
+    /// `elif cond:` -- parser-level sugar for `else: if cond: ...`, chainable
+    /// (`Parser::parse_if_else_tail`/`Parser::parse_if_else_tail_expr`,
+    /// `src/parser/stmt.rs`/`src/parser/expr.rs`). Never reaches the AST as
+    /// its own node; it desugars straight into a nested `Stmt::If`/`Expr::If`
+    /// held inside the enclosing arm's `else_block`.
+    Elif,
     For,
     In,
     While,
@@ -179,6 +185,7 @@ impl TokenKind {
             TokenKind::Return => "'return'".into(),
             TokenKind::If => "'if'".into(),
             TokenKind::Else => "'else'".into(),
+            TokenKind::Elif => "'elif'".into(),
             TokenKind::For => "'for'".into(),
             TokenKind::In => "'in'".into(),
             TokenKind::While => "'while'".into(),
@@ -978,6 +985,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "return" => TokenKind::Return,
         "if" => TokenKind::If,
         "else" => TokenKind::Else,
+        "elif" => TokenKind::Elif,
         "for" => TokenKind::For,
         "in" => TokenKind::In,
         "while" => TokenKind::While,
