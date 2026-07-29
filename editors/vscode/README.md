@@ -1,9 +1,11 @@
 # Star language support for VS Code
 
-Minimal editor tooling for `.star` files: syntax highlighting (via a
-TextMate grammar) plus basic bracket/comment/indentation configuration.
-No language server, no completions, no diagnostics -- just highlighting,
-so it's cheap to keep in sync while the language itself is still moving.
+Editor tooling for `.star` files: syntax highlighting (via a TextMate
+grammar), basic bracket/comment/indentation configuration, and
+`star check`-driven diagnostics via a minimal Language Server Protocol
+client (todo.md P2 #5) -- no completions, no hover, no go-to-definition
+yet, just squiggles where `star check` would already have found a
+problem, in-editor instead of in a terminal.
 
 ## What's here
 
@@ -16,8 +18,30 @@ so it's cheap to keep in sync while the language itself is still moving.
   auto-closing quotes/brackets, and indentation rules (Star uses
   significant indentation like Python: a line ending in `:` opens a
   block, `else` dedents to match its `if`).
-- `package.json` -- the extension manifest wiring the two files above to
-  the `.star` extension.
+- `extension.js` -- the extension host entry point. Plain CommonJS (no
+  bundler/TypeScript build step, matching this extension's existing
+  "cheap to keep in sync" philosophy): it launches `star lsp` as a child
+  process over stdio via `vscode-languageclient` and does nothing else.
+  The actual diagnostics logic lives entirely in the compiler
+  (`src/lsp.rs`'s module doc comment) -- this file is just plumbing.
+- `package.json` -- the extension manifest: wires the grammar/language
+  config, declares the `vscode-languageclient` dependency, and exposes
+  two settings (`star.serverPath`, `star.trace.server`).
+
+## Requirements
+
+A `star` executable that understands the `lsp` subcommand (this repo's
+own `cargo build`, or any build of it) reachable one of two ways:
+
+- On `PATH` under the name `star` (or `star.exe` on Windows) -- the
+  default, no configuration needed.
+- Anywhere else: set the `star.serverPath` setting (File > Preferences >
+  Settings, search "star") to the full path of the executable.
+
+If `star lsp` fails to launch (wrong path, executable missing), VS Code
+shows an error notification naming the failure -- syntax highlighting
+still works either way, since it doesn't depend on the language server
+at all.
 
 ## Try it locally
 
@@ -29,16 +53,20 @@ Windows it's typically `%LOCALAPPDATA%\Programs\VSCodium\bin\codium.cmd`,
 which the VSCodium installer normally puts on `PATH`).
 
 ```sh
+cd editors/vscode
+npm install   # pulls in vscode-languageclient (a real runtime dependency
+              # now, not just a manifest) -- needed before either option
+              # below, since the extension `require`s it at activation time.
+
 # Option A: point the editor at this folder directly for one session
 code --extensionDevelopmentPath="editors/vscode" .
 # or: codium --extensionDevelopmentPath="editors/vscode" .
 
 # Option B: install it like a normal extension
 npm install -g @vscode/vsce
-cd editors/vscode
 vsce package
-code --install-extension star-lang-0.1.0.vsix
-# or: codium --install-extension star-lang-0.1.0.vsix
+code --install-extension star-lang-0.2.0.vsix
+# or: codium --install-extension star-lang-0.2.0.vsix
 ```
 
 ## Coverage
@@ -53,7 +81,16 @@ types anywhere they appear (structs, enum variants, generic arguments)
 rather than only at declaration sites, since Star's own naming
 convention already reserves `PascalCase` for types.
 
-Not attempted: real type-checking-aware highlighting (e.g.
-distinguishing a shadowed local from a global), or anything needing a
-language server. See `todo.md` P3 #9 for the scoping decision behind
-keeping this to highlighting only for now.
+Diagnostics are published on `textDocument/didOpen`/`didSave`, re-running
+the exact same `Driver::compile` pipeline `star check` uses -- not on
+every keystroke (`didChange` is accepted but intentionally a no-op; see
+`src/lsp.rs`'s module doc comment for why). A diagnostic whose real
+location is inside an `import`ed file (rather than the open document
+itself) is still surfaced, but anchored at the top of the open file with
+the origin file named in the message text, since the server doesn't yet
+track imported files' canonical paths -- a natural follow-up once this
+minimal version proves out.
+
+Not attempted: completions, hover, go-to-definition, or any
+real-time-as-you-type analysis. Each is an additive extension of
+`src/lsp.rs`'s `handle_message` dispatch, not a redesign.

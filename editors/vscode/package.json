@@ -1,12 +1,14 @@
 {
   "name": "star-lang",
   "displayName": "Star",
-  "description": "Syntax highlighting for the Star programming language (.star)",
-  "version": "0.1.0",
+  "description": "Syntax highlighting and diagnostics (via `star lsp`) for the Star programming language (.star)",
+  "version": "0.2.0",
   "engines": {
-    "vscode": "^1.60.0"
+    "vscode": "^1.67.0"
   },
   "categories": ["Programming Languages"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:star"],
   "contributes": {
     "languages": [
       {
@@ -22,6 +24,25 @@
         "scopeName": "source.star",
         "path": "./syntaxes/star.tmLanguage.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Star",
+      "properties": {
+        "star.serverPath": {
+          "type": "string",
+          "default": "star",
+          "description": "Path to the `star` compiler executable used to run `star lsp`. Defaults to `star` on PATH."
+        },
+        "star.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Trace the JSON-RPC communication between VS Code and the `star lsp` server (for debugging the extension itself)."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^8.1.0"
   }
 }

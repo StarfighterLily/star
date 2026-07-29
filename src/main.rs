@@ -5,6 +5,9 @@
 //! - `star check <file>`  — lex + parse + type-check, report diagnostics.
 //! - `star build <file>`  — full pipeline to native executable via LLVM IR.
 //! - `star emit <file>`   — dump tokens or the AST for debugging.
+//! - `star lsp`            — run a minimal Language Server Protocol server
+//!   over stdio (see [`star::lsp`]); meant to be launched by an editor, not
+//!   a human.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -113,6 +116,12 @@ enum Command {
         #[arg(long = "target", value_enum, default_value_t = TargetArg::Windows)]
         target: TargetArg,
     },
+    /// Run a minimal Language Server Protocol server over stdio (see
+    /// `star::lsp`'s module doc comment). Publishes `star check`-equivalent
+    /// diagnostics on `textDocument/didOpen`/`didSave`; not meant to be run
+    /// by hand -- an editor's LSP client launches this and speaks the
+    /// protocol over its stdin/stdout.
+    Lsp,
 }
 
 /// `--target`'s CLI spelling of `star::codegen::Target` -- kept as its own
@@ -199,6 +208,7 @@ fn run(cli: Cli) -> ExitCode {
             cmd_build(&file, &search, output.as_deref(), opt_level, release, &libs, &lib_paths, skip_ir_verify, target.to_target())
         }
         Command::Emit { what, file, search, target } => cmd_emit(what, &file, &search, target.to_target()),
+        Command::Lsp => star::lsp::run(),
     }
 }
 

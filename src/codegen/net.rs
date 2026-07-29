@@ -28,6 +28,19 @@
 //! must be built with `-l ws2_32` (`star build foo.star -l ws2_32`), the
 //! same way binding an external library through `extern "C"` FFI needs an
 //! explicit `--lib`/`-l`.
+//!
+//! ## Windows-only today, but cheap to port
+//! Unlike `crate::codegen::system_font`'s GDI calls, this module has no
+//! fundamental portability problem -- BSD sockets are Winsock's own
+//! ancestor API, so `socket`/`connect`/`send`/`recv` already share Winsock's
+//! names and signatures on Linux almost exactly. It just hasn't been given
+//! a `Target::LinuxGnu` arm the way `crate::codegen::platform` has for
+//! threads/semaphores yet: no `WSAStartup`/`WSACleanup` equivalent is
+//! needed on POSIX, `close` replaces `closesocket`, and (the one real
+//! representation change) a POSIX socket is a plain `int` fd with `-1` as
+//! its failure sentinel rather than this module's pointer-shaped `SOCKET`
+//! handle with a null-pointer sentinel. See `docs/cross_platform_scope.md`
+//! for the concrete per-call plan.
 
 use crate::diagnostics::Span;
 use crate::types::*;

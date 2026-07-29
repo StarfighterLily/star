@@ -17,6 +17,8 @@ path = "src/lib.rs"
 clap = { version = "4", features = ["derive"] }
 # Ergonomic error propagation in the driver/CLI layer.
 anyhow = "1"
+# JSON-RPC message (de)serialization for `star lsp` (Language Server Protocol).
+serde_json = "1"
 
 [dev-dependencies]
 # Snapshot-style assertions for integration tests over .star programs.

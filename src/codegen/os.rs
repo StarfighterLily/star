@@ -2,6 +2,14 @@
 //! wrappers over the C runtime's `getenv`/`_putenv_s`. `args()` builds a
 //! `List<str>` and lives alongside the rest of `List<T>`'s construction
 //! logic instead -- see `crate::codegen::list::emit_args`.
+//!
+//! ## Windows-only today, but the cheapest gap in the codebase
+//! `getenv` (`emit_env_get`) is already POSIX-standard and needs no
+//! `Target` branch at all. `_putenv_s` (`emit_env_set`) is a Microsoft CRT
+//! extension, not POSIX -- the direct equivalent is glibc's
+//! `setenv(name, value, 1) -> i32`, same argument shape, "0 on success"
+//! convention preserved. A single `Target::LinuxGnu` match arm in
+//! `emit_env_set` closes this; see `docs/cross_platform_scope.md`.
 
 use crate::diagnostics::Span;
 use crate::types::*;

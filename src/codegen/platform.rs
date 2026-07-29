@@ -17,11 +17,17 @@
 //! a real, large feature addition, not a seam retrofit. See that module's
 //! own doc comment: it stays an explicit, acknowledged Windows-only
 //! dependency, with `crate::codegen::font`'s hand-rolled bitmap font as the
-//! already-portable fallback. Likewise `crate::codegen::net`'s Winsock calls
-//! and `crate::codegen::system_font`'s GDI calls are declared unconditionally
+//! already-portable fallback. `crate::codegen::net`'s Winsock calls and
+//! `crate::codegen::os`'s `_putenv_s` call are also Windows-only and not yet
+//! seamed here -- unlike fonts, both are cheap (BSD sockets and `setenv`
+//! are close POSIX equivalents), just not yet built. Every `declare` this
+//! crate emits for these still-Windows-only surfaces stays unconditional
 //! regardless of `Target` (an unreferenced `declare` costs nothing at link
 //! time) -- only the primitives actually load-bearing for `par`/`swarm`
-//! (threads, semaphores, core count) have a second implementation.
+//! (threads, semaphores, core count) have a second implementation today.
+//! See `docs/cross_platform_scope.md` for the full inventory, a concrete
+//! per-surface porting plan for each remaining gap, and why none of it is
+//! scheduled yet (no Linux devbox to build/link/run against).
 //!
 //! ## Semaphore representation
 //! Win32's `CreateSemaphoreA` returns an opaque kernel `HANDLE` (`i8*`);

@@ -2,6 +2,12 @@
 
 A game programming language with Pythonic-Rust syntax and unique memory management modes, targeting native executables via LLVM IR.
 
+## Versioning:
+Currently 0.1.0. There is no guarantee of stability or usability. Version shall remain as such until
+the Nova project is complete and minimal 4 rounds of bug hunts, after which the language will be
+considered usable and a semblance of stability can be expected. From there, industry-standard SemVer
+practices will be observed to provide a reliable measure at a glance.
+
 ## Design
 
 - **Syntax**: Python-style indentation, Rust-style type inference, pattern matching, and immutability-by-default.
@@ -15,25 +21,45 @@ See [docs/design.md](docs/design.md) and [docs/features.md](docs/features.md) fo
 
 ## Platform Support
 
-A compiled Star program only runs on Windows today: `window_create`/audio/
-gamepad (`crate::codegen::sdl`/`audio`/`gamepad`) bind SDL2, and
-`font_load_system`/`font_load_ttf`/`draw_text_ttf` (`crate::codegen::
-system_font`) bind Windows GDI directly, with no portable equivalent bound
-in either case. That's an explicit, acknowledged scope decision, not an
-oversight — see `crate::codegen::system_font`'s module doc comment for why
-GDI text rendering in particular isn't a cheap retrofit (there's no POSIX
-syscall that rasterizes a TrueType glyph).
+A compiled Star program only runs on Windows today. Three surfaces are
+Windows-only by construction, not one:
 
-One piece *is* target-abstracted: the `par`/`swarm` worker-thread pool
+- `font_load_system`/`font_load_ttf`/`draw_text_ttf`
+  (`crate::codegen::system_font`) bind Windows GDI directly, with no
+  portable equivalent bound at all — see that module's own doc comment for
+  why GDI text rendering isn't a cheap retrofit (there's no POSIX syscall
+  that rasterizes a TrueType glyph).
+- `tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close` (`crate::codegen::net`)
+  bind Winsock2 directly.
+- `env_set` (`crate::codegen::os`) calls `_putenv_s`, a Microsoft CRT
+  extension, not POSIX.
+
+Unlike fonts, the networking and env-var gaps are cheap — POSIX has a
+near-identical BSD-sockets API and a `setenv` equivalent respectively — they
+just haven't been given a `Target`-gated second implementation yet.
+`window_create`/audio/gamepad (`crate::codegen::sdl`/`audio`/`gamepad`) bind
+SDL2, which already ships real Linux builds; that gap is packaging (this
+repo only vendors a Windows SDL2 build), not codegen. See
+[docs/cross_platform_scope.md](docs/cross_platform_scope.md) for the full
+inventory and per-surface plan.
+
+One piece *is* target-abstracted today: the `par`/`swarm` worker-thread pool
 (`crate::codegen::platform`) has a real second implementation using POSIX
 threads/semaphores instead of Win32 primitives, selectable with `--target
 linux` on `star build`/`star emit llvm`. This is best-effort cross-*emission*
 of that one subsystem, not a supported cross-compile story: nothing in this
 repo vendors, detects, or verifies a Linux sysroot/libc, and any program
-touching a window/audio/gamepad/font builtin still won't link under that
-target regardless. Use it to inspect the generated IR shape or hand it to a
-real Linux toolchain, not to expect `star build --target=linux` to produce a
-working binary out of the box.
+touching a window/audio/gamepad/font/net/env builtin still won't link under
+that target regardless. Use it to inspect the generated IR shape or hand it
+to a real Linux toolchain, not to expect `star build --target=linux` to
+produce a working binary out of the box.
+
+**Cross-platform Linux support is a genuinely intended goal, not a maybe** —
+see [docs/cross_platform_scope.md](docs/cross_platform_scope.md)'s status
+line. It's gated on getting a real Linux devbox running: every claim above
+is currently IR-shape-verified only (inspected by eye), never actually
+linked or run, and closing that gap for real needs a real `clang`/`ld`/libc
+to build and test against rather than more IR inspection.
 
 ## Compilation Toolchain
 
