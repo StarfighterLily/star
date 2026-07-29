@@ -1,358 +1,330 @@
 # Star Language: A Technical Assessment
 
-*Reviewed at commit `34c7fea` (2026-07-28). Based on a full read of
-`docs/design.md`, `docs/features.md`, `docs/language_reference.md`,
-`readme.md`, `todo.md`, every `changelog/` entry, the complete git history
-(129 commits, first commit `d555e4b` on 2026-07-06), the `src/` compiler
-(~44.8k lines of Rust), the test suite (1,762 `#[test]` functions across 68
-files under `tests/`), and `projects/nova` — a from-scratch ~4,900-line Star
-port of a fantasy CPU emulator that now serves as the project's largest real
-stress test. `cargo +stable-x86_64-pc-windows-gnu check --tests` is clean
-with zero warnings at the time of this review.
+*Reviewed at commit `9b4e24c` (2026-07-29), one stage after the prior
+review at `34c7fea` (archived as
+[changelog/066_2026-07-29_9b4e24c_current_status.md](changelog/066_2026-07-29_9b4e24c_current_status.md)).
+Based on a full read of that prior assessment, `todo.md`'s "Previous work"
+log, every file the intervening five commits touched (`git log --stat
+34c7fea..9b4e24c`), `docs/conventions.md` and `CLAUDE.md` (both new this
+stage), `docs/cross_platform_scope.md`, `src/lsp.rs`, `projects/nova/NOTES.md`'s
+new sections, and the `.clinerules/` directory the new `CLAUDE.md` claims to
+mirror. `cargo +stable-x86_64-pc-windows-gnu check --tests` is clean with
+zero warnings at this commit. The full `cargo +stable-x86_64-pc-windows-gnu
+test` run, started in the background at the top of this review, finished
+clean (exit code 0, every one of ~69 test binaries reporting `0 failed`)
+by the time this document was ready to finalize — see "A process note on
+this review itself" below for why that took long enough to be worth
+naming, even though it ultimately passed.
 
 ## The pitch, then and now
 
-The very first commit (`d555e4b`, 2026-07-06) already stated the whole
-thesis in one line: *"a game programming language with Pythonic-Rust syntax
-and unique memory management modes, targeting native executables via LLVM
-IR."* Twenty-two days and 129 commits later, that sentence hasn't changed —
-what's changed is how much of it is real. The first commit was a 467-line
-`codegen.rs`, a lexer, and a design doc describing a `frame`/arena/
-generational-reference memory model that didn't exist yet. Today that model
-is implemented, tested, and battle-tested against a real 64KB-addressable
-CPU emulator; hash-backed `Map`/`Set`; trait-bounded generics with operator
-overloading; a `par`/`swarm` concurrency model that queries real hardware
-core counts; SDL2-backed graphics/audio/gamepad; GDI text rendering; and a
-compiler that verifies its own hand-rolled LLVM IR before ever handing it to
-`clang`. The gap between the pitch and the implementation, which was total
-at commit one, is now narrow enough that the honest caveats are about scope
-(Windows-only, static dispatch only) rather than "does this exist at all."
+Unchanged from the last review, and still true: *"a game programming
+language with Pythonic-Rust syntax and unique memory management modes,
+targeting native executables via LLVM IR."* This stage didn't add language
+surface — it closed process debt instead. That's a legitimate thing for a
+stage to do (three prior assessments all flagged process gaps: no LSP, no
+stated versioning policy, no automatic reassessment trigger), and this
+stage closed all three in one sitting. The interesting finding this round
+isn't a new compiler bug — it's that the closing process itself wasn't done
+as cleanly as the "Done." markers in `todo.md` claim (see "The Bad" #1 and
+#2 below), which is exactly the kind of thing a reassessment is supposed to
+catch and exactly why the cadence is worth keeping.
 
 ---
 
-## History: the stages so far
+## History: Stage 7 (`34c7fea` → `9b4e24c`, 2026-07-28 to 07-29)
 
-**Stage 1 — Bootstrapping a pipeline (`d555e4b` → `df33ae2`, first ~2 days).**
-Lexer, parser, a type checker, and an LLVM-IR emitter good enough to call
-"compilable milestone achieved." No memory model yet, no conditionals even.
-This stage was about proving the two-stage architecture (Rust front-end →
-textual `.ll` → `clang`) could round-trip at all.
+The previous review's own "Next steps, prioritized" section became this
+stage's `todo.md` verbatim, and every one of its seven items now reads
+**Done.**:
 
-**Stage 2 — Making it a real language (`8852828` → `0e8c107`, next ~week).**
-Conditionals, the actual `frame`/`arena`/`GenRef` memory model, SIMD math
-types, reflection decorators, a modularized source tree. This is where the
-design doc's central bet — three memory tiers instead of a GC or borrow
-checker — went from prose to enforced compiler rule.
+- **P0 #1 — write-width generalization.** The single-opcode `MOV`-only fix
+  from Stage 5 was generalized to ~30 call sites across `cpu.star`
+  (arithmetic/bitwise/BCD/math-library/string-conversion), and the same
+  live-reference-verification pass turned up two more real bugs along the
+  way: `PUSH`/`POP` used a fixed 16-bit stack slot instead of the operand's
+  actual width, and the BCD carry/borrow opcodes checked their flag against
+  the *masked* result instead of the raw pre-mask value — the latter
+  correcting a previous `NOTES.md` entry that had mis-documented this as
+  intentional. Five new checked-in regression tests in `projects/nova/tests/asm/`,
+  each independently verified against the live Python reference over the
+  Nova-16 MCP bridge before being added.
+- **P0 #2 — stack-budget warning.** New `Checker::check_stack_budget`
+  (`src/types/stack_budget.rs`, 426 lines): a `star check`/`star build`-time
+  heuristic that sums a function's own `let`-aggregate footprint plus its
+  deepest statically-resolvable call chain's footprint, and warns (never
+  errors, via a new `Checker`/`Compilation` `warnings` side-channel
+  threaded through `src/driver.rs` and `src/main.rs`, parallel to the
+  existing fatal `errors` path) at a 1MiB combined total — turning the
+  exact incident class that forced Stage 5's 16MiB linker-flag bump into a
+  compile-time signal. 11 new tests in
+  `tests/frontend_stack_budget_warning.rs`.
+- **P1 #3 — cross-platform scope, fully inventoried.** New
+  `docs/cross_platform_scope.md` covers all three Windows-only codegen
+  surfaces (not just fonts): networking and env-vars are scoped as cheap
+  `Target`-gated match-arm additions with concrete per-line porting notes;
+  GDI text rendering is scoped as genuinely hard with a concrete two-option
+  vendor plan (`stb_truetype` preferred). `readme.md`'s "Platform Support"
+  section, and `platform.rs`/`net.rs`/`os.rs`'s own module doc comments,
+  all point at it. This is real, complete scoping work — the font-vendor
+  plan the prior review asked to be sketched now has one, in enough detail
+  that "add a `Target::LinuxGnu` arm" is close to a checklist for
+  networking/env-vars specifically.
+- **P2 #5 — `star lsp`.** New `src/lsp.rs` (638 lines): a minimal LSP
+  server over stdio, hand-rolled `Content-Length`-framed JSON-RPC over the
+  one new dependency this needed (`serde_json`), re-running the same
+  `Driver::compile` pipeline `star check` already uses on `didOpen`/
+  `didSave`. 17 new tests plus a real subprocess smoke test (stdin/stdout
+  piped to a built `star.exe`, not just in-process calls). Wired into
+  `editors/vscode`: a new `extension.js` (`vscode-languageclient`, plain
+  CommonJS, no bundler), a `star.serverPath` setting, `package.json`
+  bumped to `0.2.0` with `engines.vscode` raised to `^1.67.0` (the floor
+  that dependency needs), and a rebuilt `star-lang-0.2.0.vsix` replacing
+  the grammar-only `0.1.0` one.
+- **P1 #4 — Nova audio/UART.** Marked **Done.** in `todo.md`. It isn't —
+  see "The Bad" #1, the most consequential finding of this review.
+- **P2 #6 — versioning policy.** `readme.md`'s "Versioning" section now
+  states the actual gate explicitly: `0.1.0` until Nova is complete and has
+  survived four bug-hunt rounds, then standard SemVer. A real, if informal
+  by nature, improvement over the prior review's "no stated policy at all"
+  gap — see "The Bad" #4 for a caveat on the gate's own definition.
+- **P3 #7 — institutionalize the reassessment cadence.** New `CLAUDE.md`
+  (root, agent-facing) and `docs/conventions.md` (the fuller human-facing
+  version) both now state the trigger explicitly: full `todo.md` completion
+  *is* the signal to stop and reassess, no one has to remember to ask. This
+  document is the first reassessment produced under that written trigger
+  rather than an ad hoc request — the mechanism this stage built is, right
+  now, being exercised for the first time. See "The Bad" #2 for a gap in
+  how completely that formalization actually landed.
 
-**Stage 3 — General-purpose completeness (`03390dc` → `71683d7`, roughly
-the next two weeks).** File I/O, C extern/FFI, `List<T>` ownership,
-bug-hunting rounds (explicitly numbered — "round 2," "round 3," "round 4,"
-"round 6" — each hardening a different corner: numeric casts, generics,
-`Option`/`Result`, collections, concurrency), modules, math builtin
-expansion. By the end of this stage the language could express real
-programs, but the test suite was still one undifferentiated pile and several
-foundational gaps (no hex literals, no bitwise operators, `Map`/`Set` were
-linear scans, structs couldn't overload operators) were still open.
-
-**Stage 4 — Systems depth (`39960ca` → `ca0d66b`, 2026-07-21 to 07-26).**
-This is the stage that turned Star from "a language that compiles" into "a
-language you could plausibly ship a game in": generic struct methods, a
-real `Snake` game as an integration exercise, arena/frame capacity
-configuration, spawn handles, top-level `let`/`const`, `Map`/`Set`/`Symbol`
-becoming real open-addressed hash tables, trait-bounded generics, operator
-overloading (reusing the existing method-call codegen path — zero new
-backend surface for a whole new surface-level feature), audio/gamepad,
-GDI-backed system fonts, and — critically — `ir_check.rs`: a post-codegen
-verifier plus a 2,000-case fuzzer that closes the single biggest structural
-risk a hand-rolled-IR compiler can have (`star check` passing while `clang`
-silently rejects the output). A full external assessment (`changelog/060`)
-was written at the end of this stage; its 13-item punch list was closed in
-about two days.
-
-**Stage 5 — Hardening and dogfooding (`d203a9e` → `2c71fb7`, 2026-07-26 to
-07-27).** The worker pool went from a hardcoded 4 threads to a real
-hardware-core-count query with a documented OS-primitives seam
-(`codegen/platform.rs`) so a second target isn't a grep-and-replace across
-the whole codegen crate. The 1,514-test monolith (`tests/frontend.rs`) was
-split into 59 topic-scoped files. A second, independent full assessment
-(`changelog/062`) was written and its punch list closed the same way. Then
-`projects/nova` began: a real fantasy-computer CPU emulator ported into
-Star, deliberately chosen as "something larger and more demanding than a
-toy." It found five genuine Star **compiler** bugs in short order (large
-struct/array by-value hangs, malformed `phi` for tuple/struct-returning
-`if`/`else`, RC leaks from an untaken `if` arm, a diamond-import bug
-silently deleting a cross-module `impl` block, and a too-small default
-stack causing silent `STATUS_STACK_OVERFLOW` crashes) — each fixed at the
-root and regression-tested, not patched around.
-
-**Stage 6 — Nova as ongoing pressure-test (`71c803e` → `34c7fea`, 2026-07-27
-to 07-28, today).** Nova's own gap list drove a batch of real language
-features rather than the reverse: binary-safe `Bytes` I/O, real bitwise/
-shift operators (`&`/`|`/`^`/`~`/`<<`/`>>`), hex literals, destructuring
-`let`, cross-module `impl` blocks, `elif`, single-line `fn` bodies, fixed-
-size array literals with differing values, scientific-notation float
-literals. Nova itself grew a binary program loader, full 9-layer
-compositing, memory-mapped sprites, a UART model, mouse plumbing, a Q8.8
-fixed-point math library, a string/integer-conversion library, and BCD
-opcodes — verified, where possible, by replaying the *exact same assembled
-machine code* against a live upstream Python reference over an MCP bridge
-rather than by independent hand-derivation, which is a materially stronger
-verification method than "the numbers look right."
-
-The throughline across all six stages: every stage's gaps were found by
-building something real in the language, not by inspection, and every
-external assessment's punch list was closed in full rather than
-cherry-picked. That pattern itself is now three review cycles deep
-(`060` → `062` → this one) and has held every time.
+Net: five of seven items are real, verified, tested work matching their
+`todo.md` descriptions. Two (P1 #4, and the "keep `.clinerules` in sync"
+clause of P3 #7) are not, in ways only visible by actually checking rather
+than trusting the "Done." marker — which is precisely the failure mode a
+reassessment exists to catch.
 
 ---
 
 ## The Good
 
-**1. The memory model is real, not aspirational, and still holds up.**
-`frame` bump allocators with escape analysis, spatial `arena`s, and
-`GenRef` generational references were pure design-doc prose at commit one.
-They are now enforced compiler rules with dedicated analysis passes
-(`frame_analysis.rs`, `par_analysis.rs`, `system_analysis.rs`) and have
-survived a 300KB-plus real struct (Nova's `Cpu`) without the model itself
-needing to change shape — only a linker flag (default stack size) needed
-adjustment.
+**1. The reassessment cadence is now load-bearing, not aspirational —
+including catching its own stage's shortfalls.** `CLAUDE.md`/
+`docs/conventions.md` turned "someone remembered to ask for a review
+twice" into a written, mechanical trigger (full `todo.md` completion), and
+this document is that trigger firing for the first time. That it
+immediately surfaced two real gaps in the very stage that wrote the
+trigger (see The Bad #1, #2) is the strongest possible evidence the
+mechanism works as intended, rather than being self-congratulatory
+process theater.
 
-**2. The hand-rolled-IR structural risk has a real, tested answer.**
-`ir_check.rs` runs after codegen and before `clang` ever sees the output:
-terminator/phi/reference/duplicate-definition checks derived directly from
-real historically-hit bug classes, a 2,000-case fuzz test, and (as of this
-stage) a second fuzzer one layer earlier — `tests/frontend_fuzz_testing.rs`
-feeds random bytes and mutated real `.star` source through the full
-lexer→parser→checker pipeline and asserts it always ends in success or a
-clean diagnostic, never a panic. This closes the gap the last review
-flagged (181 `.expect()` call sites as plausible panic surfaces on
-malformed input) at the layer that sees raw user text first.
+**2. Verification rigor on the Nova side keeps improving, not just
+accumulating.** The write-width generalization pass didn't just fix the
+known bug wider — it re-verified prior documentation against the live
+reference and found that document wrong (the BCD carry/borrow masking
+order). `NOTES.md`'s new "Status: this port now supersedes the Python
+reference" section draws the correct, non-obvious conclusion from this:
+future discrepancies should no longer default to "assume Python is right."
+That's a mature, evidence-backed position, not overconfidence — it's
+explicitly scoped to what's actually been re-verified.
 
-**3. Verification methodology has gotten more rigorous, not just more
-voluminous.** The BCD-opcode work is the clearest example: rather than
-hand-deriving "correct" BCD arithmetic on both the Star port and the
-verification harness (which would silently reproduce the same idealized-but-
-wrong algorithm on both sides), the port was checked by replaying the
-identical assembled machine code against a live reference implementation,
-checkpoint by checkpoint. That caught a real reference-quirk bug (a carry
-check that can structurally never fire because of mask-before-check
-ordering) that an independent re-derivation would have missed entirely.
+**3. `star lsp` is a genuinely complete minimal implementation, not a
+stub.** Real `Content-Length` framing, real percent-decoding and
+UTF-16-code-unit column conversion (verified against an astral-plane
+emoji, not just ASCII), and — notably — an actual subprocess smoke test
+that pipes stdin/stdout to a built `star.exe` rather than only calling
+`handle_message` in-process. That last detail matters: a hand-rolled
+JSON-RPC framer is exactly the kind of code where "the unit tests pass"
+and "the wire protocol actually round-trips" can diverge, and this stage
+tested the harder, more honest claim.
 
-**4. Real hash tables, real generics, real operators — and each landed
-without inflating the backend.** `Map`/`Set`/`Symbol` are open-addressed
-with tombstones and structural hashing that agrees with structural equality
-(including `-0.0`/`+0.0` canonicalization). Operator overloading desugars
-`a + b` into the same `TypedExpr::Call` shape an ordinary method call
-already produces, meaning zero new codegen paths for a whole new
-surface-level feature — a genuinely elegant design choice that avoids
-reopening the hand-rolled-IR risk for every new piece of syntax sugar.
+**4. The stack-budget checker is a well-scoped heuristic that names its
+own gaps rather than overselling.** `src/types/stack_budget.rs`'s module
+doc comment explicitly lists what it doesn't cover (calls through
+closures/function values, a closure's own separate stack frame, deep
+non-mutual recursion's per-call cost) and states each is an accepted,
+warning-can-only-under-fire gap — the same "best-effort, not a soundness
+proof" honesty `ir_check.rs` set the precedent for.
 
-**5. The Windows-only scope is now a documented decision with a real
-retrofit seam, not silent debt.** `codegen/platform.rs` centralizes every
-raw thread/semaphore/core-count primitive behind `emit_*`/`declare_*`
-methods, with an explicit `Target` enum (`WindowsGnu`/`LinuxGnu`) and a
-`--target` flag on `star build`/`star emit llvm`. This is honestly scoped:
-the README is explicit that this is "best-effort cross-*emission* of one
-subsystem," not a supported cross-compile story — GDI text rendering and
-SDL2's own Windows binary remain hard Windows dependencies with no pretense
-otherwise.
-
-**6. Dogfooding at real scale, not toy examples.** `projects/nova` is a
-~4,900-line, multi-file Star program (a ~3,000-line `cpu.star` alone)
-implementing a real CPU emulator: 64KB memory space, ~190-instruction ISA,
-9-layer graphics compositing, UART, keyboard, mouse, Q8.8 fixed-point math.
-It is by a wide margin the most demanding thing built in this language to
-date, and it is still finding real compiler bugs (five, this round) rather
-than just exercising already-solid paths — meaning the language is still
-being pressure-tested by something harder than its own test suite.
-
-**7. Test suite hygiene improved under its own weight.** The 1,514-test,
-single ~1.45MB `tests/frontend.rs` file the last review flagged as an
-emerging cost has been split into 59 topic-scoped files (now 68 total, 1,762
-tests) mirroring `src/codegen/`'s own module boundaries, with a shared
-`tests/frontend/common.rs` for cross-cutting helpers. "Find existing
-coverage before adding more" is materially cheaper now than it was two
-review cycles ago.
-
-**8. Diagnostics and process discipline remain a real strength.**
-Rustc-grade diagnostics with cross-file span tracking and "did you mean"
-suggestions, an append-only `changelog/` giving a durable record of *why*
-each change happened (not just what), and — new this stage — actual
-external tooling: a TextMate grammar and minimal VS Code extension, so
-`.star` files no longer render as plain text in an editor.
+**5. Cross-platform scoping is now complete enough to be closer to a
+checklist than a shrug.** `docs/cross_platform_scope.md` gives networking
+and env-vars concrete per-line porting notes (down to which POSIX call
+replaces which Win32 call and what sentinel-comparison change is needed)
+and gives text rendering a real two-option vendor decision
+(`stb_truetype` preferred, reasons given) rather than leaving it as "hard,
+unscoped." The only remaining blocker for all of it is external (a Linux
+devbox), not a documentation or planning gap.
 
 ---
 
 ## The Bad
 
-**1. Traits are structural sugar over monomorphization — permanently, by
-explicit decision. Enums still can't implement one.** There's no vtable, no
-`dyn Trait`, no heterogeneous `List<SomeTrait>`. This is now clearly
-documented as a *permanent, intentional* choice (`docs/design.md`'s "Trait
-Dispatch: Decision and Scope," `docs/language_reference.md`'s "Dispatch
-Model"/"Heterogeneous Collections" sections), with a documented workaround
-(a tagged enum of variants dispatched via `match`). That's a real
-improvement over the prior review's "this reads like it wants runtime
-polymorphism but can't deliver it" gap — the design doc's own flagship
-`Player`/`Damageable` example has been reconciled with what the compiler
-actually does. But the underlying limitation is unchanged, and the
-struct-only restriction on `impl Trait for ...:` is likewise now a
-documented permanent asymmetry rather than a closed gap. Anyone coming from
-Rust/C++/any OOP-with-interfaces background will hit this immediately, and
-"use an enum instead" is a real workaround, not equivalent expressiveness
-(every new concrete type needs the enum itself edited, unlike a genuine
-open trait-object collection).
+**1. `todo.md`'s P1 #4 is marked "Done." and isn't — this is the most
+important finding this review turned up.** The entry's own text ("Nova's
+audio synthesis and UART needs *will be met next*... Getting these in is a
+win across the board") is future-tense intent, not a completed-work
+summary, and it's the only one of the seven closed items with no
+corresponding "Previous work" paragraph and no file changes in either
+`34c7fea..9b4e24c` commit. Checked directly against the code: `cpu.star`'s
+`op_splay`/`op_sstop`/`op_strig` are still literal no-ops
+(`self.halted = self.halted`), and `NOTES.md`'s own "Ideas for future
+work" section — *written this same stage* — still lists "sound synthesis"
+and "a UART host bridge" as not-yet-done. Nothing was implemented; the
+`todo.md` line was marked complete anyway. This is worth taking seriously
+precisely because the last four stages' credibility rests on "Done." always
+meaning done — one false marker doesn't undo that track record, but left
+uncorrected it would be the first crack in it. (Note also: the two
+building blocks this item's own justification cited as blockers —
+"multiplayer... network" and "stdin... text-based games" — already exist
+at the language level, `tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close` in
+`net.rs` and stdin support in `file_io.rs` both predate this stage. The
+only genuinely new capability this item's premise needed was real audio
+waveform synthesis/mixing and a real UART *host* bridge, and neither was
+built.)
 
-**2. One narrow but real correctness gap sits in Nova's own port, not the
-compiler — but it's the kind of gap the compiler makes easy to introduce.**
-The `MOV [mem], <narrow-source>` write-width bug (fixed this round) was
-scoped deliberately narrowly: the same latent issue almost certainly exists
-in ~90 other opcode handlers that share the same `_write_result`-style
-codepath (`ADD`/`SUB`/`AND`/`XCHNG`/...), and generalizing the fix was
-explicitly deferred as higher-risk than its proven impact justified. This
-isn't a Star-language problem per se, but it's worth naming: a
-64KB-addressable, register-width-polymorphic emulator is exactly the kind
-of program where "operand width is inferred from destination kind" is an
-easy rule to get subtly wrong in more than one place, and the fix pattern
-here (narrow, single-opcode-scoped) means the other ~90 call sites are an
-open, acknowledged risk in Nova's own correctness, not a closed one.
+**2. `CLAUDE.md` claims a cross-tool sync that doesn't hold up.**
+`CLAUDE.md`'s header states "`.clinerules/general.md` and
+`.clinerules/workflows/todo` cover the same ground for Cline; keep all
+three in sync if any changes." Checked directly: `.clinerules/general.md`
+is 2 generic lines ("write industry-standard Rust... use PowerShell") and
+`.clinerules/workflows/todo` is 4 generic lines with no mention of the
+`+stable-x86_64-pc-windows-gnu` toolchain override (the single most
+load-bearing rule in `CLAUDE.md` — plain `cargo build` fails outright on
+this machine), no mention of the reassessment trigger, and none of
+`docs/conventions.md`'s specificity. Both predate this stage and were
+never touched by it. This is a small, mechanical fix (update two short
+files), but it's a concrete, checkable claim in a checked-in file that is
+false today — the kind of drift that compounds silently if a Cline-based
+session ever relies on it.
 
-**3. Versioning is still informal.** `Cargo.toml` stays `0.1.0` across 129
-commits and three full external assessments; there's still no stated
-stability tier or SemVer policy for the language surface. The `changelog/`
-directory (added specifically to address the process gap behind this) is a
-real improvement, but it documents history — it doesn't answer "is it safe
-to write a `.star` program today and expect it to still parse next month."
-For a solo project mid-design-churn that's a reasonable trade, but it's the
-same open item from two reviews ago, just not yet urgent enough to force.
+**3. Traits remain structural sugar over monomorphization, permanently,
+by explicit decision.** Unchanged from every prior review — no vtable, no
+`dyn Trait`, no heterogeneous `List<SomeTrait>`, still fully documented as
+intentional rather than a gap. Carried forward for completeness, not
+because anything changed this stage.
 
-**4. No LSP, no formatter, no package registry.** The TextMate grammar/VS
-Code extension added this stage is real progress on the single cheapest
-item (syntax highlighting), but there is still no language server (no
-autocomplete, no inline diagnostics without running `star check` by hand),
-no code formatter, and nothing beyond local search paths plus a minimal
-manifest for dependency management. Not urgent while the primary author is
-also the only user, but it remains the real adoption barrier the moment
-this language is shown to a second person.
+**4. The versioning gate's exit condition isn't itself well-defined.**
+`readme.md` now states the gate ("until Nova is complete and has survived
+4 bug-hunt rounds") explicitly, which is real progress over having no
+stated gate at all — but "Nova is complete" isn't defined anywhere, and
+Nova's own `NOTES.md` "Ideas for future work" list has *grown* this stage
+(sound synthesis, UART bridge, an assembler, splitting `cpu.star` further),
+not shrunk. A gate whose target keeps growing risks never being reached
+by its own definition rather than by the language's actual readiness. This
+isn't urgent, but it's worth deciding what "complete" means concretely
+(a fixed opcode/feature checklist, most plausibly) before the list grows
+again.
 
-**5. The review cadence is still ad hoc.** Three full assessments now exist
-(`changelog/060`, `changelog/062`, this one), each closing its own punch
-list in full within one to two days — which is a genuine strength, but it
-also means the interval *between* reviews is exactly when untested Win32
-surface, new special cases, and new opcode-handler-style latent bugs (see
-Bad #2) can accumulate fastest. Nothing yet triggers a review on a cadence
-tied to feature velocity rather than to someone deciding to ask for one —
-this document is itself an instance of that gap, not a fix for it.
+**5. The review cadence's first automatic firing took noticeably longer to
+confirm than an ad hoc review would.** The full `cargo test` run (started
+in the background at the top of this review) took long enough that this
+document's drafting finished first — it did pass cleanly once it
+completed, but a reassessment that fires mid-session rather than at a
+point of someone's choosing needs to actually budget for that wait rather
+than assume `check --tests` alone is enough, or risk finalizing before the
+real confirmation lands. This time it worked out; the process gap (see
+"A process note on this review itself") is worth naming regardless.
 
 ---
 
 ## The Ugly
 
-**1. Every new feature still makes the eventual cross-platform port more
-expensive, and the counter-force (the `platform.rs` seam) is necessary but
-not sufficient.** The seam genuinely helps for threads/semaphores/core-count
-— that's real, tested, and no longer a grep-and-replace problem. But
-`system_font.rs` (raw GDI, acknowledged as not cheaply portable — there's no
-POSIX syscall that rasterizes a TrueType glyph) and SDL2's own Windows-only
-binary in this repo are still hard dependencies with no retrofit path
-sketched, even a deferred one. The seam closes the *narrowest* part of the
-problem (the part that was cheapest to fix); the expensive parts (fonts,
-the actual SDL runtime story on a second OS) are undiminished. This is
-still the right trade for a solo Windows-focused project — but it's worth
-being honest that "the Windows-only risk was addressed" is true for threads
-and false for windowing/text, and the document trail could read as more
-resolved than it is if that distinction gets lost.
+**1. The full test suite took long enough to look stuck before it didn't
+be.** Partway through this review, the background `cargo test` run showed
+two idle `cargo` processes with near-zero CPU and no active `rustc` for a
+long stretch — indistinguishable, from the outside, from the SDL/window-
+contention hang-or-crash class the project's own test helpers already
+document from prior full-parallel runs. It was, in fact, just slow (69
+test binaries, many spawning real SDL windows/subprocesses) — the run
+finished at exit code 0 with every binary reporting `0 failed` before this
+document was finalized. Worth recording anyway: this stage doesn't have a
+way to distinguish "slow" from "hung" from the outside other than waiting
+it out, and the next automatically-triggered review should expect the same
+uncertainty rather than assume either outcome by default.
 
-**2. The language's own big-aggregate feature directly caused a silent
-production-crash-class bug, and the fix is a global linker flag, not a
-structural guarantee.** Nova's stack-overflow bug (Stage 5) exists *because*
-Star deliberately makes multi-hundred-KB structs ordinary stack-allocatable
-`let` bindings — a real, useful feature — with no compiler-side guard
-against a call chain's cumulative stack usage exceeding the OS default. The
-fix (a generous, explicit 16MiB stack reserve baked into every `star build`
-invocation) makes the *known* case go away, but it's a blunt instrument: it
-raises the ceiling rather than making the compiler aware of the stack
-budget it's spending on the caller's behalf. A sufficiently deep call chain
-or a sufficiently large aggregate can still silently exhaust 16MiB the same
-way the old 1MiB default was exhausted — just at a further remove, with the
-exact same silent-`STATUS_STACK_OVERFLOW`-no-diagnostic failure mode,
-because nothing in the compiler models stack usage at all. This is a real
-fix for a real bug, but it treats a symptom of "this language has no notion
-of stack budget," not the underlying gap.
+**2. Every prior stage's unchanged structural caveats still stand.** The
+Windows-only-by-construction scope (now fully documented, still not
+retrofitted), the "special guest" type families (`Wrapping`/`Fixed`/
+`Tick`/`Duration`/`Instant`, unified in documentation, not in mechanism),
+and the big-aggregate stack-budget risk (now diagnosable at compile time
+via a warning, but still only a warning, never a hard block) are all
+carried forward unchanged from the last review. None regressed this stage;
+none were the focus of it either.
 
-**3. "One type system" is still a shorter list of special guests, not zero
-special guests.** `Ty::eq_only_scalar_shape` unified the equality-only
-types' dispatch, and this stage's binop-dispatch documentation pass
-explicitly wrote down (rather than left implicit) that `Wrapping`/`Fixed`
-and the `Tick`/`Duration`/`Instant` family are irreducibly special. Writing
-that down is real progress over an undocumented asymmetry — but it's
-documentation of permanence, not reduction: the number of special-cased
-type families is the same as it was, just now labeled "by design" instead
-of "not yet unified." Whether that's actually the correct final shape or
-just where the unification effort stopped is not yet distinguishable from
-the outside.
+---
+
+## A process note on this review itself
+
+This reassessment was triggered automatically (per `CLAUDE.md`/
+`docs/conventions.md`'s new trigger) at the start of a session, rather
+than requested at a point of someone's choosing. That surfaced two real
+findings (The Bad #1, #2) a less adversarial pass might have accepted at
+face value from the "Done." markers alone — which is the mechanism working
+as designed. It also meant drafting this document ran concurrently with,
+rather than strictly after, the full-test-suite confirmation every prior
+review had time to obtain before writing anything (The Ugly #1) — it
+finished clean, but the sequencing was closer than it should have been.
+Both of those facts belong in the same document: the trigger is already
+earning its keep, and it has a real, nameable cost. Neither should be
+quietly dropped from the next cycle's memory of how this one went.
 
 ---
 
 ## Goals vs. reality, honestly
 
-The original design goals — Python-style ergonomics, Rust-style safety
-without a borrow checker, a GC-free three-tier memory model, safe parallel
-ECS iteration, native performance via LLVM — are, at this point, **largely
-achieved on their own terms**, with two explicit, load-bearing caveats the
-project itself now names rather than hides: dispatch is static-only by
-permanent design (not "not yet," but "never"), and the runtime target is
-Windows by pragmatic choice (with one real, tested seam for the
-threading/hardware-count primitives, and no pretense of a second one for
-windowing/audio/fonts). Every stage since `d555e4b` has closed real gaps
-found by building something harder than the last thing built in the
-language — that pattern, not any single feature, is the project's strongest
-asset, because it means the backlog is generated by evidence rather than
-speculation.
+Unchanged from the last review's framing, which still holds: the original
+design goals are largely achieved on their own terms, with the same two
+permanent, self-named caveats (static-only dispatch, Windows-only runtime
+target). What's different this stage is smaller and more procedural than
+architectural — the project spent a cycle on tooling and process debt
+rather than language surface, closed most of it well, and this review's
+job was to check that "well" against "claimed," which is exactly where the
+two real gaps above were found.
 
 ---
 
 ## Next steps, prioritized
 
-**P0 — Protect what Nova's stress-testing has already proven fragile.**
-1. Decide whether to generalize the `MOV`-only write-width fix to the other
-   ~90 opcode handlers that share its codepath, or explicitly document the
-   remaining exposure in Nova's own `NOTES.md` as accepted, scoped risk (it
-   currently reads as "future work," which underclaims how likely a second
-   instance is).
-2. Give the compiler *some* notion of stack budget for large-aggregate
-   `let`s — even a `star check`-time warning when a function's local
-   aggregate footprint plus its call depth crosses a threshold would turn
-   the next stack overflow into a diagnosable compile-time signal instead of
-   a repeat of the same silent runtime crash the 16MiB fix already had to
-   bisect once.
+**P0 — Fix what this review found, before it compounds.**
+1. Either actually implement Nova's sound synthesis (waveform generation
+   behind the already-dispatched `SPLAY`/`SSTOP`/`STRIG` opcodes) and a
+   real UART host bridge (stdin- or socket-backed, using the
+   already-existing `file_io.rs`/`net.rs` builtins — no new language
+   surface should be needed for a minimal version), or correct `todo.md`'s
+   P1 #4 to accurately read "not started" and requeue it honestly. Marking
+   it done a second time without the underlying work would be a second,
+   compounding instance of the exact gap this review exists to catch.
+2. Bring `.clinerules/general.md` and `.clinerules/workflows/todo` into
+   actual sync with `CLAUDE.md`/`docs/conventions.md` — at minimum the
+   `+stable-x86_64-pc-windows-gnu` toolchain override (the single fact
+   whose absence would send a Cline-based session down a "plain `cargo
+   build` fails, why?" dead end) and the reassessment trigger.
 
 **P1 — Close the distance between "seam exists" and "port is actually
-cheap."** 3. Scope (don't necessarily build yet) what a portable text-
-rendering path would need — `stb_truetype` is the cheapest realistic vendor
-option — so that if cross-platform ever becomes a real goal, the one
-component `platform.rs`'s own doc comment flags as *not* covered by the
-seam has a plan rather than a shrug. 4. Consider whether Nova's UART host
-bridge and sound synthesis (both explicitly scoped out, both requiring real
-host I/O) are worth pulling forward as the *next* stress test — they are
-the two remaining places Nova's own "Ideas for future work" list identifies
-as needing genuinely new language-level I/O capability (sockets, audio
-mixing) rather than more opcode coverage.
+cheap" — carried forward, still gated externally.**
+3. No code action here today: the only remaining blocker across
+   networking/env-vars/fonts is a real Linux devbox to build and link
+   against (`docs/cross_platform_scope.md`'s own "What 'devbox' unblocks
+   specifically" section already says this). Nothing to prioritize until
+   that hardware exists.
+4. Decide, concretely, what "Nova is complete" means for the versioning
+   gate (readme.md's "Versioning" section) — a fixed checklist of
+   opcodes/subsystems, most plausibly — before `NOTES.md`'s "Ideas for
+   future work" list grows further and makes the gate's target a moving
+   one by default rather than by decision.
 
-**P2 — Reduce the adoption barrier before this is shown to a second
-person.** 5. A minimal LSP (even just diagnostics-on-save via `star check`,
-no autocomplete) would do more for a first impression than any single
-language feature at this point, now that the TextMate grammar has already
-solved the cheaper half of "can someone read this in an editor." 6. Pick a
-versioning policy now, while it's still cheap: even a one-paragraph
-"pre-1.0, no stability guarantee, breaking changes land in `changelog/`" is
-better than silence, and is a five-minute fix relative to everything else
-on this list.
+**P2 — Genuinely new capability, once P0/P1 are settled.**
+5. If P0 #1 lands as real implementation work: sound synthesis and a UART
+   bridge are still the right *next* stress test for Nova after the
+   correction above, for the same reasons the last review gave (they're
+   the two remaining items on Nova's own list needing genuinely new
+   host-I/O-shaped capability rather than more opcode coverage) — this
+   isn't a new idea, just the same one, done for real this time.
 
-**P3 — Institutionalize the review cadence that has repeatedly proven
-valuable.** 7. This is the third full assessment in three stages, each
-finding real issues the day-to-day feature work didn't surface on its own.
-Consider tying the next one to a concrete trigger (e.g., "every N
-changelog entries" or "before any session that adds a new codegen module")
-rather than continuing to rely on someone remembering to ask.
+**P3 — Keep the cadence honest.**
+6. Nothing structural to change here — the trigger fired correctly this
+   cycle, and the full suite did pass. The one adjustment worth carrying
+   forward: when the trigger fires mid-session rather than being
+   requested, start the full test suite first and actually wait for its
+   result before finalizing the document, rather than drafting concurrently
+   with it and patching the conclusion in after the fact the way this
+   review had to.
