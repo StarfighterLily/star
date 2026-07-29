@@ -4,7 +4,7 @@ A game programming language with Pythonic-Rust syntax and unique memory manageme
 
 ## Versioning:
 Currently 0.1.0. There is no guarantee of stability or usability. Version shall remain as such until
-the Nova project is complete and minimal 4 rounds of bug hunts, after which the language will be
+the Nova project is complete (full system implementation, GUI+controls, and tooling to match Python reference, NoBASIC optional) and minimal 4 rounds of bug hunts, after which the language will be
 considered usable and a semblance of stability can be expected. From there, industry-standard SemVer
 practices will be observed to provide a reliable measure at a glance.
 
