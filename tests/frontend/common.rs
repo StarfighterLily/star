@@ -5,9 +5,23 @@
 //! `#[path = "frontend/common.rs"] mod common;` from each split file.
 
 pub use star::ast::{AssignOp, BinOp, EnumDef, Expr, FStrExpr, Item, Pattern, Stmt, Type, TypeParam, UnOp};
+pub use star::diagnostics::Diagnostic;
 pub use star::driver::{Driver};
 pub use star::lexer::{TokenKind};
-pub use star::types::{Ty, TypedExpr, TypedItem, TypedStmt};
+pub use star::types::{Checker, Ty, TypedExpr, TypedItem, TypedStmt};
+
+/// Type-check `src` and return both the typed module and every non-fatal
+/// warning `Checker::check` accumulated (currently just
+/// `Checker::check_stack_budget`'s, `todo.md` P0 #2) -- `Driver::check`
+/// alone (used by every other helper here) discards these, since it only
+/// ever returns `Result<TypedModule, Vec<Diagnostic>>`, so this goes
+/// straight to a fresh `Checker` instead.
+pub fn typecheck_with_warnings(src: &str) -> (star::types::TypedModule, Vec<Diagnostic>) {
+    let module = Driver::parse(src).expect("should parse");
+    let mut checker = Checker::new();
+    let typed = checker.check(&module).expect("should type-check");
+    (typed, checker.take_warnings())
+}
 
 /// Shared fixture: a minimal `Enemy` struct + backing arena, prefixed onto
 /// `par`/`swarm`/`spawn`/`despawn` test sources across several split files.

@@ -9,13 +9,15 @@
 //! submodule: `hir` (the typed tree `Checker::check` produces), `stmt`
 //! (statement checking), `expr` (expression inference), `par_analysis`
 //! (the `par`/`swarm` disjoint-mutation proof), `frame_analysis` (the
-//! `frame:` escape analysis), and `system_analysis` (the `system`/
-//! `parallel` arena-access and cross-system lock-conflict proof).
+//! `frame:` escape analysis), `system_analysis` (the `system`/
+//! `parallel` arena-access and cross-system lock-conflict proof), and
+//! `stack_budget` (the large-aggregate-local stack-footprint warning).
 
 mod expr;
 mod frame_analysis;
 mod hir;
 mod par_analysis;
+mod stack_budget;
 mod system_analysis;
 mod stmt;
 
@@ -1656,6 +1658,17 @@ pub struct Checker {
     /// through the checker into codegen from a context with no concrete
     /// type to substitute it with.
     trait_sig_context: bool,
+    /// Non-fatal findings accumulated during `check` -- currently just
+    /// `check_stack_budget`'s (todo.md P0 #2) -- kept entirely separate from
+    /// `errors`: a warning never turns a successful `Ok(TypedModule)` into an
+    /// `Err`, and `check`'s own `if self.errors.is_empty()` gate is
+    /// unaffected by it. Read out via `Checker::take_warnings` by
+    /// `crate::driver::Driver::compile` after a successful `check` call
+    /// (`Checker::check` takes `&mut self`, so the caller's `checker`
+    /// binding is still there to read from once it returns) into
+    /// `Compilation::warnings`, mirroring how `IrVerification` already
+    /// splits `errors`/`warnings` for the codegen stage.
+    warnings: Vec<Diagnostic>,
 }
 
 impl Checker {
@@ -1687,6 +1700,7 @@ impl Checker {
             mono_depth: 0,
             sequence_param_counts: HashMap::new(),
             trait_sig_context: false,
+            warnings: Vec::new(),
         }
     }
 
@@ -2111,6 +2125,14 @@ impl Checker {
         self.check_no_recursive_structs(&typed_items);
 
         if self.errors.is_empty() {
+            // A best-effort, non-fatal stack-budget heuristic (todo.md P0
+            // #2) -- only worth running once the module is otherwise known
+            // to check cleanly, since an incomplete `typed_items` list (an
+            // erroring item's `check_item` call returns `None`, see the loop
+            // above) would make its call-graph/footprint analysis both
+            // unreliable and moot.
+            self.check_stack_budget(&typed_items);
+
             // Combine both mono-instantiation tables into the one map
             // `TypedModule` carries onward -- see its `generic_instantiations`
             // doc comment for why `Codegen` needs this at all (it never sees
@@ -3967,6 +3989,22 @@ impl Checker {
 
     fn error(&mut self, msg: impl Into<String>, span: Span) {
         self.errors.push(TypeError { message: msg.into(), span, note: None });
+    }
+
+    /// Record a non-fatal finding -- unlike `error`, this never causes
+    /// `check` to return `Err`. See `warnings`' own doc comment.
+    fn warning(&mut self, msg: impl Into<String>, span: Span) {
+        self.warnings.push(Diagnostic::warning(msg, span));
+    }
+
+    /// Drain every warning `check` accumulated, for a caller (currently only
+    /// `crate::driver::Driver::compile`) to surface after a successful
+    /// check. See `warnings`' own doc comment for why this is a drain rather
+    /// than a plain field read: `Checker` has no `Drop` of its own and isn't
+    /// reused across compiles, so ownership transfer is simplest expressed
+    /// by taking rather than cloning.
+    pub fn take_warnings(&mut self) -> Vec<Diagnostic> {
+        std::mem::take(&mut self.warnings)
     }
 
     /// Like [`Checker::error`], but attaches a secondary "did you mean `x`?"

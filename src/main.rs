@@ -245,6 +245,7 @@ fn cmd_check(file: &str, search: &SearchPathArgs) -> ExitCode {
     match driver.compile() {
         Ok(compilation) => {
             if compilation.is_ok() {
+                eprint!("{}", compilation.render_warnings());
                 println!("ok: {} parsed and type-checked successfully", resolved.entry.display());
                 ExitCode::SUCCESS
             } else {
@@ -382,6 +383,7 @@ fn cmd_build(
         eprint!("{}", compilation.render_diagnostics());
         return ExitCode::FAILURE;
     }
+    eprint!("{}", compilation.render_warnings());
 
     let typed = compilation.typed.as_ref().expect("typed module after successful compile");
     let verification = match Driver::codegen_verified_for_target(typed, target) {

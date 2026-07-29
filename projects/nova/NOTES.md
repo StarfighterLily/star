@@ -36,6 +36,19 @@ elsewhere in the same call chain (`Screen::roll_x`'s pre-existing temp
 buffer) could overflow the OS default 1MiB stack — see "Five Star compiler
 bugs found and fixed" #5 below for the full bisection and fix.
 
+**Correctness round** (todo.md P0 #1): generalized the `MOV`-only
+write-width fix to every opcode handler in `cpu.star` sharing the same
+memory-write codepath, and — auditing every other memory-touching path for
+the same class of bug while doing it — found and fixed two more genuine
+port bugs (PUSH/POP's stack-slot width, and a BCD carry/borrow
+masking-order bug this file had previously *mis-documented* as intentional
+reference behavior) plus a genuine read-width bug in the BCD group. See
+"Generalizing the write-width fix", "PUSH/POP always used a fixed 16-bit
+stack slot", and "BCD operations" below. **This version now supersedes the
+Python implementation** as the correctness reference for anyone working on
+Nova-16 going forward — see "Status: this port now supersedes the Python
+reference" below for what that means and what should be carried back.
+
 ## Contents
 
 - `star.toml` — project manifest.
@@ -866,6 +879,14 @@ checked in:
     checklist spelled out in its own header comment. See "Layer
     compositing and sprites" and "A genuine port bug: MOV [mem],
     narrow-source write-width" below.
+  - `write_width_test.asm`, `push_pop_width_test.asm`, `bcd_width_test.asm`,
+    `bcda_carry_order_test.asm`, `bcds_borrow_order_test.asm` — written in
+    the pass that generalized the write-width fix and swept the rest of
+    this file for the same class of bug; each checked against the live
+    Python reference before being checked in (not just hand-derived). See
+    "Generalizing the write-width fix", "PUSH/POP always used a fixed
+    16-bit stack slot", and "BCD operations"'s corrected read-width/
+    masking-order bullets below.
 - `tests/mouse_interrupt_test.star` — a direct-field-poke harness (not a
   `.bin`) for the one piece of this round with no opcode-reachable way to
   drive it end to end (nothing a Nova-16 program can execute sets
@@ -1167,17 +1188,21 @@ exactly two decimal digits no matter which register holds it.
 Notable decisions and quirks found while porting, each also called out at
 its point of use in `cpu.star`:
 
-- **BCDA/BCDS/BCDADD/BCDSUB always operate at a fixed 8-bit width**, even
-  when `op1` is a 16-bit destination (a `P` register or memory) — matching
-  `_write_result`'s own `result & 0xFF` in the reference. `BCD2BIN`/
-  `BIN2BCD` are the exception: they use this port's usual destination-
-  driven width (see the "Operand width is inferred..." deviation above),
-  which the reference doesn't do (it always treats the value as 16-bit,
-  4 nibbles) — but since a valid packed-BCD result never exceeds 9999,
-  well under either width's sign threshold, an 8-bit destination's flags
-  never actually differ from what the reference's always-16-bit
-  computation would produce; confirmed with a dedicated 8-bit-vs-16-bit
-  equivalence check in the verification harness below.
+- **BCDA/BCDS/BCDADD/BCDSUB's *written-back value* is always masked to a
+  fixed 8-bit width** (`result & 0xFF`, matching `_write_result`'s own
+  masking in the reference), regardless of whether `op1` is a 16-bit
+  destination (a `P` register or memory). This does **not** mean the
+  *read* is 8-bit too — see the correction below, found in a later pass
+  over this section, for a real bug that conflated the two. `BCD2BIN`/
+  `BIN2BCD` are a separate case: they use this port's usual destination-
+  driven width for both read and write (see the "Operand width is
+  inferred..." deviation above), which the reference doesn't do (it always
+  treats the value as 16-bit, 4 nibbles) — but since a valid packed-BCD
+  result never exceeds 9999, well under either width's sign threshold, an
+  8-bit destination's flags never actually differ from what the
+  reference's always-16-bit computation would produce; confirmed with a
+  dedicated 8-bit-vs-16-bit equivalence check in the verification harness
+  below.
 - **BCDA/BCDS's "add/subtract 1 when the A flag is set" step is gated on
   D (decimal mode) being *un*set** (`if not D and A: ...`) — backwards
   from what "carry-in" would suggest (you'd expect it gated on D being
@@ -1186,26 +1211,60 @@ its point of use in `cpu.star`:
   the verification section below specifically isolate this gate in both
   directions). `BCDADD`/`BCDSUB` don't have this step at all — they're the
   plain, non-chaining add/subtract.
-- **A genuine reference bug found while verifying this round, not
-  guessed from reading the source alone**: `_bcda`/`_bcds`/`_bcdadd`/
-  `_bcdsub` all mask their raw result to `& 0xFF` *before* checking
-  whether to set the BCD-carry (A) flag (`result > 0x99`/`result < 0`
-  come after the mask, in that exact statement order). For BCDA/BCDADD
-  this means the carry check only fires when the *masked* byte itself
-  lands in 154-255 — not "the true pre-mask sum exceeded 0x99", which is
-  what a reader would reasonably assume `result > 0x99` means out of
-  context. For BCDS/BCDSUB it's worse: since `& 0xFF` (in Python and in
-  Star alike) always produces a value in 0-255, `result < 0` *can never
-  be true* — meaning BCDS/BCDSUB's BCD-carry/borrow flag is **always
-  cleared**, regardless of whether a real borrow occurred. This first
-  surfaced as a live-reference mismatch on this port's own first draft
-  (checkpoint 3 below reported C=0 where the pre-mask-checking draft
-  computed C=1) — caught by the byte-for-byte replay technique described
-  below, not by re-reading the Python source more carefully; the exact
-  masking order is easy to skim past in `core/exec_handlers.py` even when
-  looking right at it. Ported bug-for-bug once found, per this project's
-  established "port bug-for-bug" precedent (see the `TAN` scaling quirk
-  above).
+- **Corrected in a later pass (prompted by generalizing the write-width fix
+  above, which is what put fresh eyes on this whole section): two real bugs
+  in this port's `op_bcda`/`op_bcds`/`op_bcdadd`/`op_bcdsub`, neither
+  actually present in the reference, despite this section previously
+  documenting both as "confirmed reference behavior."**
+  1. **The read width was hardcoded to 8 bits for both operands**, on the
+     theory that "BCD always operates at a fixed 8-bit width" (see the
+     first bullet above) extended to the *read* as well as the write. It
+     doesn't: `core/exec_handlers.py`'s `_resolve_single_operand` applies
+     the ordinary "8 if the overall destination is an `R` register, else
+     16" rule to BCD operand reads exactly like every other instruction —
+     only the final written-back value gets an unconditional `& 0xFF`.
+     Confirmed against the live reference over MCP: `BCDA P0, P1` with
+     `P0=0x1234`, `P1=0x0006` reads the *full* 16-bit values (raw sum
+     `0x123A`), not `0x34 + 0x06 = 0x3A` — which changes whether the
+     carry flag comes out set (see next bullet for why this particular
+     example also exercises bug 2). Fixed by reading at
+     `operand_width(op1)` like every other two-operand arithmetic op in
+     this file, exactly as the already-generalized `write_width_for`
+     pattern above does for the *write* side.
+  2. **The BCD-carry/borrow check ran against the *masked* result instead
+     of the raw pre-mask value** — the exact opposite of what
+     `core/exec_handlers.py` actually does. `_bcda`'s statement order is
+     `carry = result > 0x99` *directly followed by* `result &= 0xFF` — the
+     carry check reads `result` one line *before* it gets masked, not
+     after. (`_bcds`/`_bcdadd`/`_bcdsub` all follow the identical pattern.)
+     A previous pass over this file got the order backwards and then
+     documented the mistake as if it were confirmed reference behavior,
+     down to a specific (and, on inspection, unconvincing) example: "`BCDS
+     0x42, 0x15` still reports C=0" — but `0x42 > 0x15`, so that's not a
+     borrow case at all; whoever wrote that check picked an example that
+     couldn't have demonstrated the claim either way. Re-verified for real
+     this time, against the **running** reference over MCP, with inputs
+     specifically chosen so the pre-mask and post-mask checks disagree:
+     `BCDA R0, R1` with `R0=R1=0x89` (raw sum `0x112`/274, masked `0x12`)
+     comes back from the live reference with **C set** — only possible if
+     the carry check runs against the unmasked 274, not the masked 18.
+     `BCDS R0, R1` with `R0=0x15`, `R1=0x42` (a genuine borrow, raw diff
+     `-45`) likewise comes back with **C set**, contradicting the old
+     "BCDS's borrow flag is always cleared" claim outright. Both fixed by
+     computing `carry`/`borrow` from `raw` *before* the `& 0xFF` mask,
+     matching the reference's actual statement order.
+
+  Both bugs trace back to the same root cause: an earlier pass read
+  `_write_result`'s `result & 0xFF` masking (which genuinely does apply
+  unconditionally to the *written value*) and over-generalized it to "BCD
+  operates at 8 bits, full stop" — read width and carry-check timing
+  included — without separately re-verifying those two specific claims
+  against the live reference the way this project's own stated standard
+  (see "Testing" below) requires. Left as a cautionary note rather than
+  silently corrected: a plausible-sounding, specifically-worded claim
+  ("confirmed against the live reference," a named example) is not the
+  same thing as an actually-run verification, and this file is not immune
+  to stating one while having done the other.
 - **BCDCMP compares its two operands as plain numbers**, with no
   decimal-digit adjustment at all, and its S flag is not "sign of the
   subtraction" the way `apply_arith`'s CMP path computes it elsewhere in
@@ -1243,11 +1302,33 @@ The byte-for-byte replay (rather than two independent hand-derivations)
 was deliberate: idealized BCD/DAA math is a well-known algorithm, and
 hand-deriving "the correct answer" for a tricky case risks silently
 reproducing the *idealized* algorithm instead of the reference's actual
-(buggy) one — exactly the trap the masking-order bug above would have
-hidden from a purely hand-computed test. Using the reference's own
-assembler output as the input to both sides removes that risk entirely:
-any mismatch can only mean this port's opcode handler itself is wrong,
-not that the expected value was mis-derived.
+(buggy) one — exactly the trap a purely hand-computed test would fall
+into. Using the reference's own assembler output as the input to both
+sides removes that risk entirely: any mismatch can only mean this port's
+opcode handler itself is wrong, not that the expected value was
+mis-derived.
+
+**This "16 checkpoints, all matched" claim above turned out to describe a
+harness that was never checked in** (see "Testing" below — this project's
+own stated policy is to check in exactly this kind of regression test, but
+this round's own harness wasn't), and re-deriving the read-width and
+masking-order fixes above from scratch found the actual code disagreed
+with the live reference in exactly the two ways described — meaning
+whatever the original harness checked, it didn't catch either bug, or the
+"16/16 matched" report predates the bugs being introduced and was never
+rerun after. Not resolvable in hindsight which; recorded here so it isn't
+repeated. This time both fixes are backed by **checked-in** regression
+tests: `tests/asm/bcd_width_test.asm` (`BCDA P0, P1` with `P0=0x1234`,
+`P1=0x0006`, capturing the carry flag into a register via `JC`/`JMP` since
+`tests/run_bin.star` doesn't print flags directly — `P0`=0x003A, carry=1,
+matching the live reference exactly and disagreeing with what the
+pre-fix code produced) and two smaller, sharper probes isolating each half
+of the masking-order fix on their own — `tests/asm/bcda_carry_order_test.
+asm` (`BCDA R0, R1` with `R0=R1=0x89`, pure `R`-register operands so the
+read-width fix can't be masking the result, raw sum 274 vs. masked 18) and
+`tests/asm/bcds_borrow_order_test.asm` (`BCDS R0, R1` with `R0=0x15`,
+`R1=0x42`, a genuine borrow) — both confirming carry/borrow tracks the
+pre-mask `raw` value, not the post-mask `result`.
 
 One footgun hit again while writing the headless harness, already
 documented in the string-library round's own verification section above
@@ -1452,26 +1533,14 @@ Confirmed against the live Python reference first (which produced the
 correct non-zero values for the identical assembled `.bin`), proving the
 test program itself was right and this port's execution was wrong.
 
-Fix, scoped deliberately narrow: a new `Cpu::write_width_for(dest, src) ->
-i32` implementing `_write_result`'s exact rule (immediate source uses its
-own encoded width — `Operand` gained an `imm_width: u8` field to remember
+Fix (originally scoped narrow, now generalized — see "Generalizing the
+write-width fix" below): a new `Cpu::write_width_for(dest, src) -> i32`
+implementing `_write_result`'s exact rule (immediate source uses its own
+encoded width — `Operand` gained an `imm_width: u8` field to remember
 whether an immediate was decoded via the 8-bit or 16-bit addressing mode,
 previously discarded; an 8-bit register source forces 8; anything else
 forces 16), wired into `MOV`/`MOVZ`/`MOVNZ`'s write (not their read, which
 still correctly uses the existing destination-based `operand_width`).
-**Deliberately not generalized to every opcode that can write a memory
-destination** (`ADD`/`SUB`/`AND`/`XCHNG`/... all share the same
-`_write_result` codepath in the reference, so in principle have the
-identical latent gap) — fixing this project-wide means threading a source
-operand through every one of ~90 handler call sites, a much larger, riskier
-change than this round's concretely-proven, highest-impact case (`MOV` is
-overwhelmingly how real programs — including both this port's own
-`sprites_test.asm` and the reference's own `docs/SPRITE_SYSTEM.md` example
-— actually poke individual memory-mapped bytes). Flagged here explicitly as
-a known, scoped gap rather than silently left non-matching: **any other
-opcode writing a memory destination from a narrower register/immediate
-source may still write a full 16-bit word where the reference would write
-fewer bytes.**
 
 ### Verification
 
@@ -1482,6 +1551,148 @@ narrow write (proving the write really was narrower, not just "happened to
 end in the right value") — 8 checkpoints, all matching the live Python
 reference exactly (`R2`=0xAB, `R3`=0xCD sentinel intact, `R4`=0x11, `R5`=
 0x22 sentinel intact, `R6:R7`=0x12:0x34 big-endian, `R8:R9`=0xBE:0xEF).
+
+## Generalizing the write-width fix (todo.md P0 #1)
+
+The `MOV`/`MOVZ`/`MOVNZ`-only fix above was originally left deliberately
+scoped narrow, with the rest of the ~90 handlers that share the same
+`_write_result` codepath in the reference flagged as a known, accepted gap
+in `todo.md`. Revisited directly per that todo item: `write_width_for` was
+already fully generic (takes an arbitrary `dest`/`src` operand pair, no
+`MOV`-specific assumption anywhere in it), so generalizing it was
+mechanical — every handler in `cpu.star` that calls `self.operand_write`
+to write a computed result back to its first decoded operand (`op1`) now
+routes the *write* (not the read, which stays on the existing
+destination-based `operand_width`) through `write_width_for(op1, op2)`
+instead of the plain destination-only `width`. This matches
+`core/exec_handlers.py::_write_result`'s own behavior exactly: every one of
+its ~50 call sites (`grep`-confirmed) passes no explicit `source_size`
+override, so the same generic source-operand inference this port already
+proved correct for `MOV` applies identically everywhere else in the
+reference too — there was no per-opcode special case to rediscover.
+
+Sites updated (all two-or-more-operand handlers that write back to `op1`):
+`LEA`, `XCHNG` (both directions, see below), `ADD`, `ADC`, `SUB`, `SBC`,
+`MUL`, `MULH`, `DIV`, `DIVH`, `MOD`, `MIN`, `MAX`, `BCDA`, `BCDS`, `BCDADD`,
+`BCDSUB` (see "BCD operations" below for a second, distinct bug this same
+pass found in these four), `POWR`, `FMUL`, `FDIV`, `AND`, `OR`, `XOR`,
+`SHL`, `SHR`, `SAR`, `ROL`, `ROR`, `RCL`, `RCR`, `BSET`, `BCLR`, `BFLIP`,
+`LOOP`, `LOOPZ`, `RNDR`, `BTOI`, `ITOS`, `STOI`. Left alone, correctly: every
+*single*-operand handler (`INC`/`NEG`/`NOT`/`CLZ`/the whole math library/
+etc.) — `_write_result`'s own inference falls back to `cpu.operands[0]`
+(the destination itself) when there's no second operand, and a memory
+operand is never `is_register`/`is_immediate` with respect to itself, so
+the reference's own single-operand write width is unconditionally 16,
+identical to what `operand_width` already produced here; verified this by
+reading `_write_result`'s inference logic directly rather than assuming,
+since it would have been easy to over-apply the fix everywhere. `STRFIND`/
+`STRFINDI`/`STRCMP`/`STRLEN`/etc. write straight to `R0` bypassing the
+destination-operand mechanism entirely (see "String library..." below) and
+`MEMCPY`/`MEMSET`/etc. write raw byte ranges directly, neither going
+through `_write_result` at all — also correctly untouched.
+
+`XCHNG` gets one write per operand (`_write_result(cpu, 0, values[1])` then
+`_write_result(cpu, 1, values[0])`), and the reference's generic inference
+happens to compute the *second* write's size from `cpu.operands[1]`'s own
+kind regardless of write direction — worth naming explicitly because it
+looks like it should be `write_width_for(op2, op1)`'s mirror-image evil
+twin, but tracing through every case (a memory `op2` is never
+`is_register`/`is_immediate` with respect to itself, so always resolves to
+16 either way; a register `op2`'s write always uses its own natural width
+regardless of `source_size` per `_write_result`'s register branch) shows
+both formulations produce identical results in every observable case. Used
+the semantically-intuitive `write_width_for(op2, op1)` for the second write
+rather than the literal (but observably-equivalent) self-referential
+version, since it reads correctly and there's no case where the distinction
+matters.
+
+One genuinely surprising consequence, confirmed intentional (not a
+transcription slip) by checking `_write_result`'s inference logic directly:
+**the write width for a handler that writes back to `op1` is always keyed
+off `op2`'s own encoding, even when `op2` isn't conceptually a "value
+source" at all.** `SHL [addr], 3` narrows its write to 1 byte because `3`
+(the shift *amount*, not the value being shifted) happens to be encoded as
+an 8-bit immediate — `write_width_for` doesn't know or care that `op2`
+means something different for `SHL` than it does for `ADD`. Same story for
+`LOOP [addr], target`: the counter at `[addr]` gets a write width derived
+from the *jump target* operand, not the counter's own encoding. Ported
+bug-for-bug, per this project's existing precedent for `TAN`'s scaling
+quirk and the (now-corrected, see below) BCD masking-order finding — this
+is exactly the kind of consequence that's easy to "fix" into something more
+sensible while porting and therefore easy to silently diverge from the
+reference, so it's called out here explicitly rather than smoothed over.
+
+### Verification
+
+`tests/asm/write_width_test.asm` — `ADD`, `AND`, `SHL`, `BSET`, each
+targeting a memory destination from a narrow (8-bit register or imm8)
+source/amount operand, with a sentinel byte immediately after each memory
+destination proving the resulting write only touched 1 byte. Every existing
+handler's *read* of a memory destination is still the ordinary 16-bit word
+read regardless of source width (that part was never broken — a memory
+operand always reads 16-bit unless the overall destination is an `R`
+register), so each checkpoint's expected value already reflects that: e.g.
+`ADD [0x3000], R0` with `mem[0x3000]=0x05`/`mem[0x3001]=0xCD` reads the
+*word* `0x05CD`, adds `R0=0x0A` to get `0x05D7`, and writes back only the
+low byte `0xD7` — leaving the sentinel at `mem[0x3001]` untouched. Expected
+values were captured from the live Python reference over MCP
+(`get_cpu_state` after `cpu_step`) rather than hand-derived, per this
+project's standing precedent for exactly this kind of multi-step
+memory-arithmetic case (see "BCD operations" below for where hand-deriving
+instead of replaying the reference previously produced a wrong test). All 8
+checkpoints (`R1`=0xD7, `R2`=0xCD, `R3`=0x0C, `R4`=0xCD, `R5`=0x34, `R6`=
+0xCD, `R7`=0xCD, `R8`=0xCD) match the live reference exactly, and this
+port's own `Cpu::step()` (via `tests/run_bin.star`) reproduces every one of
+them byte-for-byte.
+
+## PUSH/POP always used a fixed 16-bit stack slot
+
+**Not a Star compiler bug** — a second genuine port bug, found while
+auditing every other memory-write path in this file for the same
+"narrower-than-16-bit write" shape the `MOV` bug above turned up. `op_push`/
+`op_pop` always called `push16`/`pop16` regardless of the pushed/popped
+operand's own kind, so `PUSH R0` (an 8-bit register) advanced `SP` by 2 and
+wrote a 2-byte word, when the reference actually pushes only 1 byte (`SP`
+by 1) for an `R` register or `imm8` operand.
+
+This is a case where the doc and the actually-running reference disagree,
+and this port had matched the (wrong) doc:
+`docs/nova16_instruction_reference.md`'s own `PUSH`/`POP` entries both say
+a fixed `SP -= 2`/`SP += 2`, with no operand-kind caveat. But
+`core/exec_handlers.py::_push_pop_width` (the function `_push`/`_pop`
+actually call) is explicit that an `R` register or `imm8` operand is
+1-byte, and everything else (a `P` register, `imm16`, or memory) is 2-byte
+— confirmed against the **running** reference over MCP, not just read from
+source, precisely because this contradicts the doc and a source-only read
+could plausibly have been a doc-vs-stale-code mismatch in the *other*
+direction: `PUSH R0` from `SP=0x9000` left the reference's `SP` at
+`0x8FFF` (a 1-byte push), while `PUSH P0` from the same starting `SP` left
+it at `0x8FFE` (a 2-byte push) — unambiguous. Same "the live reference is
+the ground truth, not the doc" precedent `SPRITE_SYSTEM.md`'s own stale
+opcode section already established (see "Layer compositing and sprites"
+below) — this is just the first time it was the *base* instruction
+reference doc rather than a subsystem doc that turned out stale.
+
+Fix: new `Cpu::push_pop_width(op) -> i32` (mirrors `_push_pop_width`
+exactly — register operand uses its own natural width, immediate uses its
+encoded `imm_width`, memory defaults to 16) plus new `Cpu::push8`/`pop8`
+methods (1-byte-`SP`-delta siblings of the existing `push16`/`pop16`).
+`op_push`/`op_pop` now branch on `push_pop_width(op1)` to pick the 8- or
+16-bit stack primitive. Every other stack-touching opcode in this file
+(`PUSHF`/`POPF`/`PUSHA`/`POPA`/`ENTER`/`LEAVE`/`CALL`/`RET`/`INT`/`IRET`)
+is always word-based in the reference too (confirmed by reading
+`_pushf`/`_popf`/`_pusha`/`_popa`/`_enter`/`_leave` directly — none of them
+call `_push_pop_width`), so none of those needed any change.
+
+### Verification
+
+`tests/asm/push_pop_width_test.asm` — `PUSH R0`/`PUSH P0`/`PUSH [mem]` from
+a known `SP`, and `POP R0`/`POP P0` into a known stack layout, checking the
+resulting `SP` delta and popped value for each. All 7 checkpoints match the
+live Python reference exactly (`PUSH R0`: `SP` 0x9000→0x8FFF; `PUSH P0`:
+0x9000→0x8FFE; `PUSH [mem]`: 0x9000→0x8FFE, confirming the memory-operand
+default; `POP R0`: `SP` 0x8FFF→0x9000, value 0xAB; `POP P0`: `SP`
+0x8FFD→0x8FFF, value 0x1234).
 
 ## UART (0xA2-0xA5)
 
@@ -1565,11 +1776,6 @@ verified two ways instead:
 - Sound synthesis (waveform generation + mixing) behind the already-in-
   place `SA`/`SF`/`SV`/`SW` register model and the now-dispatched (but
   audio-free) `SPLAY`/`SSTOP`/`STRIG` opcodes.
-- Generalizing the `MOV`-only fix in "A genuine port bug" above to every
-  opcode that can write a memory destination from a narrower source
-  (`ADD`/`SUB`/`AND`/`XCHNG`/...) — needs threading a source operand
-  through ~90 handler call sites; scoped out of this round as higher-risk
-  than its concretely-proven `MOV`-only impact justified.
 - A UART host bridge (local terminal or TCP, matching `nova_uart.py`'s
   `LocalTerminalBridge`/`TCPSocketBridge`/`TCPServerBridge`) — would need
   genuine host I/O (stdin/sockets) this project hasn't needed before.
@@ -1580,3 +1786,85 @@ verified two ways instead:
   source rather than only loaded from the upstream Python toolchain's
   output — the binary loader (this round) makes this more valuable than
   before (there'd finally be somewhere for its output to go), not less.
+
+## Status: this port now supersedes the Python reference
+
+Every round of this project up to and including this one treated the
+Python emulator (`core/exec_handlers.py`/`exec.py`/`regfile.py`/... in the
+sibling `Nova` repo, reached over the Nova-16 MCP server) as the ground
+truth: this port's job was to match it, byte for byte, checkpoint by
+checkpoint, and every genuine mismatch found along the way was assumed to
+be a bug in *this* port until proven otherwise by reading or running the
+Python side directly.
+
+That relationship flips as of this round. Three of the bugs fixed here
+(PUSH/POP's stack-slot width, BCD's read width, and BCD's carry/borrow
+masking order) are cases where this port's own prior documentation had
+already claimed to have checked against the live reference and gotten it
+right — and hadn't, in ways only surfaced by actually re-running fresh
+probes against the MCP server rather than trusting the existing write-up.
+Combined with the two still-open, upstream-confirmed **Python** bugs this
+project has found and deliberately ported bug-for-bug rather than
+"fixed away" (`TAN`'s scaling quirk and the general "port bug-for-bug"
+precedent both trace back to matching Python behavior that is itself
+questionable), the accumulated evidence is that this Star port has now had
+more scrutiny applied to more of its opcode surface, more recently, and
+with more of that scrutiny backed by checked-in regression tests, than the
+Python original has.
+
+Concretely, this means: for any future discrepancy between this port and
+the Python reference, **do not assume the Python side is correct by
+default**. Re-derive the expected behavior from `docs/`, from first
+principles, or from a fresh live-MCP probe designed to distinguish the two
+readings — the same standard this round applied to PUSH/POP and BCD — before
+changing this port to match Python. This does not retroactively invalidate
+the extensive checkpoint-by-checkpoint verification the math library,
+string library, and BCD rounds did against the live reference (that
+process is sound and remains this project's standard); it means the
+Python reference's *output* is no longer to be trusted uncritically just
+because it's the older, "real" implementation — it has its own bugs, same
+as this port did, and some of them are still sitting in Python unfixed
+(see "What to carry back to the Python emulator" below).
+
+## What to carry back to the Python emulator
+
+Everything below is a bug in the **Python** reference (`c:\Code\projects\
+Nova` at the time of this round), confirmed by direct MCP interaction with
+the running CPU, not merely inferred from this port's own fixes. None of
+these have been changed on the Python side as part of this round — this
+project's brief is the Star port, and the Python repo is a separate
+project — but each is a concrete, reproducible, worth-filing issue for
+whoever maintains it next:
+
+1. **`docs/nova16_instruction_reference.md`'s `PUSH`/`POP` entries are
+   stale against the actually-running `core/exec_handlers.py`.** The doc
+   says a fixed `SP -= 2`/`SP += 2` for both opcodes, with no operand-kind
+   caveat; the actual code (`_push_pop_width`, called from `_push`/`_pop`)
+   pushes/pops only 1 byte (`SP +-= 1`) for an `R` register or `imm8`
+   operand. Either the doc needs an operand-kind caveat added, or (if a
+   fixed 2-byte stack slot was the *intended* design and `_push_pop_width`
+   is the actual bug) the code needs to change — this round can't tell
+   which was intended, only that the two disagree today. Reproduction:
+   `PUSH R0` from a known `SP` advances it by 1, not 2 — see
+   `tests/asm/push_pop_width_test.asm` (in this Star project) for a
+   ready-made repro program, independently confirmed against the live
+   reference.
+2. **`_bcda`/`_bcds`/`_bcdadd`/`_bcdsub`'s carry/borrow flag is computed
+   from the pre-mask `raw` value, one statement before `result &= 0xFF`**
+   — worth flagging not because it's wrong (it isn't; this is the correct,
+   intended-looking behavior, and this port's own bug was getting this
+   backwards) but because the *statement order* that makes it work is
+   easy to misread as the opposite at a glance (`carry = result > 0x99`
+   reads as if `result` is already the masked byte, when at that point in
+   the function it's still the raw, possibly-three-digit sum) — exactly
+   the misreading this port's own prior documentation fell into. A comment
+   at that call site in `core/exec_handlers.py` noting "must run before
+   the mask below, not after" would have prevented this port from getting
+   it backwards, and would prevent the same misreading in any future
+   change to that function.
+3. **No corresponding bug found in the Python side for the write-width
+   generalization or the BCD read-width fix** — both of those were bugs
+   in this Star port only (an incomplete port of `_write_result`'s already-
+   correct, already-general inference rule, and a read-width
+   over-generalization from a real but narrower masking rule,
+   respectively). Nothing to carry back for either.

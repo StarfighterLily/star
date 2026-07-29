@@ -31,6 +31,12 @@ pub struct Compilation {
     pub module: Option<Module>,
     pub typed: Option<TypedModule>,
     pub diagnostics: Vec<Diagnostic>,
+    /// Non-fatal findings from a *successful* check -- currently just
+    /// `crate::types::Checker::check_stack_budget`'s (`todo.md` P0 #2).
+    /// Always empty when `diagnostics` isn't (see `Driver::compile`): an
+    /// erroring compile's `typed` is `None`, and the analyses that produce
+    /// warnings only ever run against a fully-typed module.
+    pub warnings: Vec<Diagnostic>,
 }
 
 /// Result of [`Driver::codegen_verified`]: the generated LLVM IR text,
@@ -94,6 +100,20 @@ impl Compilation {
     /// source text.
     pub fn render_diagnostics(&self) -> String {
         self.diagnostics
+            .iter()
+            .map(|d| {
+                let (file, source) = self.file_and_source(d.span.file_id);
+                diagnostics::render(source, file, d)
+            })
+            .collect()
+    }
+
+    /// Same as `render_diagnostics`, but for `warnings` -- kept as a
+    /// separate method (rather than folded into `render_diagnostics`) since
+    /// a caller may want to print these even when `is_ok()` is true, unlike
+    /// `diagnostics` which only ever holds something when it's false.
+    pub fn render_warnings(&self) -> String {
+        self.warnings
             .iter()
             .map(|d| {
                 let (file, source) = self.file_and_source(d.span.file_id);
@@ -175,11 +195,13 @@ impl Driver {
         };
 
         // Run type checker if parsing succeeded.
+        let mut warnings = Vec::new();
         let typed = if let Some(ref module) = module {
             let mut checker = Checker::new();
             match checker.check(module) {
                 Ok(tm) => {
                     diagnostics = Vec::new();
+                    warnings = checker.take_warnings();
                     Some(tm)
                 }
                 Err(type_errs) => {
@@ -191,7 +213,7 @@ impl Driver {
             None
         };
 
-        Ok(Compilation { file, source, imported_files, module, typed, diagnostics })
+        Ok(Compilation { file, source, imported_files, module, typed, diagnostics, warnings })
     }
 
     /// Generate LLVM IR from a checked module, then verify its structural

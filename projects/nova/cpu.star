@@ -483,6 +483,23 @@ impl Cpu:
         self.p[8] = Wrapping<u16>(newsp as u16)
         val
 
+    # PUSH/POP-only 8-bit stack ops -- see `push_pop_width` below for why
+    # these exist at all (an R register or imm8 source pushes/pops only 1
+    # byte, SP +-= 1, not the fixed 2-byte/SP +-= 2 every other stack op
+    # here uses).
+    fn push8(mut self, val: i32):
+        let sp = (self.p[8] as u16) as i32
+        let newsp = wrap_addr(sp - 1)
+        self.mem.write_byte(newsp, val as u8)
+        self.p[8] = Wrapping<u16>(newsp as u16)
+
+    fn pop8(mut self) -> i32:
+        let sp = (self.p[8] as u16) as i32
+        let val = (self.mem.read_byte(sp)) as i32
+        let newsp = wrap_addr(sp + 1)
+        self.p[8] = Wrapping<u16>(newsp as u16)
+        val
+
     # ── Fetch ────────────────────────────────────────────────────────────
 
     fn fetch_u8(mut self) -> u8:
@@ -648,16 +665,25 @@ impl Cpu:
     # it always uses its own natural width regardless of the source, which
     # `operand_width(dest)` already gets right on its own.
     #
-    # Only wired into `MOV`/`MOVZ`/`MOVNZ` below (confirmed broken via a
-    # real assembled program: a `MOV [addr], R0` sequence writing 16 sprite
-    # control block bytes silently produced all zeros, each write's 16-bit
-    # default clobbering the next address' first byte -- see NOTES.md for
-    # the full trace and live-Python-reference confirmation). Every other
-    # opcode that can write a memory destination from a narrower source
-    # (`ADD`/`SUB`/`AND`/`XCHNG`/...) still uses the plain destination-only
-    # `operand_width` for its memory write size, a narrower fix than the
-    # reference's fully general rule -- flagged in NOTES.md as a known,
-    # scoped gap rather than silently left non-matching.
+    # Originally wired into `MOV`/`MOVZ`/`MOVNZ` only (confirmed broken via
+    # a real assembled program: a `MOV [addr], R0` sequence writing 16
+    # sprite control block bytes silently produced all zeros, each write's
+    # 16-bit default clobbering the next address' first byte -- see
+    # NOTES.md for the full trace and live-Python-reference confirmation).
+    # `_write_result`'s inference is called identically, with no per-opcode
+    # override, from *every* handler in the reference that writes a result
+    # back to its first operand -- so this is now wired into every such
+    # handler in this file (`ADD`/`SUB`/`AND`/`XCHNG`/`LOOP`/`BSET`/...;
+    # see NOTES.md "Generalizing the write-width fix" for the full list and
+    # for the one genuinely surprising consequence found doing this: a
+    # handler's *second* operand determines the write width even when that
+    # operand isn't conceptually a "value source" at all -- e.g. `SHL
+    # [addr], 3`'s shift-*amount* operand (an imm8) makes the shifted
+    # result write only 1 byte, because `_write_result` always keys off
+    # `cpu.operands[1]`'s own encoding regardless of what role it plays.
+    # Confirmed intentional-if-odd reference behavior, not a transcription
+    # slip, and ported the same "bug-for-bug" way this project already
+    # treats `TAN`'s scaling and the BCDS masking-order quirk.
     fn write_width_for(self, dest: Operand, src: Operand) -> i32:
         if dest.kind != (2 as u8):
             self.operand_width(dest)
@@ -665,6 +691,28 @@ impl Cpu:
             src.imm_width as i32
         elif src.kind == (0 as u8) and self.reg_width(src.reg_code) == 8:
             8
+        else:
+            16
+
+    # PUSH/POP's stack-slot width is a *separate* rule from `write_width_for`
+    # above: it's the operand's own kind (not a paired dest/src), matching
+    # `core/exec_handlers.py::_push_pop_width` exactly -- an R register or
+    # imm8 operand pushes/pops 1 byte (SP +-= 1); a P register, imm16, or
+    # memory operand pushes/pops 2 bytes (SP +-= 2). Confirmed against the
+    # live reference over MCP (`PUSH R0` from SP=0x9000 left SP=0x8FFF, a
+    # 1-byte push; `PUSH P0` from the same SP left SP=0x8FFE, a 2-byte
+    # push) -- this contradicts `docs/nova16_instruction_reference.md`'s own
+    # PUSH/POP entries, which both say the fixed "SP -= 2"/"SP += 2" this
+    # port originally implemented (always calling `push16`/`pop16`
+    # regardless of operand kind). The doc is stale against the actually-
+    # running reference here, the same way `SPRITE_SYSTEM.md`'s opcode
+    # section already turned out to be (see "Layer compositing and
+    # sprites" below) -- this port now matches the live CPU, not the doc.
+    fn push_pop_width(self, op: Operand) -> i32:
+        if op.kind == (0 as u8):
+            self.reg_width(op.reg_code)
+        elif op.kind == (1 as u8):
+            op.imm_width as i32
         else:
             16
 
@@ -861,8 +909,8 @@ impl Cpu:
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
-        self.operand_write(op1, width, b)
-        self.operand_write(op2, width, a)
+        self.operand_write(op1, self.write_width_for(op1, op2), b)
+        self.operand_write(op2, self.write_width_for(op2, op1), a)
 
     fn op_swap(mut self):
         let (op1, _op2, _op3) = self.decode_operands(1)
@@ -892,7 +940,8 @@ impl Cpu:
             addr_val = op2.addr as i32
         else:
             addr_val = self.operand_read(op2, width)
-        self.operand_write(op1, width, addr_val)
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(addr_val, ww))
 
     # ── Arithmetic ───────────────────────────────────────────────────────
 
@@ -903,7 +952,8 @@ impl Cpu:
         let b = self.operand_read(op2, width)
         let raw = a + b
         self.flags.apply_arith(raw, a, b, width, false, false)
-        self.operand_write(op1, width, self.mask_to_width(raw, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_adc(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -915,7 +965,8 @@ impl Cpu:
             carry_in = 1
         let raw = a + b + carry_in
         self.flags.apply_arith(raw, a, b, width, false, false)
-        self.operand_write(op1, width, self.mask_to_width(raw, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_sub(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -924,7 +975,8 @@ impl Cpu:
         let b = self.operand_read(op2, width)
         let raw = a - b
         self.flags.apply_arith(raw, a, b, width, true, false)
-        self.operand_write(op1, width, self.mask_to_width(raw, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_sbc(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -936,7 +988,8 @@ impl Cpu:
             carry_in = 1
         let raw = a - b - carry_in
         self.flags.apply_arith(raw, a, b, width, true, false)
-        self.operand_write(op1, width, self.mask_to_width(raw, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_cmp(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -953,7 +1006,8 @@ impl Cpu:
         let b = self.operand_read(op2, width)
         let raw = a * b
         self.flags.apply_arith(raw, a, b, width, false, false)
-        self.operand_write(op1, width, self.mask_to_width(raw, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_mulh(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -966,7 +1020,8 @@ impl Cpu:
             hi = product / (256 as i64)
         else:
             hi = product / (65536 as i64)
-        self.operand_write(op1, width, self.mask_to_width(hi as i32, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(hi as i32, ww))
 
     fn op_div(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -978,7 +1033,8 @@ impl Cpu:
         else:
             let raw = a / b
             self.flags.apply_arith(raw, a, b, width, false, false)
-            self.operand_write(op1, width, self.mask_to_width(raw, width))
+            let ww = self.write_width_for(op1, op2)
+            self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_divh(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -996,7 +1052,8 @@ impl Cpu:
             else:
                 shifted = ai * (65536 as i64)
             let q = shifted / bi
-            self.operand_write(op1, width, self.mask_to_width(q as i32, width))
+            let ww = self.write_width_for(op1, op2)
+            self.operand_write(op1, ww, self.mask_to_width(q as i32, ww))
 
     fn op_mod(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -1008,7 +1065,8 @@ impl Cpu:
         else:
             let raw = a % b
             self.flags.apply_arith(raw, a, b, width, false, false)
-            self.operand_write(op1, width, self.mask_to_width(raw, width))
+            let ww = self.write_width_for(op1, op2)
+            self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_inc(mut self):
         let (op1, _op2, _op3) = self.decode_operands(1)
@@ -1055,7 +1113,8 @@ impl Cpu:
         if b < a:
             raw = b
         self.flags.apply_arith(raw, a, b, width, false, false)
-        self.operand_write(op1, width, self.mask_to_width(raw, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_max(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -1066,7 +1125,8 @@ impl Cpu:
         if b > a:
             raw = b
         self.flags.apply_arith(raw, a, b, width, false, false)
-        self.operand_write(op1, width, self.mask_to_width(raw, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_clz(mut self):
         let (op1, _op2, _op3) = self.decode_operands(1)
@@ -1103,14 +1163,24 @@ impl Cpu:
 
     # ── BCD operations (docs/nova16_instruction_reference.md 0x4B-0x54) ──
     # Ported from core/exec_handlers.py's _sed/_cld/_cla/_bcda/.../_bcdsub.
-    # A BCD byte packs two decimal digits per byte (one per nibble), so
-    # unlike every other arithmetic op in this file, BCDA/BCDS/BCDCMP/
-    # BCDADD/BCDSUB always operate at a fixed 8-bit width -- even if op1
-    # happens to be a 16-bit destination (a P register or memory), only its
-    # low byte is read/written, matching `_write_result`'s `result & 0xFF`
-    # in the reference. SED/CLD/CLA are handled directly in `execute` (no
-    # operand at all, same as CLI/STI at 0x03/0x04) rather than as their
-    # own `op_*` methods.
+    # A BCD byte packs two decimal digits per byte (one per nibble), but
+    # BCDA/BCDS/BCDCMP/BCDADD/BCDSUB do NOT read at a fixed 8-bit width --
+    # an earlier draft of this port assumed they did (matching only
+    # `_write_result`'s unconditional `result & 0xFF` value mask) and
+    # hardcoded `operand_read(op, 8)` for both operands. Confirmed wrong
+    # against the live reference over MCP: `_resolve_single_operand` applies
+    # the same "8 if op1 is an R register, else 16" rule to BCD operands as
+    # every other instruction (`BCDA P0, P1` with P0=0x1234, P1=0x0006 reads
+    # the *full* 16-bit P-register values -- sum 0x123A, not 0x3A -- so the
+    # reference's carry flag comes out set where an 8-bit-only read would
+    # have left it clear). Only the final *value* written back is always
+    # masked to a byte (`result & 0xFF`, matching `_write_result`'s mask);
+    # the read width (and therefore the carry/borrow check, which happens
+    # against the unmasked `raw`) follows the usual destination-kind rule
+    # via `operand_width(op1)` like every other two-operand arithmetic op
+    # here. SED/CLD/CLA are handled directly in `execute` (no operand at
+    # all, same as CLI/STI at 0x03/0x04) rather than as their own `op_*`
+    # methods.
     #
     # BCDA/BCDS are ported bug-for-bug: the "add/subtract 1 when the A
     # flag is set but D (decimal mode) is *not*" step in `_bcda`/`_bcds`
@@ -1120,8 +1190,9 @@ impl Cpu:
     # NOTES.md.
     fn op_bcda(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
-        let a = self.operand_read(op1, 8)
-        let b = self.operand_read(op2, 8)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let b = self.operand_read(op2, width)
         let mut raw = a + b
         if !self.flags.d() and self.flags.a():
             raw += 1
@@ -1130,22 +1201,28 @@ impl Cpu:
                 raw += 0x06
             if ((raw >> 4) & 0x0F) > 9:
                 raw += 0x60
-        # `result > 0x99` is checked *after* masking to 0xFF below, exactly
-        # matching `_bcda`'s own statement order -- not a simplification.
-        # Masking first means this can only ever see 0-255, so it only
-        # actually fires when the masked byte itself lands in 154-255 (this
-        # port's op_bcd2bin/op_bin2bcd's "post-mask can't differ from
-        # pre-mask" reasoning does NOT apply here, since BCDA's raw sum can
-        # be much larger than 255 before masking).
+        # `carry = result > 0x99` is checked *before* `result &= 0xFF` in
+        # the reference (`core/exec_handlers.py::_bcda`, statement order:
+        # `carry = result > 0x99` on the line directly above `result &=
+        # 0xFF`) -- an earlier draft of this port had this backwards
+        # (checking the *masked* byte against 0x99, which can only ever be
+        # 0-255 and so only fires for 154-255) and documented the bug as
+        # if it were the reference's own behavior. Confirmed wrong against
+        # the live reference over MCP: `BCDA R0, R1` with R0=R1=0x89 (raw
+        # sum 0x112/274, masked result 0x12) comes back with C set, which
+        # is only possible if the carry check runs against the *unmasked*
+        # 274, not the masked 18. Fixed to check `raw` before masking.
+        let carry = raw > 0x99
         let result = raw & 0xFF
-        let carry = result > 0x99
-        self.operand_write(op1, 8, result)
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, result)
         self.flags.apply_bcd(result, carry)
 
     fn op_bcds(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
-        let a = self.operand_read(op1, 8)
-        let b = self.operand_read(op2, 8)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let b = self.operand_read(op2, width)
         let mut raw = a - b
         if !self.flags.d() and self.flags.a():
             raw -= 1
@@ -1154,19 +1231,19 @@ impl Cpu:
                 raw -= 0x06
             if ((raw >> 4) & 0x0F) > 9:
                 raw -= 0x60
-        # `result < 0` is likewise checked *after* masking below, matching
-        # `_bcds`'s own statement order -- and since `& 0xFF` always
-        # produces a value in 0-255 (Star's bitwise `&`, like Python's,
-        # masks at the bit-pattern level regardless of `raw`'s sign), this
-        # comparison can never be true. BCDS's BCD-carry/A/C flags are
-        # therefore always cleared, confirmed against the live reference
-        # (`BCDS 0x42, 0x15` still reports C=0 even though it holds a real
-        # borrow) -- a real reference quirk (almost certainly an
-        # accidental order-of-operations bug upstream), ported as-is per
-        # this project's "port bug-for-bug" precedent (see NOTES.md).
+        # `borrow = result < 0` is likewise checked *before* `result &=
+        # 0xFF` in the reference. An earlier draft of this port had this
+        # backwards too (checking the masked byte, which Star's and
+        # Python's bitwise `&` both always reduce to 0-255 regardless of
+        # sign, so `< 0` could never be true) and documented BCDS's borrow
+        # flag as "always cleared" -- confirmed wrong against the live
+        # reference over MCP: `BCDS R0, R1` with R0=0x15, R1=0x42 (a genuine
+        # borrow, op1 < op2; raw diff -45) comes back with C set. Fixed to
+        # check `raw` before masking, same as BCDA above.
+        let carry = raw < 0
         let result = raw & 0xFF
-        let carry = result < 0
-        self.operand_write(op1, 8, result)
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, result)
         self.flags.apply_bcd(result, carry)
 
     # Compares op1/op2 as plain numbers (no decimal-digit adjustment at
@@ -1177,8 +1254,9 @@ impl Cpu:
     # it as an 8-bit result -- this op just doesn't compute it that way).
     fn op_bcdcmp(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
-        let a = self.operand_read(op1, 8)
-        let b = self.operand_read(op2, 8)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let b = self.operand_read(op2, width)
         if a == b:
             self.flags.set_z(true)
             self.flags.set_s(false)
@@ -1252,35 +1330,38 @@ impl Cpu:
     # BCD add/subtract).
     fn op_bcdadd(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
-        let a = self.operand_read(op1, 8)
-        let b = self.operand_read(op2, 8)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let b = self.operand_read(op2, width)
         let mut raw = a + b
         if self.flags.d():
             if (raw & 0x0F) > 9:
                 raw += 0x06
             if ((raw >> 4) & 0x0F) > 9:
                 raw += 0x60
-        # Masked before the carry check, same reasoning as op_bcda above.
+        # Carry checked before masking, same fix as op_bcda above.
+        let carry = raw > 0x99
         let result = raw & 0xFF
-        let carry = result > 0x99
-        self.operand_write(op1, 8, result)
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, result)
         self.flags.apply_bcd(result, carry)
 
     fn op_bcdsub(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
-        let a = self.operand_read(op1, 8)
-        let b = self.operand_read(op2, 8)
+        let width = self.operand_width(op1)
+        let a = self.operand_read(op1, width)
+        let b = self.operand_read(op2, width)
         let mut raw = a - b
         if self.flags.d():
             if (raw & 0x0F) > 9:
                 raw -= 0x06
             if ((raw >> 4) & 0x0F) > 9:
                 raw -= 0x60
-        # Masked before the carry check, same reasoning as op_bcds above --
-        # always false in practice, ported as-is.
+        # Borrow checked before masking, same fix as op_bcds above.
+        let carry = raw < 0
         let result = raw & 0xFF
-        let carry = result < 0
-        self.operand_write(op1, 8, result)
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, result)
         self.flags.apply_bcd(result, carry)
 
     # ── Math library (docs/nova16_instruction_reference.md 0x5B-0x6C) ──
@@ -1332,7 +1413,8 @@ impl Cpu:
             result = (p as i64) as i32
         let masked = self.mask_to_width(result, 16)
         self.flags.apply_arith(masked, a, b, 16, false, false)
-        self.operand_write(op1, width, self.mask_to_width(result, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(result, ww))
 
     fn op_sqrt(mut self):
         let (op1, _op2, _op3) = self.decode_operands(1)
@@ -1567,7 +1649,8 @@ impl Cpu:
         let raw = (da * db) >> 8
         let masked = self.mask_to_width(raw, 16)
         self.flags.apply_arith(masked, a, b, 16, false, false)
-        self.operand_write(op1, width, self.mask_to_width(raw, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_fdiv(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -1586,7 +1669,8 @@ impl Cpu:
             let raw = floor_div16(da << 8, db)
             let masked = self.mask_to_width(raw, 16)
             self.flags.apply_arith(masked, a, b, 16, false, false)
-            self.operand_write(op1, width, self.mask_to_width(raw, width))
+            let ww = self.write_width_for(op1, op2)
+            self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_ftoi(mut self):
         let (op1, _op2, _op3) = self.decode_operands(1)
@@ -1617,7 +1701,8 @@ impl Cpu:
         let b = self.operand_read(op2, width)
         let raw = (a & b)
         self.flags.apply_logic(raw, width)
-        self.operand_write(op1, width, self.mask_to_width(raw, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_or(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -1626,7 +1711,8 @@ impl Cpu:
         let b = self.operand_read(op2, width)
         let raw = (a | b)
         self.flags.apply_logic(raw, width)
-        self.operand_write(op1, width, self.mask_to_width(raw, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_xor(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -1635,7 +1721,8 @@ impl Cpu:
         let b = self.operand_read(op2, width)
         let raw = (a ^ b)
         self.flags.apply_logic(raw, width)
-        self.operand_write(op1, width, self.mask_to_width(raw, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_not(mut self):
         let (op1, _op2, _op3) = self.decode_operands(1)
@@ -1656,7 +1743,8 @@ impl Cpu:
         else:
             raw = (bits::shl16(a as u16, amt)) as i32
         self.flags.apply_logic(raw, width)
-        self.operand_write(op1, width, raw)
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_shr(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -1669,7 +1757,8 @@ impl Cpu:
         else:
             raw = (bits::shr16(a as u16, amt)) as i32
         self.flags.apply_logic(raw, width)
-        self.operand_write(op1, width, raw)
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_sar(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -1682,7 +1771,8 @@ impl Cpu:
         else:
             raw = (bits::sar16(a as u16, amt)) as i32
         self.flags.apply_logic(raw, width)
-        self.operand_write(op1, width, raw)
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_rol(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -1695,7 +1785,8 @@ impl Cpu:
         else:
             raw = (bits::rol16(a as u16, amt)) as i32
         self.flags.apply_logic(raw, width)
-        self.operand_write(op1, width, raw)
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_ror(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -1708,7 +1799,8 @@ impl Cpu:
         else:
             raw = (bits::ror16(a as u16, amt)) as i32
         self.flags.apply_logic(raw, width)
-        self.operand_write(op1, width, raw)
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_rcl(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -1723,7 +1815,8 @@ impl Cpu:
             let (r, c) = bits::rcl16(a as u16, carry_in, amt)
             (r as i32, c)
         self.flags.apply_rotate(raw, width, carry_out)
-        self.operand_write(op1, width, raw)
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_rcr(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -1738,7 +1831,8 @@ impl Cpu:
             let (r, c) = bits::rcr16(a as u16, carry_in, amt)
             (r as i32, c)
         self.flags.apply_rotate(raw, width, carry_out)
-        self.operand_write(op1, width, raw)
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(raw, ww))
 
     fn op_btst(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -1752,21 +1846,24 @@ impl Cpu:
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let bitidx = (self.operand_read(op2, width)) % width
-        self.operand_write(op1, width, bit_set(a, bitidx))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(bit_set(a, bitidx), ww))
 
     fn op_bclr(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let bitidx = (self.operand_read(op2, width)) % width
-        self.operand_write(op1, width, bit_clear(a, bitidx))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(bit_clear(a, bitidx), ww))
 
     fn op_bflip(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let bitidx = (self.operand_read(op2, width)) % width
-        self.operand_write(op1, width, bit_toggle(a, bitidx))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(bit_toggle(a, bitidx), ww))
 
     # ── Stack ────────────────────────────────────────────────────────────
 
@@ -1774,12 +1871,19 @@ impl Cpu:
         let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
         let v = self.operand_read(op1, width)
-        self.push16(v)
+        if self.push_pop_width(op1) == 8:
+            self.push8(v)
+        else:
+            self.push16(v)
 
     fn op_pop(mut self):
         let (op1, _op2, _op3) = self.decode_operands(1)
         let width = self.operand_width(op1)
-        let v = self.pop16()
+        let mut v = 0
+        if self.push_pop_width(op1) == 8:
+            v = self.pop8()
+        else:
+            v = self.pop16()
         self.operand_write(op1, width, self.mask_to_width(v, width))
 
     fn op_pushf(mut self):
@@ -1927,7 +2031,8 @@ impl Cpu:
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let newval = self.mask_to_width(a - 1, width)
-        self.operand_write(op1, width, newval)
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(newval, ww))
         if newval != 0:
             let target = self.operand_read(op2, self.operand_width(op2))
             self.pc = Wrapping<u16>((wrap_addr(target)) as u16)
@@ -1937,7 +2042,8 @@ impl Cpu:
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let newval = self.mask_to_width(a - 1, width)
-        self.operand_write(op1, width, newval)
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(newval, ww))
         if newval != 0 and self.flags.z():
             let target = self.operand_read(op2, self.operand_width(op2))
             self.pc = Wrapping<u16>((wrap_addr(target)) as u16)
@@ -2035,7 +2141,8 @@ impl Cpu:
         let mut r = lo
         if range > 0:
             r = lo + ((rand() * (range as f32)) as i32)
-        self.operand_write(op1, width, self.mask_to_width(r, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(r, ww))
 
     # ── Graphics ─────────────────────────────────────────────────────────
 
@@ -2584,7 +2691,8 @@ impl Cpu:
             else:
                 going = false
         let masked = self.mask_to_width(result, 16)
-        self.operand_write(op1, width, self.mask_to_width(result, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(result, ww))
         self.flags.apply_arith(masked, 0, 0, 16, false, false)
 
     # ITOS always writes its decimal string to the fixed static buffer
@@ -2623,7 +2731,8 @@ impl Cpu:
             pos += 1
             i += 1
         self.mem.write_byte(wrap_addr(buffer_addr + pos), 0 as u8)
-        self.operand_write(op1, width, self.mask_to_width(buffer_addr, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(buffer_addr, ww))
         self.flags.apply_arith(self.mask_to_width(buffer_addr, 16), 0, value, 16, false, false)
 
     # STOI's decimal parser is a deliberate simplification of Python's
@@ -2664,7 +2773,8 @@ impl Cpu:
         if !valid:
             final_result = 0
         let masked = self.mask_to_width(final_result, 16)
-        self.operand_write(op1, width, self.mask_to_width(final_result, width))
+        let ww = self.write_width_for(op1, op2)
+        self.operand_write(op1, ww, self.mask_to_width(final_result, ww))
         self.flags.apply_arith(masked, 0, 0, 16, false, false)
 
     # ── Dispatch ─────────────────────────────────────────────────────────
