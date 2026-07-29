@@ -112,11 +112,9 @@
    forward to a reliable scheme.
 
 **P3: Institutionalize the review cadence that has repeatedly proven valuable.**
-7. This is the third full assessment in three stages, each
-   finding real issues the day-to-day feature work didn't surface on its own.
-   Consider tying the next one to a concrete trigger (e.g., "every N
-   changelog entries" or "before any session that adds a new codegen module")
-   rather than continuing to rely on someone remembering to ask.
+7. **Done.** `docs\conventions.md` lay out the projeect-sepcific rules and patterns
+   including the complete reassessment of the language, as well as a `CLAUDE.md` file to
+   facilitate cleaner AI contribution from Claude agents (adapt for other agents as needed).
 
 # Previous work
 src/lsp.rs (new): `star lsp`, a minimal Language Server Protocol server over stdio (todo.md P2 #5) -- `textDocument/publishDiagnostics` on `didOpen`/`didSave`, re-running the same `Driver::compile` pipeline `star check` uses. Hand-rolled `Content-Length`-framed JSON-RPC over `serde_json`; 17 new tests plus a real subprocess smoke test.
