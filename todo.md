@@ -15,14 +15,10 @@ didn't find one.**
 1. **Root-cause the repeated-f-string-call corruption bug.** Done. See
    "Previous work" below for the fix and its regression tests
    (`tests/frontend_fstring_str_hole_use_after_free.rs`).
-2. **An actual assembler** for `projects/nova`, so a `.bin` can be produced
-   from Star-authored (or at least locally-authored) source instead of only
-   loaded from the upstream Python toolchain's output. Now the single
-   biggest named-tooling gap left in `readme.md`'s versioning gate — the
-   disassembler this cycle built (`projects/nova/disasm.star`, see
-   `projects/nova/NOTES.md`'s "Disassembler" section) gives an assembler's
-   output somewhere to be checked immediately (assemble, then disassemble,
-   then diff against the source), which wasn't true before this cycle.
+2. **An actual assembler** for `projects/nova`. Done. See "Previous work"
+   below for the design, the deliberate deviations from the Python
+   assembler, and the verification record (`projects/nova/NOTES.md`'s
+   "Assembler" section has the full write-up).
 
 **P2: Bigger, still-unscoped tooling gaps.**
 3. A debugger and GUI+controls parity with the Python reference's own
@@ -159,3 +155,60 @@ correct the opcode count from an approximate "roughly 140" to a verified
 167 (of 180 documented, the 13-opcode gap being exactly the still-
 unimplemented set already listed under "What's not implemented").
 current_status.md / todo.md: this reassessment.
+
+projects/nova/assembler.star (new): a real assembler -- turns a `.asm`
+source file into a compiled `.bin` plus `.org`/`.sym` sidecars, closing
+todo.md P1 #2. Two-pass design (symbol table then code generation), same
+shape as the upstream `nova_assembler.py::Assembler.first_pass`/
+`second_pass`. Its opcode/register tables are transcribed directly from
+`disasm.star`'s own already-cross-checked-against-`cpu.star` `opcode_info`/
+`reg_name` tables (not re-derived independently), cross-checked against
+Python's `opcodes.py` too (180 instruction entries, 61 register entries,
+both counts matching exactly) -- so encode and decode are provably built
+from the same source of truth. `star check`/`star build` both succeeded on
+the first real attempt: this is the first Nova tooling round that found
+*zero* new Star compiler bugs, unlike every previous one (disassembler: 2;
+loader/large-aggregate work: several more) -- the language's `Map<K,V>`,
+`Bytes`, byte-string-indexing, and two-pass value-threading were all
+already sufficient. One genuine logic bug found and fixed along the way (not
+a compiler bug): the validation pass's directive-argument check didn't
+recognize a char-literal token as a valid `DB` argument, caught immediately
+by the new directives test failing to assemble, one-line fix.
+Verified: every one of this project's nine pre-existing checked-in
+`tests/asm/*.asm` sources reassembles byte-for-byte identical (both `.bin`
+and `.org`) to a *fresh* live run of `nova_assembler.py`, not just the
+possibly-stale checked-in files. Two new test programs added specifically
+to cover what those nine don't: `tests/asm/assembler_directives_test.asm`
+(every directive, char literals, a negative immediate, a comma-containing
+string literal, forward/backward/data-to-code label references) is also
+byte-for-byte Python-identical and was run to completion on both the live
+Python reference CPU (over MCP) and this port's own `cpu.star` (via
+`tests/run_bin.exe`), registers matching each other and the file's own
+documented expected values exactly on both, and loads cleanly under
+`nova16.exe`. `tests/asm/assembler_direct_indexed_test.asm` exercises
+`[0xADDR + off]`/`[0xADDR - off]` direct-indexed addressing, a real
+`cpu.star`/`disasm.star`-supported addressing mode the Python assembler
+cannot itself produce (confirmed: it raises "Unknown base register:
+0x2000" on `[0x2000+4]`, since its own `direct`/`indexed` regexes don't
+compose) -- verified instead via a `disasm.star` round trip back to
+matching source text, live execution on the Python reference CPU over MCP,
+and live execution on this port's own `cpu.star`, all agreeing exactly
+(including cycle count and final `pc`). Deliberate, documented deviations
+from the Python assembler (full list in `assembler.star`'s own header
+comment and `projects/nova/NOTES.md`'s "Assembler" section): no macro/
+include/conditional preprocessing (nothing in this project's real `.asm`
+corpus needs it); the 12 dual-purpose register/instruction mnemonics
+(`SA`/`TT`/etc.) are register-operand-only here, matching `cpu.star`'s own
+already-documented capability gap rather than encoding a `.bin` this port's
+CPU can't run; `BR`/`BRZ`/`BRNZ` encode an absolute address exactly like
+`JMP`, matching the Python assembler's *actual* (not commented-as-intended)
+behavior -- its own relative-offset calculation is dead code, a finding
+now filed under `projects/nova/NOTES.md`'s "What to carry back to the
+Python emulator" #4; direct-indexed addressing is supported as a
+deliberate superset; register/mnemonic matching is case-insensitive
+(strictly more lenient, never changes output for anything Python could
+already assemble). Also found and worked around (not carried into this
+port): `nova_assembler.py`'s `DB` directive can't accept a char-literal
+argument at all (a real, separate gap in `DataGenerator._parse_numeric_
+value`, confirmed empirically) even though the identical token works fine
+as an instruction operand in the same file.

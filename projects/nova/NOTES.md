@@ -31,12 +31,11 @@ memory space, a ~190-entry instruction set, a register-code addressing
 scheme, a 256x256 indexed framebuffer, and a keyboard/timer/interrupt
 model.
 
-There is a real binary program loader (see "Binary program loading" below)
-and a real disassembler (see "Disassembler" below), so test/demo programs
-are genuine compiled Nova-16 `.bin` files assembled by the upstream Python
-`nova_assembler.py` and can be inspected as real assembly text, not
-hand-encoded bytes read back as hex dumps — see "Testing" below for the
-checked-in `tests/` directory this unlocked. An assembler, a debugger, and
+There is a real binary program loader (see "Binary program loading" below),
+a real disassembler (see "Disassembler" below), and now a real assembler
+(see "Assembler" below), so test/demo programs no longer have to originate
+from the upstream Python `nova_assembler.py` at all — this project can
+produce, inspect, and run its own `.bin` files end to end. A debugger and
 GUI+controls parity with the Python reference's own tooling are the
 concrete pieces still missing before `readme.md`'s versioning gate's
 "tooling to match Python reference" condition is fully met — see "Ideas for
@@ -90,6 +89,21 @@ surfaced **two genuine, previously-unknown Star compiler bugs**, both found,
 fixed, and verified against the full `cargo test` suite with zero
 regressions — see "Seven Star compiler bugs found and fixed" #6 and #7
 below.
+
+**Assembler round** (todo.md P1 #2): a real assembler, `assembler.star` —
+see "Assembler" below. Unlike every prior round, this one found **zero**
+new Star compiler bugs — the language handled everything the assembler
+needed (a 180-entry `Map<str, i32>` opcode table, string-index-byte-by-byte
+substring building, `Bytes`/`List<T>` threaded through by return value
+across a two-pass design) on the first real attempt, both `star check` and
+`star build` succeeding without a single fix needed at the compiler level.
+Verified byte-for-byte identical to a fresh run of the live upstream
+`nova_assembler.py` on every one of this project's existing checked-in
+`tests/asm/*.asm` sources, plus two new ones covering directives/labels/
+`EQU`/char-literals/negative-immediates (also byte-for-byte Python-matched)
+and direct-indexed addressing (which the Python assembler cannot itself
+produce — verified instead via `disasm.star` round-trip and live execution
+on both the Python reference CPU over MCP and this port's own `cpu.star`).
 
 ## Contents
 
@@ -145,6 +159,10 @@ below.
   `cpu.star` (a pure byte-stream decode, no machine state involved) and,
   unlike every other Nova build target here, links with no SDL2 dependency
   at all. See "Disassembler" below.
+- `assembler.star` — the assembler: turns a `.asm` source file into a
+  compiled `.bin` plus `.org`/`.sym` sidecars. Like `disasm.star`, a pure
+  text-in/bytes-out tool independent of `Cpu`/`cpu.star`, with no SDL2
+  dependency. See "Assembler" below.
 - `cpu.star` — the CPU itself: registers, the register-code address space,
   operand decoding, the fetch-decode-execute cycle, every implemented
   instruction, interrupts, and the timer. Still the one large file in the
@@ -181,6 +199,13 @@ why):
 ```
 star build projects/nova/disasm.star -o projects/nova/disasm.exe
 projects/nova/disasm.exe projects/nova/tests/asm/write_width_test.bin
+```
+
+Neither does the assembler:
+
+```
+star build projects/nova/assembler.star -o projects/nova/assembler.exe
+projects/nova/assembler.exe projects/nova/tests/asm/write_width_test.asm
 ```
 
 ## Architecture / design decisions
@@ -964,6 +989,9 @@ estimate):
   `nova_assembler.py`) instead of only the built-in demo program.
 - A real disassembler (see "Disassembler" below) -- decodes a compiled
   `.bin` back into readable Nova-16 assembly text.
+- A real assembler (see "Assembler" below) -- turns a `.asm` source file
+  into a compiled `.bin`, matching the upstream `nova_assembler.py`'s own
+  output byte-for-byte on every source it can also assemble.
 
 ## What's not implemented (and why)
 
@@ -1109,6 +1137,15 @@ was checked against; not repeated here. What's checked in:
     "Generalizing the write-width fix", "PUSH/POP always used a fixed
     16-bit stack slot", and "BCD operations"'s corrected read-width/
     masking-order bullets below.
+  - `assembler_directives_test.asm`, `assembler_direct_indexed_test.asm` —
+    written for the assembler round (todo.md P1 #2) to exercise directives/
+    labels/`EQU`/char-literals/negative-immediates and direct-indexed
+    addressing respectively, neither touched by any file above. Their
+    `.bin`/`.org`/`.sym` are the first in this directory produced by this
+    project's own `assembler.star` rather than the upstream Python
+    `nova_assembler.py` — see "Assembler" above for the full verification
+    record (byte-for-byte Python parity where Python can assemble the
+    input, live-CPU/disassembler round-trip where it can't).
 - `tests/mouse_interrupt_test.star` — a direct-field-poke harness (not a
   `.bin`) for the one piece of this round with no opcode-reachable way to
   drive it end to end (nothing a Nova-16 program can execute sets
@@ -1758,6 +1795,184 @@ first instruction, matching "Binary program loading"'s own verification of
 the same file above). Every decoded mnemonic, operand, and byte-length
 matched the source `.asm` exactly across all four files.
 
+## Assembler
+
+Added this round: `assembler.star`, a real assembler — turns a `.asm`
+source file into a compiled `.bin` plus `.org`/`.sym` sidecars, matching
+the upstream Python `nova_assembler.py`'s own accepted syntax and output
+conventions closely enough that either assembler can consume the other's
+inputs. Named as the single biggest remaining named-tooling gap since the
+disassembler round (todo.md P1 #2, "Ideas for future work"): the binary
+loader and disassembler gave an assembler's output somewhere to go and a
+way to check it immediately, which wasn't true before either existed.
+
+### Design: reuse the disassembler's own verified tables, don't re-derive
+
+`assembler.star`'s opcode table (mnemonic -> opcode byte, operand count)
+and register table (name -> register code) are transcribed directly from
+`disasm.star`'s own `opcode_info`/`reg_name` — not re-derived independently
+from `docs/nova16_instruction_reference.md` or from Python's `opcodes.py`.
+Cross-checked against `opcodes.py` directly while writing this (every
+mnemonic/opcode/arity triple matches exactly, register table too — 180
+instruction entries, 61 register entries, both counts confirmed by
+`grep`ping each file's own match-arm/insert-call count), so this isn't
+blind trust in an unverified transcription; it's confirmation that
+`disasm.star`'s already-cross-checked-against-`cpu.star` table and the
+Python reference's own opcode table agree, and building the assembler from
+the same source of truth as the disassembler means an assemble-then-
+disassemble round trip is a genuine end-to-end check of both tools against
+each other, not two independently-guessed tables happening to agree by
+coincidence.
+
+Two-pass design, same shape as `nova_assembler.py::Assembler.first_pass`/
+`second_pass`: pass one walks every parsed line building a `Map<str, i32>`
+symbol table (label -> address, `EQU` name -> resolved value) while
+computing each line's byte size without needing that table to be complete
+yet (a bare non-literal operand token always sizes as a 2-byte immediate
+regardless of whether it's already a resolved symbol — matching
+`nova_assembler.py::OperandClassifier.classify_operand`'s own fallback
+behavior exactly, confirmed by reading it directly rather than assumed);
+pass two re-walks the same lines with the complete symbol table to emit
+real bytes. A `validate_lines` pass runs between the two (unknown
+mnemonics, unimplemented instructions, unresolvable register/symbol
+operands) so a malformed source is reported through a real nonzero exit
+code from `main` before any file is written — see "No process-abort
+builtin, so validate before emitting" below for why errors are collected
+this way rather than aborting mid-emit.
+
+### No process-abort builtin, so validate before emitting
+
+Star has no `panic`/`abort`/`std::process::exit`-equivalent builtin
+reachable from ordinary code, and `extern "C" fn exit` cannot be declared
+either — confirmed empirically, the checker rejects it outright
+(`"extern "C" fn `exit` collides with a symbol this compiler always
+declares internally"`, since the compiler's own runtime trap machinery
+already links `@exit` for its own use, `src/codegen/mod.rs`). With no way
+to unwind or terminate early from deep inside a nested call (encoding a
+single operand can be several calls deep), a Python-style "collect errors
+as `raise`s and report them all at the end" design isn't available. Instead
+`main` runs `validate_lines` once the symbol table is complete and before
+any bytes are emitted, collecting every error up front and returning a real
+nonzero exit code (`fn main() -> i32:` + `return 1`, confirmed available
+and exit-code-carrying via `tests/frontend_enums_pattern_matching.rs`'s own
+`fn main() -> i32: ... return N` pattern) if any were found. The deep
+`fatal()` helper inside code generation itself only prints — a defense-in-
+depth fallback for a code path `validate_lines` didn't anticipate, not the
+primary error-reporting mechanism; see its own doc comment.
+
+### Deliberate deviations from the Python assembler
+
+Documented in full in `assembler.star`'s own header comment; summarized
+here:
+
+- No `MACRO`/`INCLUDE`/`IF`-`IFDEF`-`IFNDEF`-`ELSE`-`ENDIF` preprocessing --
+  none of this project's own checked-in `tests/asm/*.asm` sources (the ones
+  the Python assembler actually produced the checked-in `.bin`/`.org` files
+  from) use any of these (confirmed by `grep`), so there's nothing in this
+  project's real corpus that needs them yet.
+- The 12 "dual-purpose" register/instruction mnemonics (`SA`/`SF`/`SV`/
+  `SW`/`TT`/`TM`/`TC`/`TS`/`VM`/`VL`/`VX`/`VY`) are accepted here only as
+  register operands, not as standalone one-operand instructions the way
+  Python's assembler accepts them (e.g. a bare `TT 5` line) -- because
+  `cpu.star`'s own `execute` dispatch has no opcode-table entry for any of
+  these bytes as standalone opcodes at all (confirmed by grepping every
+  register-code match in `cpu.star` -- `get_reg_value`/`set_reg_value`/
+  `reg_width` all have arms for these codes, `execute` does not), matching
+  this file's own "What's implemented" note that this port reaches these
+  registers "via MOV/arithmetic/etc, not just as dedicated opcodes." This is
+  an already-documented capability gap in this port's CPU, not something
+  newly discovered here; encoding them anyway would silently produce a
+  `.bin` this port's own `cpu.star` cannot run.
+- `BR`/`BRZ`/`BRNZ` encode an absolute resolved address, exactly like `JMP`
+  -- **not** a PC-relative delta, despite the mnemonics' names. This matches
+  the Python assembler's *actual* behavior, not its own comment:
+  `CodeGenerator._parse_immediate_value`'s "for branch instructions,
+  calculate relative offset" branch is genuinely dead code (`val = val - 0
+  # Would need location_counter passed in`), confirmed by reading
+  `nova_assembler.py` directly -- the Python reference has never actually
+  computed a relative offset here. Filed below under "What to carry back to
+  the Python emulator" as a naming/behavior mismatch worth flagging
+  upstream, alongside the PUSH/POP and BCD findings from earlier rounds.
+- `[0xADDR + off]` / `[0xADDR - off]` (direct-indexed addressing) is
+  supported here even though the Python assembler cannot produce it at all
+  -- confirmed empirically, `[0x2000+4]` raises `"Unknown base register:
+  0x2000"` in the live Python assembler, since its own `direct`/`indexed`
+  regexes don't compose (the general indexed-operand path falls through and
+  tries to look up `"0x2000"` as a register name). `cpu.star`'s
+  `decode_operand` and `disasm.star`'s own `format_operand` both handle this
+  addressing mode correctly (it's a real CPU capability, not a wrong guess),
+  so this is a deliberate superset that can never show up in a byte-for-byte
+  comparison against real Python-assembled output (Python can't generate an
+  input that would exercise it) -- verified separately, see "Verification"
+  below.
+- Register/mnemonic matching is case-insensitive here (tokens are
+  upper-cased before lookup); the Python assembler is case-sensitive for
+  registers specifically, an accident of `OperandClassifier.classify_
+  operand` comparing the raw token against an all-uppercase set without
+  upper-casing it first. Every real `.asm` source already writes registers
+  upper-case, so this is strictly more lenient and never changes output for
+  any source Python could already assemble.
+- A genuine Python-side gap found and worked around, not carried into this
+  port: `nova_assembler.py`'s `DataGenerator._parse_numeric_value` (backing
+  `DB`'s non-string arguments) never checks `OperandClassifier`'s own
+  char-literal pattern, so `DB 'A'` fails in the live Python assembler with
+  `"Unknown value: 'A'"` even though the identical `'A'` token works fine as
+  an ordinary instruction operand (`MOV R0, 'A'`) in the same file. This
+  port's `assembler.star` has no such gap (`DB` and instruction operands
+  share the same `resolve_imm`/`classify_operand` logic), but
+  `tests/asm/assembler_directives_test.asm` deliberately avoids the
+  char-literal-in-`DB` form specifically so its own output stays fully
+  byte-for-byte comparable against a live Python assembler run -- see that
+  file's own header comment.
+
+### Verification
+
+Every one of this project's pre-existing checked-in `tests/asm/*.asm`
+sources (`bcd_width_test`, `bcda_carry_order_test`, `bcds_borrow_order_
+test`, `layers_test`, `mov_write_width_test`, `push_pop_width_test`,
+`sprites_test`, `uart_integration_test`, `write_width_test` -- nine files,
+originally assembled by the Python reference) reassembled through
+`assembler.star` byte-for-byte identical, both `.bin` and `.org`, against a
+*fresh* live run of `nova_assembler.py` (not just the possibly-stale
+checked-in files) -- none of these needed a single byte adjusted.
+
+Two new files added this round specifically to exercise what those nine
+never touch:
+
+- `tests/asm/assembler_directives_test.asm` -- every directive (`EQU`/`DB`/
+  `DW`/`DEFSTR`/`DS`), char literals in instruction operands, a negative
+  decimal immediate, a string literal containing a comma (the string-aware
+  comma splitter), and label references in every direction (forward,
+  backward via a genuine loop, and a data-section reference back up into
+  the code section). Byte-for-byte identical to a fresh Python assembler
+  run (`.bin` and `.org` both). Also run to completion on both CPUs: the
+  live Python reference over MCP (`cpu_run`/`get_cpu_state`) and this
+  port's own `cpu.star` (via `tests/run_bin.exe`) -- registers matched each
+  other and the file's own documented expected values exactly on both
+  (`R0`-`R5`, `cycles_run=17`, final `pc=0x0030` on both CPUs), and the
+  assembled `.bin` also loads and runs without crashing under `nova16.exe`
+  itself (the SDL GUI build).
+- `tests/asm/assembler_direct_indexed_test.asm` -- `[0xADDR + off]` /
+  `[0xADDR - off]`, the one addressing mode the Python assembler can't
+  produce (see "Deliberate deviations" above), so there's no Python output
+  to diff against. Verified three other ways instead: (1) `disasm.star`
+  round-trips the assembled `.bin` back to text matching the source exactly
+  (`MOV [0x3000+4], 0xAB` / `MOV [0x3010-12], 0xCD`, both landing on the
+  same address `0x3004` from opposite signs); (2) run on the live Python
+  reference CPU over MCP, confirming `R0=0xAB`, `R1=0xCD`, and
+  `mem[0x3004]=0xCD` (the second write correctly overwriting the first at
+  the same resolved address); (3) run on this port's own `cpu.star` via
+  `tests/run_bin.exe`, matching the Python reference's registers, memory,
+  and even cycle count (5) and final `pc` (`0x0017`) exactly, and loading
+  cleanly under `nova16.exe`.
+
+Notably, this is the first tooling round for this project that found **zero**
+new Star compiler bugs -- both `star check` and `star build` succeeded on
+`assembler.star` on the first real attempt, with only ordinary logic bugs
+(one: `check_directive_arg`'s validation missing the char-literal case,
+caught immediately by the directives test failing to assemble, one-line
+fix) along the way.
+
 ## Layer compositing and sprites
 
 Added in this round: the remaining 8 compositing layers (backgrounds 1-4,
@@ -2151,21 +2366,18 @@ verified two ways instead:
 - Splitting `cpu.star`'s ~100 opcode-handler methods across files by group
   (arithmetic/bitwise/stack/control-flow/graphics/...) — unblocked now that
   `impl` can cross a module boundary (gotcha #6), not yet done.
-- An actual assembler, so a `.bin` could be produced from Star-authored
-  source rather than only loaded from the upstream Python toolchain's
-  output — the binary loader and disassembler (this round and the last)
-  make this more valuable than before (there'd finally be somewhere for its
-  output to go, and a way to check it), not less. Now the single most
-  valuable remaining named-tooling gap, since it's also the natural first
-  step before an interactive debugger needs source-level symbol
-  information.
+- ~~An actual assembler~~ — done, see "Assembler" above (todo.md P1 #2). A
+  debugger now has real source-level symbol information (the `.sym` file
+  and, more directly, `assembler.star`'s own in-memory symbol table) to
+  build source-line breakpoints on top of, which is exactly what this bullet
+  named as the natural next step.
 - ~~A disassembler~~ — done, see "Disassembler" below. A debugger, matching
   the upstream Python toolchain's own tooling, is still genuinely
   unstarted, and still named concretely (not just implied) by `readme.md`'s
   "Versioning" section as part of "tooling to match Python reference" for
-  the language-wide `0.1.0` gate (todo.md P1 #3). GUI+controls parity with
-  the Python reference's own tooling is the other named, still-open piece
-  of that same gate.
+  the language-wide `0.1.0` gate (todo.md P1 #3) — now the single remaining
+  named-tooling gap in that gate besides GUI+controls parity, since the
+  binary loader, disassembler, and assembler are all done.
 - ~~The f-string-repeated-call corruption bug~~ — root-caused and fixed at
   the compiler level (see "A related runtime bug, since fixed" right after
   "Seven Star compiler bugs found and fixed" above, and `todo.md` P1 #1).
@@ -2253,3 +2465,22 @@ whoever maintains it next:
    correct, already-general inference rule, and a read-width
    over-generalization from a real but narrower masking rule,
    respectively). Nothing to carry back for either.
+4. **`nova_assembler.py::CodeGenerator._parse_immediate_value`'s "for branch
+   instructions, calculate relative offset" comment describes code that was
+   never finished.** The branch it sits in is `val = val - 0  # Would need
+   location_counter passed in` — a literal no-op, confirmed by reading the
+   function directly. So `BR`/`BRZ`/`BRNZ` (the three mnemonics whose names
+   imply relative/branch semantics, as opposed to `JMP`'s explicitly
+   absolute one) have only ever encoded a resolved absolute address in the
+   actual, running Python assembler, identical to `JMP`. Found while
+   building this port's own `assembler.star` (todo.md P1 #2) and matched
+   deliberately rather than "fixed", since byte-for-byte parity with the
+   Python assembler's real output is this port's own stated verification
+   standard (see "Status: this port now supersedes the Python reference"
+   above) — see `assembler.star`'s own header comment, "Deliberate
+   deviations from the Python assembler," for where this is recorded on
+   this port's side. Worth flagging upstream either way: either finish the
+   relative-offset calculation (`location_counter` is already threaded
+   through `CodeGenerator.generate_instruction`'s call sites, so the fix is
+   probably small), or drop the misleading comment and any implication that
+   these three mnemonics currently do anything `JMP` doesn't.
