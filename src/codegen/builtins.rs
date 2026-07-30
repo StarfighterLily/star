@@ -20,6 +20,18 @@ impl Codegen {
         if let TypedExpr::FStr(parts, _, _) = arg {
             let mut fmt_str = String::new();
             let mut arg_vals: Vec<(String, Ty)> = Vec::new();
+            // A `str` hole's pointer must stay valid until the `printf` call
+            // below actually reads through it -- releasing it here in the
+            // loop, as this used to, frees it while `arg_vals` still holds
+            // the now-dangling pointer, and nothing stops some other
+            // allocation later in this same function from reusing that
+            // exact address before `printf` reads it. Same bug class
+            // `emit_str_concat`'s own doc comment (this file, below)
+            // documents and fixes for `concat`'s two arguments, and the
+            // sibling `TypedExpr::FStr` codegen path (`expr.rs`) has the
+            // identical fix. Collected here and released only after
+            // `printf` runs.
+            let mut str_hole_releases: Vec<String> = Vec::new();
             for part in parts {
                 match part {
                     TypedFStrExpr::Literal(lit) => {
@@ -183,8 +195,10 @@ impl Codegen {
                             // owning (a borrowed read's extra retain, or a
                             // fresh construction's sole reference; see
                             // `rc.rs`'s module doc comment for why this is
-                            // unconditional and always safe).
-                            self.line(&format!("  call void @star_rc_release(i8* {})", bare_val));
+                            // unconditional and always safe). Deferred until
+                            // after `printf` actually reads `bare_val` below
+                            // -- see `str_hole_releases`'s doc comment above.
+                            str_hole_releases.push(bare_val.clone());
                             bare_val
                         } else if matches!(ty, Ty::Bool) {
                             self.emit_bool_str(&bare_val)
@@ -281,6 +295,13 @@ impl Codegen {
                 }
             }
             self.line(&format!("  call i32 (i8*, ...) @printf({})", call_args.join(", ")));
+            // Now that `printf` above has actually read every `str` hole's
+            // bytes, it's safe to release them -- see
+            // `str_hole_releases`'s doc comment above for why this can't
+            // happen any earlier.
+            for held in &str_hole_releases {
+                self.line(&format!("  call void @star_rc_release(i8* {})", held));
+            }
         } else {
             let val = self.emit_expr(arg);
             // `emit_expr` may return either a bare register or one already
@@ -291,12 +312,23 @@ impl Codegen {
             // `Ident`/`Field` argument). This is already the raw `i8*`
             // pointer `printf` expects, no boxing indirection to unwrap.
             let loaded = self.untag(&val, &Ty::Str);
+            self.line(&format!("  call i32 (i8*, ...) @printf(i8* {})", loaded));
             // Same reasoning as `emit_raw_str_ptr`/the f-string branch
-            // above: release whatever `emit_expr(arg)` left us owning.
+            // above: release whatever `emit_expr(arg)` left us owning --
+            // only now that `printf` above has actually read through
+            // `loaded`. This used to release *before* the `printf` call
+            // that reads it -- a real use-after-free whenever `arg` is a
+            // fresh value (e.g. `println(some_fn_call())` where
+            // `some_fn_call` returns a freshly-built `str`): nothing stops
+            // a later allocation in the same program from reusing that
+            // exact freed address before `printf` gets to read it,
+            // corrupting the printed bytes. This is the general "release
+            // whatever's owned" call site `emit_str_concat`'s own doc
+            // comment (below) already documents and fixes this exact bug
+            // class for; this call site never got the same fix.
             if matches!(self.expr_ty(arg), Ty::Str) {
                 self.line(&format!("  call void @star_rc_release(i8* {})", loaded));
             }
-            self.line(&format!("  call i32 (i8*, ...) @printf(i8* {})", loaded));
             if println {
                 let g = self.global_name();
                 self.global_defs.push(format!("{} = private unnamed_addr constant [2 x i8] c\"\\0A\\00\"", g));

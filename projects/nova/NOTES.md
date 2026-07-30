@@ -766,7 +766,7 @@ in mind (and worth checking with a repro like the two above, not just by
 reading) the next time a function-valued builtin's return is used as a bare
 trailing `if`/`else` value and produces this same generic error.
 
-### A related, deliberately unfixed runtime bug: calling an f-string-producing function repeatedly can corrupt its own output
+### A related runtime bug, since fixed: calling an f-string-producing function repeatedly could corrupt its own output
 
 While bisecting bug #6/#7 above, an *earlier* draft of `disasm.star`'s
 `hex_word`/`hex_byte` — implemented via nested f-strings
@@ -786,24 +786,44 @@ and reproduces regardless of whether the *inner* function
 factor across every failing case is an f-string appearing *somewhere* in
 the call chain, more than once, in the same running program.
 
-This was **not root-caused or fixed** — `disasm.star` routes around it
-entirely instead (every helper function it defines builds its result with
+At the time this was written, `disasm.star` routed around it entirely
+instead (every helper function it defines builds its result with
 `concat`/`str_join` only, and calls no function from *inside* an f-string's
 `{...}` interpolation that itself contains an f-string anywhere in its own
 body; see `disasm.star`'s own header comment), which was sufficient to get
-correct, verified output from every test `.bin` disassembled during this
-round. The likely shape of the real bug (unconfirmed): the `FStr` arm's
-`star_rc_alloc`-backed buffer from a *first* call may not be retained
-correctly before being consumed by a subsequent statement, so a *second*
-call to the same f-string-materializing code path reuses the freed
-buffer's address while something else briefly holds live, uncommitted data
-there — consistent with the corruption always involving a duplicated
-fragment of an *earlier* call's output rather than random garbage, but this
-is a hypothesis, not a diagnosis backed by reading the relevant RC-tracking
-codegen the way bugs #6/#7 above were. Flagged here rather than silently
-routed around and forgotten, per this project's own standing practice for
-anything found-but-not-yet-fixed — a good next target for whoever picks up
-`todo.md`'s corresponding entry.
+correct, verified output from every test `.bin` disassembled during that
+round. The hypothesis recorded here at the time (a `star_rc_alloc`-backed
+buffer from a first call not being retained/protected before a later call
+reuses its address) turned out to be right in spirit and precise about the
+symptom, but not about the mechanism.
+
+**Since root-caused and fixed** (`todo.md` P1 #1): three separate codegen
+call sites -- `Codegen::emit_expr`'s general `TypedExpr::FStr` arm and both
+branches of `Codegen::emit_print_like` (`src/codegen/expr.rs` /
+`src/codegen/builtins.rs`) -- released a `str`-typed f-string
+interpolation hole's owned pointer via `star_rc_release` *before* the
+`snprintf`/`printf` call that actually reads through it, freeing its
+backing `malloc` block immediately. Nothing then stopped a *later*
+allocation in the same expression (typically a second interpolation
+hole's own call, or the enclosing f-string's own result buffer) from
+reusing that exact address before the pending `snprintf`/`printf` read it
+-- exactly the duplicated-fragment corruption recorded above, not random
+garbage, because the read and a subsequent write ended up aliasing the
+same memory. This is the identical bug class `Codegen::emit_str_concat`'s
+own doc comment (`builtins.rs`) already documented and fixed for
+`concat`'s two arguments in an earlier round; it had simply never been
+ported to these three other call sites. Fixed by deferring each hole's
+release until after the read(s) that actually consume it. Verified against
+a direct transcription of this section's own `wrap(v) -> f"0x{hex_word(v)}"`
+repro (reproduced the exact `"0x0x0N"` corruption pre-fix once looped over
+enough calls, clean post-fix) plus several other shapes, and the full
+`cargo +stable-x86_64-pc-windows-gnu test` suite (no regressions) -- see
+`tests/frontend_fstring_str_hole_use_after_free.rs` and `todo.md`'s
+"Previous work" entry for the fix. `disasm.star`'s own `concat`-only
+helpers are left as they are (routing around the bug cost nothing and
+reverting them isn't this fix's job), but any *new* Star code is no longer
+required to avoid nested f-strings the way this file's header comment
+still describes.
 
 ## Fixes applied to this project
 
@@ -2146,12 +2166,11 @@ verified two ways instead:
   the language-wide `0.1.0` gate (todo.md P1 #3). GUI+controls parity with
   the Python reference's own tooling is the other named, still-open piece
   of that same gate.
-- **Not yet root-caused: the f-string-repeated-call corruption bug** (see
-  "Seven Star compiler bugs found and fixed", the section right after this
-  file's compiler-bugs list) — `disasm.star` routes around it entirely, but
-  the underlying compiler bug is still live and could bite any other
-  project using this language the same way. Worth a dedicated investigation
-  session on its own, independent of any further Nova work.
+- ~~The f-string-repeated-call corruption bug~~ — root-caused and fixed at
+  the compiler level (see "A related runtime bug, since fixed" right after
+  "Seven Star compiler bugs found and fixed" above, and `todo.md` P1 #1).
+  `disasm.star` still routes around it via `concat`-only helpers, which is
+  no longer required but costs nothing to leave as-is.
 
 ## Status: this port now supersedes the Python reference
 

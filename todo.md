@@ -12,26 +12,9 @@ worth recording rather than skipping straight to new work.
 didn't find one.**
 
 **P1: The two most concrete, already-scoped gaps.**
-1. **Root-cause the repeated-f-string-call corruption bug.** Found this
-   cycle while building `projects/nova/disasm.star` (see
-   `projects/nova/NOTES.md`'s "Seven Star compiler bugs found and fixed",
-   the note right after bug #7): calling a function that itself
-   materializes its return value via an f-string, more than once in the
-   same running program, corrupts the result — `hex_word(0x1234)` came back
-   `"444"` instead of `"1234"` in the minimal repro; a wrapper function
-   returned correctly on its first call and wrong on its second/third. This
-   is **not** the same bug as #6/#7 (both already fixed this cycle,
-   untagged `FStr`/`concat` codegen returns) — it reproduces after those
-   fixes, and even when the *inner* function is `concat`-based rather than
-   f-string-based, as long as an f-string appears somewhere in the call
-   chain more than once. Not Nova-specific — any Star project could hit
-   this. Recorded hypothesis (unconfirmed): a `star_rc_alloc`-backed buffer
-   from a first f-string call isn't retained/protected correctly before a
-   later call reuses its address. Start by reading
-   `Codegen::emit_expr`'s `TypedExpr::FStr` arm (`src/codegen/expr.rs`)
-   and its RC-tracking (`push_scope`/`pop_scope`/`track_owned`/retain-
-   release calls) directly, the same way bugs #6/#7 were actually
-   diagnosed (reading the codegen, not guessing) rather than assumed.
+1. **Root-cause the repeated-f-string-call corruption bug.** Done. See
+   "Previous work" below for the fix and its regression tests
+   (`tests/frontend_fstring_str_hole_use_after_free.rs`).
 2. **An actual assembler** for `projects/nova`, so a `.bin` can be produced
    from Star-authored (or at least locally-authored) source instead of only
    loaded from the upstream Python toolchain's output. Now the single
@@ -62,6 +45,54 @@ didn't find one.**
    Carry the same discipline forward.
 
 # Previous work
+
+src/codegen/expr.rs / src/codegen/builtins.rs: root-caused and fixed P1 #1,
+the repeated-f-string-call corruption bug (`hex_word(0x1234)` coming back
+`"444"` instead of `"1234"` in `projects/nova/disasm.star`'s minimal repro).
+Root cause: three separate codegen call sites released a `str`-typed
+f-string interpolation hole's owned pointer via `star_rc_release`
+*before* the `snprintf`/`printf` call that actually reads through it --
+`Codegen::emit_expr`'s general `TypedExpr::FStr` arm, and both branches of
+`Codegen::emit_print_like` (the f-string-argument branch and the plain
+non-f-string-argument branch, e.g. `println(some_fn_call())`). Releasing a
+fresh (refcount-1) value frees its backing `malloc` block immediately;
+nothing then stops a *later* allocation in the same expression (most
+commonly a second interpolation hole's own call, itself materializing its
+return value via `concat` or another f-string) from reusing that exact
+address before the pending `snprintf`/`printf` reads it, corrupting the
+output. This is the identical bug class `Codegen::emit_str_concat`'s own
+doc comment (`builtins.rs`) already documented and fixed for `concat`'s two
+arguments in an earlier round (confirmed there via `concat(f"a{1}",
+f"b{2}")` producing `"b2b2"` instead of `"a1b2"`) — it had just never been
+ported to these three other call sites, which is exactly why this bug
+outlived bugs #6/#7 (both fixed the same cycle disasm.star was built,
+per `projects/nova/NOTES.md`'s "Seven Star compiler bugs found and fixed").
+Fix: defer each `str` hole's release until after the read(s) that actually
+consume it, at all three sites. Verified three ways: (1) reverted the fix
+and re-ran the new regression tests, confirming all 8 fail — 7 with the
+predicted corruption pattern (e.g. `"101-101"` instead of `"101-899"`,
+values from one hole bleeding into another), and the 8th (a direct
+transcription of `projects/nova/NOTES.md`'s own hand-observed `wrap(v) ->
+f"0x{hex_word(v)}"` repro) reproducing the exact recorded `"0x0x0N"`
+duplicated-fragment corruption once looped over enough calls (30 — the
+original 2-3-call repro didn't reliably reproduce against this run's
+allocator state, confirming the "not enough heap churn yet" explanation
+rather than a flaky test); (2) re-applied the fix and re-ran all 8 to
+confirm they pass; (3) re-ran the full
+`cargo +stable-x86_64-pc-windows-gnu test` suite (73 binaries, 1898 tests,
+0 failures — no regressions). New file:
+`tests/frontend_fstring_str_hole_use_after_free.rs` (8 tests: 3 IR-shape
+assertions pinning the fixed release ordering at each call site, 5 runtime
+end-to-end repros covering nested-holes-inner-f-string-based,
+nested-holes-inner-concat-based, `println(f"...")` with two holes
+directly, a three-hole variant, and the `NOTES.md` historical single-hole
+repro above). `projects/nova/NOTES.md` and `disasm.star`'s own doc comments
+previously described this as unfixed and routed around it via
+`concat`-only helpers — `NOTES.md`'s "A related, deliberately unfixed
+runtime bug" section now has a follow-up note confirming the fix and
+pointing back here; `disasm.star` itself is left unchanged (its
+concat-only helpers still work fine, and reverting them to use nested
+f-strings again isn't this fix's job).
 
 See `changelog/067_2026-07-29_45382cc_todo.md` and
 `changelog/067_2026-07-29_45382cc_current_status.md` for the full history

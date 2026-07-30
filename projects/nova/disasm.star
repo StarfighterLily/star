@@ -65,20 +65,23 @@ extern "C" fn strtol(s: str, endptr: ptr, base: i32) -> i32
 # `hex_digit`/`hex_byte`/`hex_word`/`dec_str`/`format_offset` all build their
 # result with `concat()`, never an f-string, and deliberately never call each
 # other from *inside* an f-string's `{...}` interpolation either (see every
-# call site below in `reg_name`/`format_operand`) -- a genuine, previously-
-# unknown Star compiler bug, found while writing this file: a function whose
-# own body materializes its return value via an f-string, when called from
-# *inside* another f-string's interpolation, silently corrupts the outer
-# string (confirmed with a minimal repro: `hex_word(0x1234)` came back
-# `"444"` instead of `"1234"` once `hex_byte` was implemented via a nested
+# call site below in `reg_name`/`format_operand`) -- a genuine Star compiler
+# bug, found while writing this file: a function whose own body materializes
+# its return value via an f-string, when called from *inside* another
+# f-string's interpolation, silently corrupted the outer string (confirmed
+# with a minimal repro: `hex_word(0x1234)` came back `"444"` instead of
+# `"1234"` once `hex_byte` was implemented via a nested
 # `f"{hex_digit(..)}{hex_digit(..)}"`; switching every layer to `concat()`
-# instead of nesting f-strings fixed it immediately). Not yet root-caused or
-# fixed at the compiler level -- see NOTES.md's compiler-bugs section and
-# `todo.md` for the write-up and the one related bug this same investigation
-# *did* find and fix (an untagged `FStr` codegen return value breaking
-# `emit_trailing_if_value`). Every helper below is written to route around
-# the *unfixed* bug entirely: no f-string ever appears in the body of a
-# function that is itself called from inside another f-string's `{...}`.
+# instead of nesting f-strings fixed it immediately). Root-caused and fixed
+# at the compiler level since (`todo.md` P1 #1, and NOTES.md's "A related
+# runtime bug, since fixed" section) -- a `str`-typed f-string hole's value
+# used to be released before the `snprintf` that reads it, so a later hole's
+# own allocation could reuse and corrupt it first. This file's helpers are
+# left exactly as they were (routing around the bug still works fine and
+# costs nothing), not reverted to nesting f-strings again just to prove the
+# fix -- the one related bug this same investigation *did* find and fix at
+# the time (an untagged `FStr` codegen return value breaking
+# `emit_trailing_if_value`) is unaffected either way.
 fn hex_digit(n: i32) -> str:
     if n < 10:
         chr(48 + n)

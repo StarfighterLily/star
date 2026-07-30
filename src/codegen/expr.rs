@@ -1435,6 +1435,22 @@ impl Codegen {
                 // (value, llvm-type-for-the-vararg-slot) after any
                 // widening/conversion `snprintf`'s varargs need.
                 let mut call_args: Vec<String> = Vec::new();
+                // A `str` hole's pointer must stay valid until *both*
+                // `snprintf` calls below have actually read through it (the
+                // sizing pass included -- it reads every `%s` argument's
+                // bytes too, not just the final fill pass). Releasing it
+                // here in the loop, as this used to, frees it while
+                // `call_args` still holds the now-dangling pointer; nothing
+                // stops a later `star_rc_alloc` in this same function (the
+                // final result `buf` just below, or an outer f-string's own
+                // buffer if this one is itself a hole) from reusing that
+                // exact address before `snprintf` reads it, corrupting the
+                // output. Exactly the same bug class `emit_str_concat`'s own
+                // doc comment (`builtins.rs`) already documents and fixes
+                // for `concat`'s two arguments -- this f-string path never
+                // got the same fix. Collected here and released only after
+                // both `snprintf` calls.
+                let mut str_hole_releases: Vec<String> = Vec::new();
                 for part in parts {
                     match part {
                         TypedFStrExpr::Literal(lit) => {
@@ -1617,8 +1633,12 @@ impl Codegen {
                                     // reasoning as
                                     // `emit_print_like`/`emit_raw_str_ptr`
                                     // (see `rc.rs`'s module doc comment for
-                                    // why this is unconditional).
-                                    self.line(&format!("  call void @star_rc_release(i8* {})", bare_val));
+                                    // why this is unconditional). Deferred
+                                    // until after both `snprintf` calls
+                                    // below actually read `bare_val` -- see
+                                    // `str_hole_releases`'s doc comment
+                                    // above.
+                                    str_hole_releases.push(bare_val.clone());
                                     call_args.push(format!("i8* {}", bare_val));
                                 }
                                 Ty::Bool => {
@@ -1713,6 +1733,16 @@ impl Codegen {
                 let buf = self.tmp_name();
                 self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", buf, total64));
                 self.line(&format!("  call i32 (i8*, i64, i8*, ...) @snprintf(i8* {}, i64 {}, i8* {}{})", buf, total64, fmt_reg, args_suffix));
+                // Now that both `snprintf` calls above have actually read
+                // every `str` hole's bytes, it's safe to release them -- see
+                // `str_hole_releases`'s doc comment above for why this can't
+                // happen any earlier (releasing right after `star_rc_alloc`
+                // for `buf` above, in particular, risks the exact same
+                // address being handed straight back out from underneath a
+                // hole this `snprintf` hasn't read yet).
+                for held in &str_hole_releases {
+                    self.line(&format!("  call void @star_rc_release(i8* {})", held));
+                }
                 // Tagged `"i8* <reg>"`, matching every other arm's return
                 // convention in this match (see e.g. `TupleLit` above) --
                 // this used to return a bare `buf` with no type prefix,
