@@ -38,6 +38,7 @@ import "keyboard.star" as keyboard
 import "flags.star" as flg
 import "bits.star" as bits
 import "uart.star" as uart
+import "sound.star" as snd
 
 struct Operand:
     mut kind: u8       # 0 = register, 1 = immediate, 2 = memory
@@ -2395,10 +2396,30 @@ impl Cpu:
         let v = self.uart.read_data()
         self.operand_write(op1, 8, v as i32)
 
+    # SEROUT: the real TX half of the host bridge (todo.md P0 #1) -- every
+    # transmitted byte is printed to the process's own stdout immediately,
+    # in addition to updating the register model `uart.star::write_data`
+    # tracks. This *is* "transmission": whatever's attached to this
+    # process's stdout (a real console, a pipe, `uart_bridge.star`'s own
+    # prompt loop) is the host on the other end of the wire. `print(chr(..))`
+    # rather than an f-string interpolation of `as char` -- `emit_print_like`
+    # (`builtins.rs`) unconditionally appends a trailing `\n` to *any*
+    # f-string argument regardless of `print` vs `println`, which would
+    # inject a spurious newline after every single transmitted byte; `chr`'s
+    # plain-`str` result instead takes `print`'s other path (the argument
+    # handed straight to `printf` with no newline appended). Known gap
+    # inherited from `chr`/`str` themselves, not new here: a transmitted
+    # `0x00` byte prints as nothing (a `str` can't hold an embedded NUL --
+    # same limitation `file_read`'s own doc comment already flags), and a
+    # transmitted `%` is handed to `printf` as its own format string with no
+    # following conversion, same latent UB every other bare `print(some_str)`
+    # call in this codebase already carries.
     fn op_serout(mut self):
         let (op1, _op2, _op3) = self.decode_operands(1)
         let v = self.operand_read(op1, 8)
-        self.uart.write_data(v as u8)
+        let b = v as u8
+        self.uart.write_data(b)
+        print(chr(b as i32))
 
     fn op_serstat(mut self):
         let (op1, _op2, _op3) = self.decode_operands(1)
@@ -2409,27 +2430,55 @@ impl Cpu:
         let v = self.operand_read(op1, 8)
         self.uart.write_control(v as u8)
 
-    # ── Sound (docs/SOUND_SYSTEM.md) ─────────────────────────────────────
+    # ── Sound (docs/SOUND_SYSTEM.md; sound.star) -- todo.md P0 #1 ─────────
     # `SA`/`SF`/`SV`/`SW` are already plain readable/writable registers (via
     # `MOV`/etc., through the same register-code map as everything else).
-    # `SPLAY`/`SSTOP`/`STRIG` are the three opcodes the reference itself
-    # actually implements (`SMIX`/`SECHO`/`SREVERB`/`SFILTER` are marked
-    # "unimplemented" in the reference's own `opcodes.py` -- they dispatch
-    # to nothing there either, so this port leaves them unimplemented too,
-    # falling through to `unimplemented_opcode` exactly like the reference's
-    # own missing handlers would). Stubbed here the same way `MOUSECTRL` was
-    # before real mouse plumbing landed: consumes/no-ops rather than halting,
-    # since actual waveform generation/mixing is a host-audio concern this
-    # port doesn't implement (see NOTES.md "What's not implemented").
+    # `SPLAY`/`SSTOP`/`STRIG` now drive real waveform synthesis and playback
+    # through `sound.star` -- see that file's header comment for the
+    # WAV-file-roundtrip approach (`sound_load`/`sound_play`/`music_play`
+    # have no "play these raw in-memory samples" entry point) and its
+    # documented simplifications (one loop channel + one one-shot pool
+    # rather than 8 independent voices, leaked WAV handles). `SMIX`/`SECHO`/
+    # `SREVERB`/`SFILTER` are still left unimplemented: the reference's own
+    # `opcodes.py` marks them "unimplemented" too (no handler exists there
+    # either), so leaving them unimplemented here stays a bug-for-bug match
+    # rather than a gap `sound.star` should invent its own answer for.
     fn op_splay(mut self):
-        self.halted = self.halted
+        let sw_val = self.sw as u8
+        let enabled = bit_get(sw_val, 7)
+        let looped = bit_get(sw_val, 6)
+        let waveform = sw_val & (7 as u8)
+        if enabled and waveform != (0 as u8):
+            let volume = self.sv as u8
+            if waveform == (7 as u8):
+                # Memory sample: read the documented max 1024 bytes straight
+                # from `SA` into a fresh `Bytes` (`self.mem` isn't reachable
+                # from `sound.star`, which has no `Cpu` access at all) --
+                # `synth_memory_sample` does the byte->signed-float
+                # conversion.
+                let mut samples = Bytes()
+                let sa_val = (self.sa as u16) as i32
+                let mut k = 0
+                while k < 1024:
+                    samples.push(self.mem.read_byte(wrap_addr(sa_val + k)))
+                    k += 1
+                snd::play_memory_sample(samples, volume, looped)
+            else:
+                let freq = snd::sf_to_freq(self.sf as u8)
+                snd::play_tone(waveform, freq, volume, looped)
 
+    # SSTOP has no operand in this port's ISA (0 operands per
+    # `docs/nova16_instruction_reference.md`, unlike the upstream reference's
+    # `SSTOP`/`SSTOP reg` split) -- always "stop everything", see
+    # `sound.star::stop_all`'s own doc comment.
     fn op_sstop(mut self):
-        self.halted = self.halted
+        snd::stop_all()
 
     fn op_strig(mut self):
-        let ops = self.decode_operands(1)
-        self.halted = self.halted
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let v = self.operand_read(op1, 8)
+        let volume = self.sv as u8
+        snd::trigger_effect(v as u8, volume)
 
     # MOUSECTRL: enable/disable host mouse input+interrupts. Stubbed -- this
     # port doesn't generate mouse events/interrupts yet (MX/MY/MB are still

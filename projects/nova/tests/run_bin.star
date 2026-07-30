@@ -8,8 +8,11 @@
 # round below actually uses it.
 #
 # Usage: run_bin.exe <path/to/program.bin> [max_cycles]
-# (built via: star build projects/nova/tests/run_bin.star -o projects/nova/tests/run_bin.exe --
-# no SDL linking needed -- this harness never opens a window.)
+# (built via: star build projects/nova/tests/run_bin.star -L sdl/lib/x64 -l SDL2 -o projects/nova/tests/run_bin.exe --
+# this harness never opens a window, but `-l SDL2` is required regardless
+# now that `cpu.star` transitively pulls in `sound.star`'s audio builtins
+# for SPLAY/SSTOP/STRIG, todo.md P0 #1 -- omitting it fails at link time
+# with undefined `SDL_Init`/`SDL_OpenAudioDevice`/etc, not at build time.)
 
 import "../cpu.star" as cpu
 import "../memory.star" as mem

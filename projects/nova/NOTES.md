@@ -781,22 +781,28 @@ in:
   library, now implemented — see "String library and integer/string
   conversion" below) and **`MEMCMP`** — both 4-operand opcodes; see
   "4-operand instructions are out of scope" above.
-- **Sound synthesis/mixing** (`SMIX SECHO SREVERB SFILTER`, and real
-  waveform generation for `SPLAY`/`STRIG`) — the register model (`SA SF SV
-  SW`) is fully in place and settable via `MOV` like any other register,
-  and `SPLAY`/`SSTOP`/`STRIG` are now real (if audio-free) opcodes — but no
-  audio synthesis/mixing is implemented. The actual waveform generation is
-  a host-audio concern more than CPU-instruction semantics even in the
-  reference implementation, and `SMIX`/`SECHO`/`SREVERB`/`SFILTER`
-  themselves are marked `# unimplemented` in the reference's own
-  `opcodes.py` (no handler exists there either), so this port leaving them
-  unimplemented too is a bug-for-bug match, not a gap.
-- **UART host bridge** (terminal/TCP transport) and **framed-mode
-  protocol parsing** — the ISA-reachable half of the UART (data register,
-  status/control bits, `SEROUT`-then-`SERIN` loopback) is fully implemented
-  and verified against the live reference; see "UART" below for exactly
-  why the host bridge/framed mode were left out (no opcode can drive them
-  without one).
+- **`SMIX SECHO SREVERB SFILTER`** specifically — still genuinely
+  unimplemented, unlike `SPLAY`/`SSTOP`/`STRIG` (see `sound.star` below):
+  the reference's own `opcodes.py` marks these four `# unimplemented` too
+  (no handler exists there either), so leaving them unimplemented here
+  stays a bug-for-bug match, not a gap. **`SPLAY`/`SSTOP`/`STRIG` waveform
+  synthesis itself is now implemented** (todo.md P0 #1, reversing this
+  section's own earlier "a host-audio concern, not implemented" entry) —
+  see `sound.star`'s header comment for the WAV-file-roundtrip approach
+  through the existing `crate::codegen::audio` mixer, and its documented
+  simplifications (one loop channel + one one-shot pool rather than 8
+  independent voices, leaked WAV handles, a 3-tap noise approximation
+  standing in for a true pink/1-over-f filter).
+- **UART framed-mode protocol parsing** (start byte + length + payload +
+  checksum) — still out of scope, no opcode drives it either way. **The
+  host bridge itself is now implemented** (todo.md P0 #1, reversing this
+  section's own earlier "left out, no opcode can drive it" entry):
+  `uart.star::host_push_rx` feeds a real host byte into the RX path, and
+  `projects/nova/uart_bridge.star` is a headless stdin/stdout driver for
+  it — see "UART" below and `uart_bridge.star`'s own header comment for why
+  stdin/stdout (blocking, `read_line()`-driven) was chosen over TCP (no
+  non-blocking/timeout mode exists at the language level, which would
+  freeze a bridge loop waiting on an idle peer).
 - **Hardware debugging opcodes** (`SETBP CLRBP ENABRK DISBRK ENATRAP
   DISATRAP`) — explicitly out of scope per the brief (no debugger).
 - **An assembler/disassembler/debugger** — explicitly out of scope per the
@@ -822,9 +828,11 @@ in:
   values. See `screen.star`'s header comment for the full trace. This was
   reconfirmed during this round specifically because it looked like an
   obvious gap to close — it isn't one.
-- **`SPLAY`/`SSTOP`/`STRIG` update no actual audio state** — they exist as
-  real, dispatched opcodes (rather than halting) so a program using them
-  doesn't stop dead, but there's no synthesizer to drive.
+- **`SPLAY`/`SSTOP`/`STRIG` now update real audio state (todo.md P0 #1)** —
+  previously this bullet read "update no actual audio state"; see
+  `sound.star` and the "What's not implemented" entry above for what
+  changed and its documented simplifications (one loop channel + one
+  one-shot pool, leaked WAV handles, approximated pink noise).
 - **DIV/MOD/DIVH by zero print a diagnostic and leave the destination
   unchanged**, rather than raising a hardware fault/trap — a defensive
   choice so a buggy test program halts with a readable message instead of
@@ -1703,19 +1711,25 @@ Added in this round: `SERIN SEROUT SERSTAT SERCTRL`, ported from
 vector 1 (Serial), between Timer (0, highest) and Keyboard (2) per
 `docs/CPU Specification.md`'s own priority table.
 
-Deliberately not ported: the host bridge (`LocalTerminalBridge`/
-`TCPSocketBridge`/`TCPServerBridge`) and framed-mode parsing. Both exist
-upstream purely to get bytes *into* the RX path from outside the running
-program — there is no opcode that lets a Nova-16 program push a byte into
-its own RX FIFO, so without a host bridge feeding it, `SERIN` always ends
-up reading back `data_register`, i.e. whatever `SEROUT` last wrote (the
-exact loopback-on-empty-RX-FIFO path `NovaUART.read_data()` already falls
-through to upstream, confirmed directly against `asm/
-uart_integration_test.asm`'s own `SEROUT`-then-`SERIN` check, which never
-touches a host bridge either). Same reasoning as `MOUSECTRL`'s register
-model being fully in place and testable long before real host mouse events
-existed (see "Mouse plumbing" below) — a future host bridge would slot in
-later without changing any opcode-facing surface.
+Originally deliberately not ported (this section used to end here): the
+host bridge (`LocalTerminalBridge`/`TCPSocketBridge`/`TCPServerBridge`) and
+framed-mode parsing, on the reasoning that there was no opcode that let a
+Nova-16 program push a byte into its own RX FIFO, so without a host bridge
+feeding it, `SERIN` always ended up reading back `data_register`, i.e.
+whatever `SEROUT` last wrote. **The host bridge itself is now implemented**
+(todo.md P0 #1): `host_push_rx` (this file) writes a real host byte into
+`data_register`/`rx_available`/`pending_interrupt` directly, and
+`projects/nova/uart_bridge.star` is a headless stdin/stdout driver that
+calls it, blocking on `read_line()` between bursts of CPU execution the
+same way a real interactive terminal blocks for the next line of input.
+TCP transport and framed-mode parsing are still out of scope — see
+`uart_bridge.star`'s own header comment for why TCP specifically was
+rejected (`net.rs`'s `tcp_recv` has no non-blocking/timeout mode, so it
+would freeze the bridge loop waiting on an idle peer) and no opcode drives
+framing either way. Same reasoning as `MOUSECTRL`'s register model being
+fully in place and testable long before real host mouse events existed
+(see "Mouse plumbing" below) applied here too, for exactly as long as it
+took to actually build the bridge.
 
 ### Verification
 
@@ -1727,7 +1741,17 @@ the other. Loaded through this port's own binary loader (see "Binary
 program loading" above) and run to completion: `P0 == 0xBEEF` (the
 program's own PASS marker; `0xDEAD` would mean failure), matching what the
 program expects the *real* Python reference to produce, with zero changes
-needed on either side.
+needed on either side. Still passes unchanged after the host-bridge work
+above (`op_serout` now also prints the transmitted `'A'` to stdout as a
+visible side effect, since TX is real now too).
+
+`host_push_rx`'s own new state transitions (status flags before/after a
+host push, the pushed byte round-tripping through `SERIN`'s `read_data`,
+the flag clearing again on read) were checked with a throwaway
+direct-field-poke headless harness (not checked in, same convention as the
+mouse-interrupt harness below) alongside a live `op_splay`/`op_strig`
+trigger for the new sound synthesis — see todo.md P0 #1's write-up for the
+full list of what that harness covered.
 
 ## Mouse plumbing (MOUSECTRL, MX/MY/MB, interrupt vector 3)
 
@@ -1773,12 +1797,13 @@ verified two ways instead:
 
 ## Ideas for future work
 
-- Sound synthesis (waveform generation + mixing) behind the already-in-
-  place `SA`/`SF`/`SV`/`SW` register model and the now-dispatched (but
-  audio-free) `SPLAY`/`SSTOP`/`STRIG` opcodes.
-- A UART host bridge (local terminal or TCP, matching `nova_uart.py`'s
-  `LocalTerminalBridge`/`TCPSocketBridge`/`TCPServerBridge`) — would need
-  genuine host I/O (stdin/sockets) this project hasn't needed before.
+- ~~Sound synthesis~~ and ~~a UART host bridge~~ — both done, see
+  `sound.star`/`uart_bridge.star` and todo.md P0 #1's write-up. Real
+  remaining gaps in that area: `SMIX`/`SECHO`/`SREVERB`/`SFILTER` (still
+  genuinely unimplemented, matching the reference), UART framed-mode
+  parsing, a true per-8-channel voice model instead of the current
+  one-loop-channel-plus-one-shot-pool collapse, and a real 1/f pink-noise
+  filter instead of the 3-tap white-noise approximation.
 - Splitting `cpu.star`'s ~100 opcode-handler methods across files by group
   (arithmetic/bitwise/stack/control-flow/graphics/...) — unblocked now that
   `impl` can cross a module boundary (gotcha #6), not yet done.
