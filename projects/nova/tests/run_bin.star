@@ -15,6 +15,17 @@
 # with undefined `SDL_Init`/`SDL_OpenAudioDevice`/etc, not at build time.)
 
 import "../cpu.star" as cpu
+import "../cpu_data.star" as cpu_data
+import "../cpu_arith.star" as cpu_arith
+import "../cpu_math.star" as cpu_math
+import "../cpu_bitwise.star" as cpu_bitwise
+import "../cpu_stack.star" as cpu_stack
+import "../cpu_control.star" as cpu_control
+import "../cpu_mem.star" as cpu_mem
+import "../cpu_graphics.star" as cpu_graphics
+import "../cpu_io.star" as cpu_io
+import "../cpu_sound.star" as cpu_sound
+import "../cpu_string.star" as cpu_string
 import "../memory.star" as mem
 import "../screen.star" as screen
 import "../keyboard.star" as keyboard
@@ -55,6 +66,7 @@ fn new_cpu() -> cpu::Cpu:
         sf = Wrapping<u8>(0 as u8),
         sv = Wrapping<u8>(0 as u8),
         sw = Wrapping<u8>(0 as u8),
+        next_strig_channel = 8,
         mx = Wrapping<u8>(0 as u8),
         my = Wrapping<u8>(0 as u8),
         mb = Wrapping<u8>(0 as u8),

@@ -1,0 +1,5 @@
+# Symbol table
+# Format: <symbol> <value>
+MAIN 0x1000
+WAIT1 0x101F
+WAIT2 0x1041

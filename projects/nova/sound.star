@@ -49,20 +49,77 @@
 #   retrigger could race an still-playing previous handle on another
 #   channel. A real resource leak under sustained play, same "document
 #   rather than hand-wave" standard as `screen.star`'s `SBLEND` stub.
-# - `SW`'s channel-select bits (3-5) are decoded (see `cpu.star::op_splay`)
-#   but not respected: this backend has exactly one loop-capable channel
-#   (`music_play`'s channel 0) and one shared one-shot pool (`sound_play`'s
-#   own internal free-slot scan), not eight independently addressable
-#   voices. Every looping `SPLAY` shares the single loop channel (a new one
-#   replaces whatever was already looping); every one-shot `SPLAY`/`STRIG`
-#   goes through the shared pool exactly like any other `sound_play` caller.
-# - "Pink noise" (waveform 6) is a 3-tap running average of white noise, not
-#   a true 1/f filter -- cheap central-limit smoothing that sounds closer to
-#   pink than flat white noise, not a claim of spectral accuracy.
 # - `SSTOP` has no operand in this port's ISA (`docs/nova16_instruction_
 #   reference.md`: 0 operands, unlike the upstream Python reference's
 #   `SSTOP`/`SSTOP reg` split) -- `stop_all()` below always stops
 #   everything, which is exactly what the single no-operand opcode means.
+#
+# todo.md P2 #5 ("a true per-8-channel voice model instead of the current
+# one-loop-channel-plus-one-shot-pool collapse", "a real 1/f pink-noise
+# filter instead of the 3-tap white-noise approximation") closed both of
+# its own remaining gaps in this file:
+# - **True per-8-channel voices.** `SW`'s channel-select bits (3-5) are now
+#   both decoded *and* respected (`cpu.star::op_splay` extracts `(sw_val >>
+#   3) & 7` and threads it all the way through) -- unblocked by a new
+#   compiler builtin pair, `sound_play_channel(sound, channel, looped)`/
+#   `sound_stop_channel(channel)` (`crate::codegen::audio`), which starts/
+#   stops playback on an exact, caller-chosen mixer channel instead of
+#   `music_play`'s hardcoded channel 0 or `sound_play`'s auto-scanned free
+#   slot. `play_pcm_wav_on_channel` below is the new common entry point:
+#   Nova's 8 hardware channels map directly onto mixer channels 0-7,
+#   matching `nova_sound.py::NovaSound.splay`'s own `max_channels=8`/
+#   `channel = (SW >> 3) & 0x07` exactly, including "starting a new `SPLAY`
+#   on a channel replaces whatever was already playing there" (the
+#   reference's own "stop any existing sound on this channel" -- see
+#   `crate::codegen::audio::emit_channel_start`'s unconditional overwrite).
+#   `STRIG` has no channel-select bits at all in either the reference or
+#   this port's ISA (`nova_sound.py::_play_sample_direct` bypasses
+#   `self.sound_channels`/`self.channel_states` entirely, going straight to
+#   a fresh, unaddressed `pygame.mixer.Sound.play()`), so it deliberately
+#   stays *off* the 8 hardware channels: `Cpu::next_strig_channel` (see
+#   `cpu.star`) round-robins mixer channels 8-15 instead, one per `STRIG`
+#   call -- 8 slots, coincidentally the same count `pygame.mixer`'s own
+#   default channel pool has, giving up to 8 overlapping one-shot effects
+#   without ever contending with a hardware voice's fixed channel.
+#   `trigger_effect` below takes that rotating channel as a parameter
+#   rather than calling the generic auto-scanned `sound_play` it used to.
+#   One residual, documented interaction: since both a hardware channel and
+#   the `STRIG` pool ultimately share the same fixed-size `NUM_CHANNELS`
+#   mixer array, and channel *assignment* is otherwise fully deterministic
+#   and disjoint (0-7 vs. 8-15), there is no collision path left --
+#   unlike before this fix, where `SPLAY`'s one-shot pool and `STRIG`
+#   both auto-scanned the *same* 1-15 range and could clobber each other.
+#   Reusing the same two fixed temp-file paths (`loop_temp_path`/
+#   `effect_temp_path`) across every channel stays safe under this new
+#   model for the same reason it always was: `sound_load` fully reads a
+#   file into its own independent `malloc`'d buffer before returning (see
+#   `crate::codegen::audio::emit_sound_load`), so a handle is completely
+#   decoupled from the temp file the instant `play_pcm_wav_on_channel`
+#   loads it back -- a later trigger overwriting that same temp path can't
+#   retroactively corrupt an already-loaded, already-playing handle on a
+#   different channel. This project is single-threaded and fully
+#   synchronous (write, then immediately load-back), so there's never a
+#   moment where two triggers race over the same temp file either.
+# - **Real pink noise.** Waveform 6 is now the same one-pole IIR low-pass
+#   filter over white noise `nova_sound.py::_generate_waveform_tables`/
+#   `_generate_waveform_sample` itself uses (`pink[i] = 0.99*pink[i-1] +
+#   0.01*white[i]`, first sample `0.0`) -- a bug-for-bug match with the
+#   reference's own "not a perfect 1/f filter but adequate" implementation
+#   (the reference's own comment), replacing this port's previous 3-tap
+#   running-average stand-in. `waveform_sample` now threads the filter's
+#   one-sample memory through as an extra parameter/return value (a
+#   `(sample, next_state)` tuple) since generating pink noise -- unlike
+#   every other waveform here -- needs state that persists *across* calls,
+#   not just within one; every caller (`synth_tone`/`synth_loop_tone`)
+#   carries a `mut pink_state` local through its sample loop accordingly.
+#   `synth_noise_decay` (`STRIG`'s Explosion effect) is a deliberately
+#   separate, *not* upgraded, noise shape: the reference's own
+#   `_play_effect_explosion` runs white noise through a 10-tap moving-
+#   average convolution, a materially different filter from the 0.99/0.01
+#   one-pole pink-noise IIR above, and todo.md P2 #5 only named "pink
+#   noise" (waveform 6) as the gap -- `synth_noise_decay`'s existing 3-tap
+#   approximation of that separate 10-tap shape is untouched, a pre-existing
+#   simplification this round didn't touch.
 
 const SAMPLE_RATE: i32 = 44100
 const PI: f32 = 3.14159265
@@ -163,28 +220,37 @@ fn sf_to_freq(sf: u8) -> f32:
 # [0, 1) -- everything except the memory-sample waveform (7, handled
 # separately by `synth_memory_sample` since it needs the CPU's own memory,
 # which this module has no access to). Silence (0) and any unrecognized
-# value both yield flat zero.
-fn waveform_sample(waveform: u8, phase01: f32) -> f32:
+# value both yield flat zero. `pink_state` is waveform 6's one-pole IIR
+# filter memory (the previous call's own output sample, `0.0` for the very
+# first sample of a buffer) -- returned alongside the sample as `(sample,
+# next_pink_state)` since, unlike every other waveform here, pink noise
+# needs state that persists *across* calls, not just within one. Every
+# other waveform passes `pink_state` through unchanged.
+fn waveform_sample(waveform: u8, phase01: f32, pink_state: f32) -> (f32, f32):
     if waveform == (1 as u8): # square
         if phase01 < 0.5:
-            1.0
+            (1.0, pink_state)
         else:
-            -1.0
+            (-1.0, pink_state)
     elif waveform == (2 as u8): # sine
-        sin(2.0 * PI * phase01)
+        (sin(2.0 * PI * phase01), pink_state)
     elif waveform == (3 as u8): # sawtooth
-        2.0 * phase01 - 1.0
+        (2.0 * phase01 - 1.0, pink_state)
     elif waveform == (4 as u8): # triangle
         if phase01 < 0.5:
-            4.0 * phase01 - 1.0
+            (4.0 * phase01 - 1.0, pink_state)
         else:
-            3.0 - 4.0 * phase01
+            (3.0 - 4.0 * phase01, pink_state)
     elif waveform == (5 as u8): # white noise
-        rand() * 2.0 - 1.0
-    elif waveform == (6 as u8): # pink noise (3-tap approximation, see header)
-        ((rand() + rand() + rand()) / 3.0) * 2.0 - 1.0
+        (rand() * 2.0 - 1.0, pink_state)
+    elif waveform == (6 as u8): # pink noise: real one-pole 1/f-ish IIR
+        # filter, matching `nova_sound.py::_generate_waveform_sample`'s own
+        # `pink[i] = 0.99*pink[i-1] + 0.01*white[i]` exactly (see header).
+        let white = rand() * 2.0 - 1.0
+        let next_pink = 0.99 * pink_state + 0.01 * white
+        (next_pink, next_pink)
     else:
-        0.0
+        (0.0, pink_state)
 
 # ── SPLAY: current-register-driven tone/loop synthesis ──────────────────
 
@@ -195,16 +261,19 @@ fn synth_tone(waveform: u8, freq: f32, volume: u8, seconds: f32) -> Bytes:
     let amp = ((volume as f32) / 255.0) * 32000.0
     let phase_step = freq / (SAMPLE_RATE as f32)
     let mut phase = 0.0
+    let mut pink_state = 0.0
     let mut i = 0
     while i < total_samples:
-        buf = push_frame(buf, waveform_sample(waveform, phase - floor(phase)), amp)
+        let (sample, next_pink) = waveform_sample(waveform, phase - floor(phase), pink_state)
+        pink_state = next_pink
+        buf = push_frame(buf, sample, amp)
         phase += phase_step
         i += 1
     buf
 
 # A period-aligned loop buffer (at least ~512 samples, an integer number of
 # full periods so the loop point has no discontinuity) -- `SPLAY` with SW's
-# loop bit set, played via `music_play`'s single loop channel.
+# loop bit set, played on its own dedicated hardware channel (see header).
 fn synth_loop_tone(waveform: u8, freq: f32, volume: u8) -> Bytes:
     let mut period_samples = (SAMPLE_RATE as f32) / freq
     if period_samples < 1.0:
@@ -217,9 +286,12 @@ fn synth_loop_tone(waveform: u8, freq: f32, volume: u8) -> Bytes:
     let amp = ((volume as f32) / 255.0) * 32000.0
     let phase_step = freq / (SAMPLE_RATE as f32)
     let mut phase = 0.0
+    let mut pink_state = 0.0
     let mut i = 0
     while i < total_samples:
-        buf = push_frame(buf, waveform_sample(waveform, phase - floor(phase)), amp)
+        let (sample, next_pink) = waveform_sample(waveform, phase - floor(phase), pink_state)
+        pink_state = next_pink
+        buf = push_frame(buf, sample, amp)
         phase += phase_step
         i += 1
     buf
@@ -252,7 +324,11 @@ fn synth_sweep(waveform: u8, freq_start: f32, freq_end: f32, volume: u8, seconds
         let t = (i as f32) / (total_samples as f32)
         let freq = freq_start + (freq_end - freq_start) * t
         phase += freq / (SAMPLE_RATE as f32) # accumulate instantaneous freq, not freq*t -- keeps phase continuous through the sweep
-        buf = push_frame(buf, waveform_sample(waveform, phase - floor(phase)), amp)
+        # `_pink_state` discarded: `synth_sweep` is only ever called with a
+        # tone-shaped waveform (never 6, pink noise -- see `trigger_effect`),
+        # so there's no cross-sample filter state worth threading through.
+        let (sample, _pink_state) = waveform_sample(waveform, phase - floor(phase), 0.0)
+        buf = push_frame(buf, sample, amp)
         i += 1
     buf
 
@@ -286,7 +362,8 @@ fn synth_jump(volume: u8) -> Bytes:
         else:
             freq = 900.0 - 700.0 * ((t - 0.5) / 0.5)
         phase += freq / (SAMPLE_RATE as f32)
-        buf = push_frame(buf, waveform_sample(1 as u8, phase - floor(phase)), amp)
+        let (sample, _pink_state) = waveform_sample(1 as u8, phase - floor(phase), 0.0)
+        buf = push_frame(buf, sample, amp)
         i += 1
     buf
 
@@ -304,7 +381,8 @@ fn synth_two_tone(freq1: f32, freq2: f32, volume: u8, seconds_each: f32) -> Byte
         if i >= total_each:
             freq = freq2
         phase += freq / (SAMPLE_RATE as f32)
-        buf = push_frame(buf, waveform_sample(2 as u8, phase - floor(phase)), amp)
+        let (sample, _pink_state) = waveform_sample(2 as u8, phase - floor(phase), 0.0)
+        buf = push_frame(buf, sample, amp)
         i += 1
     buf
 
@@ -329,7 +407,8 @@ fn synth_arpeggio(volume: u8) -> Bytes:
         else:
             freq = 1046.5
         phase += freq / (SAMPLE_RATE as f32)
-        buf = push_frame(buf, waveform_sample(2 as u8, phase - floor(phase)), amp)
+        let (sample, _pink_state) = waveform_sample(2 as u8, phase - floor(phase), 0.0)
+        buf = push_frame(buf, sample, amp)
         i += 1
     buf
 
@@ -348,12 +427,16 @@ fn loop_temp_path() -> str:
 fn effect_temp_path() -> str:
     f"{temp_dir()}\\nova16_synth_effect.wav"
 
-# Writes `wav` to `path`, loads it back, and starts playback -- `looped` on
-# `music_play`'s single loop channel, one-shot on `sound_play`'s pool. False
-# (silent, non-fatal -- matches `audio.rs`'s own "never crash, just don't
-# make sound" convention) if the temp file couldn't be written or the
+# Writes `wav` to `path`, loads it back, and starts playback on the exact
+# mixer channel `channel` (`crate::codegen::audio::sound_play_channel`) --
+# `looped` matches SW's own loop bit, `channel` is either one of Nova's 8
+# hardware voices (`SPLAY`) or the STRIG one-shot pool's current rotating
+# slot (`Cpu::next_strig_channel`) -- see this file's header comment for
+# why sharing these two fixed temp paths across every channel stays safe.
+# False (silent, non-fatal -- matches `audio.rs`'s own "never crash, just
+# don't make sound" convention) if the temp file couldn't be written or the
 # roundtrip failed to load back as valid audio.
-fn play_pcm_wav(path: str, wav: Bytes, looped: bool) -> bool:
+fn play_pcm_wav_on_channel(path: str, wav: Bytes, channel: u8, looped: bool) -> bool:
     let fh = file_open(path, "wb")
     if is_null(fh):
         return false
@@ -364,48 +447,52 @@ fn play_pcm_wav(path: str, wav: Bytes, looped: bool) -> bool:
     let handle = sound_load(path)
     if is_null(handle):
         return false
-    if looped:
-        music_play(handle)
-    else:
-        sound_play(handle)
+    sound_play_channel(handle, channel as i32, looped)
     true
 
 # `cpu.star::op_splay`'s entry point for waveforms 1-6 (tone-shaped).
-fn play_tone(waveform: u8, freq: f32, volume: u8, looped: bool) -> bool:
+# `channel` is `SW`'s own decoded channel-select bits (3-5).
+fn play_tone(waveform: u8, freq: f32, volume: u8, looped: bool, channel: u8) -> bool:
     if looped:
-        play_pcm_wav(loop_temp_path(), synth_loop_tone(waveform, freq, volume), true)
+        play_pcm_wav_on_channel(loop_temp_path(), synth_loop_tone(waveform, freq, volume), channel, true)
     else:
-        play_pcm_wav(effect_temp_path(), synth_tone(waveform, freq, volume, 0.35), false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_tone(waveform, freq, volume, 0.35), channel, false)
 
 # `cpu.star::op_splay`'s entry point for waveform 7 (memory sample).
-fn play_memory_sample(samples: Bytes, volume: u8, looped: bool) -> bool:
+fn play_memory_sample(samples: Bytes, volume: u8, looped: bool, channel: u8) -> bool:
     if looped:
-        play_pcm_wav(loop_temp_path(), synth_memory_sample(samples, volume), true)
+        play_pcm_wav_on_channel(loop_temp_path(), synth_memory_sample(samples, volume), channel, true)
     else:
-        play_pcm_wav(effect_temp_path(), synth_memory_sample(samples, volume), false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_memory_sample(samples, volume), channel, false)
 
 # `cpu.star::op_strig`'s entry point -- `effect` is STRIG's operand value
-# clamped/wrapped to the documented 0-7 range by the caller.
-fn trigger_effect(effect: u8, volume: u8) -> bool:
+# clamped/wrapped to the documented 0-7 range by the caller, `channel` is
+# `Cpu::next_strig_channel`'s current rotating slot (8-15, see header).
+fn trigger_effect(effect: u8, volume: u8, channel: u8) -> bool:
     if effect == (0 as u8): # Simple Beep
-        play_pcm_wav(effect_temp_path(), synth_tone(2 as u8, 800.0, volume, 0.15), false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_tone(2 as u8, 800.0, volume, 0.15), channel, false)
     elif effect == (1 as u8): # Rising Tone
-        play_pcm_wav(effect_temp_path(), synth_sweep(2 as u8, 300.0, 1200.0, volume, 0.3), false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_sweep(2 as u8, 300.0, 1200.0, volume, 0.3), channel, false)
     elif effect == (2 as u8): # Falling Tone
-        play_pcm_wav(effect_temp_path(), synth_sweep(2 as u8, 1200.0, 300.0, volume, 0.3), false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_sweep(2 as u8, 1200.0, 300.0, volume, 0.3), channel, false)
     elif effect == (3 as u8): # Explosion
-        play_pcm_wav(effect_temp_path(), synth_noise_decay(volume, 0.6), false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_noise_decay(volume, 0.6), channel, false)
     elif effect == (4 as u8): # Laser Shot
-        play_pcm_wav(effect_temp_path(), synth_sweep(1 as u8, 1500.0, 200.0, volume, 0.25), false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_sweep(1 as u8, 1500.0, 200.0, volume, 0.25), channel, false)
     elif effect == (5 as u8): # Jump
-        play_pcm_wav(effect_temp_path(), synth_jump(volume), false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_jump(volume), channel, false)
     elif effect == (6 as u8): # Coin Pickup (E5, A5)
-        play_pcm_wav(effect_temp_path(), synth_two_tone(659.26, 880.0, volume, 0.09), false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_two_tone(659.26, 880.0, volume, 0.09), channel, false)
     else: # Power-up (effect == 7, and any out-of-range value clamps here)
-        play_pcm_wav(effect_temp_path(), synth_arpeggio(volume), false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_arpeggio(volume), channel, false)
 
 # `SSTOP` -- see this file's header comment for why "stop everything" is the
-# only meaning this port's no-operand `SSTOP` has.
+# only meaning this port's no-operand `SSTOP` has. Still `sound_stop_all()`
+# (every mixer channel, not just Nova's own 0-15 range -- there is no
+# channel 16+ anything else in this project could be using anyway) plus
+# `music_stop()`; the latter is now redundant with the former (channel 0 is
+# just another Nova hardware channel, already covered by `sound_stop_all`'s
+# full sweep) but kept for clarity/no behavior change from before this round.
 fn stop_all():
     sound_stop_all()
     music_stop()

@@ -2834,6 +2834,24 @@ impl Checker {
             "music_stop" | "sound_stop_all" | "gamepad_count" => {
                 arity_ok(0, self);
             }
+            "sound_play_channel" => {
+                if arity_ok(3, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`sound_play_channel` argument 1 (sound) expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Int) {
+                        self.error(format!("`sound_play_channel` argument 2 (channel) expected `int`, found `{:?}`", arg_tys[1]), span);
+                    }
+                    if !tys_eq(&arg_tys[2], &Ty::Bool) {
+                        self.error(format!("`sound_play_channel` argument 3 (looped) expected `bool`, found `{:?}`", arg_tys[2]), span);
+                    }
+                }
+            }
+            "sound_stop_channel" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Int) {
+                    self.error(format!("`sound_stop_channel` expects an `int` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
             "gamepad_open" => {
                 if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Int) {
                     self.error(format!("`gamepad_open` expects an `int` argument, found `{:?}`", arg_tys[0]), span);

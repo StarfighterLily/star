@@ -1019,6 +1019,13 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "sound_free" | "sound_play" | "music_play" | "music_stop" | "sound_stop_all" => {
             Some(Ty::Named("unknown".into()))
         }
+        // `sound_play_channel(sound: ptr, channel: int, looped: bool)`/
+        // `sound_stop_channel(channel: int)` -- `crate::codegen::audio`'s
+        // per-channel-addressed playback pair (`todo.md` P2 #5), generalizing
+        // `music_play`'s fixed-channel-0 shape to any caller-chosen channel.
+        // Neither returns a useful value, same convention as the rest of
+        // this family.
+        "sound_play_channel" | "sound_stop_channel" => Some(Ty::Named("unknown".into())),
         // `gamepad_open` reuses `Ty::Ptr` as an opaque `SDL_Joystick*`
         // handle (null on failure -- an unplugged/out-of-range index --
         // same convention as every other handle-returning builtin here).

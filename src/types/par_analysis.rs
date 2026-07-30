@@ -32,13 +32,16 @@ use super::*;
 /// two threads is a real but narrower hazard, no different in kind from any
 /// other shared `ptr` a `par` body could already be handed).
 ///
-/// `sound_play`/`music_play`/`music_stop`/`sound_stop_all`/`sound_free` join
-/// the ban list for the same reason, but a narrower one: these mutate (or,
-/// for `sound_free`, conditionally scan-and-mutate) the fixed-size global
-/// channel-table arrays backing the shared audio mixer (see
-/// `crate::codegen::audio`) with no lock of any kind -- concurrent writers
-/// from multiple worker threads racing to claim the same free channel slot
-/// is a real, unguarded data race, not just an unprovable-disjointness
+/// `sound_play`/`music_play`/`music_stop`/`sound_stop_all`/`sound_free`
+/// (and, added later for `todo.md` P2 #5's per-channel-addressed pair,
+/// `sound_play_channel`/`sound_stop_channel`) join the ban list for the
+/// same reason, but a narrower one: these mutate (or, for `sound_free`,
+/// conditionally scan-and-mutate) the fixed-size global channel-table
+/// arrays backing the shared audio mixer (see `crate::codegen::audio`)
+/// with no lock of any kind -- concurrent writers from multiple worker
+/// threads racing to claim the same free channel slot (or, for the
+/// explicitly-addressed pair, racing to write the *same named* channel) is
+/// a real, unguarded data race, not just an unprovable-disjointness
 /// conservatism. `sound_load` is deliberately *not* banned, for the same
 /// reason `font_load`/`font_free` aren't: it only touches its own
 /// independently `malloc`'d buffer, never the shared channel table.
@@ -84,6 +87,8 @@ pub(super) fn is_banned_sdl_builtin_in_par(name: &str) -> bool {
             | "music_play"
             | "music_stop"
             | "sound_stop_all"
+            | "sound_play_channel"
+            | "sound_stop_channel"
             | "gamepad_count"
             | "gamepad_open"
             | "gamepad_close"

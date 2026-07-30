@@ -421,21 +421,32 @@ see both what the constraint used to be *and* what replaced it.
    on a struct had to live in the same file as that struct's own
    definition; there was no way to split `Cpu`'s ~90 opcode handler methods
    across multiple files the way, say, C splits a big `struct` across
-   translation units. This is why `cpu.star` was (and, pending an actual
-   split, still is) one large file rather than several smaller ones. What
-   already worked, and is used throughout this project: composition —
-   `Cpu` holds `mem: memory::Memory`, `screen: screen::Screen`,
-   `kbd: keyboard::Keyboard`, `flags: flags::Flags` as plain fields, each
-   with their own methods defined in their own file, called through
-   `self.mem.read_byte(...)` etc. Method resolution across the module
-   boundary always worked fine for *calling* a type's existing methods —
-   it was only *defining new methods* on an imported type that didn't.
-   **Fixed:** `impl mod::Type:` (and `impl mod::Trait: for Type`/etc., any
-   combination) now resolves the qualified name correctly. This directly
-   unblocks splitting `cpu.star`'s opcode handlers across files by group —
-   genuinely useful for this project specifically, since `cpu.star` is
-   still its one ~1800-line file — but that split hasn't been done in this
-   pass; it's scoped as its own follow-up (see "Ideas for future work").
+   translation units. This is why `cpu.star` was one large file rather than
+   several smaller ones. What already worked, and is used throughout this
+   project: composition — `Cpu` holds `mem: memory::Memory`,
+   `screen: screen::Screen`, `kbd: keyboard::Keyboard`,
+   `flags: flags::Flags` as plain fields, each with their own methods
+   defined in their own file, called through `self.mem.read_byte(...)` etc.
+   Method resolution across the module boundary always worked fine for
+   *calling* a type's existing methods — it was only *defining new
+   methods* on an imported type that didn't. **Fixed:** `impl mod::Type:`
+   (and `impl mod::Trait: for Type`/etc., any combination) now resolves the
+   qualified name correctly. This directly unblocked splitting `cpu.star`'s
+   opcode handlers across files by group — done in a later pass (todo.md
+   P2 #5): `cpu.star` now keeps only the register-code address space,
+   operand decoding, fetch/interrupt/timer machinery, and the `execute()`
+   dispatch itself, with its ~100 `op_*` handlers split across
+   `cpu_data.star`/`cpu_arith.star`/`cpu_math.star`/`cpu_bitwise.star`/
+   `cpu_stack.star`/`cpu_control.star`/`cpu_mem.star`/`cpu_graphics.star`/
+   `cpu_io.star`/`cpu_sound.star`/`cpu_string.star`, one `impl cpu::Cpu:`
+   block per file. Confirmed the *reverse* direction resolves too, not just
+   "calling into a type from outside" — `cpu.star`'s own `execute()` calls
+   `self.op_add()` etc. with no import of `cpu_arith.star` at all, and it
+   works because `Item::Impl` blocks are never mangled by file/alias (see
+   `crate::modules::resolve`'s own doc comment): method resolution is keyed
+   on the flattened module's full item set, not on which file a call site's
+   text lives in, so it doesn't matter that the *caller* can't see the
+   *callee*'s file, only that the ultimate build target imports both.
 
 7. **`Flags` is a reserved builtin generic name.** `struct Flags:` collided
    with the builtin `Flags<E>` (a typed bitset over a fieldless enum) and
@@ -1018,11 +1029,13 @@ estimate):
 - Sprites: `SPBLIT SPBLITALL` (see "Layer compositing and sprites" below).
 - UART: `SERIN SEROUT SERSTAT SERCTRL`, plus a real host bridge
   (`uart_bridge.star`) — see "UART" below.
-- Sound: `SPLAY SSTOP STRIG` — real waveform synthesis and playback (not a
-  stub; see `sound.star` and "Known simplifications" below for the
-  documented simplifications this *does* still carry). `SMIX SECHO SREVERB
-  SFILTER` are unimplemented in the reference itself, see "What's not
-  implemented" below.
+- Sound: `SPLAY SSTOP STRIG` — real waveform synthesis and playback, now
+  with a true per-8-independent-hardware-channel voice model (`SW`'s
+  channel-select bits 3-5, todo.md P2 #5) rather than one shared loop
+  channel plus a one-shot pool; see `sound.star` and "Known
+  simplifications" below for the simplifications this *does* still carry
+  (leaked WAV handles). `SMIX SECHO SREVERB SFILTER` are unimplemented in
+  the reference itself, see "What's not implemented" below.
 - Keyboard: `KEYIN KEYSTAT KEYCOUNT KEYCLEAR KEYCTRL`
 - `MOUSECTRL` (real host mouse plumbing — see "Mouse plumbing" below).
 - Every register-code target (`R0-R9, P0-P9, SP, FP, VX, VY, VM, VL, VC,
@@ -1067,10 +1080,16 @@ in:
   synthesis itself is now implemented** (todo.md P0 #1, reversing this
   section's own earlier "a host-audio concern, not implemented" entry) —
   see `sound.star`'s header comment for the WAV-file-roundtrip approach
-  through the existing `crate::codegen::audio` mixer, and its documented
-  simplifications (one loop channel + one one-shot pool rather than 8
-  independent voices, leaked WAV handles, a 3-tap noise approximation
-  standing in for a true pink/1-over-f filter).
+  through the existing `crate::codegen::audio` mixer. Its two remaining
+  documented simplifications named here previously — "one loop channel +
+  one one-shot pool rather than 8 independent voices" and "a 3-tap noise
+  approximation standing in for a true pink/1-over-f filter" — are both
+  closed as of todo.md P2 #5: a new `sound_play_channel`/
+  `sound_stop_channel` compiler builtin pair (`crate::codegen::audio`)
+  gives `SPLAY` a true per-8-hardware-channel voice model, and waveform 6
+  now runs the same one-pole IIR filter the Python reference's own
+  `_generate_waveform_sample` uses. Leaked WAV handles remain (see
+  `sound.star`'s own header comment for why).
 - **UART framed-mode protocol parsing** (start byte + length + payload +
   checksum) — still out of scope, no opcode drives it either way. **The
   host bridge itself is now implemented** (todo.md P0 #1, reversing this
@@ -1123,8 +1142,11 @@ in:
 - **`SPLAY`/`SSTOP`/`STRIG` now update real audio state (todo.md P0 #1)** —
   previously this bullet read "update no actual audio state"; see
   `sound.star` and the "What's not implemented" entry above for what
-  changed and its documented simplifications (one loop channel + one
-  one-shot pool, leaked WAV handles, approximated pink noise).
+  changed. `SPLAY` now gets a true 8-independent-hardware-channel voice
+  model and waveform 6 a real one-pole pink-noise filter (todo.md P2 #5,
+  reversing this bullet's own former "one loop channel + one one-shot
+  pool"/"approximated pink noise" wording) — leaked WAV handles remain the
+  one simplification still standing.
 - **DIV/MOD/DIVH by zero print a diagnostic and leave the destination
   unchanged**, rather than raising a hardware fault/trap — a defensive
   choice so a buggy test program halts with a readable message instead of
@@ -2700,15 +2722,25 @@ verified two ways instead:
 ## Ideas for future work
 
 - ~~Sound synthesis~~ and ~~a UART host bridge~~ — both done, see
-  `sound.star`/`uart_bridge.star` and todo.md P0 #1's write-up. Real
-  remaining gaps in that area: `SMIX`/`SECHO`/`SREVERB`/`SFILTER` (still
-  genuinely unimplemented, matching the reference), UART framed-mode
-  parsing, a true per-8-channel voice model instead of the current
-  one-loop-channel-plus-one-shot-pool collapse, and a real 1/f pink-noise
-  filter instead of the 3-tap white-noise approximation.
-- Splitting `cpu.star`'s ~100 opcode-handler methods across files by group
-  (arithmetic/bitwise/stack/control-flow/graphics/...) — unblocked now that
-  `impl` can cross a module boundary (gotcha #6), not yet done.
+  `sound.star`/`uart_bridge.star` and todo.md P0 #1's write-up. ~~A true
+  per-8-channel voice model~~ and ~~a real 1/f pink-noise filter~~ — also
+  both done (todo.md P2 #5): a new `sound_play_channel`/
+  `sound_stop_channel` compiler builtin pair replaces the old
+  one-loop-channel-plus-one-shot-pool collapse with 8 independently
+  addressable hardware channels (`SW` bits 3-5), and waveform 6 now runs
+  the reference's own one-pole IIR filter instead of a 3-tap running
+  average. Real remaining gap in this area: `SMIX`/`SECHO`/`SREVERB`/
+  `SFILTER` (still genuinely unimplemented, matching the reference) and
+  UART framed-mode parsing.
+- ~~Splitting `cpu.star`'s ~100 opcode-handler methods across files by
+  group~~ — done (todo.md P2 #5): `cpu_data.star`/`cpu_arith.star`/
+  `cpu_math.star`/`cpu_bitwise.star`/`cpu_stack.star`/`cpu_control.star`/
+  `cpu_mem.star`/`cpu_graphics.star`/`cpu_io.star`/`cpu_sound.star`/
+  `cpu_string.star`, unblocked by `impl` crossing a module boundary
+  (gotcha #6) — see `cpu.star`'s own header comment and gotcha #6's updated
+  write-up above for the mechanics (including confirming the *reverse*
+  direction, `cpu.star`'s `execute()` calling into a handler it never
+  imports, resolves correctly).
 - ~~An actual assembler~~ — done, see "Assembler" above (todo.md P1 #2). Its
   `.sym` output is exactly what `debugger.star`'s address-labeling now reads
   (see "Debugger" above), which is what this bullet named as the natural

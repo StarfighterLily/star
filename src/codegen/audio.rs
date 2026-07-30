@@ -64,6 +64,12 @@
 //! Linking note: same as `crate::codegen::sdl`'s own note -- needs
 //! `-L sdl/lib/x64 -l SDL2` at build time and `SDL2.dll` discoverable at
 //! run time.
+//!
+//! `sound_play_channel`/`sound_stop_channel` (added for `todo.md` P2 #5,
+//! Nova-16's own 8-independent-sound-channel port) generalize `music_play`'s
+//! "start on a fixed channel, replacing whatever's there" shape to any
+//! caller-chosen channel index, with the loop flag now a runtime argument
+//! instead of which builtin was called -- see their own doc comments below.
 
 use crate::diagnostics::Span;
 use crate::types::*;
@@ -778,5 +784,81 @@ impl Codegen {
             gep, NUM_CHANNELS, NUM_CHANNELS
         ));
         self.emit_fill_i8(&gep, &NUM_CHANNELS.to_string(), 0);
+    }
+
+    /// `sound_play_channel(sound: ptr, channel: int, looped: bool)`: starts
+    /// playback of `sound` on the exact mixer channel `channel & (NUM_CHANNELS
+    /// - 1)` -- a cheap power-of-two mask that keeps the index always
+    /// in-bounds with no branch, matching `wrap_addr`-style masking already
+    /// used elsewhere in this codebase's own Nova-16 port rather than a
+    /// bounds-check-and-clamp. Unlike `sound_play`'s auto-scanned free slot
+    /// or `music_play`'s hardcoded channel 0, this lets a caller address a
+    /// *specific* channel directly, unconditionally overwriting whatever was
+    /// already playing there via the same `emit_channel_start` every other
+    /// playback builtin uses -- "start on channel N, replacing whatever's
+    /// there" is exactly `music_play`'s own semantics, generalized from a
+    /// fixed channel to any caller-chosen one, with the loop flag now a
+    /// runtime argument rather than baked into which builtin was called.
+    /// This is what a true per-N-independent-voice model needs: `todo.md`
+    /// P2 #5's Nova-16 port is the first real caller, mapping its own 8
+    /// SW-channel-select-bit voices onto mixer channels 0-7 directly (see
+    /// `projects/nova/sound.star`), leaving 8-15 to the existing `sound_play`
+    /// auto-scan pool for its unaddressed one-shot effects.
+    pub(super) fn emit_sound_play_channel(&mut self, args: &[TypedExpr]) {
+        if args.len() < 3 {
+            self.err("sound_play_channel(..) expects 3 arguments (sound, channel, looped)", Span::dummy());
+            return;
+        }
+        let val = self.emit_expr(&args[0]);
+        let handle = self.untag(&val, &Ty::Ptr);
+        self.abort_if_null_sound(&handle, "sound_play_channel");
+        self.ensure_audio_device();
+        let (data_ptr, len) = self.emit_sound_data_and_len(&handle);
+
+        let chan_val = self.emit_expr(&args[1]);
+        let chan_raw = self.untag(&chan_val, &Ty::Int);
+        let chan_masked = self.tmp_name();
+        self.line(&format!("  {} = and i32 {}, {}", chan_masked, chan_raw, NUM_CHANNELS - 1));
+
+        let loop_val = self.emit_expr(&args[2]);
+        let loop_i1 = self.untag(&loop_val, &Ty::Bool);
+        let loop_label = self.block_label("sound_play_channel_loop");
+        let oneshot_label = self.block_label("sound_play_channel_oneshot");
+        let after_label = self.block_label("sound_play_channel_after");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", loop_i1, loop_label, oneshot_label));
+
+        self.open_block(&loop_label);
+        self.emit_channel_start(&chan_masked, &data_ptr, &len, true);
+        self.line(&format!("  br label %{}", after_label));
+
+        self.open_block(&oneshot_label);
+        self.emit_channel_start(&chan_masked, &data_ptr, &len, false);
+        self.line(&format!("  br label %{}", after_label));
+
+        self.open_block(&after_label);
+    }
+
+    /// `sound_stop_channel(channel: int)`: stops only the exact mixer
+    /// channel `channel & (NUM_CHANNELS - 1)`, unlike `sound_stop_all`'s
+    /// "stop everything" -- the counterpart `sound_play_channel` needs a way
+    /// to silence one independently-addressed voice without cutting off
+    /// every other channel currently playing.
+    pub(super) fn emit_sound_stop_channel(&mut self, args: &[TypedExpr]) {
+        let Some(chan_arg) = args.first() else {
+            self.err("sound_stop_channel(..) expects 1 argument (channel)", Span::dummy());
+            return;
+        };
+        self.ensure_audio_pool_emitted();
+        let chan_val = self.emit_expr(chan_arg);
+        let chan_raw = self.untag(&chan_val, &Ty::Int);
+        let chan_masked = self.tmp_name();
+        self.line(&format!("  {} = and i32 {}, {}", chan_masked, chan_raw, NUM_CHANNELS - 1));
+
+        let gep = self.tmp_name();
+        self.line(&format!(
+            "  {} = getelementptr inbounds [{} x i8], [{} x i8]* @star.audio.chan_playing, i32 0, i32 {}",
+            gep, NUM_CHANNELS, NUM_CHANNELS, chan_masked
+        ));
+        self.line(&format!("  store i8 0, i8* {}", gep));
     }
 }

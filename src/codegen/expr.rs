@@ -847,6 +847,8 @@ impl Codegen {
                     Some("music_play") => { self.emit_music_play(args); "%undef".into() }
                     Some("music_stop") => { self.emit_music_stop(); "%undef".into() }
                     Some("sound_stop_all") => { self.emit_sound_stop_all(); "%undef".into() }
+                    Some("sound_play_channel") => { self.emit_sound_play_channel(args); "%undef".into() }
+                    Some("sound_stop_channel") => { self.emit_sound_stop_channel(args); "%undef".into() }
                     Some("gamepad_count") => self.emit_gamepad_count(),
                     Some("gamepad_open") => self.emit_gamepad_open(args),
                     Some("gamepad_close") => { self.emit_gamepad_close(args); "%undef".into() }

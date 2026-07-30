@@ -47,17 +47,28 @@ within the same stage that found it.**
 
 **P2: Process debt that's been deferred past the point of being
 defensible.**
-3. **Done.** See "Previous work" below for the rationale.
+3. **Done.** A second, closer pass after the "Done-ish" first cut: built
+   the concrete "what does 'Nova complete' mean" checklist `current_
+   status.md`'s own P2 #3 asked for (three reviews running), checked it
+   against `NOTES.md`'s "What's implemented"/"What's not implemented", and
+   confirmed the readme's "minimal 4 rounds of bug hunts" clause separately.
+   See "Previous work" below for the full checklist and citations. The
+   `readme.md` Versioning-section/version-number update itself is
+   deliberately left for the user to greenlight, not done here — see the
+   note at the end of that entry.
 4. **Done.** Root-caused and fixed as a genuine, previously-uncovered Star
    compiler bug — not a recurrence of "Seven Star compiler bugs found and
    fixed" #1's shape. See "Previous work" below for the full account.
-5. Nova's own remaining, deliberately-scoped-out gaps (unchanged from
-   before this stage): splitting `cpu.star`'s opcode handlers across
-   files; `SMIX`/`SECHO`/`SREVERB`/`SFILTER` (unimplemented, matching the
-   reference); a true per-8-channel sound voice model; a real pink-noise
-   filter; source-line (as opposed to numeric-address) breakpoints in
-   `debugger.star`, once/if `assembler.star` grows debug-line-mapping
-   output.
+5. **Done**, minus two items deliberately left out (see "Previous work"
+   below for the full account and rationale): a new `sound_play_channel`/
+   `sound_stop_channel` compiler builtin pair gives Nova's `SPLAY` a true
+   per-8-hardware-channel voice model and waveform 6 a real one-pole
+   pink-noise filter matching the Python reference's own; `cpu.star`'s
+   ~100 opcode-handler methods are now split across 11 `cpu_*.star` files
+   by group. Left out, per explicit instruction: `SMIX`/`SECHO`/`SREVERB`/
+   `SFILTER` (still unimplemented, matching the reference itself) and
+   `debugger.star`'s source-line (as opposed to numeric-address)
+   breakpoints.
 
 **P3: Keep the cadence honest.**
 6. This cycle's trigger fired for a genuine reason and the full test suite
@@ -106,15 +117,59 @@ present from the start) since a real file was already the more robust
 choice for a checked-in test regardless. Worth revisiting only if this
 project ever needs genuinely live/interactive piped stdin for something.
 
-Assessed the current status of the Nova project: aside from a few noted items
-in the `NOTES.md` and some unimplemented opcodes the reference version itself
-lacks, the bulk of work on the Nova-16 emulator is complete. No new systems or
-tools need to be implemented to run the existing library of Nova-16 programs,
-and the project and the language itself both have outgrown the "will the Nova-16
-even work" stage to a point where further progress is increasingly unlikely
-to uncover language gaps or issues; therefore the Nova project's end of version
-gating should be considered upheld, leaving only the requisite bug hunting rounds.
-`readme.md` update pending reassessment's consideration on the matter.
+P2 #3, defining "Nova complete" concretely (closed this session, upgraded
+from the first pass's "Done-ish"): `current_status.md`'s own P2 #3 had
+named this the most overdue item across three reviews running ("should
+not appear a fourth time without being acted on"), and the first pass at
+it this cycle reached a real conclusion but left the follow-through
+("`readme.md` update pending reassessment's consideration") for later
+rather than either doing it or explicitly deferring it to the user. This
+pass does the follow-through: a concrete checklist against `readme.md`'s
+own gate text ("the Nova project is complete (full system implementation,
+GUI+controls, and tooling to match Python reference, NoBASIC optional)
+and minimal 4 rounds of bug hunts"), checked off item by item rather than
+left as a qualitative impression:
+
+- **Full system implementation**: CPU (all opcodes `NOTES.md`'s "What's
+  implemented" lists, with only 4-operand opcodes and the reference's own
+  unimplemented `SMIX`/`SECHO`/`SREVERB`/`SFILTER` left out — both
+  explicitly scoped exclusions, not gaps), memory (incl. banking),
+  screen/layer compositing + sprites, keyboard, UART (+ a real host
+  bridge), sound (now with a true per-8-channel voice model and a real
+  pink-noise filter as of this session's own P2 #5, closing the last two
+  "known simplification" entries that weren't permanent), mouse (real
+  host plumbing), and timer/interrupts. All present.
+- **GUI+controls**: toolbar (Start/Pause, Stop, Reset, Step, Load) +
+  status bar, matching `nova_gui.py`'s own toolbar, plus the `Load`
+  button/`open_file_dialog` addition. Present (todo.md P2 #3's original
+  close, this cycle's predecessor).
+- **Tooling to match Python reference**: binary loader, disassembler,
+  assembler, and debugger — all real, all cross-checked against the
+  Python reference at least once (see NOTES.md's own "Verification"
+  subsections for each). Present.
+- **NoBASIC**: explicitly parenthetical-optional in the gate's own text —
+  not required.
+- **Minimal 4 rounds of bug hunts**: overwhelmingly cleared regardless of
+  whether this means Nova-driven bug discovery specifically or the
+  compiler's general bug-hunting-round cadence. Nova-driven alone:
+  "Seven Star compiler bugs found and fixed" (7, `NOTES.md`), the
+  repeated-f-string-call corruption bug, ten `nova16_instruction_
+  reference.md` operand-count documentation bugs (changelog `067`), the
+  Cpu SP/FP reset-value bug and the `clang` large-aggregate-reassignment
+  pathology (both this reassessment's own cycle) — already several times
+  past 4 distinct sessions, without even counting the compiler-wide
+  "Thorough bug-hunting round" stages documented independently throughout
+  `changelog/025` onward.
+
+Every checklist item the gate names is satisfied. What this pass
+deliberately does *not* do: touch `readme.md`'s Versioning section or the
+crate's version number itself. `CLAUDE.md`'s own "Things not to do"
+section is explicit that a version bump isn't something to fold into
+unrelated work, and while this investigation is squarely *on-topic* (not
+unrelated), actually flipping the language's own "not yet usable/stable"
+public signal is a different order of consequential than confirming the
+gate's conditions are met — raised to the user directly rather than
+decided here.
 
 P1 #2, F5-F8 hotkey verification (closed this session): confirmed F8/Step
 genuinely works, both the hotkey and the toolbar button, but only after a
@@ -235,6 +290,133 @@ construction regardless of this compiler bug, matching `nova_gui.py::
 CPUController.reset()`'s own mutate-in-place shape more closely -- this fix
 closes the *investigation* `todo.md` asked for, not a request to change
 Nova's design back.
+
+P2 #5, Nova's own remaining scoped-out gap list (closed this session, two
+items deliberately left out per explicit instruction -- `SMIX`/`SECHO`/
+`SREVERB`/`SFILTER` unimplemented opcodes and `debugger.star` source-line
+breakpoints, both still genuinely out of scope for the reasons already on
+record in `NOTES.md`):
+
+**A true per-8-channel sound voice model.** `SW`'s channel-select bits
+(3-5) were decoded nowhere at all before this session -- `cpu.star::
+op_splay`'s doc comment claimed they were "decoded but not respected,"
+which turned out to be wrong on inspection: they were never read in the
+first place. Closing the real gap needed a new compiler builtin pair,
+`sound_play_channel(sound, channel, looped)`/`sound_stop_channel(channel)`
+(`src/codegen/audio.rs`), since the existing `sound_play`/`music_play`
+only offer an auto-scanned pool slot or a hardcoded channel 0 -- neither
+lets a caller address one of Nova's 8 hardware channels directly. Both
+mask their channel argument with `& 15` (`NUM_CHANNELS - 1`, a cheap
+power-of-two bound rather than a branch) and are banned inside `par`/
+`swarm` bodies for the same shared-unlocked-channel-table reason as the
+rest of this family (`src/types/par_analysis.rs`). Covered by 10 new
+tests in `tests/frontend_audio_gamepad.rs` (checker arity/type checks, a
+par-ban regression test, two codegen-shape assertions confirming the `&
+15` mask and the runtime loop-flag branch, and a real
+`SDL_AUDIODRIVER=dummy` end-to-end test playing two independent channels
+and stopping them individually).
+
+Nova's own `sound.star`/`cpu.star` wiring: `cpu.star::op_splay` now
+extracts `channel = (sw_val >> 3) & 7` and threads it through
+`sound.star::play_tone`/`play_memory_sample` to a new
+`play_pcm_wav_on_channel`, mapping Nova's 8 hardware channels directly
+onto mixer channels 0-7 (matching `nova_sound.py::NovaSound.splay`'s own
+`max_channels=8`/`channel = (SW >> 3) & 0x07` exactly, including "a new
+`SPLAY` on a channel replaces whatever was already playing there").
+`STRIG` has no channel-select bits in either the reference or this port's
+ISA (`nova_sound.py::_play_sample_direct` bypasses the reference's own
+per-channel state entirely), so it deliberately stays off the 8 hardware
+channels: a new `Cpu::next_strig_channel` field round-robins mixer
+channels 8-15 instead, one per `STRIG` call -- this closes a real
+collision risk the naive version of this fix would have introduced
+(reserving 0-7 for hardware channels while leaving `STRIG` on the old
+1-15 auto-scan pool could have let an one-shot `STRIG` effect land on a
+channel a `SPLAY` voice was actively using). Verified via a new
+`projects/nova/asm/sound_channel_test.asm`/`.bin`, hand-assembled with
+`assembler.exe`: two simultaneous channels (2 looping, 5 one-shot), a
+retrigger of channel 2 with a different waveform, three `STRIG` effects
+in a row, then `SSTOP` -- confirmed running clean to `HLT` via both
+`tests/run_bin.exe` (`SDL_AUDIODRIVER=dummy` and real) and disassembly
+cross-checked against the intended `SW` byte values (`0xD2`/`0xA9`/
+`0xD4`).
+
+**A real pink-noise filter.** Waveform 6 was a 3-tap running average of
+white noise; it's now the same one-pole IIR low-pass filter over white
+noise the reference's own `nova_sound.py::_generate_waveform_sample` uses
+(`pink[i] = 0.99*pink[i-1] + 0.01*white[i]`, first sample `0.0`) -- a
+bug-for-bug match with the reference's own "not a perfect 1/f filter but
+adequate" implementation, not an attempt at spectral perfection beyond
+it. This needed `waveform_sample` to thread a `(sample, next_pink_state)`
+tuple through its callers (`synth_tone`/`synth_loop_tone`, plus three
+other call sites that never hit waveform 6 but still had to update their
+call shape) since pink noise -- unlike every other waveform -- needs
+state that persists *across* samples, not just within generating one.
+`synth_noise_decay` (`STRIG`'s Explosion effect, a *different* noise
+shape -- the reference's own 10-tap moving-average convolution, not this
+0.99/0.01 filter) was deliberately left untouched: todo.md only named
+"pink noise" (waveform 6) as the gap.
+
+**Splitting `cpu.star`'s opcode handlers across files.** `cpu.star` was
+one ~3200-line file holding both the CPU's core fetch/decode/dispatch
+machinery and every one of its ~100 `op_*` opcode-handler methods. Before
+touching the real file, the exact "does the *reverse* direction resolve"
+question -- would `cpu.star`'s own `execute()` correctly call
+`self.op_add()` if `op_add` moved to a file `cpu.star` itself never
+imports? -- was confirmed with a standalone three-file scratch repro
+(`a.star` defines a type + method calling `self.g()`; `b.star` imports
+`a.star` and defines `g` in a separate `impl a::S:` block; `main.star`
+imports both and calls into `a`'s own method) before committing to the
+real split: it resolved and ran correctly, confirming `Item::Impl` blocks
+are never mangled by file/alias (`src/modules.rs`'s own doc comment) --
+method resolution is keyed on the fully flattened module's item set, not
+on which file a call site's text lives in, so it doesn't matter that
+`cpu.star` can't "see" `cpu_arith.star`, only that every one of this
+project's 4 build targets (`main.star`/`debugger.star`/
+`tests/run_bin.star`/`uart_bridge.star`) imports both. A second scratch
+repro confirmed the same for a struct field's type living in a *third*
+file neither the core nor the extension file imports directly (method
+calls through `self.mem`/`self.screen`/etc. don't need memory.star/
+screen.star re-imported by every split file, only free functions/consts
+qualified with `cpu::` do, since those aren't `impl` blocks).
+
+Grouped along the exact lines `cpu.star`'s own header comment already
+proposed (arithmetic/bitwise/stack/control-flow/graphics/...), aligned to
+the file's own pre-existing `# ── Section ──` comment boundaries so no
+group split disagreed with the original author's own organization:
+`cpu_data.star` (MOV/XCHNG/SWAP/LEA), `cpu_arith.star` (arithmetic +
+BCD), `cpu_math.star` (the transcendental/Q8.8 math library),
+`cpu_bitwise.star`, `cpu_stack.star`, `cpu_control.star` (JMP/BR/CALL/
+RET/LOOP/...), `cpu_mem.star` (bulk memory ops + RND), `cpu_graphics.star`
+(graphics + sprites, plus `vxy`/`draw_text`/`blit_sprite` -- helpers used
+only by opcodes in that same file), `cpu_io.star` (keyboard/serial/
+mouse), `cpu_sound.star` (SPLAY/SSTOP/STRIG), and `cpu_string.star` (the
+string library + integer/string conversion). `cpu.star` itself keeps only
+the register-code address space, operand decoding, fetch/interrupt/timer
+machinery, and `execute()`'s own dispatch -- plus `jump_if`, which
+deliberately did *not* move with `op_jmp`/`op_br`/etc. to
+`cpu_control.star` since it has no dedicated opcode handler of its own
+and is only ever called inline from `execute()`'s conditional-jump
+dispatch, its one real call site staying in the same file. Pure code
+motion throughout -- every method's body, including its own doc comments,
+copied verbatim, with only free-function/const references from `cpu.star`
+(`wrap_addr`/`floor_div16`/`ascii_upper`/`PI`/`MATH_OVERFLOW_GUARD`/
+`SCB_START`/`SCB_BLOCK_SIZE`/`SCB_COUNT`) requalified with a `cpu::`
+prefix, exactly the same requalification any other cross-file free
+function/const reference in this project already needs (unlike a method
+call through `self`, a bare top-level name from another file isn't
+exempt from mangling).
+
+Verification: all four build targets rebuilt clean (no `clang` slowdown,
+same ~5s each as before the split) and type-check with no errors; the
+full `tests/asm/*.bin` regression suite re-run and confirmed byte-for-byte
+identical register/`pc`/`cycles_run` output to the pre-split baseline for
+every existing test, plus the new `sound_channel_test.bin`; the checked-in
+`debugger.star` regression test (`tests/run_debugger_test.ps1`) still
+passes unchanged. Full `cargo test` suite re-run clean (exit code 0,
+every test binary passing). `cpu.star`'s own header comment, gotcha #6's
+write-up, and the "Ideas for future work"/"What's implemented" sections in
+`NOTES.md` all updated to describe the completed split rather than the
+former "possible but not done" framing.
 
 More out-of-band work:
 Copied over the Python reference's assembly programs to `projects/nova/asm/`

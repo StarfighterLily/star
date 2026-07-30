@@ -142,6 +142,55 @@ fn checker_rejects_music_stop_sound_stop_all_gamepad_count_wrong_arg_count() {
     }
 }
 
+/// `sound_play_channel(sound: ptr, channel: int, looped: bool)` takes all
+/// three and returns no useful value.
+#[test]
+fn checks_sound_play_channel_takes_ptr_int_bool() {
+    let src = "fn t():\n    \
+               let s = sound_load(\"x.wav\")\n    \
+               sound_play_channel(s, 3, true)\n    \
+               sound_play_channel(s, 5, false)\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("sound_play_channel should type-check");
+}
+
+#[test]
+fn checker_rejects_sound_play_channel_wrong_arg_count() {
+    let src = "fn t():\n    \
+               let s = sound_load(\"x.wav\")\n    \
+               sound_play_channel(s, 3)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("sound_play_channel with 2 arguments should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`sound_play_channel` expects 3 argument(s)")), "{:?}", diags);
+}
+
+#[test]
+fn checker_rejects_sound_play_channel_wrong_arg_types() {
+    let src = "fn t():\n    sound_play_channel(1, \"x\", 2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("sound_play_channel(int, str, int) should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`sound_play_channel` argument 1 (sound) expected `ptr`")), "{:?}", diags);
+    assert!(diags.iter().any(|d| d.message.contains("`sound_play_channel` argument 2 (channel) expected `int`")), "{:?}", diags);
+    assert!(diags.iter().any(|d| d.message.contains("`sound_play_channel` argument 3 (looped) expected `bool`")), "{:?}", diags);
+}
+
+/// `sound_stop_channel(channel: int)` takes a bare `int` and returns no
+/// useful value.
+#[test]
+fn checks_sound_stop_channel_takes_int() {
+    let src = "fn t():\n    sound_stop_channel(3)\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("sound_stop_channel should type-check");
+}
+
+#[test]
+fn checker_rejects_sound_stop_channel_wrong_arg_type() {
+    let src = "fn t():\n    sound_stop_channel(\"3\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("sound_stop_channel(str) should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`sound_stop_channel` expects an `int` argument")), "{:?}", diags);
+}
+
 #[test]
 fn checks_music_stop_sound_stop_all_gamepad_count_zero_arity_type_check() {
     let src = "fn t():\n    \
@@ -252,6 +301,33 @@ fn rejects_audio_playback_calls_inside_par_body() {
         panic!("sound_play/music_play/music_stop/sound_stop_all/sound_free inside a par/swarm body should be rejected")
     };
     for name in ["sound_play", "music_play", "music_stop", "sound_stop_all", "sound_free"] {
+        assert!(
+            diags.iter().any(|d| d.message.contains(&format!("cannot call `{}`", name))),
+            "expected a rejection for `{}`, got: {:?}",
+            name,
+            diags
+        );
+    }
+}
+
+/// Sibling covering the newer per-channel-addressed pair: same shared,
+/// unlocked global channel table, same race.
+#[test]
+fn rejects_sound_play_channel_and_stop_channel_inside_par_body() {
+    let src = concat!(
+        "struct Entity:\n    mut idx: i32\n\n",
+        "arena Entities: Entity\n\n",
+        "fn main():\n",
+        "    let s = sound_load(\"x.wav\")\n",
+        "    par e in Entities:\n",
+        "        sound_play_channel(s, e.idx, true)\n",
+        "        sound_stop_channel(e.idx)\n",
+    );
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else {
+        panic!("sound_play_channel/sound_stop_channel inside a par/swarm body should be rejected")
+    };
+    for name in ["sound_play_channel", "sound_stop_channel"] {
         assert!(
             diags.iter().any(|d| d.message.contains(&format!("cannot call `{}`", name))),
             "expected a rejection for `{}`, got: {:?}",
@@ -388,6 +464,40 @@ fn codegen_music_stop_and_sound_stop_all_touch_channel_table_only() {
     // is that nothing actually *calls* it, not that the text never appears.
     let calls_open_device = ir.lines().any(|l| l.contains("call") && l.contains("@SDL_OpenAudioDevice"));
     assert!(!calls_open_device, "music_stop/sound_stop_all shouldn't need the output device: {}", ir);
+}
+
+/// `sound_play_channel` masks its channel argument with `& 15`
+/// (`NUM_CHANNELS - 1`) rather than trusting the caller, and branches on the
+/// runtime `looped` argument to set the loop flag -- both stores (loop=1 and
+/// loop=0) should appear, one per branch, unlike `music_play`'s single
+/// compile-time-fixed store.
+#[test]
+fn codegen_sound_play_channel_masks_index_and_branches_on_loop_flag() {
+    let src = "fn t():\n    \
+               let s = sound_load(\"x.wav\")\n    \
+               sound_play_channel(s, 3, true)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("and i32 3, 15"), "sound_play_channel should mask its channel argument: {}", ir);
+    assert!(ir.contains("store i8 1,"), "the loop-flag=true branch should store 1: {}", ir);
+    assert!(ir.contains("store i8 0,"), "the loop-flag=false branch should store 0: {}", ir);
+}
+
+/// `sound_stop_channel` masks its channel argument the same way and
+/// stores directly into `chan_playing` at that index, with no reference to
+/// the output device (same "channel table only" shape as `music_stop`/
+/// `sound_stop_all`).
+#[test]
+fn codegen_sound_stop_channel_masks_index_and_touches_channel_table_only() {
+    let src = "fn t():\n    sound_stop_channel(5)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("and i32 5, 15"), "sound_stop_channel should mask its channel argument: {}", ir);
+    assert!(ir.contains("@star.audio.chan_playing"), "{}", ir);
+    let calls_open_device = ir.lines().any(|l| l.contains("call") && l.contains("@SDL_OpenAudioDevice"));
+    assert!(!calls_open_device, "sound_stop_channel shouldn't need the output device: {}", ir);
 }
 
 /// The mixer's one-time static machinery is emitted exactly once even
@@ -555,6 +665,41 @@ fn runtime_sound_and_music_playback_sequence_end_to_end() {
         path
     );
     let output = compile_and_run_sdl_audio("sound_and_music_playback_sequence", &src);
+    assert!(output.status.success(), "{:?} stderr={}", output.status, String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["false", "done"], "{}", stdout);
+}
+
+/// A per-channel-addressed playback sequence -- two independent voices
+/// started on channels 2 and 5 (one looping, one one-shot), then each
+/// stopped individually via `sound_stop_channel` -- runs end to end with no
+/// crash/hang under `SDL_AUDIODRIVER=dummy`, exercising the real
+/// `SDL_OpenAudioDevice`/mixer-callback path with the new indexed builtins,
+/// not just a codegen-shape assertion. There's no readback builtin to
+/// directly assert channel 2 and channel 5 stayed independent (see
+/// `crate::codegen::audio`'s doc comment: no such query exists at the
+/// language level), so this is a liveness/no-crash proof, the same
+/// standard `runtime_sound_and_music_playback_sequence_end_to_end` above
+/// already holds `sound_play`/`music_play` to.
+#[test]
+fn runtime_sound_play_channel_and_stop_channel_two_independent_voices_end_to_end() {
+    let path = beep_wav_path();
+    let src = format!(
+        "fn main():\n    \
+         let s = sound_load(\"{}\")\n    \
+         println(f\"{{is_null(s)}}\")\n    \
+         sound_play_channel(s, 2, true)\n    \
+         sound_play_channel(s, 5, false)\n    \
+         delay(30)\n    \
+         sound_stop_channel(5)\n    \
+         delay(30)\n    \
+         sound_stop_channel(2)\n    \
+         sound_free(s)\n    \
+         println(\"done\")\n",
+        path
+    );
+    let output = compile_and_run_sdl_audio("sound_play_channel_two_independent_voices", &src);
     assert!(output.status.success(), "{:?} stderr={}", output.status, String::from_utf8_lossy(&output.stderr));
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
