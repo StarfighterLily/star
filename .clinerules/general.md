@@ -48,13 +48,21 @@ the Linux arm isn't implemented yet, unless there's genuinely no cheap
 POSIX equivalent (document that explicitly if so, as `system_font.rs`
 does for GDI).
 
-## Things not to do
+## Versioning
 
-- Don't bump the version as part of unrelated work — see `readme.md`'s
-  "Versioning" section for the actual gate (`0.1.0` → `0.2.0` already
-  happened, at the `82be6e2` reassessment, once that gate's conditions
-  were confirmed; any future bump, e.g. a `1.0.0` push, deserves the same
-  deliberate reassessment-driven treatment, not a drive-by edit).
+The official version has been bumped from `0.1.0` as the gated requirements
+have been met, user-reviewed, and reassessed. From here on out, industry-standard
+SemVer practices are to be observed as per the [readme.md](readme.md)'s versioning
+section. Keep all instances of the Star language's version consistent across all
+load-bearing files and documentation, taking time out to do so explicitly so no
+staleness grows in some hidden corner.
+
+## Things not to do
+- Don't bump the version number
+   as part of unrelated feature work — the `0.1.0` → `0.2.0` move happened only because
+   a full reassessment cycle confirmed the gate's conditions, and any future
+   bump (a `1.0.0` push, say) should get the same deliberate treatment, not
+   be folded into other work.
 - Don't `git push`, force-push, or amend published commits without
   explicit confirmation for that specific action.
 - Don't skip the reassessment trigger in `.clinerules/workflows/todo`

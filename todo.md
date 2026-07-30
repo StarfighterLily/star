@@ -15,15 +15,7 @@ pathology) was root-caused and fixed within the same stage that found
 it, with new regression coverage.**
 
 **P1: The one decision this whole cycle has been building toward.**
-1. Decide whether, and to what version, `readme.md`'s Versioning section
-   and `Cargo.toml`'s version number move, now that the gate's own stated
-   conditions have been independently confirmed met. Recommendation on
-   record (not a decision made unilaterally): `0.2.0`, not `1.0.0` — see
-   `current_status.md` P1 #1 for the full reasoning (the gate's own text
-   ties the next version to "usable, a semblance of stability," not a
-   SemVer-1.0 public-API stability commitment, and the project's only
-   real-world exercise so far is one in-repo consumer, `projects/nova`,
-   not independent third-party usage).
+1. **Done.** The version has been bumped to `0.2.0`. See below for details.
 2. Once a number is chosen: update `readme.md`'s Versioning section,
    `Cargo.toml`'s `version` field, and `docs/conventions.md`'s own
    "Versioning" section together in the same change (the last of these
@@ -53,6 +45,12 @@ since the gate never named them.**
    running have now made this adjustment; keep doing it.
 
 # Previous work
+P1 #1: Bumped version to an honest `0.2.0` across `cargo.toml` and `readme.md`, 
+modified both `CLAUDE.md` and `.clinerules/general.md` to reflect the unbounded
+version bump while raising the point to keep the version in sync across load-bearing
+files and documentation alike to avoid stale version numbers anywhere, and 
+updated `docs/conventions.md` to reflect the bump and further define incremental
+policy (also reflected in Claude and Cline files).
 
 See `changelog/069_2026-07-30_82be6e2_todo.md` and
 `changelog/069_2026-07-30_82be6e2_current_status.md` for the full history
