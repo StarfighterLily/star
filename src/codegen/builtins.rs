@@ -788,7 +788,16 @@ impl Codegen {
         // above have actually read through the pointer).
         self.line(&format!("  call void @star_rc_release(i8* {})", a));
         self.line(&format!("  call void @star_rc_release(i8* {})", b));
-        buf
+        // Tagged `"i8* <reg>"`, matching every other builtin's return
+        // convention (`emit_str_join` right below already does this) --
+        // this used to return a bare `buf`, which broke
+        // `Codegen::emit_trailing_if_value`'s `rsplit_once(' ')` type
+        // recovery the exact same way the sibling `TypedExpr::FStr` bug did
+        // (`expr.rs`, see that fix's own comment) -- found via the same
+        // Nova disassembler work, once its hex-formatting helpers were
+        // rewritten to use `concat` instead of f-strings as a workaround for
+        // *that* bug and immediately hit this one instead.
+        format!("i8* {}", buf)
     }
 
     /// Normalizes a possibly-`null` `str` value (`Ty::Str`'s zero value, see

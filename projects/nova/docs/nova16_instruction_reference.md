@@ -345,8 +345,8 @@ This document provides a compact reference for the Nova-16 instruction set. Inst
 - **SSHFT** (0x36): 2 operands - Shift screen by axis, amount
   - Operands: axis, amount
   - Side Effects: Shifts screen
-- **SFLIP** (0x37): 2 operands - Flip screen by axis, amount
-  - Operands: axis, amount
+- **SFLIP** (0x37): 1 operand - Flip screen by axis
+  - Operands: axis
   - Side Effects: Flips screen
 - **SLINE** (0x38): 2 operands - Line end x, end y
   - Operands: end_x, end_y
@@ -394,8 +394,8 @@ This document provides a compact reference for the Nova-16 instruction set. Inst
 - **KEYCOUNT** (0x45): 1 operand - Get key count
   - Operands: dest
   - Side Effects: Sets dest to buffer count
-- **KEYCLEAR** (0x46): 1 operand - Clear keyboard buffer
-  - Operands: None (operand ignored?)
+- **KEYCLEAR** (0x46): 0 operands - Clear keyboard buffer
+  - Operands: None
   - Side Effects: Clears buffer
 - **KEYCTRL** (0x47): 1 operand - Keyboard control
   - Operands: control
@@ -479,36 +479,45 @@ This document provides a compact reference for the Nova-16 instruction set. Inst
   - Side Effects: Converts string to int
 
 ## BCD Operations
-- **SED** (0x4B): 1 operand - Set decimal flag
-  - Operands: None (operand ignored?)
+- **SED** (0x4B): 0 operands - Set decimal flag
+  - Operands: None
   - Side Effects: Sets decimal mode
-- **CLD** (0x4C): 1 operand - Clear decimal flag
+- **CLD** (0x4C): 0 operands - Clear decimal flag
   - Operands: None
   - Side Effects: Clears decimal mode
-- **CLA** (0x4D): 1 operand - Clear auxiliary carry
+- **CLA** (0x4D): 0 operands - Clear auxiliary carry
   - Operands: None
   - Side Effects: Clears auxiliary carry
-- **BCDA** (0x4E): 1 operand - BCD add with carry
-  - Operands: value
-  - Side Effects: BCD add, sets flags
-- **BCDS** (0x4F): 1 operand - BCD subtract with carry
-  - Operands: value
-  - Side Effects: BCD subtract, sets flags
-- **BCDCMP** (0x50): 1 operand - BCD compare
-  - Operands: value
-  - Side Effects: BCD compare, sets flags
+- **BCDA** (0x4E): 2 operands - BCD add with carry
+  - Operands: dest, src
+  - Side Effects: BCD add, sets flags. Written-back result is always masked
+    to 8 bits regardless of `dest`'s own width, but the *read* of both
+    operands uses the ordinary destination-driven width rule (8-bit only
+    when `dest` is itself an `R` register) -- see `cpu.star`'s
+    `write_width_for`/BCD section and `NOTES.md`'s "BCD operations" for the
+    two real bugs an earlier port pass introduced by conflating the two.
+- **BCDS** (0x4F): 2 operands - BCD subtract with carry
+  - Operands: dest, src
+  - Side Effects: BCD subtract, sets flags (same read/write-width split as
+    `BCDA` above)
+- **BCDCMP** (0x50): 2 operands - BCD compare
+  - Operands: op1, op2
+  - Side Effects: BCD compare, sets flags (plain numeric comparison, no
+    decimal-digit adjustment -- see `NOTES.md`'s "BCD operations")
 - **BCD2BIN** (0x51): 1 operand - BCD to binary
   - Operands: value
   - Side Effects: Converts BCD to binary
 - **BIN2BCD** (0x52): 1 operand - Binary to BCD
   - Operands: value
   - Side Effects: Converts binary to BCD
-- **BCDADD** (0x53): 1 operand - BCD add immediate
-  - Operands: value
-  - Side Effects: BCD add immediate
-- **BCDSUB** (0x54): 1 operand - BCD subtract immediate
-  - Operands: value
-  - Side Effects: BCD subtract immediate
+- **BCDADD** (0x53): 2 operands - BCD add immediate
+  - Operands: dest, src
+  - Side Effects: BCD add immediate (same read/write-width split as `BCDA`
+    above)
+- **BCDSUB** (0x54): 2 operands - BCD subtract immediate
+  - Operands: dest, src
+  - Side Effects: BCD subtract immediate (same read/write-width split as
+    `BCDA` above)
 
 ## Math Functions
 - **POWR** (0x5B): 2 operands - Power base, exponent

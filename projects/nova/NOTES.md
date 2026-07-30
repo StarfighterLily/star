@@ -1,20 +1,46 @@
 # Nova-16 in Star — implementation notes
 
-A native reimplementation of the Nova-16 fantasy computer (originally a
-Python emulator at a sibling project) written in Star, the language this
-repository's compiler implements. Like `projects/snake`, this exists to
-exercise the language on something larger and more demanding than a toy —
-in this case a CPU emulator: a 64KB unified memory space, a ~190-entry
-instruction set, a register-code addressing scheme, a 256x256 indexed
-framebuffer, and a keyboard/timer/interrupt model — and to write down
-everything that broke, surprised, or shaped a design choice along the way.
+**Read this framing note first if you're new to this file — it corrects a
+stale impression the rest of this document used to leave.** Every round
+before the disassembler round below described this project primarily as a
+*language exercise*: something to "stress-test Star on a big, demanding
+program" and "write down everything that broke." That framing was accurate
+for a while, but it has quietly stopped being the point. Enough of this
+project is now correctness-verified against the live Python reference,
+byte-for-byte, with checked-in regression tests, that "Status: this port
+now supersedes the Python reference" below is a real, evidenced claim, not
+a boast — and enough Python-toolchain-equivalent tooling now exists (a real
+binary loader, a real disassembler, real sound synthesis, a real UART host
+bridge) that treating this as "a demo that happens to run Nova-16 programs"
+undersells it. **The goal from here forward is to make this the de facto
+Nova-16 emulator** — not "can Star do this," but "this is where you go to
+run, inspect, and trust a Nova-16 program" — with the Python original
+increasingly the *legacy* implementation instead of the ground truth. The
+language-exercise angle doesn't disappear (every genuine Star compiler bug
+found along the way is still recorded below, and still matters to that
+other project), but it is no longer why this project exists. Concretely,
+this means: don't reach for "acceptable simplification because this is
+just a stress test" as a reason to skip real verification, real tooling, or
+a real fix — hold this project to the same bar a standalone Nova-16
+emulator project would set for itself, because that's what it now is.
 
-This is a **base emulator only**, per the brief: no assembler, no
-disassembler, no debugger. There is now a real binary program loader (see
-"Binary program loading" below), so test/demo programs are genuine compiled
-Nova-16 `.bin` files assembled by the upstream Python `nova_assembler.py`,
-not hand-encoded bytes — see "Testing" below for the checked-in `tests/`
-directory this unlocked.
+A native reimplementation of the Nova-16 fantasy computer (originally a
+Python emulator at a sibling project, `c:\Code\projects\Nova`) written in
+Star, the language this repository's compiler implements: a 64KB unified
+memory space, a ~190-entry instruction set, a register-code addressing
+scheme, a 256x256 indexed framebuffer, and a keyboard/timer/interrupt
+model.
+
+There is a real binary program loader (see "Binary program loading" below)
+and a real disassembler (see "Disassembler" below), so test/demo programs
+are genuine compiled Nova-16 `.bin` files assembled by the upstream Python
+`nova_assembler.py` and can be inspected as real assembly text, not
+hand-encoded bytes read back as hex dumps — see "Testing" below for the
+checked-in `tests/` directory this unlocked. An assembler, a debugger, and
+GUI+controls parity with the Python reference's own tooling are the
+concrete pieces still missing before `readme.md`'s versioning gate's
+"tooling to match Python reference" condition is fully met — see "Ideas for
+future work" below.
 
 **Expansion round** (this pass): the binary program loader itself, full
 9-layer compositing (`LSWAP`/`LMOVE`/`LCOPY`, every drawing opcode now
@@ -33,7 +59,7 @@ line close almost immediately") led to a genuine **Star compiler** bug —
 large struct like this project's own `Cpu` (grown considerably by the
 9-layer compositing above) combined with just one more sizable local
 elsewhere in the same call chain (`Screen::roll_x`'s pre-existing temp
-buffer) could overflow the OS default 1MiB stack — see "Five Star compiler
+buffer) could overflow the OS default 1MiB stack — see "Seven Star compiler
 bugs found and fixed" #5 below for the full bisection and fix.
 
 **Correctness round** (todo.md P0 #1): generalized the `MOV`-only
@@ -48,6 +74,22 @@ stack slot", and "BCD operations" below. **This version now supersedes the
 Python implementation** as the correctness reference for anyone working on
 Nova-16 going forward — see "Status: this port now supersedes the Python
 reference" below for what that means and what should be carried back.
+
+**Disassembler round** (the first round explicitly framed around "de facto
+emulator," not "language exercise" — see the framing note at the very top
+of this file): a real disassembler, `disasm.star` — see "Disassembler"
+below. Building it required knowing every opcode's exact operand count, so
+every opcode in `docs/nova16_instruction_reference.md` was cross-checked
+against `cpu.star`'s own `decode_operands(N)` call sites rather than the
+doc being trusted at face value (this project's own established
+precedent — see "Status: this port now supersedes the Python reference"
+below) — that check found **ten real operand-count errors in the doc
+itself**, now fixed there directly (see "Disassembler" below for the full
+list). Writing the disassembler's hex/string formatting helpers also
+surfaced **two genuine, previously-unknown Star compiler bugs**, both found,
+fixed, and verified against the full `cargo test` suite with zero
+regressions — see "Seven Star compiler bugs found and fixed" #6 and #7
+below.
 
 ## Contents
 
@@ -85,13 +127,24 @@ reference" below for what that means and what should be carried back.
   primitives (line/rect/circle/char/text/roll/shift/flip/rotate/fill/invert),
   all `VL`-layer-aware, and on-demand (uncached) compositing. See "Layer
   compositing and sprites" below.
-- `uart.star` — the UART's data/status/control register model and RX/TX
-  loopback semantics (no host bridge — see "UART" below).
+- `uart.star` — the UART's data/status/control register model, RX/TX
+  loopback semantics, and (`host_push_rx`) the real host-bridge RX path —
+  see "UART" below.
+- `sound.star` — real waveform synthesis (square/sine/sawtooth/triangle/
+  white-noise/pink-noise-approximation/memory-sample) for `SPLAY`/`SSTOP`/
+  `STRIG`, round-tripped through the host audio mixer via a generated WAV
+  buffer. See "Sound" (in "What's not implemented"'s history) and its own
+  header comment for the full approach and documented simplifications.
 - `keyboard.star` — the 64-slot keyboard FIFO and its status/control
   register model.
 - `loader.star` — the binary program loader: reads a compiled `.bin` (plus
   its `.org` sidecar, if present) via `file_read_bytes` into a `Cpu`'s
   memory. See "Binary program loading" below.
+- `disasm.star` — the disassembler: decodes a compiled `.bin` back into
+  readable Nova-16 assembly text. Deliberately independent of `Cpu`/
+  `cpu.star` (a pure byte-stream decode, no machine state involved) and,
+  unlike every other Nova build target here, links with no SDL2 dependency
+  at all. See "Disassembler" below.
 - `cpu.star` — the CPU itself: registers, the register-code address space,
   operand decoding, the fetch-decode-execute cycle, every implemented
   instruction, interrupts, and the timer. Still the one large file in the
@@ -101,6 +154,8 @@ reference" below for what that means and what should be carried back.
 - `main.star` — SDL2 window, a small built-in demo program (used when no
   `.bin` path is given on the command line — see "Binary program loading"
   below), the main loop, and keyboard/mouse-event plumbing.
+- `uart_bridge.star` — a headless stdin/stdout UART host bridge entry
+  point, separate from `main.star`'s graphical loop. See "UART" below.
 - `tests/` — checked-in headless regression tests: `run_bin.star` (a
   generic `.bin` runner/register-dumper, built as its own small executable,
   no SDL needed), a handful of direct-field-poke Star harnesses for things
@@ -119,6 +174,14 @@ The demo draws a diagonal rainbow gradient (color = (x+y) mod 256 through
 the palette) using nested loops, register arithmetic, and `SWRITE`, then
 jumps back to address 0 and redraws forever. Press Escape or close the
 window to quit.
+
+The disassembler needs no SDL linking at all (see "Disassembler" below for
+why):
+
+```
+star build projects/nova/disasm.star -o projects/nova/disasm.exe
+projects/nova/disasm.exe projects/nova/tests/asm/write_width_test.bin
+```
 
 ## Architecture / design decisions
 
@@ -371,7 +434,7 @@ see both what the constraint used to be *and* what replaced it.
     now recognizes an `[eE][+-]?[0-9]+` exponent suffix (`todo.md` P3 #12).
     `cpu.star`'s `MATH_OVERFLOW_GUARD` is now spelled `3.0e38` directly.
 
-## Five Star compiler bugs found and fixed
+## Seven Star compiler bugs found and fixed
 
 Building this project's very first smoke test (a struct holding a
 `[u8; 65536]` array — the whole reason a Nova-16 port needs 64KB of
@@ -645,6 +708,103 @@ file, same general topic) but fix unrelated problems; the doc comment on
 the new `DEFAULT_STACK_SIZE_BYTES` constant cross-references this
 distinction directly for whoever finds this section next.
 
+### 6. `FStr` (f-string) codegen returned an untagged value, breaking trailing-`if`/`else` type recovery
+
+Found writing `disasm.star`'s `format_offset` helper: `fn format_offset(off:
+i32) -> str: if off < 0: f"-{0 - off}" else: f"+{off}"` — a function whose
+entire body is a trailing `if`/`else`, each arm a single f-string
+expression — failed to compile with a generic `codegen error: function must
+end in a value-producing expression or explicit return`, despite type-
+checking cleanly and despite an f-string working fine as a function's *only*
+statement, or with an explicit `return f"..."` inside each arm. Only the
+"bare trailing-value" `if`/`else` shape failed.
+
+Root cause, in `Codegen::emit_expr`'s `TypedExpr::FStr` arm
+(`src/codegen/expr.rs`): every other arm in that same match returns a
+*tagged* `"<llvm-type> <value>"` string (e.g. `TupleLit`'s
+`format!("{} {}", struct_ty, loaded)`) — the convention
+`Codegen::untag`/`Codegen::reg_of` and (critically here)
+`Codegen::emit_trailing_if_value` (`src/codegen/stmt.rs`, the fix site for
+bug #2 above) all rely on. `FStr`'s arm was the one exception: it built its
+`snprintf`-backed buffer correctly but returned the bare register name
+`buf`, no type tag at all. `untag`'s own defensive `strip_prefix(..).
+unwrap_or(s)` tolerates a missing tag fine (that's exactly why this went
+unnoticed for as long as it did — most callers already route through
+`untag`), but `emit_trailing_if_value`'s `then_val.rsplit_once(' ')` — used
+to *recover* the merged `phi`'s LLVM type from the value string itself,
+since a bare `TypedStmt::If` carries no separate `ty` field the way
+`TypedExpr::If` does — has no fallback: no space in the string means
+`rsplit_once` returns `None`, the `?` operator propagates it, and the whole
+function silently reports "no trailing value" even though one obviously
+exists.
+
+Fix: tag the `FStr` arm's return the same way every sibling arm already
+does — `format!("i8* {}", buf)` instead of bare `buf`. One line. Verified
+against a minimal repro (`fn f1(off: i32) -> str: if off < 0: f"-{off}"
+else: f"+{off}"`, previously failing the same way, now compiles and runs
+correctly) and the full `cargo +stable-x86_64-pc-windows-gnu test` suite
+(zero regressions, all ~72 binaries).
+
+### 7. `concat()` had the identical untagged-return bug, found five minutes later by the same investigation
+
+Working around bug #6 (before it was diagnosed as fixable) by rewriting
+`disasm.star`'s hex-formatting helpers to build strings with `concat(a, b)`
+instead of nesting f-strings hit the *exact same* `codegen error:` message
+again, on `fn format_offset(off: i32) -> str: if off < 0: concat("-",
+dec_str(0 - off)) else: concat("+", dec_str(off))` — same shape, different
+builtin. `Codegen::emit_str_concat` (`src/codegen/builtins.rs`) turned out
+to have the identical bug: it also returns a bare `buf`, unlike its own
+sibling `Codegen::emit_str_join` (`src/codegen/list.rs`), which already
+returns `format!("i8* {}", buf)` correctly — `str_join` was never affected.
+
+Fix: identical one-line change, `buf` → `format!("i8* {}", buf)`. Also
+verified against a minimal repro and the full test suite (zero
+regressions). Given two independent builtins had the same exact class of
+bug, a third might too — nothing else was found by inspection of the
+remaining `str_*`/list builtins during this pass, but this is worth keeping
+in mind (and worth checking with a repro like the two above, not just by
+reading) the next time a function-valued builtin's return is used as a bare
+trailing `if`/`else` value and produces this same generic error.
+
+### A related, deliberately unfixed runtime bug: calling an f-string-producing function repeatedly can corrupt its own output
+
+While bisecting bug #6/#7 above, an *earlier* draft of `disasm.star`'s
+`hex_word`/`hex_byte` — implemented via nested f-strings
+(`f"{hex_byte(..)}{hex_byte(..)}"`) rather than `concat` — exhibited a
+second, different symptom once bug #6 was already fixed at the compiler
+level: the program *compiled and ran*, but produced wrong values.
+`hex_word(0x1234)` returned `"444"` instead of `"1234"`; a small wrapper
+function (`fn wrap(v: i32) -> str: f"0x{hex_word(v)}"`, itself materialized
+via f-string) returned the *correct* value on its first call in a program
+run and a *corrupted* one on the second/third call to the same call site —
+`wrap(0x1234)` → `"0x1234"` (right), then `wrap(0)` → `"0x0x00"` (wrong,
+with a literal duplicated `"0x"` fragment), even though each call is
+independent and passes a fresh argument. This is **not** the same bug as
+#6/#7 above (no compile error at all — the program builds and links fine)
+and reproduces regardless of whether the *inner* function
+(`hex_byte`/`hex_word`) is itself f-string- or `concat`-based; the common
+factor across every failing case is an f-string appearing *somewhere* in
+the call chain, more than once, in the same running program.
+
+This was **not root-caused or fixed** — `disasm.star` routes around it
+entirely instead (every helper function it defines builds its result with
+`concat`/`str_join` only, and calls no function from *inside* an f-string's
+`{...}` interpolation that itself contains an f-string anywhere in its own
+body; see `disasm.star`'s own header comment), which was sufficient to get
+correct, verified output from every test `.bin` disassembled during this
+round. The likely shape of the real bug (unconfirmed): the `FStr` arm's
+`star_rc_alloc`-backed buffer from a *first* call may not be retained
+correctly before being consumed by a subsequent statement, so a *second*
+call to the same f-string-materializing code path reuses the freed
+buffer's address while something else briefly holds live, uncommitted data
+there — consistent with the corruption always involving a duplicated
+fragment of an *earlier* call's output rather than random garbage, but this
+is a hypothesis, not a diagnosis backed by reading the relevant RC-tracking
+codegen the way bugs #6/#7 above were. Flagged here rather than silently
+routed around and forgotten, per this project's own standing practice for
+anything found-but-not-yet-fixed — a good next target for whoever picks up
+`todo.md`'s corresponding entry.
+
 ## Fixes applied to this project
 
 Once all ten gotchas above were fixed at the compiler level (tracked in
@@ -728,7 +888,15 @@ mechanical version's and are identical.
 ## What's implemented
 
 The full CPU/memory/register-file/flags architecture, the fetch-decode-
-execute cycle, all four addressing modes, and roughly 140 opcodes:
+execute cycle, all four addressing modes, and 167 opcodes (of the 180
+`docs/nova16_instruction_reference.md` documents as real instructions —
+the 13 gap is exactly "What's not implemented" below: 6 hardware-debugging
+opcodes, `STREXT`/`STREXTI`/`MEMCMP`, and `SMIX`/`SECHO`/`SREVERB`/
+`SFILTER`. This count, and every opcode's exact operand count below, was
+mechanically cross-checked against `cpu.star`'s own `decode_operands(N)`
+call sites while building the disassembler — see "Disassembler" below,
+which is also where this replaces this section's own former "roughly 140"
+estimate):
 
 - No-operand: `HLT NOP RET IRET CLI STI`
 - Data movement: `MOV MOVZ MOVNZ XCHNG SWAP LEA`
@@ -755,10 +923,13 @@ execute cycle, all four addressing modes, and roughly 140 opcodes:
   sprites" below).
 - Layers: `LSWAP LMOVE LCOPY` (see "Layer compositing and sprites" below).
 - Sprites: `SPBLIT SPBLITALL` (see "Layer compositing and sprites" below).
-- UART: `SERIN SEROUT SERSTAT SERCTRL` (see "UART" below).
-- Sound: `SPLAY SSTOP STRIG` (register-model stubs — see "Known
-  simplifications" below; `SMIX SECHO SREVERB SFILTER` are unimplemented in
-  the reference itself, see that same section).
+- UART: `SERIN SEROUT SERSTAT SERCTRL`, plus a real host bridge
+  (`uart_bridge.star`) — see "UART" below.
+- Sound: `SPLAY SSTOP STRIG` — real waveform synthesis and playback (not a
+  stub; see `sound.star` and "Known simplifications" below for the
+  documented simplifications this *does* still carry). `SMIX SECHO SREVERB
+  SFILTER` are unimplemented in the reference itself, see "What's not
+  implemented" below.
 - Keyboard: `KEYIN KEYSTAT KEYCOUNT KEYCLEAR KEYCTRL`
 - `MOUSECTRL` (real host mouse plumbing — see "Mouse plumbing" below).
 - Every register-code target (`R0-R9, P0-P9, SP, FP, VX, VY, VM, VL, VC,
@@ -771,6 +942,8 @@ execute cycle, all four addressing modes, and roughly 140 opcodes:
 - A real binary program loader (see "Binary program loading" below) --
   loads a compiled `.bin` (as produced by the upstream Python
   `nova_assembler.py`) instead of only the built-in demo program.
+- A real disassembler (see "Disassembler" below) -- decodes a compiled
+  `.bin` back into readable Nova-16 assembly text.
 
 ## What's not implemented (and why)
 
@@ -804,11 +977,20 @@ in:
   non-blocking/timeout mode exists at the language level, which would
   freeze a bridge loop waiting on an idle peer).
 - **Hardware debugging opcodes** (`SETBP CLRBP ENABRK DISBRK ENATRAP
-  DISATRAP`) — explicitly out of scope per the brief (no debugger).
-- **An assembler/disassembler/debugger** — explicitly out of scope per the
-  brief. Programs are now real compiled `.bin`s (see "Binary program
-  loading") assembled by the upstream Python `nova_assembler.py`; this
-  port still can't produce one from source itself.
+  DISATRAP`) — still unimplemented; genuinely needs a debugger to be worth
+  wiring up (there's no way to set/hit a breakpoint without one), so this is
+  tracked together with "An assembler/debugger" below rather than being its
+  own separate gap.
+- **An assembler/debugger** — still genuinely unstarted. **A disassembler
+  is no longer part of this list** — see "Disassembler" below: it's real,
+  implemented, and this section previously grouped it with the still-
+  missing two, which is no longer accurate. Programs are still real
+  compiled `.bin`s (see "Binary program loading") assembled by the
+  upstream Python `nova_assembler.py`; this port still can't produce one
+  from source itself (that's the assembler), and there's still no way to
+  set a breakpoint, single-step interactively, or inspect state live
+  (that's the debugger) beyond what `disasm.star`'s static decode and
+  `tests/run_bin.star`'s post-hoc register dump already give.
 
 ## Known simplifications
 
@@ -865,16 +1047,28 @@ unblocked entirely by the binary program loader (see "Binary program
 loading" below) — assembling a real `.asm` test program with the upstream
 Python `nova_assembler.py` and loading the resulting `.bin` is now strictly
 easier than hand-encoding bytes, so every prior round's "no test suite, no
-assembler" rationale is gone for anything the assembler can express. What's
-checked in:
+assembler" rationale is gone for anything the assembler can express. This
+round also added a second, independent way to eyeball what a checked-in
+`.bin` actually contains without executing it at all — `disasm.star` (see
+"Disassembler" above), whose own "Verification" subsection covers what it
+was checked against; not repeated here. What's checked in:
 
 - `tests/run_bin.star` — a generic headless runner: loads a `.bin` (via
   `loader.star`, same as `main.star`), steps it to completion or a cycle
   cap, and prints every register plus `halted`/`pc` (and, given a third/
   fourth CLI argument, a raw memory range) for shell-level comparison. Built
-  standalone (`star build projects/nova/tests/run_bin.star -o
-  projects/nova/tests/run_bin.exe`, no SDL needed) once per session and
-  reused against every `.bin` below.
+  standalone (`star build projects/nova/tests/run_bin.star -L sdl/lib/x64
+  -l SDL2 -o projects/nova/tests/run_bin.exe`) once per session and reused
+  against every `.bin` below. **Correction**: this used to say "no SDL
+  needed" — true when this file was first written, no longer true since
+  `cpu.star` transitively pulls in `sound.star`'s audio builtins for
+  `SPLAY`/`SSTOP`/`STRIG` (todo.md P0 #1) even though this harness never
+  opens a window; `-l SDL2` is required at link time regardless (undefined
+  `SDL_Init`/`SDL_OpenAudioDevice`/etc. otherwise). `run_bin.star`'s own
+  header comment already carries this correction; this file didn't, until
+  now. `disasm.star` (see "Disassembler" above) is the one Nova build
+  target in this project that genuinely doesn't need `-l SDL2` — it never
+  imports `cpu.star` at all.
 - `tests/asm/*.asm` (+ their assembled `.bin`/`.org`/`.sym`) — the actual
   test programs:
   - `uart_integration_test.asm` — copied verbatim from the upstream
@@ -1414,6 +1608,136 @@ halted cleanly with `unimplemented opcode 165 (0xA5, SERCTRL) at pc=4102`,
 exactly the diagnostic "Known simplifications" promises, rather than
 crashing or desyncing.
 
+## Disassembler
+
+Added in this round: `disasm.star`, a real disassembler — decodes a
+compiled `.bin` back into readable Nova-16 assembly text (`ADD [0x3000],
+R0` rather than a raw hex dump). Named in "Ideas for future work" since the
+binary loader round, picked up for real this round as the first piece of
+work explicitly framed around this file's new "de facto emulator" goal (see
+the framing note at the top of this file) rather than "language exercise."
+
+Deliberately independent of `Cpu`/`cpu.star`: disassembly is a pure, static
+byte-stream decode (opcode byte -> mnemonic/operand-count from a lookup
+table, mode byte -> addressing mode, no register *values* or machine state
+involved anywhere), so `disasm.star` imports only `bits.star` (for
+`sign_extend8`) — no `Memory`/`Screen`/`Uart`/`sound.star`, and, unlike
+every other Nova build target in this project, it links with **no SDL2
+dependency at all** (`sound.star`'s audio builtins are the only reason
+`tests/run_bin.star`/`main.star`/`uart_bridge.star` all need `-l SDL2`;
+this tool never touches that import chain).
+
+### The opcode table: code as ground truth, not the doc
+
+The hard part of a disassembler isn't decoding one instruction — it's
+knowing exactly how many operand bytes each opcode consumes, since getting
+one wrong desyncs every instruction after it in the stream. The obvious
+source is `docs/nova16_instruction_reference.md`'s own opcode table
+(mnemonic, hex opcode, operand count, one line per instruction) — but this
+project's own repeated experience (`SPRITE_SYSTEM.md`'s stale "Instructions"
+section, the base instruction reference's own stale `PUSH`/`POP` stack-slot
+width, both documented elsewhere in this file) is that a doc can silently
+drift from the code it describes, and "Status: this port now supersedes the
+Python reference" below already establishes the standing rule for exactly
+this situation: re-derive from source, don't trust the doc by default.
+
+So every opcode's operand count in `disasm.star`'s `opcode_info` table was
+mechanically cross-checked against `cpu.star`'s own `decode_operands(N)`
+call sites (or, for the handful of opcodes handled inline in `execute`
+rather than through a dedicated `op_*` method — `HLT`/`NOP`/`RET`/`IRET`/
+`CLI`/`STI`/`SED`/`CLD`/`CLA`/the twelve conditional jumps via the shared
+`jump_if` helper — read directly from `execute`'s dispatch) rather than
+taken from the doc at face value. **That cross-check found ten real
+operand-count errors in the doc itself**, each confirmed against the
+actual, already-live-reference-verified `cpu.star` handler and now fixed
+directly in `docs/nova16_instruction_reference.md`:
+
+- **`SFLIP` (0x37)**: doc said 2 operands, `op_sflip` actually decodes 1
+  (just an axis; there's no separate amount operand the way `SROL`/`SROT`/
+  `SSHFT` have).
+- **`KEYCLEAR` (0x46)**: doc said 1 operand (with its own description
+  hedging "operand ignored?", a doc that already didn't fully believe
+  itself) — `op_keyclear` decodes 0. Same story for **`SED`/`CLD`/`CLA`
+  (0x4B/0x4C/0x4D)**: each doc entry said 1 operand, but all three are
+  handled inline in `execute` with no `decode_operands` call at all (0
+  operands) — matching this file's own "BCD operations" section, which
+  already correctly described `SED`/`CLD`/`CLA` as "no operand at all,"
+  just never made it back into the instruction reference doc itself.
+- **`BCDA`/`BCDS`/`BCDCMP`/`BCDADD`/`BCDSUB` (0x4E/0x4F/0x50/0x53/0x54)**:
+  doc said 1 operand each; `op_bcda`/`op_bcds`/`op_bcdcmp`/`op_bcdadd`/
+  `op_bcdsub` all call `decode_operands(2)`. This one is the most
+  consequential of the ten — a real two-operand instruction decoded as
+  one-operand would desync every following byte in the stream — and this
+  file's own "BCD operations" section already shows a `BCDA P0, P1`
+  two-operand worked example, so the doc's "1 operand" was already
+  contradicted by this file before the disassembler forced a real
+  cross-check to notice.
+
+`BCD2BIN`/`BIN2BCD` were the control case: the doc's "1 operand" for those
+two is correct (`decode_operands(1)`, confirmed), which is why they aren't
+in the list above — the disassembler cross-check corrects, it doesn't
+uniformly distrust.
+
+Two same-byte aliases were also confirmed *not* to be bugs, by reading the
+Python reference's own handlers directly rather than assuming from the
+shared dispatch target alone: `execute`'s `0x91` (`SAL`) dispatches to the
+same `op_shl` as `0x14` (`SHL`), and `0x6C` (`INTGR`) dispatches to the same
+`op_trunc` as `0x6A` (`TRUNC`). `core/exec_handlers.py::_sal`'s own body is
+`return _shl(cpu, values)`, and `_intgr`'s own docstring says "alias of
+TRUNC" with a body identical to `_trunc`'s — both opcodes are *supposed* to
+share a handler, matching the reference exactly. `disasm.star`'s opcode
+table still gives each its own correct mnemonic (disassembly reflects the
+byte encoding, not which handler happens to implement it), so this had no
+effect on the table itself; noted in the file's own header comment so a
+future reader who spots the shared handler in `cpu.star` doesn't mistake it
+for a missing-opcode bug.
+
+Opcodes with no `cpu.star` handler at all (hardware debugging, `STREXT`/
+`STREXTI`/`MEMCMP`, `SMIX`/`SECHO`/`SREVERB`/`SFILTER` — see "What's not
+implemented" above) have no running code to cross-check against, so their
+operand counts are still doc-sourced and flagged `unverified` in
+`disasm.star`'s own table.
+
+One earlier suspected doc gap that turned out **not** to be real, corrected
+before it was written down anywhere permanent: a first pass over
+`docs/nova16_instruction_reference.md`'s "Special Registers" section
+suspected it was missing the `P0:`-`P9:`/`:P0`-`:P9` byte-half register
+codes (0xC9-0xDC) entirely. That was wrong — a `grep` pattern that happened
+to exclude `:`-containing mnemonics was the actual cause, not a real
+omission; the doc covers the full 0xC2-0xFE range correctly. `disasm.star`
+still sources its own register-name table from `cpu.star::get_reg_value`
+directly rather than the doc, consistent with its general "the code is the
+source of truth" stance for everything else in this file, but that's a
+choice of convention, not a doc-gap workaround.
+
+### Genuine Star compiler bugs found while writing this file
+
+Two, both found, fixed, and verified with zero regressions against the
+full `cargo test` suite — see "Seven Star compiler bugs found and fixed"
+below, entries #6 and #7. A third, related issue (calling an f-string-
+materializing function more than once in the same program run can corrupt
+its own output) was found but not root-caused or fixed — `disasm.star`
+routes around it by never using an f-string anywhere in its own source
+(every dynamic string is built with `concat`/`str_join` instead); see that
+same section's write-up for the full repro and status.
+
+### Verification
+
+Run against four independently-produced `.bin`s already checked in under
+`tests/asm/` (not new files written to flatter the disassembler): `write_
+width_test.bin` and `bcd_width_test.bin` (round-tripped byte-for-byte back
+to a text form matching their own `.asm` source exactly, including the
+corrected `BCDA P0, P1` two-operand decode above), `push_pop_width_test.
+bin` (confirming `PUSH R0`/`PUSH P0`/`PUSH [mem]`'s differing operand
+widths decode as single operands regardless of the underlying stack-slot
+width difference — a CPU-execution concern, not a disassembly one), and
+`uart_integration_test.bin` (the file copied verbatim from the upstream
+Python repo, not authored for this port — decodes cleanly starting at its
+`.org` file's recorded entry point `0x1000` with `MOV P0, 0xDEAD` as the
+first instruction, matching "Binary program loading"'s own verification of
+the same file above). Every decoded mnemonic, operand, and byte-length
+matched the source `.asm` exactly across all four files.
+
 ## Layer compositing and sprites
 
 Added in this round: the remaining 8 compositing layers (backgrounds 1-4,
@@ -1809,8 +2133,25 @@ verified two ways instead:
   `impl` can cross a module boundary (gotcha #6), not yet done.
 - An actual assembler, so a `.bin` could be produced from Star-authored
   source rather than only loaded from the upstream Python toolchain's
-  output — the binary loader (this round) makes this more valuable than
-  before (there'd finally be somewhere for its output to go), not less.
+  output — the binary loader and disassembler (this round and the last)
+  make this more valuable than before (there'd finally be somewhere for its
+  output to go, and a way to check it), not less. Now the single most
+  valuable remaining named-tooling gap, since it's also the natural first
+  step before an interactive debugger needs source-level symbol
+  information.
+- ~~A disassembler~~ — done, see "Disassembler" below. A debugger, matching
+  the upstream Python toolchain's own tooling, is still genuinely
+  unstarted, and still named concretely (not just implied) by `readme.md`'s
+  "Versioning" section as part of "tooling to match Python reference" for
+  the language-wide `0.1.0` gate (todo.md P1 #3). GUI+controls parity with
+  the Python reference's own tooling is the other named, still-open piece
+  of that same gate.
+- **Not yet root-caused: the f-string-repeated-call corruption bug** (see
+  "Seven Star compiler bugs found and fixed", the section right after this
+  file's compiler-bugs list) — `disasm.star` routes around it entirely, but
+  the underlying compiler bug is still live and could bite any other
+  project using this language the same way. Worth a dedicated investigation
+  session on its own, independent of any further Nova work.
 
 ## Status: this port now supersedes the Python reference
 

@@ -1713,7 +1713,24 @@ impl Codegen {
                 let buf = self.tmp_name();
                 self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", buf, total64));
                 self.line(&format!("  call i32 (i8*, i64, i8*, ...) @snprintf(i8* {}, i64 {}, i8* {}{})", buf, total64, fmt_reg, args_suffix));
-                buf
+                // Tagged `"i8* <reg>"`, matching every other arm's return
+                // convention in this match (see e.g. `TupleLit` above) --
+                // this used to return a bare `buf` with no type prefix,
+                // which `untag` tolerates fine (it falls back to the input
+                // unchanged when the expected prefix isn't there) but which
+                // broke any caller that instead expects the tagged
+                // `"<type> <value>"` string directly, most notably
+                // `Codegen::emit_trailing_if_value`'s `rsplit_once(' ')`
+                // type-recovery (`stmt.rs`): with no space in the string at
+                // all, that split silently returned `None`, which propagated
+                // out through the `?` operator and surfaced as the
+                // misleadingly generic "function must end in a
+                // value-producing expression or explicit return" -- for
+                // something as ordinary as `if cond: f"{x}" else: f"{y}"` as
+                // a function's trailing value. Found via `projects/nova`'s
+                // new disassembler (`disasm.star`), whose signed-offset
+                // formatter is exactly this shape.
+                format!("i8* {}", buf)
             }
             TypedExpr::If { cond, then_block, else_block, ty, .. } => {
                 let ty_str = self.llvm_ty(ty);
