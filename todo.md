@@ -1,214 +1,169 @@
 # Star Compiler — Next Steps
 
 Seeded from `current_status.md`'s "Next steps, prioritized" section
-(reviewed at commit `45382cc`, 2026-07-29). This reassessment's headline
-finding: unlike the last two cycles, nothing in the incoming `todo.md`
-needed correcting — every item held up under a real re-verification (full
-`cargo +stable-x86_64-pc-windows-gnu test` re-run, not just trusted). See
-`current_status.md`'s own "Next steps, prioritized" P0 note for why that's
-worth recording rather than skipping straight to new work.
+(reviewed at commit `cacd569` plus uncommitted work, 2026-07-30). This
+reassessment's headline finding: the incoming `todo.md`'s one open item
+(P2 #3, a debugger and GUI+controls parity for `projects/nova`) was
+genuinely done — verified two different ways for its two halves (a live
+MCP cross-check against the Python reference for the debugger, real
+screenshot-based interaction for the GUI) — closing out every named
+tooling gap in `readme.md`'s versioning gate for the first time since that
+gate was written down. See `current_status.md`'s own "The Bad" for what
+that verification pass didn't manage to confirm, and why "the list is
+empty" isn't the same claim as "the list was complete."
 
-**P0: Nothing to fix — see `current_status.md` for why this cycle's review
-didn't find one.**
+**P0: Nothing to fix — no false "Done." markers this cycle, and the one
+genuine bug found this stage (a Cpu SP/FP reset-value bug) was fixed
+within the same stage that found it.**
 
-**P1: The two most concrete, already-scoped gaps.**
-1. **Root-cause the repeated-f-string-call corruption bug.** Done. See
-   "Previous work" below for the fix and its regression tests
-   (`tests/frontend_fstring_str_hole_use_after_free.rs`).
-2. **An actual assembler** for `projects/nova`. Done. See "Previous work"
-   below for the design, the deliberate deviations from the Python
-   assembler, and the verification record (`projects/nova/NOTES.md`'s
-   "Assembler" section has the full write-up).
+**P1: Close this stage's own two honestly-flagged verification gaps.**
+1. Add a checked-in regression test for `debugger.star` — every other
+   recent Nova build target (`disasm.star`, `assembler.star`) shipped with
+   real, automatable verification against `tests/asm/*`; the debugger was
+   only verified once, interactively, in the session that built it. A
+   scripted-stdin-in/captured-stdout-out comparison against a fixed
+   `tests/asm/*.bin`, same spirit as `tests/run_bin.star` but exercising
+   the REPL's command surface, is the natural shape.
+2. Actually verify the F5-F8 hotkeys in `main.star`'s GUI. This stage's own
+   synthetic `keybd_event` attempt was inconclusive (plausibly Windows'
+   foreground-lock restrictions on a background process's simulated
+   input) — the mouse-click equivalents were verified for real, but the
+   hotkeys currently rest on "same underlying `running`/`single_step`
+   variables" reasoning, not independent confirmation. Needs either a
+   foreground-safe input-injection technique or a small temporary
+   self-test hook.
 
-**P2: Bigger, still-unscoped tooling gaps.**
-3. A debugger and GUI+controls parity with the Python reference's own
-   tooling — both still genuinely unstarted, both still only named
-   qualitatively by `readme.md`'s versioning gate. Lower priority than P1
-   above: a debugger benefits from an assembler existing first
-   (source-line breakpoints need something to map back to), and
-   "GUI+controls parity" needs its own scoping pass (what does the Python
-   reference's own GUI actually offer beyond what `main.star`'s SDL window
-   already does?) before it's actionable rather than aspirational.
+**P2: Process debt that's been deferred past the point of being
+defensible.**
+3. Define what "Nova is complete" means, concretely, for `readme.md`'s
+   versioning gate. Third reassessment in a row naming this
+   (`067`'s "The Bad" #4, `068`'s "The Bad" #3, this one) — a fixed
+   checklist (opcode/feature completeness, most plausibly building on
+   `projects/nova/NOTES.md`'s own "What's implemented"/"What's not
+   implemented" split) rather than an open-ended qualitative gate. Should
+   not appear a fourth time without being acted on.
+4. Investigate the `clang` large-aggregate-returned-repeatedly build
+   pathology this stage found and worked around (not root-caused): an
+   early `main.star` draft called a function returning a fresh, megabyte-
+   plus `Cpu` by value a second/third time (for the `Reset` control), and
+   that build took several minutes and multiple gigabytes of `clang`
+   memory just to link, before being replaced with an in-place
+   `Cpu::reinit`. Worth a minimal, project-independent repro (a function
+   returning a >512KB struct, called 2-3 times from within one enclosing
+   function) to confirm or rule out whether this is the same root cause as
+   `projects/nova/NOTES.md`'s "Seven Star compiler bugs found and fixed"
+   #1's already-fixed shape, or a genuinely new one.
+5. Nova's own remaining, deliberately-scoped-out gaps (unchanged from
+   before this stage): splitting `cpu.star`'s opcode handlers across
+   files; `SMIX`/`SECHO`/`SREVERB`/`SFILTER` (unimplemented, matching the
+   reference); a true per-8-channel sound voice model; a real pink-noise
+   filter; source-line (as opposed to numeric-address) breakpoints in
+   `debugger.star`, once/if `assembler.star` grows debug-line-mapping
+   output.
 
 **P3: Keep the cadence honest.**
-4. Nothing structural to change in the reassessment mechanism this time —
-   it fired correctly, the full test suite ran *before* finalizing
-   `current_status.md` rather than concurrently with it, and it caught a
-   real (if minor) would-be documentation error before shipping (a
-   suspected doc gap in `docs/nova16_instruction_reference.md`'s "Special
-   Registers" section that turned out to be a `grep`-pattern artifact, not
-   a real gap — corrected before it was written down anywhere permanent).
-   Carry the same discipline forward.
+6. This cycle's trigger fired for a genuine reason and the full test suite
+   was started before this reassessment's `current_status.md` was drafted
+   rather than concurrently with it, per the prior review's own stated
+   adjustment — carry that forward. One new adjustment worth adding: when a
+   verification pass discovers its own *method* doesn't work (this stage's
+   `SendMessage`-doesn't-register-with-SDL finding, worked around by
+   switching to genuine synthesized hardware input), record the dead end
+   explicitly, not just the eventual working method — both `NOTES.md` and
+   `current_status.md` did that this time; keep doing it.
 
 # Previous work
 
-src/codegen/expr.rs / src/codegen/builtins.rs: root-caused and fixed P1 #1,
-the repeated-f-string-call corruption bug (`hex_word(0x1234)` coming back
-`"444"` instead of `"1234"` in `projects/nova/disasm.star`'s minimal repro).
-Root cause: three separate codegen call sites released a `str`-typed
-f-string interpolation hole's owned pointer via `star_rc_release`
-*before* the `snprintf`/`printf` call that actually reads through it --
-`Codegen::emit_expr`'s general `TypedExpr::FStr` arm, and both branches of
-`Codegen::emit_print_like` (the f-string-argument branch and the plain
-non-f-string-argument branch, e.g. `println(some_fn_call())`). Releasing a
-fresh (refcount-1) value frees its backing `malloc` block immediately;
-nothing then stops a *later* allocation in the same expression (most
-commonly a second interpolation hole's own call, itself materializing its
-return value via `concat` or another f-string) from reusing that exact
-address before the pending `snprintf`/`printf` reads it, corrupting the
-output. This is the identical bug class `Codegen::emit_str_concat`'s own
-doc comment (`builtins.rs`) already documented and fixed for `concat`'s two
-arguments in an earlier round (confirmed there via `concat(f"a{1}",
-f"b{2}")` producing `"b2b2"` instead of `"a1b2"`) — it had just never been
-ported to these three other call sites, which is exactly why this bug
-outlived bugs #6/#7 (both fixed the same cycle disasm.star was built,
-per `projects/nova/NOTES.md`'s "Seven Star compiler bugs found and fixed").
-Fix: defer each `str` hole's release until after the read(s) that actually
-consume it, at all three sites. Verified three ways: (1) reverted the fix
-and re-ran the new regression tests, confirming all 8 fail — 7 with the
-predicted corruption pattern (e.g. `"101-101"` instead of `"101-899"`,
-values from one hole bleeding into another), and the 8th (a direct
-transcription of `projects/nova/NOTES.md`'s own hand-observed `wrap(v) ->
-f"0x{hex_word(v)}"` repro) reproducing the exact recorded `"0x0x0N"`
-duplicated-fragment corruption once looped over enough calls (30 — the
-original 2-3-call repro didn't reliably reproduce against this run's
-allocator state, confirming the "not enough heap churn yet" explanation
-rather than a flaky test); (2) re-applied the fix and re-ran all 8 to
-confirm they pass; (3) re-ran the full
-`cargo +stable-x86_64-pc-windows-gnu test` suite (73 binaries, 1898 tests,
-0 failures — no regressions). New file:
-`tests/frontend_fstring_str_hole_use_after_free.rs` (8 tests: 3 IR-shape
-assertions pinning the fixed release ordering at each call site, 5 runtime
-end-to-end repros covering nested-holes-inner-f-string-based,
-nested-holes-inner-concat-based, `println(f"...")` with two holes
-directly, a three-hole variant, and the `NOTES.md` historical single-hole
-repro above). `projects/nova/NOTES.md` and `disasm.star`'s own doc comments
-previously described this as unfixed and routed around it via
-`concat`-only helpers — `NOTES.md`'s "A related, deliberately unfixed
-runtime bug" section now has a follow-up note confirming the fix and
-pointing back here; `disasm.star` itself is left unchanged (its
-concat-only helpers still work fine, and reverting them to use nested
-f-strings again isn't this fix's job).
+See `changelog/068_2026-07-30_cacd569_todo.md` and
+`changelog/068_2026-07-30_cacd569_current_status.md` for the full history
+up to and including this cycle (the repeated-f-string-call corruption bug
+root-caused and fixed, a real assembler for `projects/nova`, and — this
+session — a real debugger (`projects/nova/debugger.star`) and GUI+controls
+parity (`projects/nova/main.star`'s toolbar/status bar/hotkeys), a genuine
+Cpu SP/FP reset-value port bug found via the debugger's first real use and
+fixed across all four build targets that construct a `Cpu`, and a `clang`
+build-time pathology found and worked around via `Cpu::reinit`) — archived
+per the reassessment protocol before this file was reseeded from the fresh
+`current_status.md`'s "Next steps" section above.
 
-See `changelog/067_2026-07-29_45382cc_todo.md` and
-`changelog/067_2026-07-29_45382cc_current_status.md` for the full history
-up to and including this cycle (sound synthesis + UART host bridge landing
-for real, `.clinerules` sync, the versioning-gate adequacy judgment, the
-Nova disassembler, two genuine Star compiler bugs found and fixed via that
-disassembler work, ten operand-count documentation bugs found and fixed in
-`docs/nova16_instruction_reference.md`, and `projects/nova/NOTES.md`'s
-reframing from "language exercise" to "de facto Nova-16 emulator") —
-archived per the reassessment protocol before this file was reseeded from
-the fresh `current_status.md`'s "Next steps" section above.
+projects/nova/debugger.star (new): a real debugger -- a headless CLI REPL
+matching `nova_debugger.py`'s command set (`step`/`s`, `run`/`continue`/
+`cont`, `regs`/`r`, `mem`, `stack`, `disasm`/`d`, `break`/`b`,
+`breakpoints`/`bp`, `clear`/`c`, `load`, `help`, `quit`). Reuses
+`disasm.star`'s disassembly tables (duplicated, not imported -- both are
+standalone build targets with their own `fn main()`, and this compiler
+lowers every top-level `fn main()` to the same `@main` symbol regardless of
+source file, so importing either into the other would collide two `@main`
+definitions) and `assembler.star`'s `.sym` sidecar format for symbol-
+labeled disassembly/breakpoint output. One deliberate improvement over the
+Python reference: `run`/`continue` steps at least once before its first
+breakpoint check (Python's own `run_until_breakpoint` re-hits an
+already-current breakpoint instantly on every resume, a real upstream quirk
+found and filed under `projects/nova/NOTES.md`'s "What to carry back to the
+Python emulator", not matched here). Verified against
+`tests/asm/write_width_test.bin` via a scripted stdin session and
+cross-checked against a live `debugger_init`/`cpu_step`/`get_cpu_state`
+sequence on the Python reference over MCP (registers and `pc` matched
+exactly after 10 steps). That cross-check is what surfaced the SP/FP reset
+bug below.
 
-projects/nova/disasm.star (new): a real disassembler — decodes a compiled
-`.bin` back into readable Nova-16 assembly text, independent of `Cpu`/
-`cpu.star` entirely (no SDL2 link dependency, unlike every other Nova build
-target). Verified against four independently-produced `.bin` files
-(`write_width_test.bin`, `bcd_width_test.bin`, `push_pop_width_test.bin`,
-and `uart_integration_test.bin`, the last copied verbatim from the upstream
-Python repo), every decoded mnemonic/operand/byte-length matching the
-source `.asm` exactly.
+A genuine port bug, found via the debugger's first real use: every Nova
+build target's `Cpu` construction initialized SP/FP (P8/P9) to `0x0000`;
+the live Python reference initializes them to `0xFFFF`
+(`core/regfile.py::RegisterFile.__init__`). Every existing checked-in
+`.asm` test happens to set SP explicitly before touching the stack, which
+is exactly why this went unnoticed until the debugger's `stack` command
+exposed the raw post-reset state. Fixed in all four places a `Cpu` is
+constructed (`main.star`, `debugger.star`, `tests/run_bin.star`,
+`uart_bridge.star`); re-verified the full `tests/asm/*.bin` suite against
+`tests/run_bin.exe` afterward with no change to any test's documented
+expected register values.
 
-src/codegen/expr.rs: `TypedExpr::FStr`'s codegen arm now returns a tagged
-`"i8* <reg>"` value instead of a bare untagged register — fixes a real bug
-where an f-string used as a bare trailing `if`/`else` value (no explicit
-`return`) failed to compile with a generic "function must end in a
-value-producing expression" error, because
-`Codegen::emit_trailing_if_value`'s `rsplit_once(' ')` type-recovery had no
-space to split on. Found via `projects/nova/disasm.star`'s
-`format_offset` helper.
-src/codegen/builtins.rs: `Codegen::emit_str_concat` had the identical bug
-(bare untagged return) and got the identical one-line fix. Its sibling
-`Codegen::emit_str_join` was already correct.
-Both fixes verified against a minimal repro each and the full
-`cargo +stable-x86_64-pc-windows-gnu test` suite (72/72 binaries, 0 failed,
-twice — once per fix).
+projects/nova/main.star (extended): GUI+controls parity -- a toolbar
+(Start/Pause, Stop, Reset, Step) and status bar (PC, run state, F5-F8
+hotkey legend), matching the useful-without-a-file-dialog slice of
+`nova_gui.py`'s own toolbar (no file-dialog/Tk-dialog builtin exists in
+this language at all, so "Load"/"UART config" buttons are a deliberate,
+documented scope cut -- loading stays command-line-argument-only,
+`uart_bridge.star` stays the separate UART tool). Verified interactively:
+built `nova16.exe`, launched it, and drove the toolbar with genuinely
+synthesized hardware-level mouse input (`SetCursorPos` + `mouse_event`)
+while screenshotting the live window -- confirmed Start/Pause toggling the
+button label and status-bar run-state text, Step advancing `PC` by exactly
+the expected two-instruction delta while stopped, and Reset reloading and
+resuming. `SendMessage`-posted window messages did *not* register with
+SDL's own mouse-state tracking during this verification (a dead end worth
+recording, per `current_status.md`'s own P3 #6), which is why genuine
+synthesized input was used instead. The F5-F8 hotkeys share the exact same
+edge-triggered `running`/`single_step` state the verified mouse clicks
+already exercise, but were not independently confirmed working this
+session (synthetic `keybd_event` presses from a background script were
+inconclusive) -- see todo.md P1 #2 above.
 
-docs/nova16_instruction_reference.md: fixed ten real operand-count errors
-found by cross-checking every documented opcode against `cpu.star`'s actual
-`decode_operands(N)` call sites while building the disassembler above:
-SFLIP (doc said 2, actually 1), KEYCLEAR/SED/CLD/CLA (doc said 1, actually
-0 -- all four handled with no operand decode at all), and
-BCDA/BCDS/BCDCMP/BCDADD/BCDSUB (doc said 1, actually 2 -- the most
-consequential, since a wrong operand count desyncs every following byte in
-a disassembled stream).
+A real `clang` build-time pathology, found and worked around (not
+root-caused): an early draft implemented `Reset` by calling a
+`build_cpu`-style function (constructing and returning a fresh,
+megabyte-plus `Cpu` by value) a second and third time, on top of the one
+call already needed at startup -- that build took several minutes and
+multiple gigabytes of `clang` memory just to reach the link step. Worked
+around with `Cpu::reinit`, a method that resets every field via ordinary
+loop-driven writes into the *existing* `Cpu` rather than a repeated
+struct-literal-returning call -- builds and links in the same normal time
+as every other file in this project, and is arguably a closer match to
+`nova_gui.py::CPUController.reset()`'s own "mutate in place" shape than the
+original draft was anyway. See todo.md P2 #4 above for the follow-up this
+deserves.
 
-projects/nova/NOTES.md: added a framing note at the top of the file
-declaring the shift from "language exercise" to "de facto Nova-16
-emulator" as this project's stated goal going forward; added a
-"Disassembler" section documenting `disasm.star`, the ten doc fixes above,
-and the two confirmed-intentional same-byte opcode aliases (SAL/SHL,
-INTGR/TRUNC) found while building it; renamed "Five Star compiler bugs
-found and fixed" to "Seven" and added the two fixed bugs above plus a
-write-up of a third, related bug that was found but NOT fixed (repeated
-f-string-producing-function calls can corrupt output -- see todo.md P1 #1
-above); fixed several stale claims found along the way (the "Sound" bullet
-under "What's implemented" still called SPLAY/SSTOP/STRIG "register-model
-stubs" a stage after they became real; the "Testing" section's own
-`tests/run_bin.star` build instructions still said "no SDL needed" a stage
-after that file's own header comment was corrected to say the opposite;
-`sound.star`/`uart_bridge.star` were missing from the "Contents" index
-entirely); updated "What's implemented"/"What's not implemented"/"Ideas for
-future work" to move the disassembler from not-started to done and
-correct the opcode count from an approximate "roughly 140" to a verified
-167 (of 180 documented, the 13-opcode gap being exactly the still-
-unimplemented set already listed under "What's not implemented").
 current_status.md / todo.md: this reassessment.
 
-projects/nova/assembler.star (new): a real assembler -- turns a `.asm`
-source file into a compiled `.bin` plus `.org`/`.sym` sidecars, closing
-todo.md P1 #2. Two-pass design (symbol table then code generation), same
-shape as the upstream `nova_assembler.py::Assembler.first_pass`/
-`second_pass`. Its opcode/register tables are transcribed directly from
-`disasm.star`'s own already-cross-checked-against-`cpu.star` `opcode_info`/
-`reg_name` tables (not re-derived independently), cross-checked against
-Python's `opcodes.py` too (180 instruction entries, 61 register entries,
-both counts matching exactly) -- so encode and decode are provably built
-from the same source of truth. `star check`/`star build` both succeeded on
-the first real attempt: this is the first Nova tooling round that found
-*zero* new Star compiler bugs, unlike every previous one (disassembler: 2;
-loader/large-aggregate work: several more) -- the language's `Map<K,V>`,
-`Bytes`, byte-string-indexing, and two-pass value-threading were all
-already sufficient. One genuine logic bug found and fixed along the way (not
-a compiler bug): the validation pass's directive-argument check didn't
-recognize a char-literal token as a valid `DB` argument, caught immediately
-by the new directives test failing to assemble, one-line fix.
-Verified: every one of this project's nine pre-existing checked-in
-`tests/asm/*.asm` sources reassembles byte-for-byte identical (both `.bin`
-and `.org`) to a *fresh* live run of `nova_assembler.py`, not just the
-possibly-stale checked-in files. Two new test programs added specifically
-to cover what those nine don't: `tests/asm/assembler_directives_test.asm`
-(every directive, char literals, a negative immediate, a comma-containing
-string literal, forward/backward/data-to-code label references) is also
-byte-for-byte Python-identical and was run to completion on both the live
-Python reference CPU (over MCP) and this port's own `cpu.star` (via
-`tests/run_bin.exe`), registers matching each other and the file's own
-documented expected values exactly on both, and loads cleanly under
-`nova16.exe`. `tests/asm/assembler_direct_indexed_test.asm` exercises
-`[0xADDR + off]`/`[0xADDR - off]` direct-indexed addressing, a real
-`cpu.star`/`disasm.star`-supported addressing mode the Python assembler
-cannot itself produce (confirmed: it raises "Unknown base register:
-0x2000" on `[0x2000+4]`, since its own `direct`/`indexed` regexes don't
-compose) -- verified instead via a `disasm.star` round trip back to
-matching source text, live execution on the Python reference CPU over MCP,
-and live execution on this port's own `cpu.star`, all agreeing exactly
-(including cycle count and final `pc`). Deliberate, documented deviations
-from the Python assembler (full list in `assembler.star`'s own header
-comment and `projects/nova/NOTES.md`'s "Assembler" section): no macro/
-include/conditional preprocessing (nothing in this project's real `.asm`
-corpus needs it); the 12 dual-purpose register/instruction mnemonics
-(`SA`/`TT`/etc.) are register-operand-only here, matching `cpu.star`'s own
-already-documented capability gap rather than encoding a `.bin` this port's
-CPU can't run; `BR`/`BRZ`/`BRNZ` encode an absolute address exactly like
-`JMP`, matching the Python assembler's *actual* (not commented-as-intended)
-behavior -- its own relative-offset calculation is dead code, a finding
-now filed under `projects/nova/NOTES.md`'s "What to carry back to the
-Python emulator" #4; direct-indexed addressing is supported as a
-deliberate superset; register/mnemonic matching is case-insensitive
-(strictly more lenient, never changes output for anything Python could
-already assemble). Also found and worked around (not carried into this
-port): `nova_assembler.py`'s `DB` directive can't accept a char-literal
-argument at all (a real, separate gap in `DataGenerator._parse_numeric_
-value`, confirmed empirically) even though the identical token works fine
-as an instruction operand in the same file.
+See `changelog/067_2026-07-29_45382cc_todo.md` and
+`changelog/067_2026-07-29_45382cc_current_status.md` for the prior cycle's
+full history (sound synthesis + UART host bridge landing for real,
+`.clinerules` sync, the versioning-gate adequacy judgment, the Nova
+disassembler, two genuine Star compiler bugs found and fixed via that
+disassembler work, ten operand-count documentation bugs found and fixed in
+`docs/nova16_instruction_reference.md`, and `projects/nova/NOTES.md`'s
+reframing from "language exercise" to "de facto Nova-16 emulator") and the
+cycle before that (the repeated-f-string-call corruption bug root-caused
+and fixed, and a real assembler for `projects/nova`) -- both archived under
+the same reassessment protocol.

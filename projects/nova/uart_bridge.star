@@ -56,7 +56,15 @@ fn new_cpu() -> cpu::Cpu:
         flags = flg::Flags(bits = BitField<16>(0)),
         uart = uart::new_uart(),
         r = [Wrapping<u8>(0 as u8); 10],
-        p = [Wrapping<u16>(0 as u16); 10],
+        # SP (P8)/FP (P9) reset to 0xFFFF, matching `main.star`'s identical
+        # fix -- see its own comment on this same field for the full bug
+        # writeup (found via `debugger.star`'s `stack` command).
+        p = [
+            Wrapping<u16>(0 as u16), Wrapping<u16>(0 as u16), Wrapping<u16>(0 as u16),
+            Wrapping<u16>(0 as u16), Wrapping<u16>(0 as u16), Wrapping<u16>(0 as u16),
+            Wrapping<u16>(0 as u16), Wrapping<u16>(0 as u16),
+            Wrapping<u16>(0xFFFF as u16), Wrapping<u16>(0xFFFF as u16),
+        ],
         pc = Wrapping<u16>(0 as u16),
         vx = Wrapping<u8>(0 as u8),
         vy = Wrapping<u8>(0 as u8),

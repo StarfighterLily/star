@@ -32,14 +32,16 @@ scheme, a 256x256 indexed framebuffer, and a keyboard/timer/interrupt
 model.
 
 There is a real binary program loader (see "Binary program loading" below),
-a real disassembler (see "Disassembler" below), and now a real assembler
-(see "Assembler" below), so test/demo programs no longer have to originate
-from the upstream Python `nova_assembler.py` at all — this project can
-produce, inspect, and run its own `.bin` files end to end. A debugger and
-GUI+controls parity with the Python reference's own tooling are the
-concrete pieces still missing before `readme.md`'s versioning gate's
-"tooling to match Python reference" condition is fully met — see "Ideas for
-future work" below.
+a real disassembler (see "Disassembler" below), a real assembler (see
+"Assembler" below), a real debugger (see "Debugger" below), and now
+GUI+controls parity with the Python reference's own graphical tooling (see
+"GUI+controls parity" below) — every concrete, named piece of `readme.md`'s
+versioning gate's "tooling to match Python reference" condition is now
+built. Test/demo programs no longer have to originate from the upstream
+Python `nova_assembler.py` at all — this project can produce, inspect, run,
+and interactively debug its own `.bin` files end to end. See "Ideas for
+future work" below for what's left unported by deliberate scope cut (a
+file-dialog/Tk-dialog equivalent, mainly) rather than genuinely missing.
 
 **Expansion round** (this pass): the binary program loader itself, full
 9-layer compositing (`LSWAP`/`LMOVE`/`LCOPY`, every drawing opcode now
@@ -104,6 +106,45 @@ Verified byte-for-byte identical to a fresh run of the live upstream
 and direct-indexed addressing (which the Python assembler cannot itself
 produce — verified instead via `disasm.star` round-trip and live execution
 on both the Python reference CPU over MCP and this port's own `cpu.star`).
+
+**Debugger and GUI+controls round** (todo.md P2 #3, the reassessment's
+headline finding for this cycle): a real debugger, `debugger.star` — see
+"Debugger" below — and GUI+controls parity in `main.star` — see
+"GUI+controls parity" below — the two remaining named-tooling gaps in
+`readme.md`'s versioning gate. Building the debugger's `stack` command
+surfaced a genuine, previously-unknown **port bug** (not a Star compiler
+bug): every build target's `Cpu` construction initialized SP/FP (P8/P9) to
+`0x0000` instead of the reference's real `0xFFFF` reset value (confirmed
+against `core/regfile.py::RegisterFile.__init__`'s explicit `self.P[8] =
+self.P[9] = 0xFFFF`, and against a fresh `debugger_init`/`get_cpu_state`
+probe over MCP) — every existing checked-in `.asm` test happens to set SP
+explicitly before touching the stack, which is exactly why this went
+unnoticed until a debugger exposed the raw post-reset state. Fixed in all
+four build targets that construct a `Cpu` (`main.star`, `debugger.star`,
+`tests/run_bin.star`, `uart_bridge.star`); re-verified the full
+`tests/asm/*.bin` suite against `tests/run_bin.exe` afterward (all 11
+programs, including the two that exercise the stack —
+`push_pop_width_test.bin`, which sets its own SP and was unaffected, and
+`assembler_directives_test.bin`, whose `CALL`/`RET` round-trip doesn't set
+SP at all and still matched its documented expected register values exactly
+post-fix, since a push/pop pair returns the stack pointer to wherever it
+started regardless of that starting value). A second, unrelated finding
+while wiring up `main.star`'s `Reset` button: an early draft called a
+`build_cpu`-style function (returning a fresh `Cpu` by value) a second and
+third time for `Reset`, and that build took several minutes and multiple
+gigabytes of `clang` memory just to link — three call sites to a function
+returning a megabyte-plus struct, in one function, is a meaningfully
+different shape from the single call site every other build target in this
+project uses, and empirically triggers something close to the `clang`
+optimizer pathology NOTES.md's own "Large fixed-array/struct construction
+crashed or hung clang" bug writeup already describes for a different
+(also since-fixed) shape. Not chased down to a compiler-level fix this
+round (no reproducible minimal case isolated yet, and a working per-project
+mitigation existed) — `main.star`'s `Cpu::reinit` does the equivalent reset
+via ordinary loop-driven field/array writes into the existing `Cpu` instead
+of a second/third full struct-literal-returning call, which builds and
+links normally. Worth investigating for real if this shape ever recurs
+elsewhere.
 
 ## Contents
 
@@ -171,7 +212,12 @@ on both the Python reference CPU over MCP and this port's own `cpu.star`).
   since `impl` can cross a module boundary, just not done yet.
 - `main.star` — SDL2 window, a small built-in demo program (used when no
   `.bin` path is given on the command line — see "Binary program loading"
-  below), the main loop, and keyboard/mouse-event plumbing.
+  below), the main loop, keyboard/mouse-event plumbing, and (see
+  "GUI+controls parity" below) a toolbar (Start/Pause, Stop, Reset, Step)
+  and status bar plus F5-F8 hotkeys.
+- `debugger.star` — the debugger: a headless CLI REPL (step/breakpoints/
+  register-and-memory inspection/disassembly), independent of `main.star`'s
+  graphical loop the same way `uart_bridge.star` is. See "Debugger" below.
 - `uart_bridge.star` — a headless stdin/stdout UART host bridge entry
   point, separate from `main.star`'s graphical loop. See "UART" below.
 - `tests/` — checked-in headless regression tests: `run_bin.star` (a
@@ -992,6 +1038,13 @@ estimate):
 - A real assembler (see "Assembler" below) -- turns a `.asm` source file
   into a compiled `.bin`, matching the upstream `nova_assembler.py`'s own
   output byte-for-byte on every source it can also assemble.
+- A real debugger (see "Debugger" below) -- a CLI REPL with breakpoints,
+  single-stepping, register/memory/stack inspection, and symbol-labeled
+  disassembly.
+- GUI+controls parity (see "GUI+controls parity" below) -- `main.star`'s
+  SDL window now has a Start/Pause/Stop/Reset/Step toolbar, a status bar,
+  and F5-F8 hotkeys, matching the useful-without-a-file-dialog slice of the
+  upstream `nova_gui.py`'s own toolbar.
 
 ## What's not implemented (and why)
 
@@ -1025,20 +1078,25 @@ in:
   non-blocking/timeout mode exists at the language level, which would
   freeze a bridge loop waiting on an idle peer).
 - **Hardware debugging opcodes** (`SETBP CLRBP ENABRK DISBRK ENATRAP
-  DISATRAP`) — still unimplemented; genuinely needs a debugger to be worth
-  wiring up (there's no way to set/hit a breakpoint without one), so this is
-  tracked together with "An assembler/debugger" below rather than being its
-  own separate gap.
-- **An assembler/debugger** — still genuinely unstarted. **A disassembler
-  is no longer part of this list** — see "Disassembler" below: it's real,
-  implemented, and this section previously grouped it with the still-
-  missing two, which is no longer accurate. Programs are still real
-  compiled `.bin`s (see "Binary program loading") assembled by the
-  upstream Python `nova_assembler.py`; this port still can't produce one
-  from source itself (that's the assembler), and there's still no way to
-  set a breakpoint, single-step interactively, or inspect state live
-  (that's the debugger) beyond what `disasm.star`'s static decode and
-  `tests/run_bin.star`'s post-hoc register dump already give.
+  DISATRAP`) — still unimplemented; matching the reference (see
+  `disasm.star`'s own opcode table, where these are marked doc-only/
+  unverified). **This is no longer a debugger-tooling gap** now that
+  `debugger.star` exists (see "Debugger" below): its breakpoints are
+  implemented entirely host-side (a `[bool; 65536]` membership check the
+  debugger's own `step`/`run` loop consults), the same way
+  `nova_debugger.py`'s own `self.breakpoints` set works, with no dependency
+  on these CPU-level opcodes at all. Wiring these six up would only matter
+  for a Nova-16 *program* that wants to set its own breakpoints against a
+  debugger attached over some hardware protocol this emulator doesn't
+  implement — a materially different feature from "have a debugger," which
+  is done.
+- ~~An assembler/debugger~~ — both done, see "Assembler" and "Debugger"
+  below. Programs no longer have to be real compiled `.bin`s assembled by
+  the upstream Python `nova_assembler.py` — `assembler.star` produces them
+  from source directly — and there's a real way to set a breakpoint,
+  single-step interactively, and inspect state live (`debugger.star`),
+  beyond `disasm.star`'s static decode and `tests/run_bin.star`'s post-hoc
+  register dump.
 
 ## Known simplifications
 
@@ -1973,6 +2031,149 @@ new Star compiler bugs -- both `star check` and `star build` succeeded on
 caught immediately by the directives test failing to assemble, one-line
 fix) along the way.
 
+## Debugger
+
+`debugger.star` (new, todo.md P2 #3): a headless CLI REPL, matching a piece
+of the upstream Python toolchain's own tooling (`nova_debugger.py`) that
+`readme.md`'s "Versioning" section names as part of "tooling to match
+Python reference" for the language-wide `0.1.0` gate. Command set is a
+close, deliberate port of `nova_debugger.py::NovaDebugger::handle_command`:
+`step`/`s` (single or `s N`), `run`/`continue`/`cont`, `regs`/`r`, `mem
+<addr>`, `stack`, `disasm`/`d [addr] [n]`, `break`/`b <addr>`,
+`breakpoints`/`bp`, `clear`/`c <addr>`, `load <file>`, `help`/`h`/`?`,
+`quit`/`q`/`exit`. A `.sym` sidecar next to a loaded `.bin` (produced by
+`assembler.star`, see "Assembler" above) is read automatically to label
+addresses by symbol name in disassembly/breakpoint output, matching
+`nova_debugger.py::load_symbol_table`'s identical behavior. Not ported:
+the Python CLI's `--steps N` startup flag (the REPL's own `step N` command
+already covers it interactively).
+
+Deliberately duplicates a handful of small helpers from `disasm.star`
+(the full opcode/operand-formatting tables) and `assembler.star`
+(`is_ws_byte`/`ltrim`/`split_first_token`) rather than importing either
+file directly: both are themselves standalone build targets with their own
+`fn main()`, and this compiler's codegen lowers every top-level `fn main()`
+to the single real `@main` LLVM symbol regardless of which source file
+declares it (`is_main` in `src/codegen/stmt.rs` checks only the function's
+own name) -- importing either file into `debugger.star` would collide two
+`@main` definitions in one linked program. `disasm.star`'s own header
+comment already established the same "keep this tool's own link/dependency
+footprint independent" precedent for a smaller case; this is the same call
+for a bigger table, for a genuine structural reason (the double-`main`
+hazard) rather than just footprint hygiene.
+
+One deliberate, documented improvement over the Python reference:
+`nova_debugger.py::run_until_breakpoint` checks its own just-hit breakpoint
+*before* stepping on every call to `run`/`continue`, so resuming from a
+breakpoint re-hits the same address immediately without executing anything,
+unless the user manually steps off it first. This port's `run`/`continue`
+steps at least once before the first breakpoint check (matching what a
+real debugger's "continue" does) -- see "What to carry back to the Python
+emulator" below, where this is filed as an upstream issue.
+
+Verified against `tests/asm/write_width_test.bin`: `disasm`/`step`/`regs`/
+`stack`/`mem`/`break`/`breakpoints`/`run`/`clear` all exercised via a
+scripted stdin session, symbol labeling confirmed (`0x0000: (START) ...`),
+memory-dump output matching the test's own documented expected values
+(`mem[0x3000]=0xD7`, `mem[0x3001]=0xCD`) exactly, and a `break 0x30` +
+`run` landing precisely on the expected instruction with `R0=0x0C`, cross-
+checked against a fresh `debugger_init`/`cpu_step(10)`/`get_cpu_state`
+sequence against the live Python reference over MCP (identical `pc=0x0030`,
+`R0=0x0C` after 10 steps). That same cross-check is what surfaced the
+SP/FP reset bug described above (Python's fresh CPU has `sp=0xFFFF`; this
+port's did not, until fixed) -- the debugger's very first real use already
+paid for itself the same way the disassembler/assembler's own first real
+uses each found genuine bugs in earlier rounds.
+
+Build (needs SDL2 linked even though this tool never opens a window --
+`cpu.star` transitively pulls in `sound.star`'s audio builtins for
+`SPLAY`/`SSTOP`/`STRIG`, the same reason `tests/run_bin.star`/
+`uart_bridge.star` both need it too):
+```
+star build projects/nova/debugger.star -L sdl/lib/x64 -l SDL2 -o projects/nova/debugger.exe
+```
+
+## GUI+controls parity
+
+`main.star` (extended, todo.md P2 #3): a toolbar (Start/Pause, Stop, Reset,
+Step) and a status bar (PC, run state, hotkey legend), matching the
+concrete, useful-without-a-file-dialog slice of `nova_gui.py::main`'s own
+toolbar -- the other named-tooling gap in `readme.md`'s versioning gate,
+alongside the debugger above. F5/F6/F7/F8 hotkeys match `nova_gui.py`'s own
+Start/Pause/Stop/Reset/Step bindings exactly (its F9=Load has no equivalent
+here). Both the toolbar buttons and the hotkeys are edge-triggered (a
+"just pressed this frame" transition, tracked the same way the existing
+A-Z keyboard debounce already was in this file) so holding a key or mouse
+button down doesn't toggle Start/Pause or re-fire Reset every frame at
+60fps.
+
+**Deliberately not ported**: `nova_gui.py`'s own "Load" and "UART" toolbar
+buttons, each backed by a `tkinter` file-open dialog / configuration
+dialog. There is no file-dialog or Tk-dialog builtin anywhere in this
+language's surface (confirmed by inspecting `src/codegen/` -- `sdl.rs`
+covers window/input, `font.rs` covers text, neither exposes a native
+"open file" picker), and building a whole file browser from `draw_rect`/
+`draw_text`/mouse polling primitives to back one Reset button is out of
+scope for this pass. Loading stays command-line-argument-only, same as
+before this round (`nova16.exe path/to/prog.bin`); UART configuration
+stays `uart_bridge.star`'s own separate headless tool, unchanged.
+
+**Reset's own behavior is a deliberate adaptation, not a straight port**:
+`nova_gui.py::CPUController.reset()` clears CPU/memory/graphics state and
+stops, requiring the user to click "Load" again afterward to get a running
+program back. Since this port has no "Load" button to click afterward (see
+above), `Reset` here also immediately reloads whichever program the
+process originally started with (the CLI-provided `.bin`, or the built-in
+demo) and resumes running -- otherwise `Reset` would be a dead end in this
+port specifically. See `Cpu::reinit`/`Cpu::load_program_or_demo` in
+`main.star`.
+
+**A real build-time finding along the way**: an early draft implemented
+`Reset` by calling a `build_cpu`-style function (constructing and
+returning a fresh, ~megabyte `Cpu` by value) a second and third time -- once
+for the F7 hotkey, once for the toolbar button, in addition to the one call
+already needed at startup. That build took several minutes and multiple
+gigabytes of `clang` memory just to reach the link step. Three call sites
+to a function returning an aggregate this large, all within one function
+(`main`'s own per-frame loop), is a meaningfully different shape from the
+single call site every other build target in this project uses (`new_cpu`
+in `debugger.star`/`tests/run_bin.star`/`uart_bridge.star`, all called
+exactly once), and empirically triggers something close to the `clang`
+optimizer pathology NOTES.md's "Seven Star compiler bugs found and fixed"
+#1 ("Large fixed-array/struct construction crashed or hung clang")
+describes for a different (also since-fixed) shape. Not chased down to a
+minimal repro or a compiler-level fix this round -- a working, and arguably
+more correct, per-project alternative existed: `Cpu::reinit` resets every
+field via ordinary loop-driven writes into the *existing* `Cpu` (matching
+`nova_gui.py::CPUController.reset()`'s own "mutate in place" shape more
+closely than "construct a new object" would have anyway), which builds and
+links in the same normal time as everything else in this project. Worth a
+real compiler-level investigation if this shape (a large-aggregate-
+returning function called repeatedly from one function) ever recurs
+elsewhere.
+
+Verified interactively: built `nova16.exe`, launched it, and drove the
+toolbar with real synthesized mouse input (`SetCursorPos` + `mouse_event`,
+indistinguishable from a hardware click) while screenshotting the live
+window. Confirmed, in order: clicking Start/Pause toggles the button label
+(START/green <-> PAUSE/yellow) and the status bar's run-state text
+(RUNNING/STOPPED); clicking Step twice while stopped advances `PC` by
+exactly two instructions (`0x0010` -> `0x0018`, matching the built-in
+demo's own 8-byte `MOV VX, R0` / `ADD` instruction pair at those addresses
+exactly); clicking Reset reloads the demo and resumes running. Direct
+`SendMessage`-posted window messages (bypassing real input entirely) did
+*not* register with SDL's own mouse-state tracking, which is why the
+verification above uses genuine synthesized hardware input instead -- worth
+knowing if a future session tries to script-test this again. The F5-F8
+hotkeys share the exact same edge-triggered state-toggling code the
+verified mouse clicks already exercise (`running`/`single_step` locals),
+so they're verified by the same logic rather than repeated separately;
+synthetic `keybd_event` key presses sent from an external, non-foreground
+script process were inconclusive in this environment (Windows' foreground-
+lock restrictions can silently drop a background process's simulated
+keystrokes), which is an environment limitation of this verification
+attempt, not evidence of a bug in the hotkey code itself.
+
 ## Layer compositing and sprites
 
 Added in this round: the remaining 8 compositing layers (backgrounds 1-4,
@@ -2366,18 +2567,23 @@ verified two ways instead:
 - Splitting `cpu.star`'s ~100 opcode-handler methods across files by group
   (arithmetic/bitwise/stack/control-flow/graphics/...) — unblocked now that
   `impl` can cross a module boundary (gotcha #6), not yet done.
-- ~~An actual assembler~~ — done, see "Assembler" above (todo.md P1 #2). A
-  debugger now has real source-level symbol information (the `.sym` file
-  and, more directly, `assembler.star`'s own in-memory symbol table) to
-  build source-line breakpoints on top of, which is exactly what this bullet
-  named as the natural next step.
-- ~~A disassembler~~ — done, see "Disassembler" below. A debugger, matching
-  the upstream Python toolchain's own tooling, is still genuinely
-  unstarted, and still named concretely (not just implied) by `readme.md`'s
-  "Versioning" section as part of "tooling to match Python reference" for
-  the language-wide `0.1.0` gate (todo.md P1 #3) — now the single remaining
-  named-tooling gap in that gate besides GUI+controls parity, since the
-  binary loader, disassembler, and assembler are all done.
+- ~~An actual assembler~~ — done, see "Assembler" above (todo.md P1 #2). Its
+  `.sym` output is exactly what `debugger.star`'s address-labeling now reads
+  (see "Debugger" above), which is what this bullet named as the natural
+  next step.
+- ~~A disassembler~~ — done, see "Disassembler" below.
+- ~~A debugger~~ and ~~GUI+controls parity~~ — both done, see "Debugger" and
+  "GUI+controls parity" above (todo.md P2 #3). These were the last two
+  named-tooling gaps in `readme.md`'s versioning gate's "tooling to match
+  Python reference" condition; every concrete piece that gate names is now
+  built (see the file's own framing note at the top). Real remaining gaps,
+  by deliberate scope cut rather than oversight: `debugger.star` has no
+  source-line breakpoints (only numeric-address ones — nothing in this
+  project maps a `.asm` source line back to an address at debug time, only
+  symbol *names*, which it does support); `main.star`'s GUI has no
+  file-dialog-backed "Load" or "UART config" buttons (no file-dialog/Tk
+  builtin exists in this language at all — see "GUI+controls parity"
+  above).
 - ~~The f-string-repeated-call corruption bug~~ — root-caused and fixed at
   the compiler level (see "A related runtime bug, since fixed" right after
   "Seven Star compiler bugs found and fixed" above, and `todo.md` P1 #1).
@@ -2484,3 +2690,17 @@ whoever maintains it next:
    through `CodeGenerator.generate_instruction`'s call sites, so the fix is
    probably small), or drop the misleading comment and any implication that
    these three mnemonics currently do anything `JMP` doesn't.
+5. **`nova_debugger.py::run_until_breakpoint` re-hits an already-current
+   breakpoint instead of stepping past it.** The method checks `if
+   self.cpu.pc in self.breakpoints` *before* ever calling `self.cpu.step()`,
+   every time it's called -- so calling `run`/`continue` again right after a
+   breakpoint hit (the single most common next action in a debugger) prints
+   "Breakpoint hit" again immediately, without executing anything, until the
+   user manually steps off the address first. Found building this port's
+   own `debugger.star` (todo.md P2 #3) and deliberately *not* matched --
+   this port's `run`/`continue` steps at least once before its first
+   breakpoint check on every call, matching what a real debugger's
+   "continue" does, and it's hard to construct a reading of the *intended*
+   behavior where re-hitting instantly is preferable. See `debugger.star`'s
+   own `run`/`continue` handler for where this is recorded on this port's
+   side.
