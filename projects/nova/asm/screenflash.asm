@@ -1,0 +1,6 @@
+ORG 0x1000
+
+SETUP:
+    SFILL 0x0F
+    SFILL 0x00
+    JMP SETUP

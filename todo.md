@@ -194,3 +194,7 @@ reframing from "language exercise" to "de facto Nova-16 emulator") and the
 cycle before that (the repeated-f-string-call corruption bug root-caused
 and fixed, and a real assembler for `projects/nova`) -- both archived under
 the same reassessment protocol.
+
+Copied over the Python reference's assembly programs to `projects/nova/asm/`
+since they're user-written and tested programs worth moving locally for easier
+reference given the Star Nova's status as the de-facto Nova standard.
