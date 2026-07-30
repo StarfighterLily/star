@@ -1,31 +1,47 @@
 # Nova-16 fantasy computer -- native emulator entry point: opens the host
 # window, builds the CPU/memory/screen/keyboard state, and loads a program --
 # either a real compiled Nova-16 `.bin` passed on the command line, or (with
-# no argument) the small built-in demo below. See `loader.star` for the
-# binary-loading mechanics (`file_read_bytes` + `.org`-sidecar segment
-# loading, todo.md P0 #1/NOTES.md gotcha #9) and NOTES.md's "Binary program
-# loading" section for the full story.
+# no argument) nothing at all: the emulator opens to a blank screen and sits
+# idle until a binary is loaded via the toolbar's `Load` button (or its F9
+# hotkey). See `loader.star` for the binary-loading mechanics
+# (`file_read_bytes` + `.org`-sidecar segment loading, todo.md P0 #1/
+# NOTES.md gotcha #9) and NOTES.md's "Binary program loading" section for the
+# full story.
 #
-# GUI+controls parity (todo.md P2 #3): a toolbar (Start/Pause, Stop, Reset,
-# Step) plus a status bar (PC, run state, hotkey legend), matching the
-# concrete, still-useful-headless-of-a-file-dialog slice of
-# `nova_gui.py::main`'s own toolbar -- see NOTES.md's "GUI+controls parity"
-# section for exactly what was and wasn't ported and why (there's no
-# file-dialog or Tk-dialog builtin in this language, so `nova_gui.py`'s own
-# "Load"/"UART" buttons are deliberately not here; loading is still
-# command-line-argument-only, same as before this round, and UART
-# configuration is still `uart_bridge.star`'s own separate tool).
+# GUI+controls parity (todo.md P2 #3, extended): a toolbar (Start/Pause,
+# Stop, Reset, Step, Load) plus a status bar (PC, run state, hotkey legend),
+# matching `nova_gui.py::main`'s own toolbar -- including, now, its `Load`
+# button, backed by `open_file_dialog` (`crate::codegen::dialog`), a native
+# Windows "Open File" common dialog added specifically so this port no
+# longer needs the "no file-dialog builtin in this language" scope cut
+# NOTES.md's "GUI+controls parity" section previously recorded. UART
+# configuration remains `uart_bridge.star`'s own separate tool, unchanged.
 #
-# Build (from the repo root, SDL2 must be linked explicitly):
-#   star build projects/nova/main.star -L sdl/lib/x64 -l SDL2 -o projects/nova/nova16.exe
+# There is deliberately no built-in demo program anymore (an earlier
+# revision had one -- a hand-encoded diagonal-gradient fill, loaded whenever
+# no CLI argument was given). Removed because it now conflicts with the
+# `Load` button's whole point: a no-argument launch should visibly wait for
+# a real binary, not silently run something else instead. Concretely, this
+# needs no special "idle" state at all: `new_cpu`/`Cpu::reinit` already leave
+# `self.mem` entirely zeroed, and `cpu.star::execute`'s opcode `0x00` is
+# `HLT` (`self.halted = true`) -- so a never-loaded (or freshly `Reset`)
+# `Cpu` simply halts on its very first `step()`, at `PC=0`, against a blank
+# screen, for free.
+#
+# Build (from the repo root, SDL2 must be linked explicitly; `comdlg32` backs
+# the `Load` button's file-open dialog, see `crate::codegen::dialog`'s own
+# linking note):
+#   star build projects/nova/main.star -L sdl/lib/x64 -l SDL2 -l comdlg32 -o projects/nova/nova16.exe
 # `sdl/lib/x64/SDL2.dll` must be next to the built .exe (or on PATH) to run.
 #
 # Usage:
-#   nova16.exe                  # run the built-in demo (diagonal gradient)
+#   nova16.exe                  # open idle; wait for Load (toolbar or F9)
 #   nova16.exe path/to/prog.bin # load and run a real assembled program
-# Hotkeys (matching `nova_gui.py`'s own F5-F8, minus its F9=Load -- no
-# file-dialog builtin to back one here): F5 Start/Pause, F6 Stop, F7 Reset,
-# F8 Step. Escape or closing the window still quits, unchanged.
+# Hotkeys (matching `nova_gui.py`'s own F5-F9 exactly): F5 Start/Pause, F6
+# Stop, F7 Reset, F8 Step, F9 Load. Escape or closing the window still quits,
+# unchanged. `Reset` reloads whichever binary is currently active (the
+# CLI-provided one, or the most recent `Load`) if any; with nothing ever
+# loaded, `Reset` just re-clears to the same idle, waiting-for-Load state.
 
 import "cpu.star" as cpu
 import "memory.star" as mem
@@ -50,46 +66,8 @@ const BTN_RESET_X: i32 = 184
 const BTN_RESET_W: i32 = 64
 const BTN_STEP_X: i32 = 256
 const BTN_STEP_W: i32 = 64
-
-# A tiny built-in demo: fills the screen with a diagonal-stripe pattern
-# using SWRITE in a double loop, then jumps back to address 0 forever (so
-# the window stays open and responsive instead of halting after one
-# frame). Encoded by hand against docs/nova16_instruction_reference.md's
-# opcode table and docs/Operand prefix system.md's mode-byte layout --
-# verified headlessly against the exact expected pixel values before
-# wiring it up here; see NOTES.md for the byte-by-byte trace and the two
-# encoding bugs that first draft had (a wrong mode byte, and a loop
-# condition -- "R0 <= 255" -- that can never be false for an 8-bit
-# register, fixed by switching to the standard INC-then-JNZ idiom, which
-# terminates cleanly on the 8-bit wraparound instead).
-fn demo_program() -> List<i32>:
-    let prog: List<i32> = [
-        # R0 = 0 (x), R1 = 0 (y)                                   addr
-        0x06, 0x04, 0xE7, 0x00,                                              # 0
-        0x06, 0x04, 0xE8, 0x00,                                              # 4
-        # outer_y: MOV VY, R1                                      8
-        0x06, 0x00, 0xFE, 0xE8,
-        # R0 = 0 (reset x at the start of every row)               12
-        0x06, 0x04, 0xE7, 0x00,
-        # inner_x: MOV VX, R0                                      16
-        0x06, 0x00, 0xFD, 0xE7,
-        # R2 = R0 + R1 (color = x + y, wraps to a diagonal ramp)    20
-        0x06, 0x04, 0xE9, 0x00,
-        0x07, 0x00, 0xE9, 0xE7,
-        0x07, 0x00, 0xE9, 0xE8,
-        # SWRITE R2                                                32
-        0x33, 0x00, 0xE9,
-        # INC R0 ; JNZ inner_x (addr 16, i.e. loop while x != 0     35
-        # after the increment -- covers all 256 values via wraparound)
-        0x0B, 0x00, 0xE7,
-        0x20, 0x02, 0x00, 0x10,
-        # INC R1 ; JNZ outer_y (addr 8, same wraparound idiom)      42
-        0x0B, 0x00, 0xE8,
-        0x20, 0x02, 0x00, 0x08,
-        # JMP back to addr 0 (redraw forever)                      49
-        0x1E, 0x02, 0x00, 0x00,
-    ]
-    prog
+const BTN_LOAD_X: i32 = 328
+const BTN_LOAD_W: i32 = 64
 
 # Identical to `debugger.star`/`tests/run_bin.star`/`uart_bridge.star`'s own
 # `new_cpu()` -- a fresh, all-zero `Cpu` (SP/FP at 0xFFFF, see the comment on
@@ -169,30 +147,25 @@ fn new_cpu() -> cpu::Cpu:
     )
     c
 
-# Loads `bin_path` (if `use_file`) or the built-in demo into an already-
-# constructed `Cpu`, printing the same "loaded"/"falling back" message the
-# pre-GUI-controls version of this file printed inline in `main()`. Used
-# both at startup (right after `new_cpu()`) and by `Reset` (right after
-# `reinit()`) -- factored out once there were two call sites, not before.
+# Loads `bin_path` into an already-constructed `Cpu` if `use_file` -- with
+# no demo fallback anymore (see this file's own header comment): a failed
+# or absent load just leaves `self` exactly as `new_cpu`/`reinit` left it
+# (all-zero memory, `pc = 0`), which halts on the very first `step()` since
+# opcode `0x00` is `HLT` (`cpu.star::execute`) -- a blank screen, quietly
+# waiting for a real binary via the `Load` button, with no special "idle"
+# state to construct. Used at startup (right after `new_cpu()`), by `Reset`
+# (right after `reinit()`), and by the `Load` button/F9 hotkey (right after
+# a fresh `reinit()` of its own, mirroring `nova_gui.py::CPUController.
+# reset()` + `load_binary_program()`'s own stop-reset-load sequence).
 impl cpu::Cpu:
-    fn load_program_or_demo(mut self, bin_path: str, use_file: bool):
-        let mut loaded = false
+    fn load_program_or_wait(mut self, bin_path: str, use_file: bool):
         if use_file:
             let (ep, ok) = self.load_program(bin_path)
             if ok:
                 self.pc = Wrapping<u16>(ep as u16)
-                loaded = true
                 println(f"nova16: loaded '{bin_path}', entry point {ep}")
             else:
-                println(f"nova16: could not open '{bin_path}', falling back to built-in demo")
-
-        if !loaded:
-            let prog = demo_program()
-            let mut load_i = 0
-            while load_i < prog.len():
-                self.mem.write_byte(load_i, prog[load_i] as u8)
-                load_i += 1
-            self.pc = Wrapping<u16>(0 as u16)
+                println(f"nova16: could not open '{bin_path}', waiting for Load")
 
     # `Reset`'s own state-clearing step -- see `new_cpu`'s doc comment for
     # why this is a sequence of plain field/array writes into `self` rather
@@ -201,7 +174,7 @@ impl cpu::Cpu:
     # (SP/FP at 0xFFFF, everything else 0/false), so a `Reset` produces a
     # state indistinguishable from a freshly started emulator, modulo the
     # program still needing to be reloaded afterward (see
-    # `load_program_or_demo`, called right after this at both of `Reset`'s
+    # `load_program_or_wait`, called right after this at both of `Reset`'s
     # call sites in the main loop below).
     fn reinit(mut self):
         let mut i = 0
@@ -312,10 +285,15 @@ fn main():
     # consumed once at startup) so `Reset` can rebuild the same initial
     # state -- see `build_cpu`.
     let cli = args()
-    let use_file = cli.len() > 1
-    let bin_path = if use_file: cli[1] else: ""
+    # `mut` -- unlike the rest of this block, `bin_path`/`use_file` are
+    # reassigned later by the `Load` button/F9 hotkey (see below), which is
+    # also why `Reset` (F7 hotkey and toolbar button alike) reloads
+    # *whichever* binary is current rather than only ever the original CLI
+    # argument.
+    let mut use_file = cli.len() > 1
+    let mut bin_path = if use_file: cli[1] else: ""
     let mut c = new_cpu()
-    c.load_program_or_demo(bin_path, use_file)
+    c.load_program_or_wait(bin_path, use_file)
     let font = default_font()
 
     let escape_sc = 41
@@ -333,6 +311,7 @@ fn main():
     let mut prev_f6 = false
     let mut prev_f7 = false
     let mut prev_f8 = false
+    let mut prev_f9 = false
     let mut prev_mouse_left = false
     let mut running = true
 
@@ -340,9 +319,8 @@ fn main():
         if key_down(escape_sc):
             break
 
-        # F5-F8 hotkeys, matching `nova_gui.py`'s own F5=Start/Pause,
-        # F6=Stop, F7=Reset, F8=Step (its F9=Load has no equivalent here --
-        # see this file's header comment).
+        # F5-F9 hotkeys, matching `nova_gui.py`'s own F5=Start/Pause,
+        # F6=Stop, F7=Reset, F8=Step, F9=Load exactly.
         let f5_down = key_down(62)
         if f5_down and !prev_f5:
             running = !running
@@ -356,7 +334,7 @@ fn main():
         let f7_down = key_down(64)
         if f7_down and !prev_f7:
             c.reinit()
-            c.load_program_or_demo(bin_path, use_file)
+            c.load_program_or_wait(bin_path, use_file)
             running = true
         prev_f7 = f7_down
 
@@ -365,6 +343,25 @@ fn main():
         if f8_down and !prev_f8:
             single_step = true
         prev_f8 = f8_down
+
+        # F9 = Load: a native "Open File" dialog (`open_file_dialog`,
+        # `crate::codegen::dialog`), restricted to `.bin`. Mirrors
+        # `nova_gui.py::load_binary_program`'s own stop-reset-load-start
+        # sequence: `open_file_dialog` itself blocks this thread until the
+        # dialog closes, so there's no separate "stop" step needed first --
+        # the emulator is already not stepping while this call is in
+        # progress. An empty result (the user canceled) leaves `c` and
+        # `running` completely untouched.
+        let f9_down = key_down(66)
+        if f9_down and !prev_f9:
+            let picked = open_file_dialog("*.bin")
+            if picked != "":
+                bin_path = picked
+                use_file = true
+                c.reinit()
+                c.load_program_or_wait(bin_path, use_file)
+                running = true
+        prev_f9 = f9_down
 
         let mut k = 0
         while k < 26:
@@ -422,10 +419,21 @@ fn main():
                 running = false
             elif point_in_rect(mpx, mpy, BTN_RESET_X, BTN_Y, BTN_RESET_W, BTN_H):
                 c.reinit()
-                c.load_program_or_demo(bin_path, use_file)
+                c.load_program_or_wait(bin_path, use_file)
                 running = true
             elif point_in_rect(mpx, mpy, BTN_STEP_X, BTN_Y, BTN_STEP_W, BTN_H):
                 single_step = true
+            elif point_in_rect(mpx, mpy, BTN_LOAD_X, BTN_Y, BTN_LOAD_W, BTN_H):
+                # Same load sequence as the F9 hotkey above -- see that
+                # block's own comment for why no separate "stop" step is
+                # needed first.
+                let picked = open_file_dialog("*.bin")
+                if picked != "":
+                    bin_path = picked
+                    use_file = true
+                    c.reinit()
+                    c.load_program_or_wait(bin_path, use_file)
+                    running = true
 
         if running:
             let mut n = 0
@@ -459,12 +467,14 @@ fn main():
         draw_text(w, font, "RESET", BTN_RESET_X + 2, BTN_Y + 8, 2, Color32(255, 255, 255, 255))
         draw_rect(w, BTN_STEP_X, BTN_Y, BTN_STEP_W, BTN_H, Color32(160, 160, 0, 255))
         draw_text(w, font, "STEP", BTN_STEP_X + 6, BTN_Y + 8, 2, Color32(255, 255, 255, 255))
+        draw_rect(w, BTN_LOAD_X, BTN_Y, BTN_LOAD_W, BTN_H, Color32(0, 140, 140, 255))
+        draw_text(w, font, "LOAD", BTN_LOAD_X + 6, BTN_Y + 8, 2, Color32(255, 255, 255, 255))
 
         # Status bar.
         let status_y = SCREEN_SIZE * 2 + TOOLBAR_H
         draw_rect(w, 0, status_y, SCREEN_SIZE * 2, STATUS_H, Color32(25, 25, 25, 255))
         let state_text = if c.halted: "HALTED" elif running: "RUNNING" else: "STOPPED"
-        let status: List<str> = ["PC:0x", hex4((c.pc as u16) as i32), "  ", state_text, "  F5=Start/Pause F6=Stop F7=Reset F8=Step  Esc=Quit"]
+        let status: List<str> = ["PC:0x", hex4((c.pc as u16) as i32), "  ", state_text, "  F5=Start/Pause F6=Stop F7=Reset F8=Step F9=Load  Esc=Quit"]
         draw_text(w, font, str_join(status, ""), 6, status_y + 4, 1, Color32(200, 200, 200, 255))
 
         present(w)

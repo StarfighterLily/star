@@ -74,6 +74,33 @@ defensible.**
 
 # Previous work
 
+Out-of-band feature request (not from the P0-P3 list above, worked ahead
+of the next reassessment): a `Load` button for `projects/nova/main.star`'s
+GUI, requested directly, plus removal of the baked-in demo program so a
+no-argument launch waits idle for a real binary instead. This needed a new
+compiler builtin (`open_file_dialog`, `src/codegen/dialog.rs`) wrapping
+Windows' `GetOpenFileNameA` -- the "GUI+controls parity" stage two cycles
+ago had explicitly scoped `Load`/`UART` buttons out for exactly this reason
+("no file-dialog builtin anywhere in this language's surface"). See
+`projects/nova/NOTES.md`'s new "Load button and `open_file_dialog`"
+section for the full struct-layout/filter-string design writeup. Covered
+by `tests/frontend_open_file_dialog.rs` (type-checking plus a real
+clang-link-only test against `-lcomdlg32`; a genuine runtime invocation
+isn't automatable -- see that file's own doc comment for why) and verified
+manually, once, for real: built `nova16.exe`, confirmed a no-argument
+launch shows a blank `HALTED` screen with no demo gradient, then drove the
+new `LOAD` toolbar button with genuinely synthesized hardware mouse input
+(the same technique the prior GUI+controls-parity round's own verification
+used, since synthetic `keybd_event`/F9 was tried first and, consistent
+with that round's own already-recorded finding, didn't register from a
+background script) — the real Windows "Open" dialog appeared correctly
+filtered to `*.bin`, and selecting a real test program made the emulator
+reset and start running it end to end. `main.star`'s `Reset` now reloads
+whichever binary is currently active (the original CLI argument, or the
+most recent `Load`) rather than only ever the process's original argument,
+since it no longer has a "fall back to the demo" option to lean on. Full
+`cargo test` suite re-run clean afterward (74 binaries, 0 failures).
+
 See `changelog/068_2026-07-30_cacd569_todo.md` and
 `changelog/068_2026-07-30_cacd569_current_status.md` for the full history
 up to and including this cycle (the repeated-f-string-call corruption bug

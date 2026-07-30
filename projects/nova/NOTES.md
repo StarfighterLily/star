@@ -39,9 +39,11 @@ GUI+controls parity with the Python reference's own graphical tooling (see
 versioning gate's "tooling to match Python reference" condition is now
 built. Test/demo programs no longer have to originate from the upstream
 Python `nova_assembler.py` at all — this project can produce, inspect, run,
-and interactively debug its own `.bin` files end to end. See "Ideas for
-future work" below for what's left unported by deliberate scope cut (a
-file-dialog/Tk-dialog equivalent, mainly) rather than genuinely missing.
+and interactively debug its own `.bin` files end to end. A real file-open
+dialog now exists too (see "Load button and `open_file_dialog`" below) --
+see "Ideas for future work" below for what's left unported by deliberate
+scope cut (a UART-configuration dialog equivalent, mainly) rather than
+genuinely missing.
 
 **Expansion round** (this pass): the binary program loader itself, full
 9-layer compositing (`LSWAP`/`LMOVE`/`LCOPY`, every drawing opcode now
@@ -1042,9 +1044,11 @@ estimate):
   single-stepping, register/memory/stack inspection, and symbol-labeled
   disassembly.
 - GUI+controls parity (see "GUI+controls parity" below) -- `main.star`'s
-  SDL window now has a Start/Pause/Stop/Reset/Step toolbar, a status bar,
-  and F5-F8 hotkeys, matching the useful-without-a-file-dialog slice of the
-  upstream `nova_gui.py`'s own toolbar.
+  SDL window has a Start/Pause/Stop/Reset/Step/Load toolbar, a status bar,
+  and F5-F9 hotkeys, matching the upstream `nova_gui.py`'s own toolbar --
+  including, now, a real `Load` button (see "Load button and
+  `open_file_dialog`" below), backed by a new native-file-dialog compiler
+  builtin.
 
 ## What's not implemented (and why)
 
@@ -2107,26 +2111,35 @@ A-Z keyboard debounce already was in this file) so holding a key or mouse
 button down doesn't toggle Start/Pause or re-fire Reset every frame at
 60fps.
 
-**Deliberately not ported**: `nova_gui.py`'s own "Load" and "UART" toolbar
-buttons, each backed by a `tkinter` file-open dialog / configuration
-dialog. There is no file-dialog or Tk-dialog builtin anywhere in this
-language's surface (confirmed by inspecting `src/codegen/` -- `sdl.rs`
-covers window/input, `font.rs` covers text, neither exposes a native
-"open file" picker), and building a whole file browser from `draw_rect`/
-`draw_text`/mouse polling primitives to back one Reset button is out of
-scope for this pass. Loading stays command-line-argument-only, same as
-before this round (`nova16.exe path/to/prog.bin`); UART configuration
-stays `uart_bridge.star`'s own separate headless tool, unchanged.
+**Deliberately not ported, at the time this section was written**:
+`nova_gui.py`'s own "Load" and "UART" toolbar buttons, each backed by a
+`tkinter` file-open dialog / configuration dialog. There was no file-dialog
+or Tk-dialog builtin anywhere in this language's surface (confirmed by
+inspecting `src/codegen/` -- `sdl.rs` covers window/input, `font.rs` covers
+text, neither exposed a native "open file" picker), and building a whole
+file browser from `draw_rect`/`draw_text`/mouse polling primitives to back
+one Reset button was out of scope for that pass. Loading stayed
+command-line-argument-only; UART configuration stayed `uart_bridge.star`'s
+own separate headless tool. **This has since changed for `Load`** -- see
+"Load button and `open_file_dialog`" below, added specifically because a
+real, user-visible `Load` button (not just command-line loading) was
+requested. UART configuration is still the one piece left un-ported;
+`uart_bridge.star` remains its own separate tool.
 
 **Reset's own behavior is a deliberate adaptation, not a straight port**:
 `nova_gui.py::CPUController.reset()` clears CPU/memory/graphics state and
 stops, requiring the user to click "Load" again afterward to get a running
-program back. Since this port has no "Load" button to click afterward (see
-above), `Reset` here also immediately reloads whichever program the
-process originally started with (the CLI-provided `.bin`, or the built-in
-demo) and resumes running -- otherwise `Reset` would be a dead end in this
-port specifically. See `Cpu::reinit`/`Cpu::load_program_or_demo` in
-`main.star`.
+program back. At the time this paragraph was written, this port had no
+"Load" button to click afterward, so `Reset` immediately reloaded whichever
+program the process originally started with (the CLI-provided `.bin`, or a
+built-in demo program) and resumed running -- otherwise `Reset` would have
+been a dead end. Both halves of that reasoning are now out of date -- see
+"Load button and `open_file_dialog`" below: there's a real `Load` button
+now, the built-in demo has been removed entirely (a no-argument launch now
+waits idle for `Load` instead), and `Reset` reloads whichever binary is
+*currently* active (the original CLI argument, or the most recent `Load`),
+falling back to the same idle wait if nothing has ever been loaded. See
+`Cpu::reinit`/`Cpu::load_program_or_wait` in `main.star`.
 
 **A real build-time finding along the way**: an early draft implemented
 `Reset` by calling a `build_cpu`-style function (constructing and
@@ -2173,6 +2186,100 @@ script process were inconclusive in this environment (Windows' foreground-
 lock restrictions can silently drop a background process's simulated
 keystrokes), which is an environment limitation of this verification
 attempt, not evidence of a bug in the hotkey code itself.
+
+## Load button and `open_file_dialog`
+
+The "GUI+controls parity" section above recorded a deliberate scope cut:
+no `Load` button, because there was no file-dialog builtin anywhere in the
+language. That's no longer true. `open_file_dialog(filter_pattern: str) ->
+str` is a new compiler builtin (`src/codegen/dialog.rs`) wrapping Windows'
+`GetOpenFileNameA` (`comdlg32.dll`) -- a native "Open File" common dialog,
+added specifically because a real, user-visible `Load` button (as opposed
+to command-line-argument-only loading) was requested directly, not
+something this project's own backlog had queued up.
+
+**Why `GetOpenFileNameA` and not the modern `IFileOpenDialog`**: the
+Vista-era replacement is a COM interface (`CoCreateInstance` against a
+vtable, manual `AddRef`/`Release`), machinery this codegen has never
+needed before. `GetOpenFileNameA` is one flat C ABI call taking a single
+struct pointer -- the same "hand-emit a call to an existing C API" shape
+`net.rs`'s `connect`/`system_font.rs`'s `CreateFontA` already use, no COM
+plumbing to add.
+
+**The struct**: this codegen has no external-struct-type declarations --
+every field of `OPENFILENAMEA` (152 bytes on x64) is written by hand via
+`getelementptr`/`bitcast`/`store` at its known byte offset into a flat
+`alloca`, the same technique `net.rs::emit_tcp_connect` already established
+for `sockaddr_in`. See `dialog.rs`'s own module doc comment for the full
+offset table (verified against `commdlg.h`'s real field order and x64's
+natural alignment) and for how the `"Files (PATTERN)\0PATTERN\0\0"` filter
+buffer is built by hand into a zeroed scratch buffer, letting the
+separator/terminating NULs fall out for free instead of needing explicit
+writes.
+
+**Signature choice**: `open_file_dialog` takes one `filter_pattern` `str`
+(e.g. `"*.bin"`; `""` means "all files") rather than a caller-supplied
+double-NUL-packed Windows filter string directly -- an ordinary Star `str`
+is implicitly NUL-terminated at its first `\0` (this codegen's C-string
+representation), so it can't carry a packed multi-entry filter as a single
+argument anyway. Returns the chosen path as a fresh, owned `str`, or `""`
+if the user canceled -- the same "empty string means nothing here"
+convention `file_read`/`read_line`/`tcp_recv` already use, rather than a
+new `Option`-shaped sentinel this language doesn't have. No owner window is
+passed (`hwndOwner = null`): `GetOpenFileNameA` blocks the calling thread
+either way, which is exactly the "pause here and wait for a binary"
+behavior the `Load` button wants; a real parent window would need
+`SDL_GetWindowWMInfo` wired up as its own new builtin just to resolve one
+`HWND`, out of scope for this floor. Needs `-l comdlg32` linked explicitly,
+same pattern as `net.rs`'s `-l ws2_32`/`system_font.rs`'s `-l gdi32`.
+
+**Testing**: unlike `window_create`/`clear_screen`/etc (runtime-tested
+under `SDL_VIDEODRIVER=dummy`), there's no headless mode for a real Win32
+common dialog -- calling it for real shows a genuine modal window and
+blocks until a human dismisses it. `tests/frontend_open_file_dialog.rs`
+covers type-checking (arity/argument type/return type) and a real
+clang-compile-and-*link* against `-lcomdlg32` (catching any malformed
+`bitcast`/`getelementptr` in the generated IR) without ever actually
+invoking `GetOpenFileNameA`. That gap was covered manually instead, once,
+outside the automated suite (see below).
+
+**`main.star` changes**: `demo_program()` -- the old hand-encoded
+diagonal-gradient fill loaded whenever no CLI argument was given -- is
+gone entirely, along with `load_program_or_demo` (now
+`load_program_or_wait`, with no demo-fallback branch). A no-argument
+launch needs no special "idle" state to construct for this: `new_cpu`/
+`Cpu::reinit` already leave `self.mem` entirely zeroed, and opcode `0x00`
+is `HLT` (`cpu.star::execute`), so a never-loaded (or freshly `Reset`)
+`Cpu` just halts on its very first `step()`, at `PC=0`, against a blank
+screen, for free -- exactly the "wait for a binary" behavior wanted, with
+no new state machine. A `LOAD` toolbar button (teal, rightmost, after
+`STEP`) and an F9 hotkey (matching `nova_gui.py`'s own F9=Load exactly now)
+both run the same sequence: `open_file_dialog("*.bin")`, and if non-empty,
+`c.reinit()` + `load_program_or_wait(picked, true)` + resume running. A
+canceled dialog (`""`) leaves everything untouched. `bin_path`/`use_file`
+became `mut` so `Load` can update them and `Reset` (F7/toolbar) picks up
+whichever binary is now current.
+
+**Verified interactively, for real, end to end** (not just "should work
+from the codegen"): built `nova16.exe`, launched it with no argument, and
+confirmed via screenshot a blank black screen with the toolbar/status bar
+reading `PC:0X0001 HALTED` -- no demo gradient, exactly the intended idle
+wait. F9 was tried first and, consistent with this file's own prior
+finding just above (`keybd_event` from a background/non-foreground script
+being unreliable against this SDL window), didn't register. Switched to
+the same genuinely-synthesized hardware mouse click (`SetCursorPos` +
+`mouse_event`) this project's mouse-toolbar verification already trusts,
+clicking the `LOAD` button's real screen coordinates: the native "Open"
+dialog appeared for real, its filter dropdown correctly reading
+`Files (*.bin)` (confirming the hand-built filter buffer), defaulting into
+the last-used directory. Double-clicking `gfxtest.bin` in that dialog
+closed it and the emulator immediately began running the loaded program --
+status bar flipped to `PC:0X106F RUNNING`, and the screen filled with the
+program's own diagonal rainbow-stripe pattern and rendered text ("De Nova
+Stella"), matching what that specific test program is known to draw. This
+is real proof the whole path works: dialog construction, filter-string
+correctness, file selection, `Cpu::reinit`, `load_program`'s `.org`-sidecar
+segment loading, and resumed execution, all in one live run.
 
 ## Layer compositing and sprites
 
@@ -2580,10 +2687,14 @@ verified two ways instead:
   by deliberate scope cut rather than oversight: `debugger.star` has no
   source-line breakpoints (only numeric-address ones — nothing in this
   project maps a `.asm` source line back to an address at debug time, only
-  symbol *names*, which it does support); `main.star`'s GUI has no
-  file-dialog-backed "Load" or "UART config" buttons (no file-dialog/Tk
-  builtin exists in this language at all — see "GUI+controls parity"
-  above).
+  symbol *names*, which it does support).
+- ~~A file-dialog-backed "Load" button~~ — done, see "Load button and
+  `open_file_dialog`" above: a new `open_file_dialog` compiler builtin
+  (Windows `GetOpenFileNameA`) backs a real `Load` toolbar button/F9
+  hotkey, and the old built-in demo program is gone (a no-argument launch
+  now waits idle instead). The one piece still un-ported is a "UART
+  config" dialog — `uart_bridge.star` remains its own separate headless
+  tool, unchanged.
 - ~~The f-string-repeated-call corruption bug~~ — root-caused and fixed at
   the compiler level (see "A related runtime bug, since fixed" right after
   "Seven Star compiler bugs found and fixed" above, and `todo.md` P1 #1).

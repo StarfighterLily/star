@@ -17,6 +17,7 @@ mod audio;
 mod bitfield;
 mod builtins;
 mod closure;
+mod dialog;
 mod eq;
 mod expr;
 mod file_io;
@@ -692,6 +693,12 @@ impl Codegen {
         self.line("declare i32 @TextOutA(i8*, i32, i32, i8*, i32)");
         self.line("declare i32 @AddFontResourceExA(i8*, i32, i8*)");
         self.line("declare i32 @RemoveFontResourceExA(i8*, i32, i8*)");
+        // `open_file_dialog` builtin -- see `crate::codegen::dialog`.
+        // comdlg32 isn't part of this target's implicitly-linked default
+        // libraries, so a Star program calling this needs `-l comdlg32`
+        // passed explicitly at build time (mirroring `tcp_*`'s own
+        // `-l ws2_32` requirement).
+        self.line("declare i32 @GetOpenFileNameA(i8*)");
         // The rasterized glyph atlas is drawn as an ordinary SDL texture --
         // see `crate::codegen::system_font::emit_rasterize_font`.
         self.line("declare i8* @SDL_CreateTexture(i8*, i32, i32, i32, i32)");

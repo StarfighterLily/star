@@ -2420,6 +2420,11 @@ impl Checker {
                     self.error(format!("`file_exists` expects a `str` argument, found `{:?}`", arg_tys[0]), span);
                 }
             }
+            "open_file_dialog" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Str) {
+                    self.error(format!("`open_file_dialog` expects a `str` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
             "file_open" => {
                 if arity_ok(2, self) {
                     for (i, t) in arg_tys.iter().enumerate() {

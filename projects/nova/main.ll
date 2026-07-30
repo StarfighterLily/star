@@ -74,6 +74,7 @@ declare i8* @CreateDIBSection(i8*, i8*, i32, i8**, i8*, i32)
 declare i32 @TextOutA(i8*, i32, i32, i8*, i32)
 declare i32 @AddFontResourceExA(i8*, i32, i8*)
 declare i32 @RemoveFontResourceExA(i8*, i32, i8*)
+declare i32 @GetOpenFileNameA(i8*)
 declare i8* @SDL_CreateTexture(i8*, i32, i32, i32, i32)
 declare i32 @SDL_UpdateTexture(i8*, i8*, i8*, i32)
 declare i32 @SDL_SetTextureBlendMode(i8*, i32)
@@ -35670,138 +35671,6 @@ if_end_2919:
   ret { i32, i1 } %t387
 }
 
-define i8* @demo_program() {
-entry:
-  %t0 = alloca i8*
-  %t1 = getelementptr i32, i32* null, i32 1
-  %t2 = ptrtoint i32* %t1 to i64
-  %t3 = mul i64 %t2, 53
-  %t4 = call i8* @malloc(i64 %t3)
-  %t5 = bitcast i8* %t4 to i32*
-  %t6 = getelementptr inbounds i32, i32* %t5, i64 0
-  store i32 6, i32* %t6
-  %t7 = getelementptr inbounds i32, i32* %t5, i64 1
-  store i32 4, i32* %t7
-  %t8 = getelementptr inbounds i32, i32* %t5, i64 2
-  store i32 231, i32* %t8
-  %t9 = getelementptr inbounds i32, i32* %t5, i64 3
-  store i32 0, i32* %t9
-  %t10 = getelementptr inbounds i32, i32* %t5, i64 4
-  store i32 6, i32* %t10
-  %t11 = getelementptr inbounds i32, i32* %t5, i64 5
-  store i32 4, i32* %t11
-  %t12 = getelementptr inbounds i32, i32* %t5, i64 6
-  store i32 232, i32* %t12
-  %t13 = getelementptr inbounds i32, i32* %t5, i64 7
-  store i32 0, i32* %t13
-  %t14 = getelementptr inbounds i32, i32* %t5, i64 8
-  store i32 6, i32* %t14
-  %t15 = getelementptr inbounds i32, i32* %t5, i64 9
-  store i32 0, i32* %t15
-  %t16 = getelementptr inbounds i32, i32* %t5, i64 10
-  store i32 254, i32* %t16
-  %t17 = getelementptr inbounds i32, i32* %t5, i64 11
-  store i32 232, i32* %t17
-  %t18 = getelementptr inbounds i32, i32* %t5, i64 12
-  store i32 6, i32* %t18
-  %t19 = getelementptr inbounds i32, i32* %t5, i64 13
-  store i32 4, i32* %t19
-  %t20 = getelementptr inbounds i32, i32* %t5, i64 14
-  store i32 231, i32* %t20
-  %t21 = getelementptr inbounds i32, i32* %t5, i64 15
-  store i32 0, i32* %t21
-  %t22 = getelementptr inbounds i32, i32* %t5, i64 16
-  store i32 6, i32* %t22
-  %t23 = getelementptr inbounds i32, i32* %t5, i64 17
-  store i32 0, i32* %t23
-  %t24 = getelementptr inbounds i32, i32* %t5, i64 18
-  store i32 253, i32* %t24
-  %t25 = getelementptr inbounds i32, i32* %t5, i64 19
-  store i32 231, i32* %t25
-  %t26 = getelementptr inbounds i32, i32* %t5, i64 20
-  store i32 6, i32* %t26
-  %t27 = getelementptr inbounds i32, i32* %t5, i64 21
-  store i32 4, i32* %t27
-  %t28 = getelementptr inbounds i32, i32* %t5, i64 22
-  store i32 233, i32* %t28
-  %t29 = getelementptr inbounds i32, i32* %t5, i64 23
-  store i32 0, i32* %t29
-  %t30 = getelementptr inbounds i32, i32* %t5, i64 24
-  store i32 7, i32* %t30
-  %t31 = getelementptr inbounds i32, i32* %t5, i64 25
-  store i32 0, i32* %t31
-  %t32 = getelementptr inbounds i32, i32* %t5, i64 26
-  store i32 233, i32* %t32
-  %t33 = getelementptr inbounds i32, i32* %t5, i64 27
-  store i32 231, i32* %t33
-  %t34 = getelementptr inbounds i32, i32* %t5, i64 28
-  store i32 7, i32* %t34
-  %t35 = getelementptr inbounds i32, i32* %t5, i64 29
-  store i32 0, i32* %t35
-  %t36 = getelementptr inbounds i32, i32* %t5, i64 30
-  store i32 233, i32* %t36
-  %t37 = getelementptr inbounds i32, i32* %t5, i64 31
-  store i32 232, i32* %t37
-  %t38 = getelementptr inbounds i32, i32* %t5, i64 32
-  store i32 51, i32* %t38
-  %t39 = getelementptr inbounds i32, i32* %t5, i64 33
-  store i32 0, i32* %t39
-  %t40 = getelementptr inbounds i32, i32* %t5, i64 34
-  store i32 233, i32* %t40
-  %t41 = getelementptr inbounds i32, i32* %t5, i64 35
-  store i32 11, i32* %t41
-  %t42 = getelementptr inbounds i32, i32* %t5, i64 36
-  store i32 0, i32* %t42
-  %t43 = getelementptr inbounds i32, i32* %t5, i64 37
-  store i32 231, i32* %t43
-  %t44 = getelementptr inbounds i32, i32* %t5, i64 38
-  store i32 32, i32* %t44
-  %t45 = getelementptr inbounds i32, i32* %t5, i64 39
-  store i32 2, i32* %t45
-  %t46 = getelementptr inbounds i32, i32* %t5, i64 40
-  store i32 0, i32* %t46
-  %t47 = getelementptr inbounds i32, i32* %t5, i64 41
-  store i32 16, i32* %t47
-  %t48 = getelementptr inbounds i32, i32* %t5, i64 42
-  store i32 11, i32* %t48
-  %t49 = getelementptr inbounds i32, i32* %t5, i64 43
-  store i32 0, i32* %t49
-  %t50 = getelementptr inbounds i32, i32* %t5, i64 44
-  store i32 232, i32* %t50
-  %t51 = getelementptr inbounds i32, i32* %t5, i64 45
-  store i32 32, i32* %t51
-  %t52 = getelementptr inbounds i32, i32* %t5, i64 46
-  store i32 2, i32* %t52
-  %t53 = getelementptr inbounds i32, i32* %t5, i64 47
-  store i32 0, i32* %t53
-  %t54 = getelementptr inbounds i32, i32* %t5, i64 48
-  store i32 8, i32* %t54
-  %t55 = getelementptr inbounds i32, i32* %t5, i64 49
-  store i32 30, i32* %t55
-  %t56 = getelementptr inbounds i32, i32* %t5, i64 50
-  store i32 2, i32* %t56
-  %t57 = getelementptr inbounds i32, i32* %t5, i64 51
-  store i32 0, i32* %t57
-  %t58 = getelementptr inbounds i32, i32* %t5, i64 52
-  store i32 0, i32* %t58
-  %t63 = bitcast void (i8*)* @list_release_i32 to i8*
-  %t64 = call i8* @star_rc_alloc(i64 24, i8* %t63)
-  %t65 = bitcast i8* %t64 to { i32*, i64, i64 }*
-  %t66 = getelementptr inbounds { i32*, i64, i64 }, { i32*, i64, i64 }* %t65, i32 0, i32 0
-  store i32* %t5, i32** %t66
-  %t67 = getelementptr inbounds { i32*, i64, i64 }, { i32*, i64, i64 }* %t65, i32 0, i32 1
-  store i64 53, i64* %t67
-  %t68 = getelementptr inbounds { i32*, i64, i64 }, { i32*, i64, i64 }* %t65, i32 0, i32 2
-  store i64 53, i64* %t68
-  store i8* %t64, i8** %t0
-  %t69 = load i8*, i8** %t0
-  %t70 = load i8*, i8** %t0
-  call void @star_rc_retain(i8* %t70)
-  %t71 = load i8*, i8** %t0
-  call void @star_rc_release(i8* %t71)
-  ret i8* %t69
-}
-
 define void @new_cpu(%cpu__Cpu* %.sret) {
 entry:
   %t0 = alloca %cpu__Cpu
@@ -35973,146 +35842,63 @@ arr_rep_end_3003:
   ret void
 }
 
-define void @cpu__Cpu__load_program_or_demo(%cpu__Cpu* %self, i8* %bin_path, i1 %use_file) {
+define void @cpu__Cpu__load_program_or_wait(%cpu__Cpu* %self, i8* %bin_path, i1 %use_file) {
 entry:
   %t0 = alloca %cpu__Cpu*
   %t1 = alloca i8*
   %t2 = alloca i1
-  %t3 = alloca i1
-  %t5 = alloca { i32, i1 }
-  %t10 = alloca i32
-  %t13 = alloca i1
-  %t30 = alloca i8*
-  %t32 = alloca i32
+  %t4 = alloca { i32, i1 }
+  %t9 = alloca i32
+  %t12 = alloca i1
   store %cpu__Cpu* %self, %cpu__Cpu** %t0
   store i8* %bin_path, i8** %t1
   store i1 %use_file, i1* %t2
-  store i1 false, i1* %t3
-  %t4 = load i1, i1* %t2
-  br i1 %t4, label %if_then_3004, label %if_else_3005
+  %t3 = load i1, i1* %t2
+  br i1 %t3, label %if_then_3004, label %if_else_3005
 if_then_3004:
-  %t6 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t5 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t6 = load i8*, i8** %t1
   %t7 = load i8*, i8** %t1
-  %t8 = load i8*, i8** %t1
-  call void @star_rc_retain(i8* %t8)
-  %t9 = call { i32, i1 } @cpu__Cpu__load_program(%cpu__Cpu* %t6, i8* %t7)
-  store { i32, i1 } %t9, { i32, i1 }* %t5
-  %t11 = getelementptr inbounds { i32, i1 }, { i32, i1 }* %t5, i32 0, i32 0
-  %t12 = load i32, i32* %t11
-  store i32 %t12, i32* %t10
-  %t14 = getelementptr inbounds { i32, i1 }, { i32, i1 }* %t5, i32 0, i32 1
-  %t15 = load i1, i1* %t14
-  store i1 %t15, i1* %t13
-  %t16 = load i1, i1* %t13
-  br i1 %t16, label %if_then_3007, label %if_else_3008
+  call void @star_rc_retain(i8* %t7)
+  %t8 = call { i32, i1 } @cpu__Cpu__load_program(%cpu__Cpu* %t5, i8* %t6)
+  store { i32, i1 } %t8, { i32, i1 }* %t4
+  %t10 = getelementptr inbounds { i32, i1 }, { i32, i1 }* %t4, i32 0, i32 0
+  %t11 = load i32, i32* %t10
+  store i32 %t11, i32* %t9
+  %t13 = getelementptr inbounds { i32, i1 }, { i32, i1 }* %t4, i32 0, i32 1
+  %t14 = load i1, i1* %t13
+  store i1 %t14, i1* %t12
+  %t15 = load i1, i1* %t12
+  br i1 %t15, label %if_then_3007, label %if_else_3008
 if_then_3007:
-  %t17 = load i32, i32* %t10
-  %t18 = trunc i32 %t17 to i16
-  %t19 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t20 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t19, i32 0, i32 7
-  store i16 %t18, i16* %t20
-  store i1 true, i1* %t3
+  %t16 = load i32, i32* %t9
+  %t17 = trunc i32 %t16 to i16
+  %t18 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t19 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t18, i32 0, i32 7
+  store i16 %t17, i16* %t19
+  %t20 = load i8*, i8** %t1
   %t21 = load i8*, i8** %t1
-  %t22 = load i8*, i8** %t1
-  call void @star_rc_retain(i8* %t22)
-  %t23 = load i32, i32* %t10
-  %t24 = getelementptr inbounds [37 x i8], [37 x i8]* @.str.95, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t24, i8* %t21, i32 %t23)
-  call void @star_rc_release(i8* %t21)
+  call void @star_rc_retain(i8* %t21)
+  %t22 = load i32, i32* %t9
+  %t23 = getelementptr inbounds [37 x i8], [37 x i8]* @.str.95, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t23, i8* %t20, i32 %t22)
+  call void @star_rc_release(i8* %t20)
   br label %if_end_3009
 if_else_3008:
+  %t24 = load i8*, i8** %t1
   %t25 = load i8*, i8** %t1
-  %t26 = load i8*, i8** %t1
-  call void @star_rc_retain(i8* %t26)
-  %t27 = getelementptr inbounds [60 x i8], [60 x i8]* @.str.96, i64 0, i64 0
-  call i32 (i8*, ...) @printf(i8* %t27, i8* %t25)
-  call void @star_rc_release(i8* %t25)
+  call void @star_rc_retain(i8* %t25)
+  %t26 = getelementptr inbounds [47 x i8], [47 x i8]* @.str.96, i64 0, i64 0
+  call i32 (i8*, ...) @printf(i8* %t26, i8* %t24)
+  call void @star_rc_release(i8* %t24)
   br label %if_end_3009
 if_end_3009:
   br label %if_end_3006
 if_else_3005:
   br label %if_end_3006
 if_end_3006:
-  %t28 = load i1, i1* %t3
-  %t29 = xor i1 true, %t28
-  br i1 %t29, label %if_then_3010, label %if_else_3011
-if_then_3010:
-  %t31 = call i8* @demo_program()
-  store i8* %t31, i8** %t30
-  store i32 0, i32* %t32
-  br label %while_cond_3013
-while_cond_3013:
-  %t33 = load i32, i32* %t32
-  %t34 = load i8*, i8** %t30
-  %t35 = icmp eq i8* %t34, null
-  br i1 %t35, label %list_read_null_3017, label %list_read_real_3018
-list_read_null_3017:
-  br label %list_read_end_3019
-list_read_real_3018:
-  %t36 = bitcast i8* %t34 to { i32*, i64, i64 }*
-  %t37 = getelementptr inbounds { i32*, i64, i64 }, { i32*, i64, i64 }* %t36, i32 0, i32 0
-  %t38 = load i32*, i32** %t37
-  %t39 = getelementptr inbounds { i32*, i64, i64 }, { i32*, i64, i64 }* %t36, i32 0, i32 1
-  %t40 = load i64, i64* %t39
-  br label %list_read_end_3019
-list_read_end_3019:
-  %t41 = phi i32* [ null, %list_read_null_3017 ], [ %t38, %list_read_real_3018 ]
-  %t42 = phi i64 [ 0, %list_read_null_3017 ], [ %t40, %list_read_real_3018 ]
-  %t43 = trunc i64 %t42 to i32
-  %t44 = icmp slt i32 %t33, %t43
-  br i1 %t44, label %while_body_3014, label %while_else_3015
-while_body_3014:
-  %t45 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t46 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t45, i32 0, i32 0
-  %t47 = load i32, i32* %t32
-  %t48 = load i8*, i8** %t30
-  %t49 = icmp eq i8* %t48, null
-  br i1 %t49, label %list_read_null_3020, label %list_read_real_3021
-list_read_null_3020:
-  br label %list_read_end_3022
-list_read_real_3021:
-  %t50 = bitcast i8* %t48 to { i32*, i64, i64 }*
-  %t51 = getelementptr inbounds { i32*, i64, i64 }, { i32*, i64, i64 }* %t50, i32 0, i32 0
-  %t52 = load i32*, i32** %t51
-  %t53 = getelementptr inbounds { i32*, i64, i64 }, { i32*, i64, i64 }* %t50, i32 0, i32 1
-  %t54 = load i64, i64* %t53
-  br label %list_read_end_3022
-list_read_end_3022:
-  %t55 = phi i32* [ null, %list_read_null_3020 ], [ %t52, %list_read_real_3021 ]
-  %t56 = phi i64 [ 0, %list_read_null_3020 ], [ %t54, %list_read_real_3021 ]
-  %t57 = load i32, i32* %t32
-  %t58 = sext i32 %t57 to i64
-  %t59 = icmp ult i64 %t58, %t56
-  br i1 %t59, label %list_idx_ok_3023, label %list_idx_oob_3024
-list_idx_ok_3023:
-  %t60 = getelementptr inbounds i32, i32* %t55, i64 %t58
-  %t61 = load i32, i32* %t60
-  br label %list_idx_end_3025
-list_idx_oob_3024:
-  br label %list_idx_end_3025
-list_idx_end_3025:
-  %t62 = phi i32 [ %t61, %list_idx_ok_3023 ], [ 0, %list_idx_oob_3024 ]
-  %t63 = trunc i32 %t62 to i8
-  call void @cpu__mem__Memory__write_byte(%cpu__mem__Memory* %t46, i32 %t47, i8 %t63)
-  %t65 = load i32, i32* %t32
-  %t66 = add i32 %t65, 1
-  store i32 %t66, i32* %t32
-  br label %while_cond_3013
-while_else_3015:
-  br label %while_end_3016
-while_end_3016:
-  %t67 = trunc i32 0 to i16
-  %t68 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t69 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t68, i32 0, i32 7
-  store i16 %t67, i16* %t69
-  %t70 = load i8*, i8** %t30
-  call void @star_rc_release(i8* %t70)
-  br label %if_end_3012
-if_else_3011:
-  br label %if_end_3012
-if_end_3012:
-  %t71 = load i8*, i8** %t1
-  call void @star_rc_release(i8* %t71)
+  %t27 = load i8*, i8** %t1
+  call void @star_rc_release(i8* %t27)
   ret void
 }
 
@@ -36122,12 +35908,12 @@ entry:
   %t1 = alloca i32
   store %cpu__Cpu* %self, %cpu__Cpu** %t0
   store i32 0, i32* %t1
-  br label %while_cond_3026
-while_cond_3026:
+  br label %while_cond_3010
+while_cond_3010:
   %t2 = load i32, i32* %t1
   %t3 = icmp slt i32 %t2, 65536
-  br i1 %t3, label %while_body_3027, label %while_else_3028
-while_body_3027:
+  br i1 %t3, label %while_body_3011, label %while_else_3012
+while_body_3011:
   %t4 = trunc i32 0 to i8
   %t5 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t6 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t5, i32 0, i32 0
@@ -36135,28 +35921,28 @@ while_body_3027:
   %t8 = load i32, i32* %t1
   %t9 = sext i32 %t8 to i64
   %t10 = icmp ult i64 %t9, 65536
-  br i1 %t10, label %arr_set_do_3030, label %arr_set_oob_3031
-arr_set_do_3030:
+  br i1 %t10, label %arr_set_do_3014, label %arr_set_oob_3015
+arr_set_do_3014:
   %t11 = getelementptr inbounds [65536 x i8], [65536 x i8]* %t7, i32 0, i64 %t9
   store i8 %t4, i8* %t11
-  br label %arr_set_end_3032
-arr_set_oob_3031:
-  br label %arr_set_end_3032
-arr_set_end_3032:
+  br label %arr_set_end_3016
+arr_set_oob_3015:
+  br label %arr_set_end_3016
+arr_set_end_3016:
   %t12 = load i32, i32* %t1
   %t13 = add i32 %t12, 1
   store i32 %t13, i32* %t1
-  br label %while_cond_3026
-while_else_3028:
-  br label %while_end_3029
-while_end_3029:
+  br label %while_cond_3010
+while_else_3012:
+  br label %while_end_3013
+while_end_3013:
   store i32 0, i32* %t1
-  br label %while_cond_3033
-while_cond_3033:
+  br label %while_cond_3017
+while_cond_3017:
   %t14 = load i32, i32* %t1
   %t15 = icmp slt i32 %t14, 245760
-  br i1 %t15, label %while_body_3034, label %while_else_3035
-while_body_3034:
+  br i1 %t15, label %while_body_3018, label %while_else_3019
+while_body_3018:
   %t16 = trunc i32 0 to i8
   %t17 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t18 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t17, i32 0, i32 0
@@ -36164,33 +35950,33 @@ while_body_3034:
   %t20 = load i32, i32* %t1
   %t21 = sext i32 %t20 to i64
   %t22 = icmp ult i64 %t21, 245760
-  br i1 %t22, label %arr_set_do_3037, label %arr_set_oob_3038
-arr_set_do_3037:
+  br i1 %t22, label %arr_set_do_3021, label %arr_set_oob_3022
+arr_set_do_3021:
   %t23 = getelementptr inbounds [245760 x i8], [245760 x i8]* %t19, i32 0, i64 %t21
   store i8 %t16, i8* %t23
-  br label %arr_set_end_3039
-arr_set_oob_3038:
-  br label %arr_set_end_3039
-arr_set_end_3039:
+  br label %arr_set_end_3023
+arr_set_oob_3022:
+  br label %arr_set_end_3023
+arr_set_end_3023:
   %t24 = load i32, i32* %t1
   %t25 = add i32 %t24, 1
   store i32 %t25, i32* %t1
-  br label %while_cond_3033
-while_else_3035:
-  br label %while_end_3036
-while_end_3036:
+  br label %while_cond_3017
+while_else_3019:
+  br label %while_end_3020
+while_end_3020:
   %t26 = trunc i32 0 to i8
   %t27 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t28 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t27, i32 0, i32 0
   %t29 = getelementptr inbounds %cpu__mem__Memory, %cpu__mem__Memory* %t28, i32 0, i32 2
   store i8 %t26, i8* %t29
   store i32 0, i32* %t1
-  br label %while_cond_3040
-while_cond_3040:
+  br label %while_cond_3024
+while_cond_3024:
   %t30 = load i32, i32* %t1
   %t31 = icmp slt i32 %t30, 65536
-  br i1 %t31, label %while_body_3041, label %while_else_3042
-while_body_3041:
+  br i1 %t31, label %while_body_3025, label %while_else_3026
+while_body_3025:
   %t32 = trunc i32 0 to i8
   %t33 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t34 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t33, i32 0, i32 1
@@ -36198,14 +35984,14 @@ while_body_3041:
   %t36 = load i32, i32* %t1
   %t37 = sext i32 %t36 to i64
   %t38 = icmp ult i64 %t37, 65536
-  br i1 %t38, label %arr_set_do_3044, label %arr_set_oob_3045
-arr_set_do_3044:
+  br i1 %t38, label %arr_set_do_3028, label %arr_set_oob_3029
+arr_set_do_3028:
   %t39 = getelementptr inbounds [65536 x i8], [65536 x i8]* %t35, i32 0, i64 %t37
   store i8 %t32, i8* %t39
-  br label %arr_set_end_3046
-arr_set_oob_3045:
-  br label %arr_set_end_3046
-arr_set_end_3046:
+  br label %arr_set_end_3030
+arr_set_oob_3029:
+  br label %arr_set_end_3030
+arr_set_end_3030:
   %t40 = trunc i32 0 to i8
   %t41 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t42 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t41, i32 0, i32 1
@@ -36213,14 +35999,14 @@ arr_set_end_3046:
   %t44 = load i32, i32* %t1
   %t45 = sext i32 %t44 to i64
   %t46 = icmp ult i64 %t45, 65536
-  br i1 %t46, label %arr_set_do_3047, label %arr_set_oob_3048
-arr_set_do_3047:
+  br i1 %t46, label %arr_set_do_3031, label %arr_set_oob_3032
+arr_set_do_3031:
   %t47 = getelementptr inbounds [65536 x i8], [65536 x i8]* %t43, i32 0, i64 %t45
   store i8 %t40, i8* %t47
-  br label %arr_set_end_3049
-arr_set_oob_3048:
-  br label %arr_set_end_3049
-arr_set_end_3049:
+  br label %arr_set_end_3033
+arr_set_oob_3032:
+  br label %arr_set_end_3033
+arr_set_end_3033:
   %t48 = trunc i32 0 to i8
   %t49 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t50 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t49, i32 0, i32 1
@@ -36228,14 +36014,14 @@ arr_set_end_3049:
   %t52 = load i32, i32* %t1
   %t53 = sext i32 %t52 to i64
   %t54 = icmp ult i64 %t53, 65536
-  br i1 %t54, label %arr_set_do_3050, label %arr_set_oob_3051
-arr_set_do_3050:
+  br i1 %t54, label %arr_set_do_3034, label %arr_set_oob_3035
+arr_set_do_3034:
   %t55 = getelementptr inbounds [65536 x i8], [65536 x i8]* %t51, i32 0, i64 %t53
   store i8 %t48, i8* %t55
-  br label %arr_set_end_3052
-arr_set_oob_3051:
-  br label %arr_set_end_3052
-arr_set_end_3052:
+  br label %arr_set_end_3036
+arr_set_oob_3035:
+  br label %arr_set_end_3036
+arr_set_end_3036:
   %t56 = trunc i32 0 to i8
   %t57 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t58 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t57, i32 0, i32 1
@@ -36243,14 +36029,14 @@ arr_set_end_3052:
   %t60 = load i32, i32* %t1
   %t61 = sext i32 %t60 to i64
   %t62 = icmp ult i64 %t61, 65536
-  br i1 %t62, label %arr_set_do_3053, label %arr_set_oob_3054
-arr_set_do_3053:
+  br i1 %t62, label %arr_set_do_3037, label %arr_set_oob_3038
+arr_set_do_3037:
   %t63 = getelementptr inbounds [65536 x i8], [65536 x i8]* %t59, i32 0, i64 %t61
   store i8 %t56, i8* %t63
-  br label %arr_set_end_3055
-arr_set_oob_3054:
-  br label %arr_set_end_3055
-arr_set_end_3055:
+  br label %arr_set_end_3039
+arr_set_oob_3038:
+  br label %arr_set_end_3039
+arr_set_end_3039:
   %t64 = trunc i32 0 to i8
   %t65 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t66 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t65, i32 0, i32 1
@@ -36258,14 +36044,14 @@ arr_set_end_3055:
   %t68 = load i32, i32* %t1
   %t69 = sext i32 %t68 to i64
   %t70 = icmp ult i64 %t69, 65536
-  br i1 %t70, label %arr_set_do_3056, label %arr_set_oob_3057
-arr_set_do_3056:
+  br i1 %t70, label %arr_set_do_3040, label %arr_set_oob_3041
+arr_set_do_3040:
   %t71 = getelementptr inbounds [65536 x i8], [65536 x i8]* %t67, i32 0, i64 %t69
   store i8 %t64, i8* %t71
-  br label %arr_set_end_3058
-arr_set_oob_3057:
-  br label %arr_set_end_3058
-arr_set_end_3058:
+  br label %arr_set_end_3042
+arr_set_oob_3041:
+  br label %arr_set_end_3042
+arr_set_end_3042:
   %t72 = trunc i32 0 to i8
   %t73 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t74 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t73, i32 0, i32 1
@@ -36273,14 +36059,14 @@ arr_set_end_3058:
   %t76 = load i32, i32* %t1
   %t77 = sext i32 %t76 to i64
   %t78 = icmp ult i64 %t77, 65536
-  br i1 %t78, label %arr_set_do_3059, label %arr_set_oob_3060
-arr_set_do_3059:
+  br i1 %t78, label %arr_set_do_3043, label %arr_set_oob_3044
+arr_set_do_3043:
   %t79 = getelementptr inbounds [65536 x i8], [65536 x i8]* %t75, i32 0, i64 %t77
   store i8 %t72, i8* %t79
-  br label %arr_set_end_3061
-arr_set_oob_3060:
-  br label %arr_set_end_3061
-arr_set_end_3061:
+  br label %arr_set_end_3045
+arr_set_oob_3044:
+  br label %arr_set_end_3045
+arr_set_end_3045:
   %t80 = trunc i32 0 to i8
   %t81 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t82 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t81, i32 0, i32 1
@@ -36288,14 +36074,14 @@ arr_set_end_3061:
   %t84 = load i32, i32* %t1
   %t85 = sext i32 %t84 to i64
   %t86 = icmp ult i64 %t85, 65536
-  br i1 %t86, label %arr_set_do_3062, label %arr_set_oob_3063
-arr_set_do_3062:
+  br i1 %t86, label %arr_set_do_3046, label %arr_set_oob_3047
+arr_set_do_3046:
   %t87 = getelementptr inbounds [65536 x i8], [65536 x i8]* %t83, i32 0, i64 %t85
   store i8 %t80, i8* %t87
-  br label %arr_set_end_3064
-arr_set_oob_3063:
-  br label %arr_set_end_3064
-arr_set_end_3064:
+  br label %arr_set_end_3048
+arr_set_oob_3047:
+  br label %arr_set_end_3048
+arr_set_end_3048:
   %t88 = trunc i32 0 to i8
   %t89 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t90 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t89, i32 0, i32 1
@@ -36303,14 +36089,14 @@ arr_set_end_3064:
   %t92 = load i32, i32* %t1
   %t93 = sext i32 %t92 to i64
   %t94 = icmp ult i64 %t93, 65536
-  br i1 %t94, label %arr_set_do_3065, label %arr_set_oob_3066
-arr_set_do_3065:
+  br i1 %t94, label %arr_set_do_3049, label %arr_set_oob_3050
+arr_set_do_3049:
   %t95 = getelementptr inbounds [65536 x i8], [65536 x i8]* %t91, i32 0, i64 %t93
   store i8 %t88, i8* %t95
-  br label %arr_set_end_3067
-arr_set_oob_3066:
-  br label %arr_set_end_3067
-arr_set_end_3067:
+  br label %arr_set_end_3051
+arr_set_oob_3050:
+  br label %arr_set_end_3051
+arr_set_end_3051:
   %t96 = trunc i32 0 to i8
   %t97 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t98 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t97, i32 0, i32 1
@@ -36318,14 +36104,14 @@ arr_set_end_3067:
   %t100 = load i32, i32* %t1
   %t101 = sext i32 %t100 to i64
   %t102 = icmp ult i64 %t101, 65536
-  br i1 %t102, label %arr_set_do_3068, label %arr_set_oob_3069
-arr_set_do_3068:
+  br i1 %t102, label %arr_set_do_3052, label %arr_set_oob_3053
+arr_set_do_3052:
   %t103 = getelementptr inbounds [65536 x i8], [65536 x i8]* %t99, i32 0, i64 %t101
   store i8 %t96, i8* %t103
-  br label %arr_set_end_3070
-arr_set_oob_3069:
-  br label %arr_set_end_3070
-arr_set_end_3070:
+  br label %arr_set_end_3054
+arr_set_oob_3053:
+  br label %arr_set_end_3054
+arr_set_end_3054:
   %t104 = trunc i32 0 to i8
   %t105 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t106 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t105, i32 0, i32 1
@@ -36333,28 +36119,28 @@ arr_set_end_3070:
   %t108 = load i32, i32* %t1
   %t109 = sext i32 %t108 to i64
   %t110 = icmp ult i64 %t109, 65536
-  br i1 %t110, label %arr_set_do_3071, label %arr_set_oob_3072
-arr_set_do_3071:
+  br i1 %t110, label %arr_set_do_3055, label %arr_set_oob_3056
+arr_set_do_3055:
   %t111 = getelementptr inbounds [65536 x i8], [65536 x i8]* %t107, i32 0, i64 %t109
   store i8 %t104, i8* %t111
-  br label %arr_set_end_3073
-arr_set_oob_3072:
-  br label %arr_set_end_3073
-arr_set_end_3073:
+  br label %arr_set_end_3057
+arr_set_oob_3056:
+  br label %arr_set_end_3057
+arr_set_end_3057:
   %t112 = load i32, i32* %t1
   %t113 = add i32 %t112, 1
   store i32 %t113, i32* %t1
-  br label %while_cond_3040
-while_else_3042:
-  br label %while_end_3043
-while_end_3043:
+  br label %while_cond_3024
+while_else_3026:
+  br label %while_end_3027
+while_end_3027:
   store i32 0, i32* %t1
-  br label %while_cond_3074
-while_cond_3074:
+  br label %while_cond_3058
+while_cond_3058:
   %t114 = load i32, i32* %t1
   %t115 = icmp slt i32 %t114, 64
-  br i1 %t115, label %while_body_3075, label %while_else_3076
-while_body_3075:
+  br i1 %t115, label %while_body_3059, label %while_else_3060
+while_body_3059:
   %t116 = trunc i32 0 to i8
   %t117 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t118 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t117, i32 0, i32 2
@@ -36362,21 +36148,21 @@ while_body_3075:
   %t120 = load i32, i32* %t1
   %t121 = sext i32 %t120 to i64
   %t122 = icmp ult i64 %t121, 64
-  br i1 %t122, label %arr_set_do_3078, label %arr_set_oob_3079
-arr_set_do_3078:
+  br i1 %t122, label %arr_set_do_3062, label %arr_set_oob_3063
+arr_set_do_3062:
   %t123 = getelementptr inbounds [64 x i8], [64 x i8]* %t119, i32 0, i64 %t121
   store i8 %t116, i8* %t123
-  br label %arr_set_end_3080
-arr_set_oob_3079:
-  br label %arr_set_end_3080
-arr_set_end_3080:
+  br label %arr_set_end_3064
+arr_set_oob_3063:
+  br label %arr_set_end_3064
+arr_set_end_3064:
   %t124 = load i32, i32* %t1
   %t125 = add i32 %t124, 1
   store i32 %t125, i32* %t1
-  br label %while_cond_3074
-while_else_3076:
-  br label %while_end_3077
-while_end_3077:
+  br label %while_cond_3058
+while_else_3060:
+  br label %while_end_3061
+while_end_3061:
   %t126 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t127 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t126, i32 0, i32 2
   %t128 = getelementptr inbounds %cpu__keyboard__Keyboard, %cpu__keyboard__Keyboard* %t127, i32 0, i32 1
@@ -36408,87 +36194,87 @@ while_end_3077:
   %t148 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t147, i32 0, i32 4
   store %cpu__uart__Uart %t146, %cpu__uart__Uart* %t148
   store i32 0, i32* %t1
-  br label %while_cond_3081
-while_cond_3081:
+  br label %while_cond_3065
+while_cond_3065:
   %t149 = load i32, i32* %t1
   %t150 = icmp slt i32 %t149, 10
-  br i1 %t150, label %while_body_3082, label %while_else_3083
-while_body_3082:
+  br i1 %t150, label %while_body_3066, label %while_else_3067
+while_body_3066:
   %t151 = trunc i32 0 to i8
   %t152 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t153 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t152, i32 0, i32 5
   %t154 = load i32, i32* %t1
   %t155 = sext i32 %t154 to i64
   %t156 = icmp ult i64 %t155, 10
-  br i1 %t156, label %arr_set_do_3085, label %arr_set_oob_3086
-arr_set_do_3085:
+  br i1 %t156, label %arr_set_do_3069, label %arr_set_oob_3070
+arr_set_do_3069:
   %t157 = getelementptr inbounds [10 x i8], [10 x i8]* %t153, i32 0, i64 %t155
   store i8 %t151, i8* %t157
-  br label %arr_set_end_3087
-arr_set_oob_3086:
-  br label %arr_set_end_3087
-arr_set_end_3087:
+  br label %arr_set_end_3071
+arr_set_oob_3070:
+  br label %arr_set_end_3071
+arr_set_end_3071:
   %t158 = load i32, i32* %t1
   %t159 = add i32 %t158, 1
   store i32 %t159, i32* %t1
-  br label %while_cond_3081
-while_else_3083:
-  br label %while_end_3084
-while_end_3084:
+  br label %while_cond_3065
+while_else_3067:
+  br label %while_end_3068
+while_end_3068:
   store i32 0, i32* %t1
-  br label %while_cond_3088
-while_cond_3088:
+  br label %while_cond_3072
+while_cond_3072:
   %t160 = load i32, i32* %t1
   %t161 = icmp slt i32 %t160, 8
-  br i1 %t161, label %while_body_3089, label %while_else_3090
-while_body_3089:
+  br i1 %t161, label %while_body_3073, label %while_else_3074
+while_body_3073:
   %t162 = trunc i32 0 to i16
   %t163 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t164 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t163, i32 0, i32 6
   %t165 = load i32, i32* %t1
   %t166 = sext i32 %t165 to i64
   %t167 = icmp ult i64 %t166, 10
-  br i1 %t167, label %arr_set_do_3092, label %arr_set_oob_3093
-arr_set_do_3092:
+  br i1 %t167, label %arr_set_do_3076, label %arr_set_oob_3077
+arr_set_do_3076:
   %t168 = getelementptr inbounds [10 x i16], [10 x i16]* %t164, i32 0, i64 %t166
   store i16 %t162, i16* %t168
-  br label %arr_set_end_3094
-arr_set_oob_3093:
-  br label %arr_set_end_3094
-arr_set_end_3094:
+  br label %arr_set_end_3078
+arr_set_oob_3077:
+  br label %arr_set_end_3078
+arr_set_end_3078:
   %t169 = load i32, i32* %t1
   %t170 = add i32 %t169, 1
   store i32 %t170, i32* %t1
-  br label %while_cond_3088
-while_else_3090:
-  br label %while_end_3091
-while_end_3091:
+  br label %while_cond_3072
+while_else_3074:
+  br label %while_end_3075
+while_end_3075:
   %t171 = trunc i32 65535 to i16
   %t172 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t173 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t172, i32 0, i32 6
   %t174 = sext i32 8 to i64
   %t175 = icmp ult i64 %t174, 10
-  br i1 %t175, label %arr_set_do_3095, label %arr_set_oob_3096
-arr_set_do_3095:
+  br i1 %t175, label %arr_set_do_3079, label %arr_set_oob_3080
+arr_set_do_3079:
   %t176 = getelementptr inbounds [10 x i16], [10 x i16]* %t173, i32 0, i64 %t174
   store i16 %t171, i16* %t176
-  br label %arr_set_end_3097
-arr_set_oob_3096:
-  br label %arr_set_end_3097
-arr_set_end_3097:
+  br label %arr_set_end_3081
+arr_set_oob_3080:
+  br label %arr_set_end_3081
+arr_set_end_3081:
   %t177 = trunc i32 65535 to i16
   %t178 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t179 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t178, i32 0, i32 6
   %t180 = sext i32 9 to i64
   %t181 = icmp ult i64 %t180, 10
-  br i1 %t181, label %arr_set_do_3098, label %arr_set_oob_3099
-arr_set_do_3098:
+  br i1 %t181, label %arr_set_do_3082, label %arr_set_oob_3083
+arr_set_do_3082:
   %t182 = getelementptr inbounds [10 x i16], [10 x i16]* %t179, i32 0, i64 %t180
   store i16 %t177, i16* %t182
-  br label %arr_set_end_3100
-arr_set_oob_3099:
-  br label %arr_set_end_3100
-arr_set_end_3100:
+  br label %arr_set_end_3084
+arr_set_oob_3083:
+  br label %arr_set_end_3084
+arr_set_end_3084:
   %t183 = trunc i32 0 to i16
   %t184 = load %cpu__Cpu*, %cpu__Cpu** %t0
   %t185 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t184, i32 0, i32 7
@@ -36604,40 +36390,40 @@ entry:
   %t6 = load i32, i32* %t0
   %t7 = load i32, i32* %t2
   %t8 = icmp sge i32 %t6, %t7
-  br i1 %t8, label %logic_rhs_3101, label %logic_short_3102
-logic_rhs_3101:
+  br i1 %t8, label %logic_rhs_3085, label %logic_short_3086
+logic_rhs_3085:
   %t9 = load i32, i32* %t0
   %t10 = load i32, i32* %t2
   %t11 = load i32, i32* %t4
   %t12 = add i32 %t10, %t11
   %t13 = icmp slt i32 %t9, %t12
-  br label %logic_end_3103
-logic_short_3102:
-  br label %logic_end_3103
-logic_end_3103:
-  %t14 = phi i1 [ %t13, %logic_rhs_3101 ], [ false, %logic_short_3102 ]
-  br i1 %t14, label %logic_rhs_3104, label %logic_short_3105
-logic_rhs_3104:
+  br label %logic_end_3087
+logic_short_3086:
+  br label %logic_end_3087
+logic_end_3087:
+  %t14 = phi i1 [ %t13, %logic_rhs_3085 ], [ false, %logic_short_3086 ]
+  br i1 %t14, label %logic_rhs_3088, label %logic_short_3089
+logic_rhs_3088:
   %t15 = load i32, i32* %t1
   %t16 = load i32, i32* %t3
   %t17 = icmp sge i32 %t15, %t16
-  br label %logic_end_3106
-logic_short_3105:
-  br label %logic_end_3106
-logic_end_3106:
-  %t18 = phi i1 [ %t17, %logic_rhs_3104 ], [ false, %logic_short_3105 ]
-  br i1 %t18, label %logic_rhs_3107, label %logic_short_3108
-logic_rhs_3107:
+  br label %logic_end_3090
+logic_short_3089:
+  br label %logic_end_3090
+logic_end_3090:
+  %t18 = phi i1 [ %t17, %logic_rhs_3088 ], [ false, %logic_short_3089 ]
+  br i1 %t18, label %logic_rhs_3091, label %logic_short_3092
+logic_rhs_3091:
   %t19 = load i32, i32* %t1
   %t20 = load i32, i32* %t3
   %t21 = load i32, i32* %t5
   %t22 = add i32 %t20, %t21
   %t23 = icmp slt i32 %t19, %t22
-  br label %logic_end_3109
-logic_short_3108:
-  br label %logic_end_3109
-logic_end_3109:
-  %t24 = phi i1 [ %t23, %logic_rhs_3107 ], [ false, %logic_short_3108 ]
+  br label %logic_end_3093
+logic_short_3092:
+  br label %logic_end_3093
+logic_end_3093:
+  %t24 = phi i1 [ %t23, %logic_rhs_3091 ], [ false, %logic_short_3092 ]
   ret i1 %t24
 }
 
@@ -36647,8 +36433,8 @@ entry:
   store i32 %n, i32* %t0
   %t1 = load i32, i32* %t0
   %t2 = icmp slt i32 %t1, 10
-  br i1 %t2, label %if_then_3110, label %if_else_3111
-if_then_3110:
+  br i1 %t2, label %if_then_3094, label %if_else_3095
+if_then_3094:
   %t3 = load i32, i32* %t0
   %t4 = add i32 48, %t3
   %t5 = trunc i32 %t4 to i8
@@ -36656,8 +36442,8 @@ if_then_3110:
   store i8 %t5, i8* %t6
   %t7 = getelementptr inbounds i8, i8* %t6, i64 1
   store i8 0, i8* %t7
-  br label %if_end_3112
-if_else_3111:
+  br label %if_end_3096
+if_else_3095:
   %t8 = load i32, i32* %t0
   %t9 = sub i32 %t8, 10
   %t10 = add i32 65, %t9
@@ -36666,9 +36452,9 @@ if_else_3111:
   store i8 %t11, i8* %t12
   %t13 = getelementptr inbounds i8, i8* %t12, i64 1
   store i8 0, i8* %t13
-  br label %if_end_3112
-if_end_3112:
-  %t14 = phi i8* [ %t6, %if_then_3110 ], [ %t12, %if_else_3111 ]
+  br label %if_end_3096
+if_end_3096:
+  %t14 = phi i8* [ %t6, %if_then_3094 ], [ %t12, %if_else_3095 ]
   ret i8* %t14
 }
 
@@ -36685,12 +36471,12 @@ entry:
   %t5 = getelementptr inbounds { i64, i8*, [1 x i8] }, { i64, i8*, [1 x i8] }* @.str.97, i64 0, i32 2, i64 0
   store i8* %t5, i8** %t4
   store i32 12, i32* %t6
-  br label %while_cond_3113
-while_cond_3113:
+  br label %while_cond_3097
+while_cond_3097:
   %t7 = load i32, i32* %t6
   %t8 = icmp sge i32 %t7, 0
-  br i1 %t8, label %while_body_3114, label %while_else_3115
-while_body_3114:
+  br i1 %t8, label %while_body_3098, label %while_else_3099
+while_body_3098:
   %t9 = load i8*, i8** %t4
   %t10 = load i8*, i8** %t4
   call void @star_rc_retain(i8* %t10)
@@ -36716,10 +36502,10 @@ while_body_3114:
   %t24 = load i32, i32* %t6
   %t25 = sub i32 %t24, 4
   store i32 %t25, i32* %t6
-  br label %while_cond_3113
-while_else_3115:
-  br label %while_end_3116
-while_end_3116:
+  br label %while_cond_3097
+while_else_3099:
+  br label %while_end_3100
+while_end_3100:
   %t26 = load i8*, i8** %t4
   %t27 = load i8*, i8** %t4
   call void @star_rc_retain(i8* %t27)
@@ -36746,89 +36532,110 @@ entry:
   %t93 = alloca i1
   %t94 = alloca i1
   %t95 = alloca i1
-  %t99 = alloca i1
-  %t100 = alloca [56 x i8]
-  %t119 = alloca i1
-  %t136 = alloca i1
-  %t151 = alloca i1
-  %t171 = alloca i1
-  %t181 = alloca i1
-  %t187 = alloca i32
-  %t190 = alloca i32
-  %t193 = alloca i1
-  %t209 = alloca i1
-  %t228 = alloca i32
-  %t229 = alloca i32
-  %t230 = alloca i32
-  %t245 = alloca i32
-  %t246 = alloca i32
-  %t247 = alloca i32
-  %t263 = alloca i8
+  %t96 = alloca i1
+  %t100 = alloca i1
+  %t101 = alloca [56 x i8]
+  %t120 = alloca i1
+  %t137 = alloca i1
+  %t152 = alloca i1
+  %t172 = alloca i1
+  %t182 = alloca i1
+  %t188 = alloca i1
+  %t202 = alloca i8*
+  %t210 = alloca [512 x i8]
+  %t212 = alloca i64
+  %t223 = alloca [152 x i8]
+  %t225 = alloca i64
+  %t234 = alloca i64
+  %t262 = alloca i32
   %t265 = alloca i32
-  %t266 = alloca i32
-  %t278 = alloca i32
-  %t279 = alloca i32
-  %t316 = alloca i1
-  %t317 = alloca i32
-  %t318 = alloca i32
-  %t327 = alloca i1
-  %t334 = alloca i32
-  %t335 = alloca i32
-  %t336 = alloca i32
+  %t268 = alloca i1
+  %t284 = alloca i1
+  %t303 = alloca i32
+  %t304 = alloca i32
+  %t305 = alloca i32
+  %t320 = alloca i32
+  %t321 = alloca i32
+  %t322 = alloca i32
+  %t338 = alloca i8
   %t340 = alloca i32
   %t341 = alloca i32
-  %t342 = alloca i32
-  %t366 = alloca i32
-  %t407 = alloca i32
+  %t353 = alloca i32
+  %t354 = alloca i32
+  %t391 = alloca i1
+  %t392 = alloca i32
+  %t393 = alloca i32
+  %t402 = alloca i1
+  %t409 = alloca i32
   %t410 = alloca i32
-  %t413 = alloca i8
-  %t421 = alloca { i8, i8, i8 }
-  %t463 = alloca [16 x i8]
-  %t502 = alloca [16 x i8]
-  %t511 = alloca i8*
-  %t516 = alloca i32
-  %t555 = alloca [16 x i8]
-  %t613 = alloca i32
-  %t614 = alloca i32
-  %t615 = alloca i64
-  %t639 = alloca i32
-  %t647 = alloca i32
-  %t660 = alloca [16 x i8]
-  %t699 = alloca [16 x i8]
-  %t756 = alloca i32
-  %t757 = alloca i32
-  %t758 = alloca i64
-  %t782 = alloca i32
-  %t790 = alloca i32
-  %t803 = alloca [16 x i8]
-  %t842 = alloca [16 x i8]
-  %t899 = alloca i32
-  %t900 = alloca i32
-  %t901 = alloca i64
-  %t925 = alloca i32
-  %t933 = alloca i32
-  %t946 = alloca [16 x i8]
-  %t985 = alloca [16 x i8]
-  %t1042 = alloca i32
-  %t1043 = alloca i32
-  %t1044 = alloca i64
-  %t1068 = alloca i32
-  %t1076 = alloca i32
-  %t1089 = alloca [16 x i8]
-  %t1103 = alloca i32
-  %t1133 = alloca [16 x i8]
-  %t1142 = alloca i8*
-  %t1151 = alloca i8*
-  %t1219 = alloca i64
-  %t1220 = alloca i64
-  %t1240 = alloca i8*
-  %t1241 = alloca i64
-  %t1276 = alloca i32
-  %t1277 = alloca i32
-  %t1278 = alloca i64
-  %t1302 = alloca i32
-  %t1310 = alloca i32
-  %t1323 = alloca [16 x i8]
+  %t411 = alloca i32
+  %t415 = alloca i32
+  %t416 = alloca i32
+  %t417 = alloca i32
+  %t443 = alloca i8*
+  %t451 = alloca [512 x i8]
+  %t453 = alloca i64
+  %t464 = alloca [152 x i8]
+  %t466 = alloca i64
+  %t475 = alloca i64
+  %t503 = alloca i32
+  %t544 = alloca i32
+  %t547 = alloca i32
+  %t550 = alloca i8
+  %t558 = alloca { i8, i8, i8 }
+  %t600 = alloca [16 x i8]
+  %t639 = alloca [16 x i8]
+  %t648 = alloca i8*
+  %t653 = alloca i32
+  %t692 = alloca [16 x i8]
+  %t750 = alloca i32
+  %t751 = alloca i32
+  %t752 = alloca i64
+  %t776 = alloca i32
+  %t784 = alloca i32
+  %t797 = alloca [16 x i8]
+  %t836 = alloca [16 x i8]
+  %t893 = alloca i32
+  %t894 = alloca i32
+  %t895 = alloca i64
+  %t919 = alloca i32
+  %t927 = alloca i32
+  %t940 = alloca [16 x i8]
+  %t979 = alloca [16 x i8]
+  %t1036 = alloca i32
+  %t1037 = alloca i32
+  %t1038 = alloca i64
+  %t1062 = alloca i32
+  %t1070 = alloca i32
+  %t1083 = alloca [16 x i8]
+  %t1122 = alloca [16 x i8]
+  %t1179 = alloca i32
+  %t1180 = alloca i32
+  %t1181 = alloca i64
+  %t1205 = alloca i32
+  %t1213 = alloca i32
+  %t1226 = alloca [16 x i8]
+  %t1265 = alloca [16 x i8]
+  %t1322 = alloca i32
+  %t1323 = alloca i32
+  %t1324 = alloca i64
+  %t1348 = alloca i32
+  %t1356 = alloca i32
+  %t1369 = alloca [16 x i8]
+  %t1383 = alloca i32
+  %t1413 = alloca [16 x i8]
+  %t1422 = alloca i8*
+  %t1431 = alloca i8*
+  %t1499 = alloca i64
+  %t1500 = alloca i64
+  %t1520 = alloca i8*
+  %t1521 = alloca i64
+  %t1556 = alloca i32
+  %t1557 = alloca i32
+  %t1558 = alloca i64
+  %t1582 = alloca i32
+  %t1590 = alloca i32
+  %t1603 = alloca [16 x i8]
   store i32 %.argc, i32* @star.argc
   store i8** %.argv, i8*** @star.argv
   %t0 = call i8* @CreateSemaphoreA(i8* null, i32 1, i32 1, i8* null)
@@ -36842,42 +36649,42 @@ entry:
   %t7 = add i32 %t6, 22
   %t8 = call i32 @SDL_Init(i32 32)
   %t9 = icmp ne i32 %t8, 0
-  br i1 %t9, label %sdl_init_fail_3117, label %sdl_init_ok_3118
-sdl_init_fail_3117:
+  br i1 %t9, label %sdl_init_fail_3101, label %sdl_init_ok_3102
+sdl_init_fail_3101:
   call void @star_rc_release(i8* %t3)
-  br label %window_create_end_3119
-sdl_init_ok_3118:
+  br label %window_create_end_3103
+sdl_init_ok_3102:
   %t10 = call i8* @SDL_CreateWindow(i8* %t3, i32 536805376, i32 536805376, i32 %t4, i32 %t7, i32 0)
   call void @star_rc_release(i8* %t3)
   %t11 = icmp eq i8* %t10, null
-  br i1 %t11, label %sdl_window_fail_3120, label %sdl_window_ok_3121
-sdl_window_fail_3120:
-  br label %window_create_end_3119
-sdl_window_ok_3121:
+  br i1 %t11, label %sdl_window_fail_3104, label %sdl_window_ok_3105
+sdl_window_fail_3104:
+  br label %window_create_end_3103
+sdl_window_ok_3105:
   %t12 = call i8* @SDL_CreateRenderer(i8* %t10, i32 -1, i32 0)
   %t13 = icmp eq i8* %t12, null
-  br i1 %t13, label %sdl_renderer_fail_3122, label %sdl_renderer_ok_3123
-sdl_renderer_fail_3122:
+  br i1 %t13, label %sdl_renderer_fail_3106, label %sdl_renderer_ok_3107
+sdl_renderer_fail_3106:
   call void @SDL_DestroyWindow(i8* %t10)
-  br label %window_create_end_3119
-sdl_renderer_ok_3123:
-  br label %window_create_end_3119
-window_create_end_3119:
-  %t14 = phi i8* [ null, %sdl_init_fail_3117 ], [ null, %sdl_window_fail_3120 ], [ null, %sdl_renderer_fail_3122 ], [ %t10, %sdl_renderer_ok_3123 ]
+  br label %window_create_end_3103
+sdl_renderer_ok_3107:
+  br label %window_create_end_3103
+window_create_end_3103:
+  %t14 = phi i8* [ null, %sdl_init_fail_3101 ], [ null, %sdl_window_fail_3104 ], [ null, %sdl_renderer_fail_3106 ], [ %t10, %sdl_renderer_ok_3107 ]
   store i8* %t14, i8** %t2
   %t15 = load i8*, i8** %t2
   %t16 = icmp eq i8* %t15, null
-  br i1 %t16, label %if_then_3124, label %if_else_3125
-if_then_3124:
+  br i1 %t16, label %if_then_3108, label %if_else_3109
+if_then_3108:
   %t17 = getelementptr inbounds { i64, i8*, [21 x i8] }, { i64, i8*, [21 x i8] }* @.str.99, i64 0, i32 2, i64 0
   call i32 (i8*, ...) @printf(i8* %t17)
   call void @star_rc_release(i8* %t17)
   %t18 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.100, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t18)
   ret i32 0
-if_else_3125:
-  br label %if_end_3126
-if_end_3126:
+if_else_3109:
+  br label %if_end_3110
+if_end_3110:
   %t20 = load i32, i32* @star.argc
   %t21 = sext i32 %t20 to i64
   %t22 = load i8**, i8*** @star.argv
@@ -36885,12 +36692,12 @@ if_end_3126:
   %t24 = call i8* @malloc(i64 %t23)
   %t25 = bitcast i8* %t24 to i8**
   store i64 0, i64* %t26
-  br label %args_cond_3127
-args_cond_3127:
+  br label %args_cond_3111
+args_cond_3111:
   %t27 = load i64, i64* %t26
   %t28 = icmp slt i64 %t27, %t21
-  br i1 %t28, label %args_body_3128, label %args_end_3129
-args_body_3128:
+  br i1 %t28, label %args_body_3112, label %args_end_3113
+args_body_3112:
   %t29 = getelementptr inbounds i8*, i8** %t22, i64 %t27
   %t30 = load i8*, i8** %t29
   %t31 = call i32 @strlen(i8* %t30)
@@ -36902,8 +36709,8 @@ args_body_3128:
   store i8* %t34, i8** %t35
   %t36 = add i64 %t27, 1
   store i64 %t36, i64* %t26
-  br label %args_cond_3127
-args_end_3129:
+  br label %args_cond_3111
+args_end_3113:
   %t37 = bitcast void (i8*)* @list_release_str to i8*
   %t38 = call i8* @star_rc_alloc(i64 24, i8* %t37)
   %t39 = bitcast i8* %t38 to { i8**, i64, i64 }*
@@ -36916,2093 +36723,2568 @@ args_end_3129:
   store i8* %t38, i8** %t19
   %t44 = load i8*, i8** %t19
   %t45 = icmp eq i8* %t44, null
-  br i1 %t45, label %list_read_null_3130, label %list_read_real_3131
-list_read_null_3130:
-  br label %list_read_end_3132
-list_read_real_3131:
+  br i1 %t45, label %list_read_null_3114, label %list_read_real_3115
+list_read_null_3114:
+  br label %list_read_end_3116
+list_read_real_3115:
   %t46 = bitcast i8* %t44 to { i8**, i64, i64 }*
   %t47 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t46, i32 0, i32 0
   %t48 = load i8**, i8*** %t47
   %t49 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t46, i32 0, i32 1
   %t50 = load i64, i64* %t49
-  br label %list_read_end_3132
-list_read_end_3132:
-  %t51 = phi i8** [ null, %list_read_null_3130 ], [ %t48, %list_read_real_3131 ]
-  %t52 = phi i64 [ 0, %list_read_null_3130 ], [ %t50, %list_read_real_3131 ]
+  br label %list_read_end_3116
+list_read_end_3116:
+  %t51 = phi i8** [ null, %list_read_null_3114 ], [ %t48, %list_read_real_3115 ]
+  %t52 = phi i64 [ 0, %list_read_null_3114 ], [ %t50, %list_read_real_3115 ]
   %t53 = trunc i64 %t52 to i32
   %t54 = icmp sgt i32 %t53, 1
   store i1 %t54, i1* %t43
   %t56 = load i1, i1* %t43
-  br i1 %t56, label %if_then_3133, label %if_else_3134
-if_then_3133:
+  br i1 %t56, label %if_then_3117, label %if_else_3118
+if_then_3117:
   %t57 = load i8*, i8** %t19
   %t58 = icmp eq i8* %t57, null
-  br i1 %t58, label %list_read_null_3136, label %list_read_real_3137
-list_read_null_3136:
-  br label %list_read_end_3138
-list_read_real_3137:
+  br i1 %t58, label %list_read_null_3120, label %list_read_real_3121
+list_read_null_3120:
+  br label %list_read_end_3122
+list_read_real_3121:
   %t59 = bitcast i8* %t57 to { i8**, i64, i64 }*
   %t60 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t59, i32 0, i32 0
   %t61 = load i8**, i8*** %t60
   %t62 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t59, i32 0, i32 1
   %t63 = load i64, i64* %t62
-  br label %list_read_end_3138
-list_read_end_3138:
-  %t64 = phi i8** [ null, %list_read_null_3136 ], [ %t61, %list_read_real_3137 ]
-  %t65 = phi i64 [ 0, %list_read_null_3136 ], [ %t63, %list_read_real_3137 ]
+  br label %list_read_end_3122
+list_read_end_3122:
+  %t64 = phi i8** [ null, %list_read_null_3120 ], [ %t61, %list_read_real_3121 ]
+  %t65 = phi i64 [ 0, %list_read_null_3120 ], [ %t63, %list_read_real_3121 ]
   %t66 = sext i32 1 to i64
   %t67 = icmp ult i64 %t66, %t65
-  br i1 %t67, label %list_idx_ok_3139, label %list_idx_oob_3140
-list_idx_ok_3139:
+  br i1 %t67, label %list_idx_ok_3123, label %list_idx_oob_3124
+list_idx_ok_3123:
   %t68 = getelementptr inbounds i8*, i8** %t64, i64 %t66
   %t69 = load i8*, i8** %t68
   %t70 = load i8*, i8** %t68
   call void @star_rc_retain(i8* %t70)
-  br label %list_idx_end_3141
-list_idx_oob_3140:
+  br label %list_idx_end_3125
+list_idx_oob_3124:
   %t71 = call i8* @star_rc_alloc(i64 1, i8* null)
   store i8 0, i8* %t71
-  br label %list_idx_end_3141
-list_idx_end_3141:
-  %t72 = phi i8* [ %t69, %list_idx_ok_3139 ], [ %t71, %list_idx_oob_3140 ]
-  br label %if_end_3135
-if_else_3134:
+  br label %list_idx_end_3125
+list_idx_end_3125:
+  %t72 = phi i8* [ %t69, %list_idx_ok_3123 ], [ %t71, %list_idx_oob_3124 ]
+  br label %if_end_3119
+if_else_3118:
   %t73 = getelementptr inbounds { i64, i8*, [1 x i8] }, { i64, i8*, [1 x i8] }* @.str.101, i64 0, i32 2, i64 0
-  br label %if_end_3135
-if_end_3135:
-  %t74 = phi i8* [ %t72, %list_idx_end_3141 ], [ %t73, %if_else_3134 ]
+  br label %if_end_3119
+if_end_3119:
+  %t74 = phi i8* [ %t72, %list_idx_end_3125 ], [ %t73, %if_else_3118 ]
   store i8* %t74, i8** %t55
   call void @new_cpu(%cpu__Cpu* %t75)
   %t76 = load i8*, i8** %t55
   %t77 = load i8*, i8** %t55
   call void @star_rc_retain(i8* %t77)
   %t78 = load i1, i1* %t43
-  call void @cpu__Cpu__load_program_or_demo(%cpu__Cpu* %t75, i8* %t76, i1 %t78)
+  call void @cpu__Cpu__load_program_or_wait(%cpu__Cpu* %t75, i8* %t76, i1 %t78)
   %t81 = getelementptr inbounds [417 x i8], [417 x i8]* @.str.102, i64 0, i64 0
   store i8* %t81, i8** %t80
   store i32 41, i32* %t82
   %t84 = getelementptr inbounds [26 x i1], [26 x i1]* %t83, i32 0, i64 0
   store i1 false, i1* %t84
   store i64 1, i64* %t85
-  br label %arr_rep_cond_3142
-arr_rep_cond_3142:
+  br label %arr_rep_cond_3126
+arr_rep_cond_3126:
   %t86 = load i64, i64* %t85
   %t87 = icmp ult i64 %t86, 26
-  br i1 %t87, label %arr_rep_body_3143, label %arr_rep_end_3144
-arr_rep_body_3143:
+  br i1 %t87, label %arr_rep_body_3127, label %arr_rep_end_3128
+arr_rep_body_3127:
   %t88 = getelementptr inbounds [26 x i1], [26 x i1]* %t83, i32 0, i64 %t86
   store i1 false, i1* %t88
   %t89 = add i64 %t86, 1
   store i64 %t89, i64* %t85
-  br label %arr_rep_cond_3142
-arr_rep_end_3144:
+  br label %arr_rep_cond_3126
+arr_rep_end_3128:
   store i1 false, i1* %t90
   store i1 false, i1* %t91
   store i1 false, i1* %t92
   store i1 false, i1* %t93
   store i1 false, i1* %t94
-  store i1 true, i1* %t95
-  br label %while_cond_3145
-while_cond_3145:
-  %t96 = load i8*, i8** %t2
-  %t97 = icmp eq i8* %t96, null
-  br i1 %t97, label %sdl_null_window_3149, label %sdl_window_handle_ok_3150
-sdl_null_window_3149:
-  %t98 = getelementptr inbounds [85 x i8], [85 x i8]* @.str.103, i64 0, i64 0
-  call i32 @puts(i8* %t98)
+  store i1 false, i1* %t95
+  store i1 true, i1* %t96
+  br label %while_cond_3129
+while_cond_3129:
+  %t97 = load i8*, i8** %t2
+  %t98 = icmp eq i8* %t97, null
+  br i1 %t98, label %sdl_null_window_3133, label %sdl_window_handle_ok_3134
+sdl_null_window_3133:
+  %t99 = getelementptr inbounds [85 x i8], [85 x i8]* @.str.103, i64 0, i64 0
+  call i32 @puts(i8* %t99)
   call void @exit(i32 1)
   unreachable
-sdl_window_handle_ok_3150:
-  store i1 false, i1* %t99
-  %t101 = getelementptr inbounds [56 x i8], [56 x i8]* %t100, i64 0, i64 0
-  br label %sdl_poll_cond_3151
-sdl_poll_cond_3151:
-  %t102 = call i32 @SDL_PollEvent(i8* %t101)
-  %t103 = icmp ne i32 %t102, 0
-  br i1 %t103, label %sdl_poll_body_3152, label %sdl_poll_end_3154
-sdl_poll_body_3152:
-  %t104 = bitcast i8* %t101 to i32*
-  %t105 = load i32, i32* %t104
-  %t106 = icmp eq i32 %t105, 256
-  br i1 %t106, label %sdl_poll_set_quit_3153, label %sdl_poll_cond_3151
-sdl_poll_set_quit_3153:
-  store i1 true, i1* %t99
-  br label %sdl_poll_cond_3151
-sdl_poll_end_3154:
-  %t107 = load i1, i1* %t99
-  %t108 = xor i1 true, %t107
-  br i1 %t108, label %while_body_3146, label %while_else_3147
-while_body_3146:
-  %t109 = load i32, i32* %t82
-  %t110 = icmp sge i32 %t109, 0
-  %t111 = icmp slt i32 %t109, 512
-  %t112 = and i1 %t110, %t111
-  br i1 %t112, label %key_down_read_3155, label %key_down_end_3156
-key_down_read_3155:
-  %t113 = call i8* @SDL_GetKeyboardState(i32* null)
-  %t114 = sext i32 %t109 to i64
-  %t115 = getelementptr inbounds i8, i8* %t113, i64 %t114
-  %t116 = load i8, i8* %t115
-  %t117 = icmp ne i8 %t116, 0
-  br label %key_down_end_3156
-key_down_end_3156:
-  %t118 = phi i1 [ false, %while_body_3146 ], [ %t117, %key_down_read_3155 ]
-  br i1 %t118, label %if_then_3157, label %if_else_3158
+sdl_window_handle_ok_3134:
+  store i1 false, i1* %t100
+  %t102 = getelementptr inbounds [56 x i8], [56 x i8]* %t101, i64 0, i64 0
+  br label %sdl_poll_cond_3135
+sdl_poll_cond_3135:
+  %t103 = call i32 @SDL_PollEvent(i8* %t102)
+  %t104 = icmp ne i32 %t103, 0
+  br i1 %t104, label %sdl_poll_body_3136, label %sdl_poll_end_3138
+sdl_poll_body_3136:
+  %t105 = bitcast i8* %t102 to i32*
+  %t106 = load i32, i32* %t105
+  %t107 = icmp eq i32 %t106, 256
+  br i1 %t107, label %sdl_poll_set_quit_3137, label %sdl_poll_cond_3135
+sdl_poll_set_quit_3137:
+  store i1 true, i1* %t100
+  br label %sdl_poll_cond_3135
+sdl_poll_end_3138:
+  %t108 = load i1, i1* %t100
+  %t109 = xor i1 true, %t108
+  br i1 %t109, label %while_body_3130, label %while_else_3131
+while_body_3130:
+  %t110 = load i32, i32* %t82
+  %t111 = icmp sge i32 %t110, 0
+  %t112 = icmp slt i32 %t110, 512
+  %t113 = and i1 %t111, %t112
+  br i1 %t113, label %key_down_read_3139, label %key_down_end_3140
+key_down_read_3139:
+  %t114 = call i8* @SDL_GetKeyboardState(i32* null)
+  %t115 = sext i32 %t110 to i64
+  %t116 = getelementptr inbounds i8, i8* %t114, i64 %t115
+  %t117 = load i8, i8* %t116
+  %t118 = icmp ne i8 %t117, 0
+  br label %key_down_end_3140
+key_down_end_3140:
+  %t119 = phi i1 [ false, %while_body_3130 ], [ %t118, %key_down_read_3139 ]
+  br i1 %t119, label %if_then_3141, label %if_else_3142
+if_then_3141:
+  br label %while_end_3132
+if_else_3142:
+  br label %if_end_3143
+if_end_3143:
+  %t121 = icmp sge i32 62, 0
+  %t122 = icmp slt i32 62, 512
+  %t123 = and i1 %t121, %t122
+  br i1 %t123, label %key_down_read_3144, label %key_down_end_3145
+key_down_read_3144:
+  %t124 = call i8* @SDL_GetKeyboardState(i32* null)
+  %t125 = sext i32 62 to i64
+  %t126 = getelementptr inbounds i8, i8* %t124, i64 %t125
+  %t127 = load i8, i8* %t126
+  %t128 = icmp ne i8 %t127, 0
+  br label %key_down_end_3145
+key_down_end_3145:
+  %t129 = phi i1 [ false, %if_end_3143 ], [ %t128, %key_down_read_3144 ]
+  store i1 %t129, i1* %t120
+  %t130 = load i1, i1* %t120
+  br i1 %t130, label %logic_rhs_3146, label %logic_short_3147
+logic_rhs_3146:
+  %t131 = load i1, i1* %t90
+  %t132 = xor i1 true, %t131
+  br label %logic_end_3148
+logic_short_3147:
+  br label %logic_end_3148
+logic_end_3148:
+  %t133 = phi i1 [ %t132, %logic_rhs_3146 ], [ false, %logic_short_3147 ]
+  br i1 %t133, label %if_then_3149, label %if_else_3150
+if_then_3149:
+  %t134 = load i1, i1* %t96
+  %t135 = xor i1 true, %t134
+  store i1 %t135, i1* %t96
+  br label %if_end_3151
+if_else_3150:
+  br label %if_end_3151
+if_end_3151:
+  %t136 = load i1, i1* %t120
+  store i1 %t136, i1* %t90
+  %t138 = icmp sge i32 63, 0
+  %t139 = icmp slt i32 63, 512
+  %t140 = and i1 %t138, %t139
+  br i1 %t140, label %key_down_read_3152, label %key_down_end_3153
+key_down_read_3152:
+  %t141 = call i8* @SDL_GetKeyboardState(i32* null)
+  %t142 = sext i32 63 to i64
+  %t143 = getelementptr inbounds i8, i8* %t141, i64 %t142
+  %t144 = load i8, i8* %t143
+  %t145 = icmp ne i8 %t144, 0
+  br label %key_down_end_3153
+key_down_end_3153:
+  %t146 = phi i1 [ false, %if_end_3151 ], [ %t145, %key_down_read_3152 ]
+  store i1 %t146, i1* %t137
+  %t147 = load i1, i1* %t137
+  br i1 %t147, label %logic_rhs_3154, label %logic_short_3155
+logic_rhs_3154:
+  %t148 = load i1, i1* %t91
+  %t149 = xor i1 true, %t148
+  br label %logic_end_3156
+logic_short_3155:
+  br label %logic_end_3156
+logic_end_3156:
+  %t150 = phi i1 [ %t149, %logic_rhs_3154 ], [ false, %logic_short_3155 ]
+  br i1 %t150, label %if_then_3157, label %if_else_3158
 if_then_3157:
-  br label %while_end_3148
+  store i1 false, i1* %t96
+  br label %if_end_3159
 if_else_3158:
   br label %if_end_3159
 if_end_3159:
-  %t120 = icmp sge i32 62, 0
-  %t121 = icmp slt i32 62, 512
-  %t122 = and i1 %t120, %t121
-  br i1 %t122, label %key_down_read_3160, label %key_down_end_3161
+  %t151 = load i1, i1* %t137
+  store i1 %t151, i1* %t91
+  %t153 = icmp sge i32 64, 0
+  %t154 = icmp slt i32 64, 512
+  %t155 = and i1 %t153, %t154
+  br i1 %t155, label %key_down_read_3160, label %key_down_end_3161
 key_down_read_3160:
-  %t123 = call i8* @SDL_GetKeyboardState(i32* null)
-  %t124 = sext i32 62 to i64
-  %t125 = getelementptr inbounds i8, i8* %t123, i64 %t124
-  %t126 = load i8, i8* %t125
-  %t127 = icmp ne i8 %t126, 0
+  %t156 = call i8* @SDL_GetKeyboardState(i32* null)
+  %t157 = sext i32 64 to i64
+  %t158 = getelementptr inbounds i8, i8* %t156, i64 %t157
+  %t159 = load i8, i8* %t158
+  %t160 = icmp ne i8 %t159, 0
   br label %key_down_end_3161
 key_down_end_3161:
-  %t128 = phi i1 [ false, %if_end_3159 ], [ %t127, %key_down_read_3160 ]
-  store i1 %t128, i1* %t119
-  %t129 = load i1, i1* %t119
-  br i1 %t129, label %logic_rhs_3162, label %logic_short_3163
+  %t161 = phi i1 [ false, %if_end_3159 ], [ %t160, %key_down_read_3160 ]
+  store i1 %t161, i1* %t152
+  %t162 = load i1, i1* %t152
+  br i1 %t162, label %logic_rhs_3162, label %logic_short_3163
 logic_rhs_3162:
-  %t130 = load i1, i1* %t90
-  %t131 = xor i1 true, %t130
+  %t163 = load i1, i1* %t92
+  %t164 = xor i1 true, %t163
   br label %logic_end_3164
 logic_short_3163:
   br label %logic_end_3164
 logic_end_3164:
-  %t132 = phi i1 [ %t131, %logic_rhs_3162 ], [ false, %logic_short_3163 ]
-  br i1 %t132, label %if_then_3165, label %if_else_3166
+  %t165 = phi i1 [ %t164, %logic_rhs_3162 ], [ false, %logic_short_3163 ]
+  br i1 %t165, label %if_then_3165, label %if_else_3166
 if_then_3165:
-  %t133 = load i1, i1* %t95
-  %t134 = xor i1 true, %t133
-  store i1 %t134, i1* %t95
+  call void @cpu__Cpu__reinit(%cpu__Cpu* %t75)
+  %t167 = load i8*, i8** %t55
+  %t168 = load i8*, i8** %t55
+  call void @star_rc_retain(i8* %t168)
+  %t169 = load i1, i1* %t43
+  call void @cpu__Cpu__load_program_or_wait(%cpu__Cpu* %t75, i8* %t167, i1 %t169)
+  store i1 true, i1* %t96
   br label %if_end_3167
 if_else_3166:
   br label %if_end_3167
 if_end_3167:
-  %t135 = load i1, i1* %t119
-  store i1 %t135, i1* %t90
-  %t137 = icmp sge i32 63, 0
-  %t138 = icmp slt i32 63, 512
-  %t139 = and i1 %t137, %t138
-  br i1 %t139, label %key_down_read_3168, label %key_down_end_3169
+  %t171 = load i1, i1* %t152
+  store i1 %t171, i1* %t92
+  %t173 = icmp sge i32 65, 0
+  %t174 = icmp slt i32 65, 512
+  %t175 = and i1 %t173, %t174
+  br i1 %t175, label %key_down_read_3168, label %key_down_end_3169
 key_down_read_3168:
-  %t140 = call i8* @SDL_GetKeyboardState(i32* null)
-  %t141 = sext i32 63 to i64
-  %t142 = getelementptr inbounds i8, i8* %t140, i64 %t141
-  %t143 = load i8, i8* %t142
-  %t144 = icmp ne i8 %t143, 0
+  %t176 = call i8* @SDL_GetKeyboardState(i32* null)
+  %t177 = sext i32 65 to i64
+  %t178 = getelementptr inbounds i8, i8* %t176, i64 %t177
+  %t179 = load i8, i8* %t178
+  %t180 = icmp ne i8 %t179, 0
   br label %key_down_end_3169
 key_down_end_3169:
-  %t145 = phi i1 [ false, %if_end_3167 ], [ %t144, %key_down_read_3168 ]
-  store i1 %t145, i1* %t136
-  %t146 = load i1, i1* %t136
-  br i1 %t146, label %logic_rhs_3170, label %logic_short_3171
+  %t181 = phi i1 [ false, %if_end_3167 ], [ %t180, %key_down_read_3168 ]
+  store i1 %t181, i1* %t172
+  store i1 false, i1* %t182
+  %t183 = load i1, i1* %t172
+  br i1 %t183, label %logic_rhs_3170, label %logic_short_3171
 logic_rhs_3170:
-  %t147 = load i1, i1* %t91
-  %t148 = xor i1 true, %t147
+  %t184 = load i1, i1* %t93
+  %t185 = xor i1 true, %t184
   br label %logic_end_3172
 logic_short_3171:
   br label %logic_end_3172
 logic_end_3172:
-  %t149 = phi i1 [ %t148, %logic_rhs_3170 ], [ false, %logic_short_3171 ]
-  br i1 %t149, label %if_then_3173, label %if_else_3174
+  %t186 = phi i1 [ %t185, %logic_rhs_3170 ], [ false, %logic_short_3171 ]
+  br i1 %t186, label %if_then_3173, label %if_else_3174
 if_then_3173:
-  store i1 false, i1* %t95
+  store i1 true, i1* %t182
   br label %if_end_3175
 if_else_3174:
   br label %if_end_3175
 if_end_3175:
-  %t150 = load i1, i1* %t136
-  store i1 %t150, i1* %t91
-  %t152 = icmp sge i32 64, 0
-  %t153 = icmp slt i32 64, 512
-  %t154 = and i1 %t152, %t153
-  br i1 %t154, label %key_down_read_3176, label %key_down_end_3177
+  %t187 = load i1, i1* %t172
+  store i1 %t187, i1* %t93
+  %t189 = icmp sge i32 66, 0
+  %t190 = icmp slt i32 66, 512
+  %t191 = and i1 %t189, %t190
+  br i1 %t191, label %key_down_read_3176, label %key_down_end_3177
 key_down_read_3176:
-  %t155 = call i8* @SDL_GetKeyboardState(i32* null)
-  %t156 = sext i32 64 to i64
-  %t157 = getelementptr inbounds i8, i8* %t155, i64 %t156
-  %t158 = load i8, i8* %t157
-  %t159 = icmp ne i8 %t158, 0
+  %t192 = call i8* @SDL_GetKeyboardState(i32* null)
+  %t193 = sext i32 66 to i64
+  %t194 = getelementptr inbounds i8, i8* %t192, i64 %t193
+  %t195 = load i8, i8* %t194
+  %t196 = icmp ne i8 %t195, 0
   br label %key_down_end_3177
 key_down_end_3177:
-  %t160 = phi i1 [ false, %if_end_3175 ], [ %t159, %key_down_read_3176 ]
-  store i1 %t160, i1* %t151
-  %t161 = load i1, i1* %t151
-  br i1 %t161, label %logic_rhs_3178, label %logic_short_3179
+  %t197 = phi i1 [ false, %if_end_3175 ], [ %t196, %key_down_read_3176 ]
+  store i1 %t197, i1* %t188
+  %t198 = load i1, i1* %t188
+  br i1 %t198, label %logic_rhs_3178, label %logic_short_3179
 logic_rhs_3178:
-  %t162 = load i1, i1* %t92
-  %t163 = xor i1 true, %t162
+  %t199 = load i1, i1* %t94
+  %t200 = xor i1 true, %t199
   br label %logic_end_3180
 logic_short_3179:
   br label %logic_end_3180
 logic_end_3180:
-  %t164 = phi i1 [ %t163, %logic_rhs_3178 ], [ false, %logic_short_3179 ]
-  br i1 %t164, label %if_then_3181, label %if_else_3182
+  %t201 = phi i1 [ %t200, %logic_rhs_3178 ], [ false, %logic_short_3179 ]
+  br i1 %t201, label %if_then_3181, label %if_else_3182
 if_then_3181:
+  %t203 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.104, i64 0, i32 2, i64 0
+  %t204 = call i32 @strlen(i8* %t203)
+  %t205 = icmp eq i32 %t204, 0
+  %t206 = getelementptr inbounds [4 x i8], [4 x i8]* @.str.105, i64 0, i64 0
+  %t207 = select i1 %t205, i8* %t206, i8* %t203
+  %t208 = call i32 @strlen(i8* %t207)
+  %t209 = sext i32 %t208 to i64
+  %t211 = getelementptr inbounds [512 x i8], [512 x i8]* %t210, i64 0, i64 0
+  store i64 0, i64* %t212
+  br label %ht_fill8_cond_3184
+ht_fill8_cond_3184:
+  %t213 = load i64, i64* %t212
+  %t214 = icmp slt i64 %t213, 512
+  br i1 %t214, label %ht_fill8_body_3185, label %ht_fill8_end_3186
+ht_fill8_body_3185:
+  %t215 = getelementptr inbounds i8, i8* %t211, i64 %t213
+  store i8 0, i8* %t215
+  %t216 = add i64 %t213, 1
+  store i64 %t216, i64* %t212
+  br label %ht_fill8_cond_3184
+ht_fill8_end_3186:
+  %t217 = getelementptr inbounds [7 x i8], [7 x i8]* @.str.106, i64 0, i64 0
+  call i8* @memcpy(i8* %t211, i8* %t217, i64 7)
+  %t218 = getelementptr inbounds i8, i8* %t211, i64 7
+  call i8* @memcpy(i8* %t218, i8* %t207, i64 %t209)
+  %t219 = add i64 7, %t209
+  %t220 = getelementptr inbounds i8, i8* %t211, i64 %t219
+  store i8 41, i8* %t220
+  %t221 = add i64 %t219, 2
+  %t222 = getelementptr inbounds i8, i8* %t211, i64 %t221
+  call i8* @memcpy(i8* %t222, i8* %t207, i64 %t209)
+  call void @star_rc_release(i8* %t203)
+  %t224 = getelementptr inbounds [152 x i8], [152 x i8]* %t223, i64 0, i64 0
+  store i64 0, i64* %t225
+  br label %ht_fill8_cond_3187
+ht_fill8_cond_3187:
+  %t226 = load i64, i64* %t225
+  %t227 = icmp slt i64 %t226, 152
+  br i1 %t227, label %ht_fill8_body_3188, label %ht_fill8_end_3189
+ht_fill8_body_3188:
+  %t228 = getelementptr inbounds i8, i8* %t224, i64 %t226
+  store i8 0, i8* %t228
+  %t229 = add i64 %t226, 1
+  store i64 %t229, i64* %t225
+  br label %ht_fill8_cond_3187
+ht_fill8_end_3189:
+  %t230 = bitcast i8* %t224 to i32*
+  store i32 152, i32* %t230
+  %t231 = getelementptr inbounds i8, i8* %t224, i64 24
+  %t232 = bitcast i8* %t231 to i8**
+  store i8* %t211, i8** %t232
+  %t233 = call i8* @star_rc_alloc(i64 1024, i8* null)
+  store i64 0, i64* %t234
+  br label %ht_fill8_cond_3190
+ht_fill8_cond_3190:
+  %t235 = load i64, i64* %t234
+  %t236 = icmp slt i64 %t235, 1024
+  br i1 %t236, label %ht_fill8_body_3191, label %ht_fill8_end_3192
+ht_fill8_body_3191:
+  %t237 = getelementptr inbounds i8, i8* %t233, i64 %t235
+  store i8 0, i8* %t237
+  %t238 = add i64 %t235, 1
+  store i64 %t238, i64* %t234
+  br label %ht_fill8_cond_3190
+ht_fill8_end_3192:
+  %t239 = getelementptr inbounds i8, i8* %t224, i64 48
+  %t240 = bitcast i8* %t239 to i8**
+  store i8* %t233, i8** %t240
+  %t241 = getelementptr inbounds i8, i8* %t224, i64 56
+  %t242 = bitcast i8* %t241 to i32*
+  store i32 1024, i32* %t242
+  %t243 = getelementptr inbounds i8, i8* %t224, i64 96
+  %t244 = bitcast i8* %t243 to i32*
+  store i32 6148, i32* %t244
+  %t245 = call i32 @GetOpenFileNameA(i8* %t224)
+  %t246 = icmp eq i32 %t245, 0
+  br i1 %t246, label %open_file_dialog_cancel_3193, label %open_file_dialog_end_3194
+open_file_dialog_cancel_3193:
+  store i8 0, i8* %t233
+  br label %open_file_dialog_end_3194
+open_file_dialog_end_3194:
+  store i8* %t233, i8** %t202
+  %t247 = load i8*, i8** %t202
+  %t248 = load i8*, i8** %t202
+  call void @star_rc_retain(i8* %t248)
+  %t249 = getelementptr inbounds { i64, i8*, [1 x i8] }, { i64, i8*, [1 x i8] }* @.str.107, i64 0, i32 2, i64 0
+  %t250 = call i32 @strcmp(i8* %t247, i8* %t249)
+  call void @star_rc_release(i8* %t247)
+  call void @star_rc_release(i8* %t249)
+  %t251 = icmp ne i32 %t250, 0
+  br i1 %t251, label %if_then_3195, label %if_else_3196
+if_then_3195:
+  %t252 = load i8*, i8** %t202
+  %t253 = load i8*, i8** %t202
+  call void @star_rc_retain(i8* %t253)
+  %t254 = load i8*, i8** %t55
+  call void @star_rc_release(i8* %t254)
+  store i8* %t252, i8** %t55
+  store i1 true, i1* %t43
   call void @cpu__Cpu__reinit(%cpu__Cpu* %t75)
-  %t166 = load i8*, i8** %t55
-  %t167 = load i8*, i8** %t55
-  call void @star_rc_retain(i8* %t167)
-  %t168 = load i1, i1* %t43
-  call void @cpu__Cpu__load_program_or_demo(%cpu__Cpu* %t75, i8* %t166, i1 %t168)
-  store i1 true, i1* %t95
+  %t256 = load i8*, i8** %t55
+  %t257 = load i8*, i8** %t55
+  call void @star_rc_retain(i8* %t257)
+  %t258 = load i1, i1* %t43
+  call void @cpu__Cpu__load_program_or_wait(%cpu__Cpu* %t75, i8* %t256, i1 %t258)
+  store i1 true, i1* %t96
+  br label %if_end_3197
+if_else_3196:
+  br label %if_end_3197
+if_end_3197:
+  %t260 = load i8*, i8** %t202
+  call void @star_rc_release(i8* %t260)
   br label %if_end_3183
 if_else_3182:
   br label %if_end_3183
 if_end_3183:
-  %t170 = load i1, i1* %t151
-  store i1 %t170, i1* %t92
-  %t172 = icmp sge i32 65, 0
-  %t173 = icmp slt i32 65, 512
-  %t174 = and i1 %t172, %t173
-  br i1 %t174, label %key_down_read_3184, label %key_down_end_3185
-key_down_read_3184:
-  %t175 = call i8* @SDL_GetKeyboardState(i32* null)
-  %t176 = sext i32 65 to i64
-  %t177 = getelementptr inbounds i8, i8* %t175, i64 %t176
-  %t178 = load i8, i8* %t177
-  %t179 = icmp ne i8 %t178, 0
-  br label %key_down_end_3185
-key_down_end_3185:
-  %t180 = phi i1 [ false, %if_end_3183 ], [ %t179, %key_down_read_3184 ]
-  store i1 %t180, i1* %t171
-  store i1 false, i1* %t181
-  %t182 = load i1, i1* %t171
-  br i1 %t182, label %logic_rhs_3186, label %logic_short_3187
-logic_rhs_3186:
-  %t183 = load i1, i1* %t93
-  %t184 = xor i1 true, %t183
-  br label %logic_end_3188
-logic_short_3187:
-  br label %logic_end_3188
-logic_end_3188:
-  %t185 = phi i1 [ %t184, %logic_rhs_3186 ], [ false, %logic_short_3187 ]
-  br i1 %t185, label %if_then_3189, label %if_else_3190
-if_then_3189:
-  store i1 true, i1* %t181
-  br label %if_end_3191
-if_else_3190:
-  br label %if_end_3191
-if_end_3191:
-  %t186 = load i1, i1* %t171
-  store i1 %t186, i1* %t93
-  store i32 0, i32* %t187
-  br label %while_cond_3192
-while_cond_3192:
-  %t188 = load i32, i32* %t187
-  %t189 = icmp slt i32 %t188, 26
-  br i1 %t189, label %while_body_3193, label %while_else_3194
-while_body_3193:
-  %t191 = load i32, i32* %t187
-  %t192 = add i32 4, %t191
-  store i32 %t192, i32* %t190
-  %t194 = load i32, i32* %t190
-  %t195 = icmp sge i32 %t194, 0
-  %t196 = icmp slt i32 %t194, 512
-  %t197 = and i1 %t195, %t196
-  br i1 %t197, label %key_down_read_3196, label %key_down_end_3197
-key_down_read_3196:
-  %t198 = call i8* @SDL_GetKeyboardState(i32* null)
-  %t199 = sext i32 %t194 to i64
-  %t200 = getelementptr inbounds i8, i8* %t198, i64 %t199
-  %t201 = load i8, i8* %t200
-  %t202 = icmp ne i8 %t201, 0
-  br label %key_down_end_3197
-key_down_end_3197:
-  %t203 = phi i1 [ false, %while_body_3193 ], [ %t202, %key_down_read_3196 ]
-  store i1 %t203, i1* %t193
-  %t204 = load i1, i1* %t193
-  br i1 %t204, label %logic_rhs_3198, label %logic_short_3199
-logic_rhs_3198:
-  %t205 = load i32, i32* %t187
-  %t206 = sext i32 %t205 to i64
-  %t207 = icmp ult i64 %t206, 26
-  br i1 %t207, label %arr_rplace_ok_3201, label %arr_rplace_oob_3202
-arr_rplace_ok_3201:
-  %t208 = getelementptr inbounds [26 x i1], [26 x i1]* %t83, i32 0, i64 %t206
-  br label %arr_rplace_end_3203
-arr_rplace_oob_3202:
-  store i1 false, i1* %t209
-  br label %arr_rplace_end_3203
-arr_rplace_end_3203:
-  %t210 = phi i1* [ %t208, %arr_rplace_ok_3201 ], [ %t209, %arr_rplace_oob_3202 ]
-  %t211 = load i1, i1* %t210
-  %t212 = xor i1 true, %t211
-  br label %logic_end_3200
-logic_short_3199:
-  br label %logic_end_3200
-logic_end_3200:
-  %t213 = phi i1 [ %t212, %arr_rplace_end_3203 ], [ false, %logic_short_3199 ]
-  br i1 %t213, label %if_then_3204, label %if_else_3205
-if_then_3204:
-  %t214 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 2
-  %t215 = load i32, i32* %t187
-  %t216 = add i32 65, %t215
-  %t217 = trunc i32 %t216 to i8
-  call void @cpu__keyboard__Keyboard__push_key(%cpu__keyboard__Keyboard* %t214, i8 %t217)
-  br label %if_end_3206
-if_else_3205:
-  br label %if_end_3206
-if_end_3206:
-  %t219 = load i1, i1* %t193
-  %t220 = load i32, i32* %t187
-  %t221 = sext i32 %t220 to i64
-  %t222 = icmp ult i64 %t221, 26
-  br i1 %t222, label %arr_set_do_3207, label %arr_set_oob_3208
-arr_set_do_3207:
-  %t223 = getelementptr inbounds [26 x i1], [26 x i1]* %t83, i32 0, i64 %t221
-  store i1 %t219, i1* %t223
-  br label %arr_set_end_3209
-arr_set_oob_3208:
-  br label %arr_set_end_3209
-arr_set_end_3209:
-  %t224 = load i32, i32* %t187
-  %t225 = add i32 %t224, 1
-  store i32 %t225, i32* %t187
-  br label %while_cond_3192
-while_else_3194:
-  br label %while_end_3195
-while_end_3195:
-  %t226 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 26
-  %t227 = load i1, i1* %t226
-  br i1 %t227, label %if_then_3210, label %if_else_3211
+  %t261 = load i1, i1* %t188
+  store i1 %t261, i1* %t94
+  store i32 0, i32* %t262
+  br label %while_cond_3198
+while_cond_3198:
+  %t263 = load i32, i32* %t262
+  %t264 = icmp slt i32 %t263, 26
+  br i1 %t264, label %while_body_3199, label %while_else_3200
+while_body_3199:
+  %t266 = load i32, i32* %t262
+  %t267 = add i32 4, %t266
+  store i32 %t267, i32* %t265
+  %t269 = load i32, i32* %t265
+  %t270 = icmp sge i32 %t269, 0
+  %t271 = icmp slt i32 %t269, 512
+  %t272 = and i1 %t270, %t271
+  br i1 %t272, label %key_down_read_3202, label %key_down_end_3203
+key_down_read_3202:
+  %t273 = call i8* @SDL_GetKeyboardState(i32* null)
+  %t274 = sext i32 %t269 to i64
+  %t275 = getelementptr inbounds i8, i8* %t273, i64 %t274
+  %t276 = load i8, i8* %t275
+  %t277 = icmp ne i8 %t276, 0
+  br label %key_down_end_3203
+key_down_end_3203:
+  %t278 = phi i1 [ false, %while_body_3199 ], [ %t277, %key_down_read_3202 ]
+  store i1 %t278, i1* %t268
+  %t279 = load i1, i1* %t268
+  br i1 %t279, label %logic_rhs_3204, label %logic_short_3205
+logic_rhs_3204:
+  %t280 = load i32, i32* %t262
+  %t281 = sext i32 %t280 to i64
+  %t282 = icmp ult i64 %t281, 26
+  br i1 %t282, label %arr_rplace_ok_3207, label %arr_rplace_oob_3208
+arr_rplace_ok_3207:
+  %t283 = getelementptr inbounds [26 x i1], [26 x i1]* %t83, i32 0, i64 %t281
+  br label %arr_rplace_end_3209
+arr_rplace_oob_3208:
+  store i1 false, i1* %t284
+  br label %arr_rplace_end_3209
+arr_rplace_end_3209:
+  %t285 = phi i1* [ %t283, %arr_rplace_ok_3207 ], [ %t284, %arr_rplace_oob_3208 ]
+  %t286 = load i1, i1* %t285
+  %t287 = xor i1 true, %t286
+  br label %logic_end_3206
+logic_short_3205:
+  br label %logic_end_3206
+logic_end_3206:
+  %t288 = phi i1 [ %t287, %arr_rplace_end_3209 ], [ false, %logic_short_3205 ]
+  br i1 %t288, label %if_then_3210, label %if_else_3211
 if_then_3210:
-  %t231 = call i32 @SDL_GetMouseState(i32* %t229, i32* %t230)
-  %t232 = load i32, i32* %t229
-  %t233 = load i32, i32* %t230
-  %t234 = icmp eq i32 2, 0
-  %t235 = icmp eq i32 %t232, -2147483648
-  %t236 = icmp eq i32 2, -1
-  %t237 = and i1 %t235, %t236
-  %t238 = or i1 %t234, %t237
-  br i1 %t238, label %int_div_fail_3213, label %int_div_ok_3214
-int_div_fail_3213:
-  %t239 = getelementptr inbounds [71 x i8], [71 x i8]* @.str.104, i64 0, i64 0
-  call i32 @puts(i8* %t239)
-  call void @exit(i32 1)
-  unreachable
-int_div_ok_3214:
-  %t240 = sdiv i32 %t232, 2
-  store i32 %t240, i32* %t228
-  %t241 = load i32, i32* %t228
-  %t242 = icmp slt i32 %t241, 0
-  br i1 %t242, label %if_then_3215, label %if_else_3216
-if_then_3215:
-  store i32 0, i32* %t228
-  br label %if_end_3217
-if_else_3216:
-  %t243 = load i32, i32* %t228
-  %t244 = icmp sgt i32 %t243, 255
-  br i1 %t244, label %if_then_3218, label %if_else_3219
-if_then_3218:
-  store i32 255, i32* %t228
-  br label %if_end_3220
-if_else_3219:
-  br label %if_end_3220
-if_end_3220:
-  br label %if_end_3217
-if_end_3217:
-  %t248 = call i32 @SDL_GetMouseState(i32* %t246, i32* %t247)
-  %t249 = load i32, i32* %t246
-  %t250 = load i32, i32* %t247
-  %t251 = sub i32 %t250, 40
-  %t252 = icmp eq i32 2, 0
-  %t253 = icmp eq i32 %t251, -2147483648
-  %t254 = icmp eq i32 2, -1
-  %t255 = and i1 %t253, %t254
-  %t256 = or i1 %t252, %t255
-  br i1 %t256, label %int_div_fail_3221, label %int_div_ok_3222
-int_div_fail_3221:
-  %t257 = getelementptr inbounds [71 x i8], [71 x i8]* @.str.105, i64 0, i64 0
-  call i32 @puts(i8* %t257)
-  call void @exit(i32 1)
-  unreachable
-int_div_ok_3222:
-  %t258 = sdiv i32 %t251, 2
-  store i32 %t258, i32* %t245
-  %t259 = load i32, i32* %t245
-  %t260 = icmp slt i32 %t259, 0
-  br i1 %t260, label %if_then_3223, label %if_else_3224
-if_then_3223:
-  store i32 0, i32* %t245
-  br label %if_end_3225
-if_else_3224:
-  %t261 = load i32, i32* %t245
-  %t262 = icmp sgt i32 %t261, 255
-  br i1 %t262, label %if_then_3226, label %if_else_3227
-if_then_3226:
-  store i32 255, i32* %t245
-  br label %if_end_3228
-if_else_3227:
-  br label %if_end_3228
-if_end_3228:
-  br label %if_end_3225
-if_end_3225:
-  %t264 = trunc i32 0 to i8
-  store i8 %t264, i8* %t263
-  %t267 = call i32 @SDL_GetMouseState(i32* %t265, i32* %t266)
-  %t268 = load i32, i32* %t265
-  %t269 = load i32, i32* %t266
-  %t270 = sub i32 1, 1
-  %t271 = and i32 %t270, 31
-  %t272 = shl i32 1, %t271
-  %t273 = and i32 %t267, %t272
-  %t274 = icmp ne i32 %t273, 0
-  br i1 %t274, label %if_then_3229, label %if_else_3230
-if_then_3229:
-  %t275 = load i8, i8* %t263
-  %t276 = trunc i32 1 to i8
-  %t277 = or i8 %t275, %t276
-  store i8 %t277, i8* %t263
-  br label %if_end_3231
-if_else_3230:
-  br label %if_end_3231
-if_end_3231:
-  %t280 = call i32 @SDL_GetMouseState(i32* %t278, i32* %t279)
-  %t281 = load i32, i32* %t278
-  %t282 = load i32, i32* %t279
-  %t283 = sub i32 3, 1
-  %t284 = and i32 %t283, 31
-  %t285 = shl i32 1, %t284
-  %t286 = and i32 %t280, %t285
-  %t287 = icmp ne i32 %t286, 0
-  br i1 %t287, label %if_then_3232, label %if_else_3233
-if_then_3232:
-  %t288 = load i8, i8* %t263
-  %t289 = trunc i32 2 to i8
-  %t290 = or i8 %t288, %t289
-  store i8 %t290, i8* %t263
-  br label %if_end_3234
-if_else_3233:
-  br label %if_end_3234
-if_end_3234:
-  %t291 = load i32, i32* %t228
+  %t289 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 2
+  %t290 = load i32, i32* %t262
+  %t291 = add i32 65, %t290
   %t292 = trunc i32 %t291 to i8
-  %t293 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 23
-  %t294 = load i8, i8* %t293
-  %t295 = icmp ne i8 %t292, %t294
-  br i1 %t295, label %logic_short_3236, label %logic_rhs_3235
-logic_rhs_3235:
-  %t296 = load i32, i32* %t245
-  %t297 = trunc i32 %t296 to i8
-  %t298 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 24
-  %t299 = load i8, i8* %t298
-  %t300 = icmp ne i8 %t297, %t299
-  br label %logic_end_3237
-logic_short_3236:
-  br label %logic_end_3237
-logic_end_3237:
-  %t301 = phi i1 [ %t300, %logic_rhs_3235 ], [ true, %logic_short_3236 ]
-  br i1 %t301, label %logic_short_3239, label %logic_rhs_3238
-logic_rhs_3238:
-  %t302 = load i8, i8* %t263
-  %t303 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 25
-  %t304 = load i8, i8* %t303
-  %t305 = icmp ne i8 %t302, %t304
-  br label %logic_end_3240
-logic_short_3239:
-  br label %logic_end_3240
-logic_end_3240:
-  %t306 = phi i1 [ %t305, %logic_rhs_3238 ], [ true, %logic_short_3239 ]
-  br i1 %t306, label %if_then_3241, label %if_else_3242
-if_then_3241:
-  %t307 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 27
-  store i1 true, i1* %t307
-  br label %if_end_3243
-if_else_3242:
-  br label %if_end_3243
-if_end_3243:
-  %t308 = load i32, i32* %t228
-  %t309 = trunc i32 %t308 to i8
-  %t310 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 23
-  store i8 %t309, i8* %t310
-  %t311 = load i32, i32* %t245
-  %t312 = trunc i32 %t311 to i8
-  %t313 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 24
-  store i8 %t312, i8* %t313
-  %t314 = load i8, i8* %t263
-  %t315 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 25
-  store i8 %t314, i8* %t315
+  call void @cpu__keyboard__Keyboard__push_key(%cpu__keyboard__Keyboard* %t289, i8 %t292)
   br label %if_end_3212
 if_else_3211:
   br label %if_end_3212
 if_end_3212:
-  %t319 = call i32 @SDL_GetMouseState(i32* %t317, i32* %t318)
-  %t320 = load i32, i32* %t317
-  %t321 = load i32, i32* %t318
-  %t322 = sub i32 1, 1
-  %t323 = and i32 %t322, 31
-  %t324 = shl i32 1, %t323
-  %t325 = and i32 %t319, %t324
-  %t326 = icmp ne i32 %t325, 0
-  store i1 %t326, i1* %t316
-  %t328 = load i1, i1* %t316
-  br i1 %t328, label %logic_rhs_3244, label %logic_short_3245
+  %t294 = load i1, i1* %t268
+  %t295 = load i32, i32* %t262
+  %t296 = sext i32 %t295 to i64
+  %t297 = icmp ult i64 %t296, 26
+  br i1 %t297, label %arr_set_do_3213, label %arr_set_oob_3214
+arr_set_do_3213:
+  %t298 = getelementptr inbounds [26 x i1], [26 x i1]* %t83, i32 0, i64 %t296
+  store i1 %t294, i1* %t298
+  br label %arr_set_end_3215
+arr_set_oob_3214:
+  br label %arr_set_end_3215
+arr_set_end_3215:
+  %t299 = load i32, i32* %t262
+  %t300 = add i32 %t299, 1
+  store i32 %t300, i32* %t262
+  br label %while_cond_3198
+while_else_3200:
+  br label %while_end_3201
+while_end_3201:
+  %t301 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 26
+  %t302 = load i1, i1* %t301
+  br i1 %t302, label %if_then_3216, label %if_else_3217
+if_then_3216:
+  %t306 = call i32 @SDL_GetMouseState(i32* %t304, i32* %t305)
+  %t307 = load i32, i32* %t304
+  %t308 = load i32, i32* %t305
+  %t309 = icmp eq i32 2, 0
+  %t310 = icmp eq i32 %t307, -2147483648
+  %t311 = icmp eq i32 2, -1
+  %t312 = and i1 %t310, %t311
+  %t313 = or i1 %t309, %t312
+  br i1 %t313, label %int_div_fail_3219, label %int_div_ok_3220
+int_div_fail_3219:
+  %t314 = getelementptr inbounds [71 x i8], [71 x i8]* @.str.108, i64 0, i64 0
+  call i32 @puts(i8* %t314)
+  call void @exit(i32 1)
+  unreachable
+int_div_ok_3220:
+  %t315 = sdiv i32 %t307, 2
+  store i32 %t315, i32* %t303
+  %t316 = load i32, i32* %t303
+  %t317 = icmp slt i32 %t316, 0
+  br i1 %t317, label %if_then_3221, label %if_else_3222
+if_then_3221:
+  store i32 0, i32* %t303
+  br label %if_end_3223
+if_else_3222:
+  %t318 = load i32, i32* %t303
+  %t319 = icmp sgt i32 %t318, 255
+  br i1 %t319, label %if_then_3224, label %if_else_3225
+if_then_3224:
+  store i32 255, i32* %t303
+  br label %if_end_3226
+if_else_3225:
+  br label %if_end_3226
+if_end_3226:
+  br label %if_end_3223
+if_end_3223:
+  %t323 = call i32 @SDL_GetMouseState(i32* %t321, i32* %t322)
+  %t324 = load i32, i32* %t321
+  %t325 = load i32, i32* %t322
+  %t326 = sub i32 %t325, 40
+  %t327 = icmp eq i32 2, 0
+  %t328 = icmp eq i32 %t326, -2147483648
+  %t329 = icmp eq i32 2, -1
+  %t330 = and i1 %t328, %t329
+  %t331 = or i1 %t327, %t330
+  br i1 %t331, label %int_div_fail_3227, label %int_div_ok_3228
+int_div_fail_3227:
+  %t332 = getelementptr inbounds [71 x i8], [71 x i8]* @.str.109, i64 0, i64 0
+  call i32 @puts(i8* %t332)
+  call void @exit(i32 1)
+  unreachable
+int_div_ok_3228:
+  %t333 = sdiv i32 %t326, 2
+  store i32 %t333, i32* %t320
+  %t334 = load i32, i32* %t320
+  %t335 = icmp slt i32 %t334, 0
+  br i1 %t335, label %if_then_3229, label %if_else_3230
+if_then_3229:
+  store i32 0, i32* %t320
+  br label %if_end_3231
+if_else_3230:
+  %t336 = load i32, i32* %t320
+  %t337 = icmp sgt i32 %t336, 255
+  br i1 %t337, label %if_then_3232, label %if_else_3233
+if_then_3232:
+  store i32 255, i32* %t320
+  br label %if_end_3234
+if_else_3233:
+  br label %if_end_3234
+if_end_3234:
+  br label %if_end_3231
+if_end_3231:
+  %t339 = trunc i32 0 to i8
+  store i8 %t339, i8* %t338
+  %t342 = call i32 @SDL_GetMouseState(i32* %t340, i32* %t341)
+  %t343 = load i32, i32* %t340
+  %t344 = load i32, i32* %t341
+  %t345 = sub i32 1, 1
+  %t346 = and i32 %t345, 31
+  %t347 = shl i32 1, %t346
+  %t348 = and i32 %t342, %t347
+  %t349 = icmp ne i32 %t348, 0
+  br i1 %t349, label %if_then_3235, label %if_else_3236
+if_then_3235:
+  %t350 = load i8, i8* %t338
+  %t351 = trunc i32 1 to i8
+  %t352 = or i8 %t350, %t351
+  store i8 %t352, i8* %t338
+  br label %if_end_3237
+if_else_3236:
+  br label %if_end_3237
+if_end_3237:
+  %t355 = call i32 @SDL_GetMouseState(i32* %t353, i32* %t354)
+  %t356 = load i32, i32* %t353
+  %t357 = load i32, i32* %t354
+  %t358 = sub i32 3, 1
+  %t359 = and i32 %t358, 31
+  %t360 = shl i32 1, %t359
+  %t361 = and i32 %t355, %t360
+  %t362 = icmp ne i32 %t361, 0
+  br i1 %t362, label %if_then_3238, label %if_else_3239
+if_then_3238:
+  %t363 = load i8, i8* %t338
+  %t364 = trunc i32 2 to i8
+  %t365 = or i8 %t363, %t364
+  store i8 %t365, i8* %t338
+  br label %if_end_3240
+if_else_3239:
+  br label %if_end_3240
+if_end_3240:
+  %t366 = load i32, i32* %t303
+  %t367 = trunc i32 %t366 to i8
+  %t368 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 23
+  %t369 = load i8, i8* %t368
+  %t370 = icmp ne i8 %t367, %t369
+  br i1 %t370, label %logic_short_3242, label %logic_rhs_3241
+logic_rhs_3241:
+  %t371 = load i32, i32* %t320
+  %t372 = trunc i32 %t371 to i8
+  %t373 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 24
+  %t374 = load i8, i8* %t373
+  %t375 = icmp ne i8 %t372, %t374
+  br label %logic_end_3243
+logic_short_3242:
+  br label %logic_end_3243
+logic_end_3243:
+  %t376 = phi i1 [ %t375, %logic_rhs_3241 ], [ true, %logic_short_3242 ]
+  br i1 %t376, label %logic_short_3245, label %logic_rhs_3244
 logic_rhs_3244:
-  %t329 = load i1, i1* %t94
-  %t330 = xor i1 true, %t329
+  %t377 = load i8, i8* %t338
+  %t378 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 25
+  %t379 = load i8, i8* %t378
+  %t380 = icmp ne i8 %t377, %t379
   br label %logic_end_3246
 logic_short_3245:
   br label %logic_end_3246
 logic_end_3246:
-  %t331 = phi i1 [ %t330, %logic_rhs_3244 ], [ false, %logic_short_3245 ]
-  store i1 %t331, i1* %t327
-  %t332 = load i1, i1* %t316
-  store i1 %t332, i1* %t94
-  %t333 = load i1, i1* %t327
-  br i1 %t333, label %if_then_3247, label %if_else_3248
+  %t381 = phi i1 [ %t380, %logic_rhs_3244 ], [ true, %logic_short_3245 ]
+  br i1 %t381, label %if_then_3247, label %if_else_3248
 if_then_3247:
-  %t337 = call i32 @SDL_GetMouseState(i32* %t335, i32* %t336)
-  %t338 = load i32, i32* %t335
-  %t339 = load i32, i32* %t336
-  store i32 %t338, i32* %t334
-  %t343 = call i32 @SDL_GetMouseState(i32* %t341, i32* %t342)
-  %t344 = load i32, i32* %t341
-  %t345 = load i32, i32* %t342
-  store i32 %t345, i32* %t340
-  %t346 = load i32, i32* %t334
-  %t347 = load i32, i32* %t340
-  %t348 = call i1 @point_in_rect(i32 %t346, i32 %t347, i32 8, i32 6, i32 96, i32 28)
-  br i1 %t348, label %if_then_3250, label %if_else_3251
-if_then_3250:
-  %t349 = load i1, i1* %t95
-  %t350 = xor i1 true, %t349
-  store i1 %t350, i1* %t95
-  br label %if_end_3252
-if_else_3251:
-  %t351 = load i32, i32* %t334
-  %t352 = load i32, i32* %t340
-  %t353 = call i1 @point_in_rect(i32 %t351, i32 %t352, i32 112, i32 6, i32 64, i32 28)
-  br i1 %t353, label %if_then_3253, label %if_else_3254
+  %t382 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 27
+  store i1 true, i1* %t382
+  br label %if_end_3249
+if_else_3248:
+  br label %if_end_3249
+if_end_3249:
+  %t383 = load i32, i32* %t303
+  %t384 = trunc i32 %t383 to i8
+  %t385 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 23
+  store i8 %t384, i8* %t385
+  %t386 = load i32, i32* %t320
+  %t387 = trunc i32 %t386 to i8
+  %t388 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 24
+  store i8 %t387, i8* %t388
+  %t389 = load i8, i8* %t338
+  %t390 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 25
+  store i8 %t389, i8* %t390
+  br label %if_end_3218
+if_else_3217:
+  br label %if_end_3218
+if_end_3218:
+  %t394 = call i32 @SDL_GetMouseState(i32* %t392, i32* %t393)
+  %t395 = load i32, i32* %t392
+  %t396 = load i32, i32* %t393
+  %t397 = sub i32 1, 1
+  %t398 = and i32 %t397, 31
+  %t399 = shl i32 1, %t398
+  %t400 = and i32 %t394, %t399
+  %t401 = icmp ne i32 %t400, 0
+  store i1 %t401, i1* %t391
+  %t403 = load i1, i1* %t391
+  br i1 %t403, label %logic_rhs_3250, label %logic_short_3251
+logic_rhs_3250:
+  %t404 = load i1, i1* %t95
+  %t405 = xor i1 true, %t404
+  br label %logic_end_3252
+logic_short_3251:
+  br label %logic_end_3252
+logic_end_3252:
+  %t406 = phi i1 [ %t405, %logic_rhs_3250 ], [ false, %logic_short_3251 ]
+  store i1 %t406, i1* %t402
+  %t407 = load i1, i1* %t391
+  store i1 %t407, i1* %t95
+  %t408 = load i1, i1* %t402
+  br i1 %t408, label %if_then_3253, label %if_else_3254
 if_then_3253:
-  store i1 false, i1* %t95
-  br label %if_end_3255
-if_else_3254:
-  %t354 = load i32, i32* %t334
-  %t355 = load i32, i32* %t340
-  %t356 = call i1 @point_in_rect(i32 %t354, i32 %t355, i32 184, i32 6, i32 64, i32 28)
-  br i1 %t356, label %if_then_3256, label %if_else_3257
+  %t412 = call i32 @SDL_GetMouseState(i32* %t410, i32* %t411)
+  %t413 = load i32, i32* %t410
+  %t414 = load i32, i32* %t411
+  store i32 %t413, i32* %t409
+  %t418 = call i32 @SDL_GetMouseState(i32* %t416, i32* %t417)
+  %t419 = load i32, i32* %t416
+  %t420 = load i32, i32* %t417
+  store i32 %t420, i32* %t415
+  %t421 = load i32, i32* %t409
+  %t422 = load i32, i32* %t415
+  %t423 = call i1 @point_in_rect(i32 %t421, i32 %t422, i32 8, i32 6, i32 96, i32 28)
+  br i1 %t423, label %if_then_3256, label %if_else_3257
 if_then_3256:
-  call void @cpu__Cpu__reinit(%cpu__Cpu* %t75)
-  %t358 = load i8*, i8** %t55
-  %t359 = load i8*, i8** %t55
-  call void @star_rc_retain(i8* %t359)
-  %t360 = load i1, i1* %t43
-  call void @cpu__Cpu__load_program_or_demo(%cpu__Cpu* %t75, i8* %t358, i1 %t360)
-  store i1 true, i1* %t95
+  %t424 = load i1, i1* %t96
+  %t425 = xor i1 true, %t424
+  store i1 %t425, i1* %t96
   br label %if_end_3258
 if_else_3257:
-  %t362 = load i32, i32* %t334
-  %t363 = load i32, i32* %t340
-  %t364 = call i1 @point_in_rect(i32 %t362, i32 %t363, i32 256, i32 6, i32 64, i32 28)
-  br i1 %t364, label %if_then_3259, label %if_else_3260
+  %t426 = load i32, i32* %t409
+  %t427 = load i32, i32* %t415
+  %t428 = call i1 @point_in_rect(i32 %t426, i32 %t427, i32 112, i32 6, i32 64, i32 28)
+  br i1 %t428, label %if_then_3259, label %if_else_3260
 if_then_3259:
-  store i1 true, i1* %t181
+  store i1 false, i1* %t96
   br label %if_end_3261
 if_else_3260:
+  %t429 = load i32, i32* %t409
+  %t430 = load i32, i32* %t415
+  %t431 = call i1 @point_in_rect(i32 %t429, i32 %t430, i32 184, i32 6, i32 64, i32 28)
+  br i1 %t431, label %if_then_3262, label %if_else_3263
+if_then_3262:
+  call void @cpu__Cpu__reinit(%cpu__Cpu* %t75)
+  %t433 = load i8*, i8** %t55
+  %t434 = load i8*, i8** %t55
+  call void @star_rc_retain(i8* %t434)
+  %t435 = load i1, i1* %t43
+  call void @cpu__Cpu__load_program_or_wait(%cpu__Cpu* %t75, i8* %t433, i1 %t435)
+  store i1 true, i1* %t96
+  br label %if_end_3264
+if_else_3263:
+  %t437 = load i32, i32* %t409
+  %t438 = load i32, i32* %t415
+  %t439 = call i1 @point_in_rect(i32 %t437, i32 %t438, i32 256, i32 6, i32 64, i32 28)
+  br i1 %t439, label %if_then_3265, label %if_else_3266
+if_then_3265:
+  store i1 true, i1* %t182
+  br label %if_end_3267
+if_else_3266:
+  %t440 = load i32, i32* %t409
+  %t441 = load i32, i32* %t415
+  %t442 = call i1 @point_in_rect(i32 %t440, i32 %t441, i32 328, i32 6, i32 64, i32 28)
+  br i1 %t442, label %if_then_3268, label %if_else_3269
+if_then_3268:
+  %t444 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.110, i64 0, i32 2, i64 0
+  %t445 = call i32 @strlen(i8* %t444)
+  %t446 = icmp eq i32 %t445, 0
+  %t447 = getelementptr inbounds [4 x i8], [4 x i8]* @.str.111, i64 0, i64 0
+  %t448 = select i1 %t446, i8* %t447, i8* %t444
+  %t449 = call i32 @strlen(i8* %t448)
+  %t450 = sext i32 %t449 to i64
+  %t452 = getelementptr inbounds [512 x i8], [512 x i8]* %t451, i64 0, i64 0
+  store i64 0, i64* %t453
+  br label %ht_fill8_cond_3271
+ht_fill8_cond_3271:
+  %t454 = load i64, i64* %t453
+  %t455 = icmp slt i64 %t454, 512
+  br i1 %t455, label %ht_fill8_body_3272, label %ht_fill8_end_3273
+ht_fill8_body_3272:
+  %t456 = getelementptr inbounds i8, i8* %t452, i64 %t454
+  store i8 0, i8* %t456
+  %t457 = add i64 %t454, 1
+  store i64 %t457, i64* %t453
+  br label %ht_fill8_cond_3271
+ht_fill8_end_3273:
+  %t458 = getelementptr inbounds [7 x i8], [7 x i8]* @.str.112, i64 0, i64 0
+  call i8* @memcpy(i8* %t452, i8* %t458, i64 7)
+  %t459 = getelementptr inbounds i8, i8* %t452, i64 7
+  call i8* @memcpy(i8* %t459, i8* %t448, i64 %t450)
+  %t460 = add i64 7, %t450
+  %t461 = getelementptr inbounds i8, i8* %t452, i64 %t460
+  store i8 41, i8* %t461
+  %t462 = add i64 %t460, 2
+  %t463 = getelementptr inbounds i8, i8* %t452, i64 %t462
+  call i8* @memcpy(i8* %t463, i8* %t448, i64 %t450)
+  call void @star_rc_release(i8* %t444)
+  %t465 = getelementptr inbounds [152 x i8], [152 x i8]* %t464, i64 0, i64 0
+  store i64 0, i64* %t466
+  br label %ht_fill8_cond_3274
+ht_fill8_cond_3274:
+  %t467 = load i64, i64* %t466
+  %t468 = icmp slt i64 %t467, 152
+  br i1 %t468, label %ht_fill8_body_3275, label %ht_fill8_end_3276
+ht_fill8_body_3275:
+  %t469 = getelementptr inbounds i8, i8* %t465, i64 %t467
+  store i8 0, i8* %t469
+  %t470 = add i64 %t467, 1
+  store i64 %t470, i64* %t466
+  br label %ht_fill8_cond_3274
+ht_fill8_end_3276:
+  %t471 = bitcast i8* %t465 to i32*
+  store i32 152, i32* %t471
+  %t472 = getelementptr inbounds i8, i8* %t465, i64 24
+  %t473 = bitcast i8* %t472 to i8**
+  store i8* %t452, i8** %t473
+  %t474 = call i8* @star_rc_alloc(i64 1024, i8* null)
+  store i64 0, i64* %t475
+  br label %ht_fill8_cond_3277
+ht_fill8_cond_3277:
+  %t476 = load i64, i64* %t475
+  %t477 = icmp slt i64 %t476, 1024
+  br i1 %t477, label %ht_fill8_body_3278, label %ht_fill8_end_3279
+ht_fill8_body_3278:
+  %t478 = getelementptr inbounds i8, i8* %t474, i64 %t476
+  store i8 0, i8* %t478
+  %t479 = add i64 %t476, 1
+  store i64 %t479, i64* %t475
+  br label %ht_fill8_cond_3277
+ht_fill8_end_3279:
+  %t480 = getelementptr inbounds i8, i8* %t465, i64 48
+  %t481 = bitcast i8* %t480 to i8**
+  store i8* %t474, i8** %t481
+  %t482 = getelementptr inbounds i8, i8* %t465, i64 56
+  %t483 = bitcast i8* %t482 to i32*
+  store i32 1024, i32* %t483
+  %t484 = getelementptr inbounds i8, i8* %t465, i64 96
+  %t485 = bitcast i8* %t484 to i32*
+  store i32 6148, i32* %t485
+  %t486 = call i32 @GetOpenFileNameA(i8* %t465)
+  %t487 = icmp eq i32 %t486, 0
+  br i1 %t487, label %open_file_dialog_cancel_3280, label %open_file_dialog_end_3281
+open_file_dialog_cancel_3280:
+  store i8 0, i8* %t474
+  br label %open_file_dialog_end_3281
+open_file_dialog_end_3281:
+  store i8* %t474, i8** %t443
+  %t488 = load i8*, i8** %t443
+  %t489 = load i8*, i8** %t443
+  call void @star_rc_retain(i8* %t489)
+  %t490 = getelementptr inbounds { i64, i8*, [1 x i8] }, { i64, i8*, [1 x i8] }* @.str.113, i64 0, i32 2, i64 0
+  %t491 = call i32 @strcmp(i8* %t488, i8* %t490)
+  call void @star_rc_release(i8* %t488)
+  call void @star_rc_release(i8* %t490)
+  %t492 = icmp ne i32 %t491, 0
+  br i1 %t492, label %if_then_3282, label %if_else_3283
+if_then_3282:
+  %t493 = load i8*, i8** %t443
+  %t494 = load i8*, i8** %t443
+  call void @star_rc_retain(i8* %t494)
+  %t495 = load i8*, i8** %t55
+  call void @star_rc_release(i8* %t495)
+  store i8* %t493, i8** %t55
+  store i1 true, i1* %t43
+  call void @cpu__Cpu__reinit(%cpu__Cpu* %t75)
+  %t497 = load i8*, i8** %t55
+  %t498 = load i8*, i8** %t55
+  call void @star_rc_retain(i8* %t498)
+  %t499 = load i1, i1* %t43
+  call void @cpu__Cpu__load_program_or_wait(%cpu__Cpu* %t75, i8* %t497, i1 %t499)
+  store i1 true, i1* %t96
+  br label %if_end_3284
+if_else_3283:
+  br label %if_end_3284
+if_end_3284:
+  %t501 = load i8*, i8** %t443
+  call void @star_rc_release(i8* %t501)
+  br label %if_end_3270
+if_else_3269:
+  br label %if_end_3270
+if_end_3270:
+  br label %if_end_3267
+if_end_3267:
+  br label %if_end_3264
+if_end_3264:
   br label %if_end_3261
 if_end_3261:
   br label %if_end_3258
 if_end_3258:
   br label %if_end_3255
+if_else_3254:
+  br label %if_end_3255
 if_end_3255:
-  br label %if_end_3252
-if_end_3252:
-  br label %if_end_3249
-if_else_3248:
-  br label %if_end_3249
-if_end_3249:
-  %t365 = load i1, i1* %t95
-  br i1 %t365, label %if_then_3262, label %if_else_3263
-if_then_3262:
-  store i32 0, i32* %t366
-  br label %while_cond_3265
-while_cond_3265:
-  %t367 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 30
-  %t368 = load i1, i1* %t367
-  %t369 = xor i1 true, %t368
-  br i1 %t369, label %logic_rhs_3269, label %logic_short_3270
-logic_rhs_3269:
-  %t370 = load i32, i32* %t366
-  %t371 = icmp slt i32 %t370, 20000
-  br label %logic_end_3271
-logic_short_3270:
-  br label %logic_end_3271
-logic_end_3271:
-  %t372 = phi i1 [ %t371, %logic_rhs_3269 ], [ false, %logic_short_3270 ]
-  br i1 %t372, label %while_body_3266, label %while_else_3267
-while_body_3266:
+  %t502 = load i1, i1* %t96
+  br i1 %t502, label %if_then_3285, label %if_else_3286
+if_then_3285:
+  store i32 0, i32* %t503
+  br label %while_cond_3288
+while_cond_3288:
+  %t504 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 30
+  %t505 = load i1, i1* %t504
+  %t506 = xor i1 true, %t505
+  br i1 %t506, label %logic_rhs_3292, label %logic_short_3293
+logic_rhs_3292:
+  %t507 = load i32, i32* %t503
+  %t508 = icmp slt i32 %t507, 20000
+  br label %logic_end_3294
+logic_short_3293:
+  br label %logic_end_3294
+logic_end_3294:
+  %t509 = phi i1 [ %t508, %logic_rhs_3292 ], [ false, %logic_short_3293 ]
+  br i1 %t509, label %while_body_3289, label %while_else_3290
+while_body_3289:
   call void @cpu__Cpu__step(%cpu__Cpu* %t75)
-  %t374 = load i32, i32* %t366
-  %t375 = add i32 %t374, 1
-  store i32 %t375, i32* %t366
-  br label %while_cond_3265
-while_else_3267:
-  br label %while_end_3268
-while_end_3268:
-  br label %if_end_3264
-if_else_3263:
-  %t376 = load i1, i1* %t181
-  br i1 %t376, label %logic_rhs_3272, label %logic_short_3273
-logic_rhs_3272:
-  %t377 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 30
-  %t378 = load i1, i1* %t377
-  %t379 = xor i1 true, %t378
-  br label %logic_end_3274
-logic_short_3273:
-  br label %logic_end_3274
-logic_end_3274:
-  %t380 = phi i1 [ %t379, %logic_rhs_3272 ], [ false, %logic_short_3273 ]
-  br i1 %t380, label %if_then_3275, label %if_else_3276
-if_then_3275:
-  call void @cpu__Cpu__step(%cpu__Cpu* %t75)
-  br label %if_end_3277
-if_else_3276:
-  br label %if_end_3277
-if_end_3277:
-  br label %if_end_3264
-if_end_3264:
-  %t382 = load i8*, i8** %t2
-  %t383 = icmp eq i8* %t382, null
-  br i1 %t383, label %sdl_null_window_3278, label %sdl_window_handle_ok_3279
-sdl_null_window_3278:
-  %t384 = getelementptr inbounds [78 x i8], [78 x i8]* @.str.106, i64 0, i64 0
-  call i32 @puts(i8* %t384)
-  call void @exit(i32 1)
-  unreachable
-sdl_window_handle_ok_3279:
-  %t385 = call i8* @SDL_GetRenderer(i8* %t382)
-  %t386 = and i32 20, 255
-  %t387 = and i32 20, 255
-  %t388 = shl i32 %t387, 8
-  %t389 = or i32 %t386, %t388
-  %t390 = and i32 20, 255
-  %t391 = shl i32 %t390, 16
-  %t392 = or i32 %t389, %t391
-  %t393 = and i32 255, 255
-  %t394 = shl i32 %t393, 24
-  %t395 = or i32 %t392, %t394
-  %t396 = and i32 %t395, 255
-  %t397 = trunc i32 %t396 to i8
-  %t398 = lshr i32 %t395, 8
-  %t399 = and i32 %t398, 255
-  %t400 = trunc i32 %t399 to i8
-  %t401 = lshr i32 %t395, 16
-  %t402 = and i32 %t401, 255
-  %t403 = trunc i32 %t402 to i8
-  %t404 = lshr i32 %t395, 24
-  %t405 = and i32 %t404, 255
-  %t406 = trunc i32 %t405 to i8
-  call i32 @SDL_SetRenderDrawColor(i8* %t385, i8 %t397, i8 %t400, i8 %t403, i8 %t406)
-  call i32 @SDL_RenderClear(i8* %t385)
-  store i32 0, i32* %t407
-  br label %while_cond_3280
-while_cond_3280:
-  %t408 = load i32, i32* %t407
-  %t409 = icmp slt i32 %t408, 256
-  br i1 %t409, label %while_body_3281, label %while_else_3282
-while_body_3281:
-  store i32 0, i32* %t410
-  br label %while_cond_3284
-while_cond_3284:
-  %t411 = load i32, i32* %t410
-  %t412 = icmp slt i32 %t411, 256
-  br i1 %t412, label %while_body_3285, label %while_else_3286
-while_body_3285:
-  %t414 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 1
-  %t415 = load i32, i32* %t410
-  %t416 = load i32, i32* %t407
-  %t417 = call i8 @cpu__screen__Screen__composite_pixel(%cpu__screen__Screen* %t414, i32 %t415, i32 %t416)
-  store i8 %t417, i8* %t413
-  %t418 = load i8, i8* %t413
-  %t419 = trunc i32 0 to i8
-  %t420 = icmp ne i8 %t418, %t419
-  br i1 %t420, label %if_then_3288, label %if_else_3289
-if_then_3288:
-  %t422 = load i8, i8* %t413
-  %t423 = call { i8, i8, i8 } @pal__palette_color(i8 %t422)
-  store { i8, i8, i8 } %t423, { i8, i8, i8 }* %t421
-  %t424 = load i8*, i8** %t2
-  %t425 = icmp eq i8* %t424, null
-  br i1 %t425, label %sdl_null_window_3291, label %sdl_window_handle_ok_3292
-sdl_null_window_3291:
-  %t426 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.107, i64 0, i64 0
-  call i32 @puts(i8* %t426)
-  call void @exit(i32 1)
-  unreachable
-sdl_window_handle_ok_3292:
-  %t427 = call i8* @SDL_GetRenderer(i8* %t424)
-  %t428 = load i32, i32* %t410
-  %t429 = mul i32 %t428, 2
-  %t430 = load i32, i32* %t407
-  %t431 = mul i32 %t430, 2
-  %t432 = add i32 %t431, 40
-  %t433 = getelementptr inbounds { i8, i8, i8 }, { i8, i8, i8 }* %t421, i32 0, i32 0
-  %t434 = load i8, i8* %t433
-  %t435 = zext i8 %t434 to i32
-  %t436 = and i32 %t435, 255
-  %t437 = getelementptr inbounds { i8, i8, i8 }, { i8, i8, i8 }* %t421, i32 0, i32 1
-  %t438 = load i8, i8* %t437
-  %t439 = zext i8 %t438 to i32
-  %t440 = and i32 %t439, 255
-  %t441 = shl i32 %t440, 8
-  %t442 = or i32 %t436, %t441
-  %t443 = getelementptr inbounds { i8, i8, i8 }, { i8, i8, i8 }* %t421, i32 0, i32 2
-  %t444 = load i8, i8* %t443
-  %t445 = zext i8 %t444 to i32
-  %t446 = and i32 %t445, 255
-  %t447 = shl i32 %t446, 16
-  %t448 = or i32 %t442, %t447
-  %t449 = and i32 255, 255
-  %t450 = shl i32 %t449, 24
-  %t451 = or i32 %t448, %t450
-  %t452 = and i32 %t451, 255
-  %t453 = trunc i32 %t452 to i8
-  %t454 = lshr i32 %t451, 8
-  %t455 = and i32 %t454, 255
-  %t456 = trunc i32 %t455 to i8
-  %t457 = lshr i32 %t451, 16
-  %t458 = and i32 %t457, 255
-  %t459 = trunc i32 %t458 to i8
-  %t460 = lshr i32 %t451, 24
-  %t461 = and i32 %t460, 255
-  %t462 = trunc i32 %t461 to i8
-  call i32 @SDL_SetRenderDrawColor(i8* %t427, i8 %t453, i8 %t456, i8 %t459, i8 %t462)
-  %t464 = getelementptr inbounds [16 x i8], [16 x i8]* %t463, i64 0, i64 0
-  %t465 = bitcast i8* %t464 to i32*
-  store i32 %t429, i32* %t465
-  %t466 = getelementptr inbounds i8, i8* %t464, i64 4
-  %t467 = bitcast i8* %t466 to i32*
-  store i32 %t432, i32* %t467
-  %t468 = getelementptr inbounds i8, i8* %t464, i64 8
-  %t469 = bitcast i8* %t468 to i32*
-  store i32 2, i32* %t469
-  %t470 = getelementptr inbounds i8, i8* %t464, i64 12
-  %t471 = bitcast i8* %t470 to i32*
-  store i32 2, i32* %t471
-  call i32 @SDL_RenderFillRect(i8* %t427, i8* %t464)
-  br label %if_end_3290
-if_else_3289:
-  br label %if_end_3290
-if_end_3290:
-  %t472 = load i32, i32* %t410
-  %t473 = add i32 %t472, 1
-  store i32 %t473, i32* %t410
-  br label %while_cond_3284
-while_else_3286:
-  br label %while_end_3287
-while_end_3287:
-  %t474 = load i32, i32* %t407
-  %t475 = add i32 %t474, 1
-  store i32 %t475, i32* %t407
-  br label %while_cond_3280
-while_else_3282:
-  br label %while_end_3283
-while_end_3283:
-  %t476 = load i8*, i8** %t2
-  %t477 = icmp eq i8* %t476, null
-  br i1 %t477, label %sdl_null_window_3293, label %sdl_window_handle_ok_3294
-sdl_null_window_3293:
-  %t478 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.108, i64 0, i64 0
-  call i32 @puts(i8* %t478)
-  call void @exit(i32 1)
-  unreachable
-sdl_window_handle_ok_3294:
-  %t479 = call i8* @SDL_GetRenderer(i8* %t476)
-  %t480 = mul i32 256, 2
-  %t481 = and i32 40, 255
-  %t482 = and i32 40, 255
-  %t483 = shl i32 %t482, 8
-  %t484 = or i32 %t481, %t483
-  %t485 = and i32 40, 255
-  %t486 = shl i32 %t485, 16
-  %t487 = or i32 %t484, %t486
-  %t488 = and i32 255, 255
-  %t489 = shl i32 %t488, 24
-  %t490 = or i32 %t487, %t489
-  %t491 = and i32 %t490, 255
-  %t492 = trunc i32 %t491 to i8
-  %t493 = lshr i32 %t490, 8
-  %t494 = and i32 %t493, 255
-  %t495 = trunc i32 %t494 to i8
-  %t496 = lshr i32 %t490, 16
-  %t497 = and i32 %t496, 255
-  %t498 = trunc i32 %t497 to i8
-  %t499 = lshr i32 %t490, 24
-  %t500 = and i32 %t499, 255
-  %t501 = trunc i32 %t500 to i8
-  call i32 @SDL_SetRenderDrawColor(i8* %t479, i8 %t492, i8 %t495, i8 %t498, i8 %t501)
-  %t503 = getelementptr inbounds [16 x i8], [16 x i8]* %t502, i64 0, i64 0
-  %t504 = bitcast i8* %t503 to i32*
-  store i32 0, i32* %t504
-  %t505 = getelementptr inbounds i8, i8* %t503, i64 4
-  %t506 = bitcast i8* %t505 to i32*
-  store i32 0, i32* %t506
-  %t507 = getelementptr inbounds i8, i8* %t503, i64 8
-  %t508 = bitcast i8* %t507 to i32*
-  store i32 %t480, i32* %t508
-  %t509 = getelementptr inbounds i8, i8* %t503, i64 12
-  %t510 = bitcast i8* %t509 to i32*
-  store i32 40, i32* %t510
-  call i32 @SDL_RenderFillRect(i8* %t479, i8* %t503)
-  %t512 = load i1, i1* %t95
-  br i1 %t512, label %if_then_3295, label %if_else_3296
-if_then_3295:
-  %t513 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.109, i64 0, i32 2, i64 0
-  br label %if_end_3297
-if_else_3296:
-  %t514 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.110, i64 0, i32 2, i64 0
-  br label %if_end_3297
-if_end_3297:
-  %t515 = phi i8* [ %t513, %if_then_3295 ], [ %t514, %if_else_3296 ]
-  store i8* %t515, i8** %t511
-  %t517 = load i1, i1* %t95
+  %t511 = load i32, i32* %t503
+  %t512 = add i32 %t511, 1
+  store i32 %t512, i32* %t503
+  br label %while_cond_3288
+while_else_3290:
+  br label %while_end_3291
+while_end_3291:
+  br label %if_end_3287
+if_else_3286:
+  %t513 = load i1, i1* %t182
+  br i1 %t513, label %logic_rhs_3295, label %logic_short_3296
+logic_rhs_3295:
+  %t514 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 30
+  %t515 = load i1, i1* %t514
+  %t516 = xor i1 true, %t515
+  br label %logic_end_3297
+logic_short_3296:
+  br label %logic_end_3297
+logic_end_3297:
+  %t517 = phi i1 [ %t516, %logic_rhs_3295 ], [ false, %logic_short_3296 ]
   br i1 %t517, label %if_then_3298, label %if_else_3299
 if_then_3298:
-  %t518 = and i32 200, 255
-  %t519 = and i32 200, 255
-  %t520 = shl i32 %t519, 8
-  %t521 = or i32 %t518, %t520
-  %t522 = and i32 0, 255
-  %t523 = shl i32 %t522, 16
-  %t524 = or i32 %t521, %t523
-  %t525 = and i32 255, 255
-  %t526 = shl i32 %t525, 24
-  %t527 = or i32 %t524, %t526
+  call void @cpu__Cpu__step(%cpu__Cpu* %t75)
   br label %if_end_3300
 if_else_3299:
-  %t528 = and i32 0, 255
-  %t529 = and i32 160, 255
-  %t530 = shl i32 %t529, 8
-  %t531 = or i32 %t528, %t530
-  %t532 = and i32 0, 255
-  %t533 = shl i32 %t532, 16
-  %t534 = or i32 %t531, %t533
-  %t535 = and i32 255, 255
-  %t536 = shl i32 %t535, 24
-  %t537 = or i32 %t534, %t536
   br label %if_end_3300
 if_end_3300:
-  %t538 = phi i32 [ %t527, %if_then_3298 ], [ %t537, %if_else_3299 ]
-  store i32 %t538, i32* %t516
-  %t539 = load i8*, i8** %t2
-  %t540 = icmp eq i8* %t539, null
-  br i1 %t540, label %sdl_null_window_3301, label %sdl_window_handle_ok_3302
+  br label %if_end_3287
+if_end_3287:
+  %t519 = load i8*, i8** %t2
+  %t520 = icmp eq i8* %t519, null
+  br i1 %t520, label %sdl_null_window_3301, label %sdl_window_handle_ok_3302
 sdl_null_window_3301:
-  %t541 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.111, i64 0, i64 0
-  call i32 @puts(i8* %t541)
+  %t521 = getelementptr inbounds [78 x i8], [78 x i8]* @.str.114, i64 0, i64 0
+  call i32 @puts(i8* %t521)
   call void @exit(i32 1)
   unreachable
 sdl_window_handle_ok_3302:
-  %t542 = call i8* @SDL_GetRenderer(i8* %t539)
-  %t543 = load i32, i32* %t516
-  %t544 = and i32 %t543, 255
-  %t545 = trunc i32 %t544 to i8
-  %t546 = lshr i32 %t543, 8
-  %t547 = and i32 %t546, 255
-  %t548 = trunc i32 %t547 to i8
-  %t549 = lshr i32 %t543, 16
-  %t550 = and i32 %t549, 255
-  %t551 = trunc i32 %t550 to i8
-  %t552 = lshr i32 %t543, 24
-  %t553 = and i32 %t552, 255
-  %t554 = trunc i32 %t553 to i8
-  call i32 @SDL_SetRenderDrawColor(i8* %t542, i8 %t545, i8 %t548, i8 %t551, i8 %t554)
-  %t556 = getelementptr inbounds [16 x i8], [16 x i8]* %t555, i64 0, i64 0
-  %t557 = bitcast i8* %t556 to i32*
-  store i32 8, i32* %t557
-  %t558 = getelementptr inbounds i8, i8* %t556, i64 4
-  %t559 = bitcast i8* %t558 to i32*
-  store i32 6, i32* %t559
-  %t560 = getelementptr inbounds i8, i8* %t556, i64 8
-  %t561 = bitcast i8* %t560 to i32*
-  store i32 96, i32* %t561
-  %t562 = getelementptr inbounds i8, i8* %t556, i64 12
-  %t563 = bitcast i8* %t562 to i32*
-  store i32 28, i32* %t563
-  call i32 @SDL_RenderFillRect(i8* %t542, i8* %t556)
-  %t564 = load i8*, i8** %t2
-  %t565 = icmp eq i8* %t564, null
-  br i1 %t565, label %sdl_null_window_3303, label %sdl_window_handle_ok_3304
-sdl_null_window_3303:
-  %t566 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.112, i64 0, i64 0
-  call i32 @puts(i8* %t566)
+  %t522 = call i8* @SDL_GetRenderer(i8* %t519)
+  %t523 = and i32 20, 255
+  %t524 = and i32 20, 255
+  %t525 = shl i32 %t524, 8
+  %t526 = or i32 %t523, %t525
+  %t527 = and i32 20, 255
+  %t528 = shl i32 %t527, 16
+  %t529 = or i32 %t526, %t528
+  %t530 = and i32 255, 255
+  %t531 = shl i32 %t530, 24
+  %t532 = or i32 %t529, %t531
+  %t533 = and i32 %t532, 255
+  %t534 = trunc i32 %t533 to i8
+  %t535 = lshr i32 %t532, 8
+  %t536 = and i32 %t535, 255
+  %t537 = trunc i32 %t536 to i8
+  %t538 = lshr i32 %t532, 16
+  %t539 = and i32 %t538, 255
+  %t540 = trunc i32 %t539 to i8
+  %t541 = lshr i32 %t532, 24
+  %t542 = and i32 %t541, 255
+  %t543 = trunc i32 %t542 to i8
+  call i32 @SDL_SetRenderDrawColor(i8* %t522, i8 %t534, i8 %t537, i8 %t540, i8 %t543)
+  call i32 @SDL_RenderClear(i8* %t522)
+  store i32 0, i32* %t544
+  br label %while_cond_3303
+while_cond_3303:
+  %t545 = load i32, i32* %t544
+  %t546 = icmp slt i32 %t545, 256
+  br i1 %t546, label %while_body_3304, label %while_else_3305
+while_body_3304:
+  store i32 0, i32* %t547
+  br label %while_cond_3307
+while_cond_3307:
+  %t548 = load i32, i32* %t547
+  %t549 = icmp slt i32 %t548, 256
+  br i1 %t549, label %while_body_3308, label %while_else_3309
+while_body_3308:
+  %t551 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 1
+  %t552 = load i32, i32* %t547
+  %t553 = load i32, i32* %t544
+  %t554 = call i8 @cpu__screen__Screen__composite_pixel(%cpu__screen__Screen* %t551, i32 %t552, i32 %t553)
+  store i8 %t554, i8* %t550
+  %t555 = load i8, i8* %t550
+  %t556 = trunc i32 0 to i8
+  %t557 = icmp ne i8 %t555, %t556
+  br i1 %t557, label %if_then_3311, label %if_else_3312
+if_then_3311:
+  %t559 = load i8, i8* %t550
+  %t560 = call { i8, i8, i8 } @pal__palette_color(i8 %t559)
+  store { i8, i8, i8 } %t560, { i8, i8, i8 }* %t558
+  %t561 = load i8*, i8** %t2
+  %t562 = icmp eq i8* %t561, null
+  br i1 %t562, label %sdl_null_window_3314, label %sdl_window_handle_ok_3315
+sdl_null_window_3314:
+  %t563 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.115, i64 0, i64 0
+  call i32 @puts(i8* %t563)
   call void @exit(i32 1)
   unreachable
-sdl_window_handle_ok_3304:
-  %t567 = load i8*, i8** %t80
-  %t568 = icmp eq i8* %t567, null
-  br i1 %t568, label %font_null_handle_3305, label %font_handle_ok_3306
-font_null_handle_3305:
-  %t569 = getelementptr inbounds [73 x i8], [73 x i8]* @.str.113, i64 0, i64 0
-  call i32 @puts(i8* %t569)
+sdl_window_handle_ok_3315:
+  %t564 = call i8* @SDL_GetRenderer(i8* %t561)
+  %t565 = load i32, i32* %t547
+  %t566 = mul i32 %t565, 2
+  %t567 = load i32, i32* %t544
+  %t568 = mul i32 %t567, 2
+  %t569 = add i32 %t568, 40
+  %t570 = getelementptr inbounds { i8, i8, i8 }, { i8, i8, i8 }* %t558, i32 0, i32 0
+  %t571 = load i8, i8* %t570
+  %t572 = zext i8 %t571 to i32
+  %t573 = and i32 %t572, 255
+  %t574 = getelementptr inbounds { i8, i8, i8 }, { i8, i8, i8 }* %t558, i32 0, i32 1
+  %t575 = load i8, i8* %t574
+  %t576 = zext i8 %t575 to i32
+  %t577 = and i32 %t576, 255
+  %t578 = shl i32 %t577, 8
+  %t579 = or i32 %t573, %t578
+  %t580 = getelementptr inbounds { i8, i8, i8 }, { i8, i8, i8 }* %t558, i32 0, i32 2
+  %t581 = load i8, i8* %t580
+  %t582 = zext i8 %t581 to i32
+  %t583 = and i32 %t582, 255
+  %t584 = shl i32 %t583, 16
+  %t585 = or i32 %t579, %t584
+  %t586 = and i32 255, 255
+  %t587 = shl i32 %t586, 24
+  %t588 = or i32 %t585, %t587
+  %t589 = and i32 %t588, 255
+  %t590 = trunc i32 %t589 to i8
+  %t591 = lshr i32 %t588, 8
+  %t592 = and i32 %t591, 255
+  %t593 = trunc i32 %t592 to i8
+  %t594 = lshr i32 %t588, 16
+  %t595 = and i32 %t594, 255
+  %t596 = trunc i32 %t595 to i8
+  %t597 = lshr i32 %t588, 24
+  %t598 = and i32 %t597, 255
+  %t599 = trunc i32 %t598 to i8
+  call i32 @SDL_SetRenderDrawColor(i8* %t564, i8 %t590, i8 %t593, i8 %t596, i8 %t599)
+  %t601 = getelementptr inbounds [16 x i8], [16 x i8]* %t600, i64 0, i64 0
+  %t602 = bitcast i8* %t601 to i32*
+  store i32 %t566, i32* %t602
+  %t603 = getelementptr inbounds i8, i8* %t601, i64 4
+  %t604 = bitcast i8* %t603 to i32*
+  store i32 %t569, i32* %t604
+  %t605 = getelementptr inbounds i8, i8* %t601, i64 8
+  %t606 = bitcast i8* %t605 to i32*
+  store i32 2, i32* %t606
+  %t607 = getelementptr inbounds i8, i8* %t601, i64 12
+  %t608 = bitcast i8* %t607 to i32*
+  store i32 2, i32* %t608
+  call i32 @SDL_RenderFillRect(i8* %t564, i8* %t601)
+  br label %if_end_3313
+if_else_3312:
+  br label %if_end_3313
+if_end_3313:
+  %t609 = load i32, i32* %t547
+  %t610 = add i32 %t609, 1
+  store i32 %t610, i32* %t547
+  br label %while_cond_3307
+while_else_3309:
+  br label %while_end_3310
+while_end_3310:
+  %t611 = load i32, i32* %t544
+  %t612 = add i32 %t611, 1
+  store i32 %t612, i32* %t544
+  br label %while_cond_3303
+while_else_3305:
+  br label %while_end_3306
+while_end_3306:
+  %t613 = load i8*, i8** %t2
+  %t614 = icmp eq i8* %t613, null
+  br i1 %t614, label %sdl_null_window_3316, label %sdl_window_handle_ok_3317
+sdl_null_window_3316:
+  %t615 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.116, i64 0, i64 0
+  call i32 @puts(i8* %t615)
   call void @exit(i32 1)
   unreachable
-font_handle_ok_3306:
-  %t570 = call i8* @SDL_GetRenderer(i8* %t564)
-  %t571 = and i32 255, 255
-  %t572 = and i32 255, 255
-  %t573 = shl i32 %t572, 8
-  %t574 = or i32 %t571, %t573
-  %t575 = and i32 255, 255
-  %t576 = shl i32 %t575, 16
-  %t577 = or i32 %t574, %t576
-  %t578 = and i32 255, 255
-  %t579 = shl i32 %t578, 24
-  %t580 = or i32 %t577, %t579
-  %t581 = and i32 %t580, 255
-  %t582 = trunc i32 %t581 to i8
-  %t583 = lshr i32 %t580, 8
-  %t584 = and i32 %t583, 255
-  %t585 = trunc i32 %t584 to i8
-  %t586 = lshr i32 %t580, 16
-  %t587 = and i32 %t586, 255
-  %t588 = trunc i32 %t587 to i8
-  %t589 = lshr i32 %t580, 24
-  %t590 = and i32 %t589, 255
-  %t591 = trunc i32 %t590 to i8
-  call i32 @SDL_SetRenderDrawColor(i8* %t570, i8 %t582, i8 %t585, i8 %t588, i8 %t591)
-  %t592 = load i8*, i8** %t511
-  %t593 = load i8*, i8** %t511
-  call void @star_rc_retain(i8* %t593)
-  %t594 = add i32 8, 10
-  %t595 = add i32 6, 8
-  %t596 = icmp sgt i32 2, 0
-  %t597 = select i1 %t596, i32 2, i32 1
-  %t598 = load i8, i8* %t567
-  %t599 = zext i8 %t598 to i32
-  %t600 = getelementptr inbounds i8, i8* %t567, i64 1
-  %t601 = load i8, i8* %t600
-  %t602 = zext i8 %t601 to i32
-  %t603 = getelementptr inbounds i8, i8* %t567, i64 2
-  %t604 = load i8, i8* %t603
-  %t605 = zext i8 %t604 to i32
-  %t606 = getelementptr inbounds i8, i8* %t567, i64 3
-  %t607 = load i8, i8* %t606
-  %t608 = zext i8 %t607 to i32
-  %t609 = add i32 %t599, 1
-  %t610 = mul i32 %t609, %t597
-  %t611 = add i32 %t602, 1
-  %t612 = mul i32 %t611, %t597
-  store i32 %t594, i32* %t613
-  store i32 %t595, i32* %t614
-  store i64 0, i64* %t615
-  br label %draw_text_cond_3307
-draw_text_cond_3307:
-  %t616 = load i64, i64* %t615
-  %t617 = getelementptr inbounds i8, i8* %t592, i64 %t616
-  %t618 = load i8, i8* %t617
-  %t619 = icmp eq i8 %t618, 0
-  br i1 %t619, label %draw_text_end_3313, label %draw_text_body_3308
-draw_text_body_3308:
-  %t620 = zext i8 %t618 to i32
-  %t621 = icmp eq i32 %t620, 10
-  br i1 %t621, label %draw_text_newline_3309, label %draw_text_glyph_3310
-draw_text_newline_3309:
-  store i32 %t594, i32* %t613
-  %t622 = load i32, i32* %t614
-  %t623 = add i32 %t622, %t612
-  store i32 %t623, i32* %t614
-  %t624 = add i64 %t616, 1
-  store i64 %t624, i64* %t615
-  br label %draw_text_cond_3307
-draw_text_glyph_3310:
-  %t625 = icmp sge i32 %t620, 97
-  %t626 = icmp sle i32 %t620, 122
-  %t627 = and i1 %t625, %t626
-  %t628 = sub i32 %t620, 32
-  %t629 = select i1 %t627, i32 %t628, i32 %t620
-  %t630 = sub i32 %t629, %t605
-  %t631 = icmp sge i32 %t630, 0
-  %t632 = icmp slt i32 %t630, %t608
-  %t633 = and i1 %t631, %t632
-  br i1 %t633, label %draw_text_draw_glyph_3311, label %draw_text_advance_3312
-draw_text_draw_glyph_3311:
-  %t634 = mul i32 %t630, %t602
-  %t635 = add i32 %t634, 4
-  %t636 = sext i32 %t635 to i64
-  %t637 = load i32, i32* %t613
-  %t638 = load i32, i32* %t614
-  store i32 0, i32* %t639
-  br label %draw_text_row_cond_3314
-draw_text_row_cond_3314:
-  %t640 = load i32, i32* %t639
-  %t641 = icmp slt i32 %t640, %t602
-  br i1 %t641, label %draw_text_row_body_3315, label %draw_text_row_end_3316
-draw_text_row_body_3315:
-  %t642 = sext i32 %t640 to i64
-  %t643 = add i64 %t636, %t642
-  %t644 = getelementptr inbounds i8, i8* %t567, i64 %t643
-  %t645 = load i8, i8* %t644
-  %t646 = zext i8 %t645 to i32
-  store i32 0, i32* %t647
-  br label %draw_text_col_cond_3317
-draw_text_col_cond_3317:
-  %t648 = load i32, i32* %t647
-  %t649 = icmp slt i32 %t648, %t599
-  br i1 %t649, label %draw_text_col_body_3318, label %draw_text_col_end_3319
-draw_text_col_body_3318:
-  %t650 = sub i32 %t599, 1
-  %t651 = sub i32 %t650, %t648
-  %t652 = and i32 %t651, 31
-  %t653 = lshr i32 %t646, %t652
-  %t654 = and i32 %t653, 1
-  %t655 = icmp ne i32 %t654, 0
-  br i1 %t655, label %draw_text_pixel_3320, label %draw_text_after_pixel_3321
-draw_text_pixel_3320:
-  %t656 = mul i32 %t648, %t597
-  %t657 = add i32 %t637, %t656
-  %t658 = mul i32 %t640, %t597
-  %t659 = add i32 %t638, %t658
-  %t661 = getelementptr inbounds [16 x i8], [16 x i8]* %t660, i64 0, i64 0
-  %t662 = bitcast i8* %t661 to i32*
-  store i32 %t657, i32* %t662
-  %t663 = getelementptr inbounds i8, i8* %t661, i64 4
-  %t664 = bitcast i8* %t663 to i32*
-  store i32 %t659, i32* %t664
-  %t665 = getelementptr inbounds i8, i8* %t661, i64 8
-  %t666 = bitcast i8* %t665 to i32*
-  store i32 %t597, i32* %t666
-  %t667 = getelementptr inbounds i8, i8* %t661, i64 12
-  %t668 = bitcast i8* %t667 to i32*
-  store i32 %t597, i32* %t668
-  call i32 @SDL_RenderFillRect(i8* %t570, i8* %t661)
-  br label %draw_text_after_pixel_3321
-draw_text_after_pixel_3321:
-  %t669 = add i32 %t648, 1
-  store i32 %t669, i32* %t647
-  br label %draw_text_col_cond_3317
-draw_text_col_end_3319:
-  %t670 = add i32 %t640, 1
-  store i32 %t670, i32* %t639
-  br label %draw_text_row_cond_3314
-draw_text_row_end_3316:
-  br label %draw_text_advance_3312
-draw_text_advance_3312:
-  %t671 = load i32, i32* %t613
-  %t672 = add i32 %t671, %t610
-  store i32 %t672, i32* %t613
-  %t673 = add i64 %t616, 1
-  store i64 %t673, i64* %t615
-  br label %draw_text_cond_3307
-draw_text_end_3313:
-  call void @star_rc_release(i8* %t592)
-  %t674 = load i8*, i8** %t2
-  %t675 = icmp eq i8* %t674, null
-  br i1 %t675, label %sdl_null_window_3322, label %sdl_window_handle_ok_3323
-sdl_null_window_3322:
-  %t676 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.114, i64 0, i64 0
-  call i32 @puts(i8* %t676)
-  call void @exit(i32 1)
-  unreachable
-sdl_window_handle_ok_3323:
-  %t677 = call i8* @SDL_GetRenderer(i8* %t674)
-  %t678 = and i32 160, 255
-  %t679 = and i32 0, 255
-  %t680 = shl i32 %t679, 8
-  %t681 = or i32 %t678, %t680
-  %t682 = and i32 0, 255
-  %t683 = shl i32 %t682, 16
-  %t684 = or i32 %t681, %t683
-  %t685 = and i32 255, 255
-  %t686 = shl i32 %t685, 24
-  %t687 = or i32 %t684, %t686
-  %t688 = and i32 %t687, 255
-  %t689 = trunc i32 %t688 to i8
-  %t690 = lshr i32 %t687, 8
-  %t691 = and i32 %t690, 255
-  %t692 = trunc i32 %t691 to i8
-  %t693 = lshr i32 %t687, 16
-  %t694 = and i32 %t693, 255
-  %t695 = trunc i32 %t694 to i8
-  %t696 = lshr i32 %t687, 24
-  %t697 = and i32 %t696, 255
-  %t698 = trunc i32 %t697 to i8
-  call i32 @SDL_SetRenderDrawColor(i8* %t677, i8 %t689, i8 %t692, i8 %t695, i8 %t698)
-  %t700 = getelementptr inbounds [16 x i8], [16 x i8]* %t699, i64 0, i64 0
-  %t701 = bitcast i8* %t700 to i32*
-  store i32 112, i32* %t701
-  %t702 = getelementptr inbounds i8, i8* %t700, i64 4
-  %t703 = bitcast i8* %t702 to i32*
-  store i32 6, i32* %t703
-  %t704 = getelementptr inbounds i8, i8* %t700, i64 8
-  %t705 = bitcast i8* %t704 to i32*
-  store i32 64, i32* %t705
-  %t706 = getelementptr inbounds i8, i8* %t700, i64 12
-  %t707 = bitcast i8* %t706 to i32*
-  store i32 28, i32* %t707
-  call i32 @SDL_RenderFillRect(i8* %t677, i8* %t700)
-  %t708 = load i8*, i8** %t2
-  %t709 = icmp eq i8* %t708, null
-  br i1 %t709, label %sdl_null_window_3324, label %sdl_window_handle_ok_3325
+sdl_window_handle_ok_3317:
+  %t616 = call i8* @SDL_GetRenderer(i8* %t613)
+  %t617 = mul i32 256, 2
+  %t618 = and i32 40, 255
+  %t619 = and i32 40, 255
+  %t620 = shl i32 %t619, 8
+  %t621 = or i32 %t618, %t620
+  %t622 = and i32 40, 255
+  %t623 = shl i32 %t622, 16
+  %t624 = or i32 %t621, %t623
+  %t625 = and i32 255, 255
+  %t626 = shl i32 %t625, 24
+  %t627 = or i32 %t624, %t626
+  %t628 = and i32 %t627, 255
+  %t629 = trunc i32 %t628 to i8
+  %t630 = lshr i32 %t627, 8
+  %t631 = and i32 %t630, 255
+  %t632 = trunc i32 %t631 to i8
+  %t633 = lshr i32 %t627, 16
+  %t634 = and i32 %t633, 255
+  %t635 = trunc i32 %t634 to i8
+  %t636 = lshr i32 %t627, 24
+  %t637 = and i32 %t636, 255
+  %t638 = trunc i32 %t637 to i8
+  call i32 @SDL_SetRenderDrawColor(i8* %t616, i8 %t629, i8 %t632, i8 %t635, i8 %t638)
+  %t640 = getelementptr inbounds [16 x i8], [16 x i8]* %t639, i64 0, i64 0
+  %t641 = bitcast i8* %t640 to i32*
+  store i32 0, i32* %t641
+  %t642 = getelementptr inbounds i8, i8* %t640, i64 4
+  %t643 = bitcast i8* %t642 to i32*
+  store i32 0, i32* %t643
+  %t644 = getelementptr inbounds i8, i8* %t640, i64 8
+  %t645 = bitcast i8* %t644 to i32*
+  store i32 %t617, i32* %t645
+  %t646 = getelementptr inbounds i8, i8* %t640, i64 12
+  %t647 = bitcast i8* %t646 to i32*
+  store i32 40, i32* %t647
+  call i32 @SDL_RenderFillRect(i8* %t616, i8* %t640)
+  %t649 = load i1, i1* %t96
+  br i1 %t649, label %if_then_3318, label %if_else_3319
+if_then_3318:
+  %t650 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.117, i64 0, i32 2, i64 0
+  br label %if_end_3320
+if_else_3319:
+  %t651 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.118, i64 0, i32 2, i64 0
+  br label %if_end_3320
+if_end_3320:
+  %t652 = phi i8* [ %t650, %if_then_3318 ], [ %t651, %if_else_3319 ]
+  store i8* %t652, i8** %t648
+  %t654 = load i1, i1* %t96
+  br i1 %t654, label %if_then_3321, label %if_else_3322
+if_then_3321:
+  %t655 = and i32 200, 255
+  %t656 = and i32 200, 255
+  %t657 = shl i32 %t656, 8
+  %t658 = or i32 %t655, %t657
+  %t659 = and i32 0, 255
+  %t660 = shl i32 %t659, 16
+  %t661 = or i32 %t658, %t660
+  %t662 = and i32 255, 255
+  %t663 = shl i32 %t662, 24
+  %t664 = or i32 %t661, %t663
+  br label %if_end_3323
+if_else_3322:
+  %t665 = and i32 0, 255
+  %t666 = and i32 160, 255
+  %t667 = shl i32 %t666, 8
+  %t668 = or i32 %t665, %t667
+  %t669 = and i32 0, 255
+  %t670 = shl i32 %t669, 16
+  %t671 = or i32 %t668, %t670
+  %t672 = and i32 255, 255
+  %t673 = shl i32 %t672, 24
+  %t674 = or i32 %t671, %t673
+  br label %if_end_3323
+if_end_3323:
+  %t675 = phi i32 [ %t664, %if_then_3321 ], [ %t674, %if_else_3322 ]
+  store i32 %t675, i32* %t653
+  %t676 = load i8*, i8** %t2
+  %t677 = icmp eq i8* %t676, null
+  br i1 %t677, label %sdl_null_window_3324, label %sdl_window_handle_ok_3325
 sdl_null_window_3324:
-  %t710 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.115, i64 0, i64 0
-  call i32 @puts(i8* %t710)
+  %t678 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.119, i64 0, i64 0
+  call i32 @puts(i8* %t678)
   call void @exit(i32 1)
   unreachable
 sdl_window_handle_ok_3325:
-  %t711 = load i8*, i8** %t80
-  %t712 = icmp eq i8* %t711, null
-  br i1 %t712, label %font_null_handle_3326, label %font_handle_ok_3327
-font_null_handle_3326:
-  %t713 = getelementptr inbounds [73 x i8], [73 x i8]* @.str.116, i64 0, i64 0
-  call i32 @puts(i8* %t713)
+  %t679 = call i8* @SDL_GetRenderer(i8* %t676)
+  %t680 = load i32, i32* %t653
+  %t681 = and i32 %t680, 255
+  %t682 = trunc i32 %t681 to i8
+  %t683 = lshr i32 %t680, 8
+  %t684 = and i32 %t683, 255
+  %t685 = trunc i32 %t684 to i8
+  %t686 = lshr i32 %t680, 16
+  %t687 = and i32 %t686, 255
+  %t688 = trunc i32 %t687 to i8
+  %t689 = lshr i32 %t680, 24
+  %t690 = and i32 %t689, 255
+  %t691 = trunc i32 %t690 to i8
+  call i32 @SDL_SetRenderDrawColor(i8* %t679, i8 %t682, i8 %t685, i8 %t688, i8 %t691)
+  %t693 = getelementptr inbounds [16 x i8], [16 x i8]* %t692, i64 0, i64 0
+  %t694 = bitcast i8* %t693 to i32*
+  store i32 8, i32* %t694
+  %t695 = getelementptr inbounds i8, i8* %t693, i64 4
+  %t696 = bitcast i8* %t695 to i32*
+  store i32 6, i32* %t696
+  %t697 = getelementptr inbounds i8, i8* %t693, i64 8
+  %t698 = bitcast i8* %t697 to i32*
+  store i32 96, i32* %t698
+  %t699 = getelementptr inbounds i8, i8* %t693, i64 12
+  %t700 = bitcast i8* %t699 to i32*
+  store i32 28, i32* %t700
+  call i32 @SDL_RenderFillRect(i8* %t679, i8* %t693)
+  %t701 = load i8*, i8** %t2
+  %t702 = icmp eq i8* %t701, null
+  br i1 %t702, label %sdl_null_window_3326, label %sdl_window_handle_ok_3327
+sdl_null_window_3326:
+  %t703 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.120, i64 0, i64 0
+  call i32 @puts(i8* %t703)
   call void @exit(i32 1)
   unreachable
-font_handle_ok_3327:
-  %t714 = call i8* @SDL_GetRenderer(i8* %t708)
+sdl_window_handle_ok_3327:
+  %t704 = load i8*, i8** %t80
+  %t705 = icmp eq i8* %t704, null
+  br i1 %t705, label %font_null_handle_3328, label %font_handle_ok_3329
+font_null_handle_3328:
+  %t706 = getelementptr inbounds [73 x i8], [73 x i8]* @.str.121, i64 0, i64 0
+  call i32 @puts(i8* %t706)
+  call void @exit(i32 1)
+  unreachable
+font_handle_ok_3329:
+  %t707 = call i8* @SDL_GetRenderer(i8* %t701)
+  %t708 = and i32 255, 255
+  %t709 = and i32 255, 255
+  %t710 = shl i32 %t709, 8
+  %t711 = or i32 %t708, %t710
+  %t712 = and i32 255, 255
+  %t713 = shl i32 %t712, 16
+  %t714 = or i32 %t711, %t713
   %t715 = and i32 255, 255
-  %t716 = and i32 255, 255
-  %t717 = shl i32 %t716, 8
-  %t718 = or i32 %t715, %t717
-  %t719 = and i32 255, 255
-  %t720 = shl i32 %t719, 16
-  %t721 = or i32 %t718, %t720
-  %t722 = and i32 255, 255
-  %t723 = shl i32 %t722, 24
-  %t724 = or i32 %t721, %t723
-  %t725 = and i32 %t724, 255
-  %t726 = trunc i32 %t725 to i8
-  %t727 = lshr i32 %t724, 8
-  %t728 = and i32 %t727, 255
-  %t729 = trunc i32 %t728 to i8
-  %t730 = lshr i32 %t724, 16
-  %t731 = and i32 %t730, 255
-  %t732 = trunc i32 %t731 to i8
-  %t733 = lshr i32 %t724, 24
-  %t734 = and i32 %t733, 255
-  %t735 = trunc i32 %t734 to i8
-  call i32 @SDL_SetRenderDrawColor(i8* %t714, i8 %t726, i8 %t729, i8 %t732, i8 %t735)
-  %t736 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.117, i64 0, i32 2, i64 0
-  %t737 = add i32 112, 6
-  %t738 = add i32 6, 8
-  %t739 = icmp sgt i32 2, 0
-  %t740 = select i1 %t739, i32 2, i32 1
-  %t741 = load i8, i8* %t711
+  %t716 = shl i32 %t715, 24
+  %t717 = or i32 %t714, %t716
+  %t718 = and i32 %t717, 255
+  %t719 = trunc i32 %t718 to i8
+  %t720 = lshr i32 %t717, 8
+  %t721 = and i32 %t720, 255
+  %t722 = trunc i32 %t721 to i8
+  %t723 = lshr i32 %t717, 16
+  %t724 = and i32 %t723, 255
+  %t725 = trunc i32 %t724 to i8
+  %t726 = lshr i32 %t717, 24
+  %t727 = and i32 %t726, 255
+  %t728 = trunc i32 %t727 to i8
+  call i32 @SDL_SetRenderDrawColor(i8* %t707, i8 %t719, i8 %t722, i8 %t725, i8 %t728)
+  %t729 = load i8*, i8** %t648
+  %t730 = load i8*, i8** %t648
+  call void @star_rc_retain(i8* %t730)
+  %t731 = add i32 8, 10
+  %t732 = add i32 6, 8
+  %t733 = icmp sgt i32 2, 0
+  %t734 = select i1 %t733, i32 2, i32 1
+  %t735 = load i8, i8* %t704
+  %t736 = zext i8 %t735 to i32
+  %t737 = getelementptr inbounds i8, i8* %t704, i64 1
+  %t738 = load i8, i8* %t737
+  %t739 = zext i8 %t738 to i32
+  %t740 = getelementptr inbounds i8, i8* %t704, i64 2
+  %t741 = load i8, i8* %t740
   %t742 = zext i8 %t741 to i32
-  %t743 = getelementptr inbounds i8, i8* %t711, i64 1
+  %t743 = getelementptr inbounds i8, i8* %t704, i64 3
   %t744 = load i8, i8* %t743
   %t745 = zext i8 %t744 to i32
-  %t746 = getelementptr inbounds i8, i8* %t711, i64 2
-  %t747 = load i8, i8* %t746
-  %t748 = zext i8 %t747 to i32
-  %t749 = getelementptr inbounds i8, i8* %t711, i64 3
-  %t750 = load i8, i8* %t749
-  %t751 = zext i8 %t750 to i32
-  %t752 = add i32 %t742, 1
-  %t753 = mul i32 %t752, %t740
-  %t754 = add i32 %t745, 1
-  %t755 = mul i32 %t754, %t740
-  store i32 %t737, i32* %t756
-  store i32 %t738, i32* %t757
-  store i64 0, i64* %t758
-  br label %draw_text_cond_3328
-draw_text_cond_3328:
-  %t759 = load i64, i64* %t758
-  %t760 = getelementptr inbounds i8, i8* %t736, i64 %t759
-  %t761 = load i8, i8* %t760
-  %t762 = icmp eq i8 %t761, 0
-  br i1 %t762, label %draw_text_end_3334, label %draw_text_body_3329
-draw_text_body_3329:
-  %t763 = zext i8 %t761 to i32
-  %t764 = icmp eq i32 %t763, 10
-  br i1 %t764, label %draw_text_newline_3330, label %draw_text_glyph_3331
-draw_text_newline_3330:
-  store i32 %t737, i32* %t756
-  %t765 = load i32, i32* %t757
-  %t766 = add i32 %t765, %t755
-  store i32 %t766, i32* %t757
-  %t767 = add i64 %t759, 1
-  store i64 %t767, i64* %t758
-  br label %draw_text_cond_3328
-draw_text_glyph_3331:
-  %t768 = icmp sge i32 %t763, 97
-  %t769 = icmp sle i32 %t763, 122
+  %t746 = add i32 %t736, 1
+  %t747 = mul i32 %t746, %t734
+  %t748 = add i32 %t739, 1
+  %t749 = mul i32 %t748, %t734
+  store i32 %t731, i32* %t750
+  store i32 %t732, i32* %t751
+  store i64 0, i64* %t752
+  br label %draw_text_cond_3330
+draw_text_cond_3330:
+  %t753 = load i64, i64* %t752
+  %t754 = getelementptr inbounds i8, i8* %t729, i64 %t753
+  %t755 = load i8, i8* %t754
+  %t756 = icmp eq i8 %t755, 0
+  br i1 %t756, label %draw_text_end_3336, label %draw_text_body_3331
+draw_text_body_3331:
+  %t757 = zext i8 %t755 to i32
+  %t758 = icmp eq i32 %t757, 10
+  br i1 %t758, label %draw_text_newline_3332, label %draw_text_glyph_3333
+draw_text_newline_3332:
+  store i32 %t731, i32* %t750
+  %t759 = load i32, i32* %t751
+  %t760 = add i32 %t759, %t749
+  store i32 %t760, i32* %t751
+  %t761 = add i64 %t753, 1
+  store i64 %t761, i64* %t752
+  br label %draw_text_cond_3330
+draw_text_glyph_3333:
+  %t762 = icmp sge i32 %t757, 97
+  %t763 = icmp sle i32 %t757, 122
+  %t764 = and i1 %t762, %t763
+  %t765 = sub i32 %t757, 32
+  %t766 = select i1 %t764, i32 %t765, i32 %t757
+  %t767 = sub i32 %t766, %t742
+  %t768 = icmp sge i32 %t767, 0
+  %t769 = icmp slt i32 %t767, %t745
   %t770 = and i1 %t768, %t769
-  %t771 = sub i32 %t763, 32
-  %t772 = select i1 %t770, i32 %t771, i32 %t763
-  %t773 = sub i32 %t772, %t748
-  %t774 = icmp sge i32 %t773, 0
-  %t775 = icmp slt i32 %t773, %t751
-  %t776 = and i1 %t774, %t775
-  br i1 %t776, label %draw_text_draw_glyph_3332, label %draw_text_advance_3333
-draw_text_draw_glyph_3332:
-  %t777 = mul i32 %t773, %t745
-  %t778 = add i32 %t777, 4
-  %t779 = sext i32 %t778 to i64
-  %t780 = load i32, i32* %t756
-  %t781 = load i32, i32* %t757
-  store i32 0, i32* %t782
-  br label %draw_text_row_cond_3335
-draw_text_row_cond_3335:
-  %t783 = load i32, i32* %t782
-  %t784 = icmp slt i32 %t783, %t745
-  br i1 %t784, label %draw_text_row_body_3336, label %draw_text_row_end_3337
-draw_text_row_body_3336:
-  %t785 = sext i32 %t783 to i64
-  %t786 = add i64 %t779, %t785
-  %t787 = getelementptr inbounds i8, i8* %t711, i64 %t786
-  %t788 = load i8, i8* %t787
-  %t789 = zext i8 %t788 to i32
-  store i32 0, i32* %t790
-  br label %draw_text_col_cond_3338
-draw_text_col_cond_3338:
-  %t791 = load i32, i32* %t790
-  %t792 = icmp slt i32 %t791, %t742
-  br i1 %t792, label %draw_text_col_body_3339, label %draw_text_col_end_3340
-draw_text_col_body_3339:
-  %t793 = sub i32 %t742, 1
-  %t794 = sub i32 %t793, %t791
-  %t795 = and i32 %t794, 31
-  %t796 = lshr i32 %t789, %t795
-  %t797 = and i32 %t796, 1
-  %t798 = icmp ne i32 %t797, 0
-  br i1 %t798, label %draw_text_pixel_3341, label %draw_text_after_pixel_3342
-draw_text_pixel_3341:
-  %t799 = mul i32 %t791, %t740
-  %t800 = add i32 %t780, %t799
-  %t801 = mul i32 %t783, %t740
-  %t802 = add i32 %t781, %t801
-  %t804 = getelementptr inbounds [16 x i8], [16 x i8]* %t803, i64 0, i64 0
+  br i1 %t770, label %draw_text_draw_glyph_3334, label %draw_text_advance_3335
+draw_text_draw_glyph_3334:
+  %t771 = mul i32 %t767, %t739
+  %t772 = add i32 %t771, 4
+  %t773 = sext i32 %t772 to i64
+  %t774 = load i32, i32* %t750
+  %t775 = load i32, i32* %t751
+  store i32 0, i32* %t776
+  br label %draw_text_row_cond_3337
+draw_text_row_cond_3337:
+  %t777 = load i32, i32* %t776
+  %t778 = icmp slt i32 %t777, %t739
+  br i1 %t778, label %draw_text_row_body_3338, label %draw_text_row_end_3339
+draw_text_row_body_3338:
+  %t779 = sext i32 %t777 to i64
+  %t780 = add i64 %t773, %t779
+  %t781 = getelementptr inbounds i8, i8* %t704, i64 %t780
+  %t782 = load i8, i8* %t781
+  %t783 = zext i8 %t782 to i32
+  store i32 0, i32* %t784
+  br label %draw_text_col_cond_3340
+draw_text_col_cond_3340:
+  %t785 = load i32, i32* %t784
+  %t786 = icmp slt i32 %t785, %t736
+  br i1 %t786, label %draw_text_col_body_3341, label %draw_text_col_end_3342
+draw_text_col_body_3341:
+  %t787 = sub i32 %t736, 1
+  %t788 = sub i32 %t787, %t785
+  %t789 = and i32 %t788, 31
+  %t790 = lshr i32 %t783, %t789
+  %t791 = and i32 %t790, 1
+  %t792 = icmp ne i32 %t791, 0
+  br i1 %t792, label %draw_text_pixel_3343, label %draw_text_after_pixel_3344
+draw_text_pixel_3343:
+  %t793 = mul i32 %t785, %t734
+  %t794 = add i32 %t774, %t793
+  %t795 = mul i32 %t777, %t734
+  %t796 = add i32 %t775, %t795
+  %t798 = getelementptr inbounds [16 x i8], [16 x i8]* %t797, i64 0, i64 0
+  %t799 = bitcast i8* %t798 to i32*
+  store i32 %t794, i32* %t799
+  %t800 = getelementptr inbounds i8, i8* %t798, i64 4
+  %t801 = bitcast i8* %t800 to i32*
+  store i32 %t796, i32* %t801
+  %t802 = getelementptr inbounds i8, i8* %t798, i64 8
+  %t803 = bitcast i8* %t802 to i32*
+  store i32 %t734, i32* %t803
+  %t804 = getelementptr inbounds i8, i8* %t798, i64 12
   %t805 = bitcast i8* %t804 to i32*
-  store i32 %t800, i32* %t805
-  %t806 = getelementptr inbounds i8, i8* %t804, i64 4
-  %t807 = bitcast i8* %t806 to i32*
-  store i32 %t802, i32* %t807
-  %t808 = getelementptr inbounds i8, i8* %t804, i64 8
-  %t809 = bitcast i8* %t808 to i32*
-  store i32 %t740, i32* %t809
-  %t810 = getelementptr inbounds i8, i8* %t804, i64 12
-  %t811 = bitcast i8* %t810 to i32*
-  store i32 %t740, i32* %t811
-  call i32 @SDL_RenderFillRect(i8* %t714, i8* %t804)
-  br label %draw_text_after_pixel_3342
-draw_text_after_pixel_3342:
-  %t812 = add i32 %t791, 1
-  store i32 %t812, i32* %t790
-  br label %draw_text_col_cond_3338
-draw_text_col_end_3340:
-  %t813 = add i32 %t783, 1
-  store i32 %t813, i32* %t782
-  br label %draw_text_row_cond_3335
-draw_text_row_end_3337:
-  br label %draw_text_advance_3333
-draw_text_advance_3333:
-  %t814 = load i32, i32* %t756
-  %t815 = add i32 %t814, %t753
-  store i32 %t815, i32* %t756
-  %t816 = add i64 %t759, 1
-  store i64 %t816, i64* %t758
-  br label %draw_text_cond_3328
-draw_text_end_3334:
-  call void @star_rc_release(i8* %t736)
-  %t817 = load i8*, i8** %t2
-  %t818 = icmp eq i8* %t817, null
-  br i1 %t818, label %sdl_null_window_3343, label %sdl_window_handle_ok_3344
-sdl_null_window_3343:
-  %t819 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.118, i64 0, i64 0
-  call i32 @puts(i8* %t819)
-  call void @exit(i32 1)
-  unreachable
-sdl_window_handle_ok_3344:
-  %t820 = call i8* @SDL_GetRenderer(i8* %t817)
-  %t821 = and i32 0, 255
-  %t822 = and i32 0, 255
-  %t823 = shl i32 %t822, 8
-  %t824 = or i32 %t821, %t823
-  %t825 = and i32 160, 255
-  %t826 = shl i32 %t825, 16
-  %t827 = or i32 %t824, %t826
-  %t828 = and i32 255, 255
-  %t829 = shl i32 %t828, 24
-  %t830 = or i32 %t827, %t829
-  %t831 = and i32 %t830, 255
-  %t832 = trunc i32 %t831 to i8
-  %t833 = lshr i32 %t830, 8
-  %t834 = and i32 %t833, 255
-  %t835 = trunc i32 %t834 to i8
-  %t836 = lshr i32 %t830, 16
-  %t837 = and i32 %t836, 255
-  %t838 = trunc i32 %t837 to i8
-  %t839 = lshr i32 %t830, 24
-  %t840 = and i32 %t839, 255
-  %t841 = trunc i32 %t840 to i8
-  call i32 @SDL_SetRenderDrawColor(i8* %t820, i8 %t832, i8 %t835, i8 %t838, i8 %t841)
-  %t843 = getelementptr inbounds [16 x i8], [16 x i8]* %t842, i64 0, i64 0
-  %t844 = bitcast i8* %t843 to i32*
-  store i32 184, i32* %t844
-  %t845 = getelementptr inbounds i8, i8* %t843, i64 4
-  %t846 = bitcast i8* %t845 to i32*
-  store i32 6, i32* %t846
-  %t847 = getelementptr inbounds i8, i8* %t843, i64 8
-  %t848 = bitcast i8* %t847 to i32*
-  store i32 64, i32* %t848
-  %t849 = getelementptr inbounds i8, i8* %t843, i64 12
-  %t850 = bitcast i8* %t849 to i32*
-  store i32 28, i32* %t850
-  call i32 @SDL_RenderFillRect(i8* %t820, i8* %t843)
-  %t851 = load i8*, i8** %t2
-  %t852 = icmp eq i8* %t851, null
-  br i1 %t852, label %sdl_null_window_3345, label %sdl_window_handle_ok_3346
+  store i32 %t734, i32* %t805
+  call i32 @SDL_RenderFillRect(i8* %t707, i8* %t798)
+  br label %draw_text_after_pixel_3344
+draw_text_after_pixel_3344:
+  %t806 = add i32 %t785, 1
+  store i32 %t806, i32* %t784
+  br label %draw_text_col_cond_3340
+draw_text_col_end_3342:
+  %t807 = add i32 %t777, 1
+  store i32 %t807, i32* %t776
+  br label %draw_text_row_cond_3337
+draw_text_row_end_3339:
+  br label %draw_text_advance_3335
+draw_text_advance_3335:
+  %t808 = load i32, i32* %t750
+  %t809 = add i32 %t808, %t747
+  store i32 %t809, i32* %t750
+  %t810 = add i64 %t753, 1
+  store i64 %t810, i64* %t752
+  br label %draw_text_cond_3330
+draw_text_end_3336:
+  call void @star_rc_release(i8* %t729)
+  %t811 = load i8*, i8** %t2
+  %t812 = icmp eq i8* %t811, null
+  br i1 %t812, label %sdl_null_window_3345, label %sdl_window_handle_ok_3346
 sdl_null_window_3345:
-  %t853 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.119, i64 0, i64 0
-  call i32 @puts(i8* %t853)
+  %t813 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.122, i64 0, i64 0
+  call i32 @puts(i8* %t813)
   call void @exit(i32 1)
   unreachable
 sdl_window_handle_ok_3346:
-  %t854 = load i8*, i8** %t80
-  %t855 = icmp eq i8* %t854, null
-  br i1 %t855, label %font_null_handle_3347, label %font_handle_ok_3348
-font_null_handle_3347:
-  %t856 = getelementptr inbounds [73 x i8], [73 x i8]* @.str.120, i64 0, i64 0
-  call i32 @puts(i8* %t856)
+  %t814 = call i8* @SDL_GetRenderer(i8* %t811)
+  %t815 = and i32 160, 255
+  %t816 = and i32 0, 255
+  %t817 = shl i32 %t816, 8
+  %t818 = or i32 %t815, %t817
+  %t819 = and i32 0, 255
+  %t820 = shl i32 %t819, 16
+  %t821 = or i32 %t818, %t820
+  %t822 = and i32 255, 255
+  %t823 = shl i32 %t822, 24
+  %t824 = or i32 %t821, %t823
+  %t825 = and i32 %t824, 255
+  %t826 = trunc i32 %t825 to i8
+  %t827 = lshr i32 %t824, 8
+  %t828 = and i32 %t827, 255
+  %t829 = trunc i32 %t828 to i8
+  %t830 = lshr i32 %t824, 16
+  %t831 = and i32 %t830, 255
+  %t832 = trunc i32 %t831 to i8
+  %t833 = lshr i32 %t824, 24
+  %t834 = and i32 %t833, 255
+  %t835 = trunc i32 %t834 to i8
+  call i32 @SDL_SetRenderDrawColor(i8* %t814, i8 %t826, i8 %t829, i8 %t832, i8 %t835)
+  %t837 = getelementptr inbounds [16 x i8], [16 x i8]* %t836, i64 0, i64 0
+  %t838 = bitcast i8* %t837 to i32*
+  store i32 112, i32* %t838
+  %t839 = getelementptr inbounds i8, i8* %t837, i64 4
+  %t840 = bitcast i8* %t839 to i32*
+  store i32 6, i32* %t840
+  %t841 = getelementptr inbounds i8, i8* %t837, i64 8
+  %t842 = bitcast i8* %t841 to i32*
+  store i32 64, i32* %t842
+  %t843 = getelementptr inbounds i8, i8* %t837, i64 12
+  %t844 = bitcast i8* %t843 to i32*
+  store i32 28, i32* %t844
+  call i32 @SDL_RenderFillRect(i8* %t814, i8* %t837)
+  %t845 = load i8*, i8** %t2
+  %t846 = icmp eq i8* %t845, null
+  br i1 %t846, label %sdl_null_window_3347, label %sdl_window_handle_ok_3348
+sdl_null_window_3347:
+  %t847 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.123, i64 0, i64 0
+  call i32 @puts(i8* %t847)
   call void @exit(i32 1)
   unreachable
-font_handle_ok_3348:
-  %t857 = call i8* @SDL_GetRenderer(i8* %t851)
-  %t858 = and i32 255, 255
+sdl_window_handle_ok_3348:
+  %t848 = load i8*, i8** %t80
+  %t849 = icmp eq i8* %t848, null
+  br i1 %t849, label %font_null_handle_3349, label %font_handle_ok_3350
+font_null_handle_3349:
+  %t850 = getelementptr inbounds [73 x i8], [73 x i8]* @.str.124, i64 0, i64 0
+  call i32 @puts(i8* %t850)
+  call void @exit(i32 1)
+  unreachable
+font_handle_ok_3350:
+  %t851 = call i8* @SDL_GetRenderer(i8* %t845)
+  %t852 = and i32 255, 255
+  %t853 = and i32 255, 255
+  %t854 = shl i32 %t853, 8
+  %t855 = or i32 %t852, %t854
+  %t856 = and i32 255, 255
+  %t857 = shl i32 %t856, 16
+  %t858 = or i32 %t855, %t857
   %t859 = and i32 255, 255
-  %t860 = shl i32 %t859, 8
+  %t860 = shl i32 %t859, 24
   %t861 = or i32 %t858, %t860
-  %t862 = and i32 255, 255
-  %t863 = shl i32 %t862, 16
-  %t864 = or i32 %t861, %t863
-  %t865 = and i32 255, 255
-  %t866 = shl i32 %t865, 24
-  %t867 = or i32 %t864, %t866
+  %t862 = and i32 %t861, 255
+  %t863 = trunc i32 %t862 to i8
+  %t864 = lshr i32 %t861, 8
+  %t865 = and i32 %t864, 255
+  %t866 = trunc i32 %t865 to i8
+  %t867 = lshr i32 %t861, 16
   %t868 = and i32 %t867, 255
   %t869 = trunc i32 %t868 to i8
-  %t870 = lshr i32 %t867, 8
+  %t870 = lshr i32 %t861, 24
   %t871 = and i32 %t870, 255
   %t872 = trunc i32 %t871 to i8
-  %t873 = lshr i32 %t867, 16
-  %t874 = and i32 %t873, 255
-  %t875 = trunc i32 %t874 to i8
-  %t876 = lshr i32 %t867, 24
-  %t877 = and i32 %t876, 255
-  %t878 = trunc i32 %t877 to i8
-  call i32 @SDL_SetRenderDrawColor(i8* %t857, i8 %t869, i8 %t872, i8 %t875, i8 %t878)
-  %t879 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.121, i64 0, i32 2, i64 0
-  %t880 = add i32 184, 2
-  %t881 = add i32 6, 8
-  %t882 = icmp sgt i32 2, 0
-  %t883 = select i1 %t882, i32 2, i32 1
-  %t884 = load i8, i8* %t854
+  call i32 @SDL_SetRenderDrawColor(i8* %t851, i8 %t863, i8 %t866, i8 %t869, i8 %t872)
+  %t873 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.125, i64 0, i32 2, i64 0
+  %t874 = add i32 112, 6
+  %t875 = add i32 6, 8
+  %t876 = icmp sgt i32 2, 0
+  %t877 = select i1 %t876, i32 2, i32 1
+  %t878 = load i8, i8* %t848
+  %t879 = zext i8 %t878 to i32
+  %t880 = getelementptr inbounds i8, i8* %t848, i64 1
+  %t881 = load i8, i8* %t880
+  %t882 = zext i8 %t881 to i32
+  %t883 = getelementptr inbounds i8, i8* %t848, i64 2
+  %t884 = load i8, i8* %t883
   %t885 = zext i8 %t884 to i32
-  %t886 = getelementptr inbounds i8, i8* %t854, i64 1
+  %t886 = getelementptr inbounds i8, i8* %t848, i64 3
   %t887 = load i8, i8* %t886
   %t888 = zext i8 %t887 to i32
-  %t889 = getelementptr inbounds i8, i8* %t854, i64 2
-  %t890 = load i8, i8* %t889
-  %t891 = zext i8 %t890 to i32
-  %t892 = getelementptr inbounds i8, i8* %t854, i64 3
-  %t893 = load i8, i8* %t892
-  %t894 = zext i8 %t893 to i32
-  %t895 = add i32 %t885, 1
-  %t896 = mul i32 %t895, %t883
-  %t897 = add i32 %t888, 1
-  %t898 = mul i32 %t897, %t883
-  store i32 %t880, i32* %t899
-  store i32 %t881, i32* %t900
-  store i64 0, i64* %t901
-  br label %draw_text_cond_3349
-draw_text_cond_3349:
-  %t902 = load i64, i64* %t901
-  %t903 = getelementptr inbounds i8, i8* %t879, i64 %t902
-  %t904 = load i8, i8* %t903
-  %t905 = icmp eq i8 %t904, 0
-  br i1 %t905, label %draw_text_end_3355, label %draw_text_body_3350
-draw_text_body_3350:
-  %t906 = zext i8 %t904 to i32
-  %t907 = icmp eq i32 %t906, 10
-  br i1 %t907, label %draw_text_newline_3351, label %draw_text_glyph_3352
-draw_text_newline_3351:
-  store i32 %t880, i32* %t899
-  %t908 = load i32, i32* %t900
-  %t909 = add i32 %t908, %t898
-  store i32 %t909, i32* %t900
-  %t910 = add i64 %t902, 1
-  store i64 %t910, i64* %t901
-  br label %draw_text_cond_3349
-draw_text_glyph_3352:
-  %t911 = icmp sge i32 %t906, 97
-  %t912 = icmp sle i32 %t906, 122
+  %t889 = add i32 %t879, 1
+  %t890 = mul i32 %t889, %t877
+  %t891 = add i32 %t882, 1
+  %t892 = mul i32 %t891, %t877
+  store i32 %t874, i32* %t893
+  store i32 %t875, i32* %t894
+  store i64 0, i64* %t895
+  br label %draw_text_cond_3351
+draw_text_cond_3351:
+  %t896 = load i64, i64* %t895
+  %t897 = getelementptr inbounds i8, i8* %t873, i64 %t896
+  %t898 = load i8, i8* %t897
+  %t899 = icmp eq i8 %t898, 0
+  br i1 %t899, label %draw_text_end_3357, label %draw_text_body_3352
+draw_text_body_3352:
+  %t900 = zext i8 %t898 to i32
+  %t901 = icmp eq i32 %t900, 10
+  br i1 %t901, label %draw_text_newline_3353, label %draw_text_glyph_3354
+draw_text_newline_3353:
+  store i32 %t874, i32* %t893
+  %t902 = load i32, i32* %t894
+  %t903 = add i32 %t902, %t892
+  store i32 %t903, i32* %t894
+  %t904 = add i64 %t896, 1
+  store i64 %t904, i64* %t895
+  br label %draw_text_cond_3351
+draw_text_glyph_3354:
+  %t905 = icmp sge i32 %t900, 97
+  %t906 = icmp sle i32 %t900, 122
+  %t907 = and i1 %t905, %t906
+  %t908 = sub i32 %t900, 32
+  %t909 = select i1 %t907, i32 %t908, i32 %t900
+  %t910 = sub i32 %t909, %t885
+  %t911 = icmp sge i32 %t910, 0
+  %t912 = icmp slt i32 %t910, %t888
   %t913 = and i1 %t911, %t912
-  %t914 = sub i32 %t906, 32
-  %t915 = select i1 %t913, i32 %t914, i32 %t906
-  %t916 = sub i32 %t915, %t891
-  %t917 = icmp sge i32 %t916, 0
-  %t918 = icmp slt i32 %t916, %t894
-  %t919 = and i1 %t917, %t918
-  br i1 %t919, label %draw_text_draw_glyph_3353, label %draw_text_advance_3354
-draw_text_draw_glyph_3353:
-  %t920 = mul i32 %t916, %t888
-  %t921 = add i32 %t920, 4
-  %t922 = sext i32 %t921 to i64
-  %t923 = load i32, i32* %t899
-  %t924 = load i32, i32* %t900
-  store i32 0, i32* %t925
-  br label %draw_text_row_cond_3356
-draw_text_row_cond_3356:
-  %t926 = load i32, i32* %t925
-  %t927 = icmp slt i32 %t926, %t888
-  br i1 %t927, label %draw_text_row_body_3357, label %draw_text_row_end_3358
-draw_text_row_body_3357:
-  %t928 = sext i32 %t926 to i64
-  %t929 = add i64 %t922, %t928
-  %t930 = getelementptr inbounds i8, i8* %t854, i64 %t929
-  %t931 = load i8, i8* %t930
-  %t932 = zext i8 %t931 to i32
-  store i32 0, i32* %t933
-  br label %draw_text_col_cond_3359
-draw_text_col_cond_3359:
-  %t934 = load i32, i32* %t933
-  %t935 = icmp slt i32 %t934, %t885
-  br i1 %t935, label %draw_text_col_body_3360, label %draw_text_col_end_3361
-draw_text_col_body_3360:
-  %t936 = sub i32 %t885, 1
-  %t937 = sub i32 %t936, %t934
-  %t938 = and i32 %t937, 31
-  %t939 = lshr i32 %t932, %t938
-  %t940 = and i32 %t939, 1
-  %t941 = icmp ne i32 %t940, 0
-  br i1 %t941, label %draw_text_pixel_3362, label %draw_text_after_pixel_3363
-draw_text_pixel_3362:
-  %t942 = mul i32 %t934, %t883
-  %t943 = add i32 %t923, %t942
-  %t944 = mul i32 %t926, %t883
-  %t945 = add i32 %t924, %t944
-  %t947 = getelementptr inbounds [16 x i8], [16 x i8]* %t946, i64 0, i64 0
+  br i1 %t913, label %draw_text_draw_glyph_3355, label %draw_text_advance_3356
+draw_text_draw_glyph_3355:
+  %t914 = mul i32 %t910, %t882
+  %t915 = add i32 %t914, 4
+  %t916 = sext i32 %t915 to i64
+  %t917 = load i32, i32* %t893
+  %t918 = load i32, i32* %t894
+  store i32 0, i32* %t919
+  br label %draw_text_row_cond_3358
+draw_text_row_cond_3358:
+  %t920 = load i32, i32* %t919
+  %t921 = icmp slt i32 %t920, %t882
+  br i1 %t921, label %draw_text_row_body_3359, label %draw_text_row_end_3360
+draw_text_row_body_3359:
+  %t922 = sext i32 %t920 to i64
+  %t923 = add i64 %t916, %t922
+  %t924 = getelementptr inbounds i8, i8* %t848, i64 %t923
+  %t925 = load i8, i8* %t924
+  %t926 = zext i8 %t925 to i32
+  store i32 0, i32* %t927
+  br label %draw_text_col_cond_3361
+draw_text_col_cond_3361:
+  %t928 = load i32, i32* %t927
+  %t929 = icmp slt i32 %t928, %t879
+  br i1 %t929, label %draw_text_col_body_3362, label %draw_text_col_end_3363
+draw_text_col_body_3362:
+  %t930 = sub i32 %t879, 1
+  %t931 = sub i32 %t930, %t928
+  %t932 = and i32 %t931, 31
+  %t933 = lshr i32 %t926, %t932
+  %t934 = and i32 %t933, 1
+  %t935 = icmp ne i32 %t934, 0
+  br i1 %t935, label %draw_text_pixel_3364, label %draw_text_after_pixel_3365
+draw_text_pixel_3364:
+  %t936 = mul i32 %t928, %t877
+  %t937 = add i32 %t917, %t936
+  %t938 = mul i32 %t920, %t877
+  %t939 = add i32 %t918, %t938
+  %t941 = getelementptr inbounds [16 x i8], [16 x i8]* %t940, i64 0, i64 0
+  %t942 = bitcast i8* %t941 to i32*
+  store i32 %t937, i32* %t942
+  %t943 = getelementptr inbounds i8, i8* %t941, i64 4
+  %t944 = bitcast i8* %t943 to i32*
+  store i32 %t939, i32* %t944
+  %t945 = getelementptr inbounds i8, i8* %t941, i64 8
+  %t946 = bitcast i8* %t945 to i32*
+  store i32 %t877, i32* %t946
+  %t947 = getelementptr inbounds i8, i8* %t941, i64 12
   %t948 = bitcast i8* %t947 to i32*
-  store i32 %t943, i32* %t948
-  %t949 = getelementptr inbounds i8, i8* %t947, i64 4
-  %t950 = bitcast i8* %t949 to i32*
-  store i32 %t945, i32* %t950
-  %t951 = getelementptr inbounds i8, i8* %t947, i64 8
-  %t952 = bitcast i8* %t951 to i32*
-  store i32 %t883, i32* %t952
-  %t953 = getelementptr inbounds i8, i8* %t947, i64 12
-  %t954 = bitcast i8* %t953 to i32*
-  store i32 %t883, i32* %t954
-  call i32 @SDL_RenderFillRect(i8* %t857, i8* %t947)
-  br label %draw_text_after_pixel_3363
-draw_text_after_pixel_3363:
-  %t955 = add i32 %t934, 1
-  store i32 %t955, i32* %t933
-  br label %draw_text_col_cond_3359
-draw_text_col_end_3361:
-  %t956 = add i32 %t926, 1
-  store i32 %t956, i32* %t925
-  br label %draw_text_row_cond_3356
-draw_text_row_end_3358:
-  br label %draw_text_advance_3354
-draw_text_advance_3354:
-  %t957 = load i32, i32* %t899
-  %t958 = add i32 %t957, %t896
-  store i32 %t958, i32* %t899
-  %t959 = add i64 %t902, 1
-  store i64 %t959, i64* %t901
-  br label %draw_text_cond_3349
-draw_text_end_3355:
-  call void @star_rc_release(i8* %t879)
-  %t960 = load i8*, i8** %t2
-  %t961 = icmp eq i8* %t960, null
-  br i1 %t961, label %sdl_null_window_3364, label %sdl_window_handle_ok_3365
-sdl_null_window_3364:
-  %t962 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.122, i64 0, i64 0
-  call i32 @puts(i8* %t962)
-  call void @exit(i32 1)
-  unreachable
-sdl_window_handle_ok_3365:
-  %t963 = call i8* @SDL_GetRenderer(i8* %t960)
-  %t964 = and i32 160, 255
-  %t965 = and i32 160, 255
-  %t966 = shl i32 %t965, 8
-  %t967 = or i32 %t964, %t966
-  %t968 = and i32 0, 255
-  %t969 = shl i32 %t968, 16
-  %t970 = or i32 %t967, %t969
-  %t971 = and i32 255, 255
-  %t972 = shl i32 %t971, 24
-  %t973 = or i32 %t970, %t972
-  %t974 = and i32 %t973, 255
-  %t975 = trunc i32 %t974 to i8
-  %t976 = lshr i32 %t973, 8
-  %t977 = and i32 %t976, 255
-  %t978 = trunc i32 %t977 to i8
-  %t979 = lshr i32 %t973, 16
-  %t980 = and i32 %t979, 255
-  %t981 = trunc i32 %t980 to i8
-  %t982 = lshr i32 %t973, 24
-  %t983 = and i32 %t982, 255
-  %t984 = trunc i32 %t983 to i8
-  call i32 @SDL_SetRenderDrawColor(i8* %t963, i8 %t975, i8 %t978, i8 %t981, i8 %t984)
-  %t986 = getelementptr inbounds [16 x i8], [16 x i8]* %t985, i64 0, i64 0
-  %t987 = bitcast i8* %t986 to i32*
-  store i32 256, i32* %t987
-  %t988 = getelementptr inbounds i8, i8* %t986, i64 4
-  %t989 = bitcast i8* %t988 to i32*
-  store i32 6, i32* %t989
-  %t990 = getelementptr inbounds i8, i8* %t986, i64 8
-  %t991 = bitcast i8* %t990 to i32*
-  store i32 64, i32* %t991
-  %t992 = getelementptr inbounds i8, i8* %t986, i64 12
-  %t993 = bitcast i8* %t992 to i32*
-  store i32 28, i32* %t993
-  call i32 @SDL_RenderFillRect(i8* %t963, i8* %t986)
-  %t994 = load i8*, i8** %t2
-  %t995 = icmp eq i8* %t994, null
-  br i1 %t995, label %sdl_null_window_3366, label %sdl_window_handle_ok_3367
+  store i32 %t877, i32* %t948
+  call i32 @SDL_RenderFillRect(i8* %t851, i8* %t941)
+  br label %draw_text_after_pixel_3365
+draw_text_after_pixel_3365:
+  %t949 = add i32 %t928, 1
+  store i32 %t949, i32* %t927
+  br label %draw_text_col_cond_3361
+draw_text_col_end_3363:
+  %t950 = add i32 %t920, 1
+  store i32 %t950, i32* %t919
+  br label %draw_text_row_cond_3358
+draw_text_row_end_3360:
+  br label %draw_text_advance_3356
+draw_text_advance_3356:
+  %t951 = load i32, i32* %t893
+  %t952 = add i32 %t951, %t890
+  store i32 %t952, i32* %t893
+  %t953 = add i64 %t896, 1
+  store i64 %t953, i64* %t895
+  br label %draw_text_cond_3351
+draw_text_end_3357:
+  call void @star_rc_release(i8* %t873)
+  %t954 = load i8*, i8** %t2
+  %t955 = icmp eq i8* %t954, null
+  br i1 %t955, label %sdl_null_window_3366, label %sdl_window_handle_ok_3367
 sdl_null_window_3366:
-  %t996 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.123, i64 0, i64 0
-  call i32 @puts(i8* %t996)
+  %t956 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.126, i64 0, i64 0
+  call i32 @puts(i8* %t956)
   call void @exit(i32 1)
   unreachable
 sdl_window_handle_ok_3367:
-  %t997 = load i8*, i8** %t80
-  %t998 = icmp eq i8* %t997, null
-  br i1 %t998, label %font_null_handle_3368, label %font_handle_ok_3369
-font_null_handle_3368:
-  %t999 = getelementptr inbounds [73 x i8], [73 x i8]* @.str.124, i64 0, i64 0
-  call i32 @puts(i8* %t999)
+  %t957 = call i8* @SDL_GetRenderer(i8* %t954)
+  %t958 = and i32 0, 255
+  %t959 = and i32 0, 255
+  %t960 = shl i32 %t959, 8
+  %t961 = or i32 %t958, %t960
+  %t962 = and i32 160, 255
+  %t963 = shl i32 %t962, 16
+  %t964 = or i32 %t961, %t963
+  %t965 = and i32 255, 255
+  %t966 = shl i32 %t965, 24
+  %t967 = or i32 %t964, %t966
+  %t968 = and i32 %t967, 255
+  %t969 = trunc i32 %t968 to i8
+  %t970 = lshr i32 %t967, 8
+  %t971 = and i32 %t970, 255
+  %t972 = trunc i32 %t971 to i8
+  %t973 = lshr i32 %t967, 16
+  %t974 = and i32 %t973, 255
+  %t975 = trunc i32 %t974 to i8
+  %t976 = lshr i32 %t967, 24
+  %t977 = and i32 %t976, 255
+  %t978 = trunc i32 %t977 to i8
+  call i32 @SDL_SetRenderDrawColor(i8* %t957, i8 %t969, i8 %t972, i8 %t975, i8 %t978)
+  %t980 = getelementptr inbounds [16 x i8], [16 x i8]* %t979, i64 0, i64 0
+  %t981 = bitcast i8* %t980 to i32*
+  store i32 184, i32* %t981
+  %t982 = getelementptr inbounds i8, i8* %t980, i64 4
+  %t983 = bitcast i8* %t982 to i32*
+  store i32 6, i32* %t983
+  %t984 = getelementptr inbounds i8, i8* %t980, i64 8
+  %t985 = bitcast i8* %t984 to i32*
+  store i32 64, i32* %t985
+  %t986 = getelementptr inbounds i8, i8* %t980, i64 12
+  %t987 = bitcast i8* %t986 to i32*
+  store i32 28, i32* %t987
+  call i32 @SDL_RenderFillRect(i8* %t957, i8* %t980)
+  %t988 = load i8*, i8** %t2
+  %t989 = icmp eq i8* %t988, null
+  br i1 %t989, label %sdl_null_window_3368, label %sdl_window_handle_ok_3369
+sdl_null_window_3368:
+  %t990 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.127, i64 0, i64 0
+  call i32 @puts(i8* %t990)
   call void @exit(i32 1)
   unreachable
-font_handle_ok_3369:
-  %t1000 = call i8* @SDL_GetRenderer(i8* %t994)
-  %t1001 = and i32 255, 255
+sdl_window_handle_ok_3369:
+  %t991 = load i8*, i8** %t80
+  %t992 = icmp eq i8* %t991, null
+  br i1 %t992, label %font_null_handle_3370, label %font_handle_ok_3371
+font_null_handle_3370:
+  %t993 = getelementptr inbounds [73 x i8], [73 x i8]* @.str.128, i64 0, i64 0
+  call i32 @puts(i8* %t993)
+  call void @exit(i32 1)
+  unreachable
+font_handle_ok_3371:
+  %t994 = call i8* @SDL_GetRenderer(i8* %t988)
+  %t995 = and i32 255, 255
+  %t996 = and i32 255, 255
+  %t997 = shl i32 %t996, 8
+  %t998 = or i32 %t995, %t997
+  %t999 = and i32 255, 255
+  %t1000 = shl i32 %t999, 16
+  %t1001 = or i32 %t998, %t1000
   %t1002 = and i32 255, 255
-  %t1003 = shl i32 %t1002, 8
+  %t1003 = shl i32 %t1002, 24
   %t1004 = or i32 %t1001, %t1003
-  %t1005 = and i32 255, 255
-  %t1006 = shl i32 %t1005, 16
-  %t1007 = or i32 %t1004, %t1006
-  %t1008 = and i32 255, 255
-  %t1009 = shl i32 %t1008, 24
-  %t1010 = or i32 %t1007, %t1009
+  %t1005 = and i32 %t1004, 255
+  %t1006 = trunc i32 %t1005 to i8
+  %t1007 = lshr i32 %t1004, 8
+  %t1008 = and i32 %t1007, 255
+  %t1009 = trunc i32 %t1008 to i8
+  %t1010 = lshr i32 %t1004, 16
   %t1011 = and i32 %t1010, 255
   %t1012 = trunc i32 %t1011 to i8
-  %t1013 = lshr i32 %t1010, 8
+  %t1013 = lshr i32 %t1004, 24
   %t1014 = and i32 %t1013, 255
   %t1015 = trunc i32 %t1014 to i8
-  %t1016 = lshr i32 %t1010, 16
-  %t1017 = and i32 %t1016, 255
-  %t1018 = trunc i32 %t1017 to i8
-  %t1019 = lshr i32 %t1010, 24
-  %t1020 = and i32 %t1019, 255
-  %t1021 = trunc i32 %t1020 to i8
-  call i32 @SDL_SetRenderDrawColor(i8* %t1000, i8 %t1012, i8 %t1015, i8 %t1018, i8 %t1021)
-  %t1022 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.125, i64 0, i32 2, i64 0
-  %t1023 = add i32 256, 6
-  %t1024 = add i32 6, 8
-  %t1025 = icmp sgt i32 2, 0
-  %t1026 = select i1 %t1025, i32 2, i32 1
-  %t1027 = load i8, i8* %t997
+  call i32 @SDL_SetRenderDrawColor(i8* %t994, i8 %t1006, i8 %t1009, i8 %t1012, i8 %t1015)
+  %t1016 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.129, i64 0, i32 2, i64 0
+  %t1017 = add i32 184, 2
+  %t1018 = add i32 6, 8
+  %t1019 = icmp sgt i32 2, 0
+  %t1020 = select i1 %t1019, i32 2, i32 1
+  %t1021 = load i8, i8* %t991
+  %t1022 = zext i8 %t1021 to i32
+  %t1023 = getelementptr inbounds i8, i8* %t991, i64 1
+  %t1024 = load i8, i8* %t1023
+  %t1025 = zext i8 %t1024 to i32
+  %t1026 = getelementptr inbounds i8, i8* %t991, i64 2
+  %t1027 = load i8, i8* %t1026
   %t1028 = zext i8 %t1027 to i32
-  %t1029 = getelementptr inbounds i8, i8* %t997, i64 1
+  %t1029 = getelementptr inbounds i8, i8* %t991, i64 3
   %t1030 = load i8, i8* %t1029
   %t1031 = zext i8 %t1030 to i32
-  %t1032 = getelementptr inbounds i8, i8* %t997, i64 2
-  %t1033 = load i8, i8* %t1032
-  %t1034 = zext i8 %t1033 to i32
-  %t1035 = getelementptr inbounds i8, i8* %t997, i64 3
-  %t1036 = load i8, i8* %t1035
-  %t1037 = zext i8 %t1036 to i32
-  %t1038 = add i32 %t1028, 1
-  %t1039 = mul i32 %t1038, %t1026
-  %t1040 = add i32 %t1031, 1
-  %t1041 = mul i32 %t1040, %t1026
-  store i32 %t1023, i32* %t1042
-  store i32 %t1024, i32* %t1043
-  store i64 0, i64* %t1044
-  br label %draw_text_cond_3370
-draw_text_cond_3370:
-  %t1045 = load i64, i64* %t1044
-  %t1046 = getelementptr inbounds i8, i8* %t1022, i64 %t1045
-  %t1047 = load i8, i8* %t1046
-  %t1048 = icmp eq i8 %t1047, 0
-  br i1 %t1048, label %draw_text_end_3376, label %draw_text_body_3371
-draw_text_body_3371:
-  %t1049 = zext i8 %t1047 to i32
-  %t1050 = icmp eq i32 %t1049, 10
-  br i1 %t1050, label %draw_text_newline_3372, label %draw_text_glyph_3373
-draw_text_newline_3372:
-  store i32 %t1023, i32* %t1042
-  %t1051 = load i32, i32* %t1043
-  %t1052 = add i32 %t1051, %t1041
-  store i32 %t1052, i32* %t1043
-  %t1053 = add i64 %t1045, 1
-  store i64 %t1053, i64* %t1044
-  br label %draw_text_cond_3370
-draw_text_glyph_3373:
-  %t1054 = icmp sge i32 %t1049, 97
-  %t1055 = icmp sle i32 %t1049, 122
+  %t1032 = add i32 %t1022, 1
+  %t1033 = mul i32 %t1032, %t1020
+  %t1034 = add i32 %t1025, 1
+  %t1035 = mul i32 %t1034, %t1020
+  store i32 %t1017, i32* %t1036
+  store i32 %t1018, i32* %t1037
+  store i64 0, i64* %t1038
+  br label %draw_text_cond_3372
+draw_text_cond_3372:
+  %t1039 = load i64, i64* %t1038
+  %t1040 = getelementptr inbounds i8, i8* %t1016, i64 %t1039
+  %t1041 = load i8, i8* %t1040
+  %t1042 = icmp eq i8 %t1041, 0
+  br i1 %t1042, label %draw_text_end_3378, label %draw_text_body_3373
+draw_text_body_3373:
+  %t1043 = zext i8 %t1041 to i32
+  %t1044 = icmp eq i32 %t1043, 10
+  br i1 %t1044, label %draw_text_newline_3374, label %draw_text_glyph_3375
+draw_text_newline_3374:
+  store i32 %t1017, i32* %t1036
+  %t1045 = load i32, i32* %t1037
+  %t1046 = add i32 %t1045, %t1035
+  store i32 %t1046, i32* %t1037
+  %t1047 = add i64 %t1039, 1
+  store i64 %t1047, i64* %t1038
+  br label %draw_text_cond_3372
+draw_text_glyph_3375:
+  %t1048 = icmp sge i32 %t1043, 97
+  %t1049 = icmp sle i32 %t1043, 122
+  %t1050 = and i1 %t1048, %t1049
+  %t1051 = sub i32 %t1043, 32
+  %t1052 = select i1 %t1050, i32 %t1051, i32 %t1043
+  %t1053 = sub i32 %t1052, %t1028
+  %t1054 = icmp sge i32 %t1053, 0
+  %t1055 = icmp slt i32 %t1053, %t1031
   %t1056 = and i1 %t1054, %t1055
-  %t1057 = sub i32 %t1049, 32
-  %t1058 = select i1 %t1056, i32 %t1057, i32 %t1049
-  %t1059 = sub i32 %t1058, %t1034
-  %t1060 = icmp sge i32 %t1059, 0
-  %t1061 = icmp slt i32 %t1059, %t1037
-  %t1062 = and i1 %t1060, %t1061
-  br i1 %t1062, label %draw_text_draw_glyph_3374, label %draw_text_advance_3375
-draw_text_draw_glyph_3374:
-  %t1063 = mul i32 %t1059, %t1031
-  %t1064 = add i32 %t1063, 4
-  %t1065 = sext i32 %t1064 to i64
-  %t1066 = load i32, i32* %t1042
-  %t1067 = load i32, i32* %t1043
-  store i32 0, i32* %t1068
-  br label %draw_text_row_cond_3377
-draw_text_row_cond_3377:
-  %t1069 = load i32, i32* %t1068
-  %t1070 = icmp slt i32 %t1069, %t1031
-  br i1 %t1070, label %draw_text_row_body_3378, label %draw_text_row_end_3379
-draw_text_row_body_3378:
-  %t1071 = sext i32 %t1069 to i64
-  %t1072 = add i64 %t1065, %t1071
-  %t1073 = getelementptr inbounds i8, i8* %t997, i64 %t1072
-  %t1074 = load i8, i8* %t1073
-  %t1075 = zext i8 %t1074 to i32
-  store i32 0, i32* %t1076
-  br label %draw_text_col_cond_3380
-draw_text_col_cond_3380:
-  %t1077 = load i32, i32* %t1076
-  %t1078 = icmp slt i32 %t1077, %t1028
-  br i1 %t1078, label %draw_text_col_body_3381, label %draw_text_col_end_3382
-draw_text_col_body_3381:
-  %t1079 = sub i32 %t1028, 1
-  %t1080 = sub i32 %t1079, %t1077
-  %t1081 = and i32 %t1080, 31
-  %t1082 = lshr i32 %t1075, %t1081
-  %t1083 = and i32 %t1082, 1
-  %t1084 = icmp ne i32 %t1083, 0
-  br i1 %t1084, label %draw_text_pixel_3383, label %draw_text_after_pixel_3384
-draw_text_pixel_3383:
-  %t1085 = mul i32 %t1077, %t1026
-  %t1086 = add i32 %t1066, %t1085
-  %t1087 = mul i32 %t1069, %t1026
-  %t1088 = add i32 %t1067, %t1087
-  %t1090 = getelementptr inbounds [16 x i8], [16 x i8]* %t1089, i64 0, i64 0
+  br i1 %t1056, label %draw_text_draw_glyph_3376, label %draw_text_advance_3377
+draw_text_draw_glyph_3376:
+  %t1057 = mul i32 %t1053, %t1025
+  %t1058 = add i32 %t1057, 4
+  %t1059 = sext i32 %t1058 to i64
+  %t1060 = load i32, i32* %t1036
+  %t1061 = load i32, i32* %t1037
+  store i32 0, i32* %t1062
+  br label %draw_text_row_cond_3379
+draw_text_row_cond_3379:
+  %t1063 = load i32, i32* %t1062
+  %t1064 = icmp slt i32 %t1063, %t1025
+  br i1 %t1064, label %draw_text_row_body_3380, label %draw_text_row_end_3381
+draw_text_row_body_3380:
+  %t1065 = sext i32 %t1063 to i64
+  %t1066 = add i64 %t1059, %t1065
+  %t1067 = getelementptr inbounds i8, i8* %t991, i64 %t1066
+  %t1068 = load i8, i8* %t1067
+  %t1069 = zext i8 %t1068 to i32
+  store i32 0, i32* %t1070
+  br label %draw_text_col_cond_3382
+draw_text_col_cond_3382:
+  %t1071 = load i32, i32* %t1070
+  %t1072 = icmp slt i32 %t1071, %t1022
+  br i1 %t1072, label %draw_text_col_body_3383, label %draw_text_col_end_3384
+draw_text_col_body_3383:
+  %t1073 = sub i32 %t1022, 1
+  %t1074 = sub i32 %t1073, %t1071
+  %t1075 = and i32 %t1074, 31
+  %t1076 = lshr i32 %t1069, %t1075
+  %t1077 = and i32 %t1076, 1
+  %t1078 = icmp ne i32 %t1077, 0
+  br i1 %t1078, label %draw_text_pixel_3385, label %draw_text_after_pixel_3386
+draw_text_pixel_3385:
+  %t1079 = mul i32 %t1071, %t1020
+  %t1080 = add i32 %t1060, %t1079
+  %t1081 = mul i32 %t1063, %t1020
+  %t1082 = add i32 %t1061, %t1081
+  %t1084 = getelementptr inbounds [16 x i8], [16 x i8]* %t1083, i64 0, i64 0
+  %t1085 = bitcast i8* %t1084 to i32*
+  store i32 %t1080, i32* %t1085
+  %t1086 = getelementptr inbounds i8, i8* %t1084, i64 4
+  %t1087 = bitcast i8* %t1086 to i32*
+  store i32 %t1082, i32* %t1087
+  %t1088 = getelementptr inbounds i8, i8* %t1084, i64 8
+  %t1089 = bitcast i8* %t1088 to i32*
+  store i32 %t1020, i32* %t1089
+  %t1090 = getelementptr inbounds i8, i8* %t1084, i64 12
   %t1091 = bitcast i8* %t1090 to i32*
-  store i32 %t1086, i32* %t1091
-  %t1092 = getelementptr inbounds i8, i8* %t1090, i64 4
-  %t1093 = bitcast i8* %t1092 to i32*
-  store i32 %t1088, i32* %t1093
-  %t1094 = getelementptr inbounds i8, i8* %t1090, i64 8
-  %t1095 = bitcast i8* %t1094 to i32*
-  store i32 %t1026, i32* %t1095
-  %t1096 = getelementptr inbounds i8, i8* %t1090, i64 12
-  %t1097 = bitcast i8* %t1096 to i32*
-  store i32 %t1026, i32* %t1097
-  call i32 @SDL_RenderFillRect(i8* %t1000, i8* %t1090)
-  br label %draw_text_after_pixel_3384
-draw_text_after_pixel_3384:
-  %t1098 = add i32 %t1077, 1
-  store i32 %t1098, i32* %t1076
-  br label %draw_text_col_cond_3380
-draw_text_col_end_3382:
-  %t1099 = add i32 %t1069, 1
-  store i32 %t1099, i32* %t1068
-  br label %draw_text_row_cond_3377
-draw_text_row_end_3379:
-  br label %draw_text_advance_3375
-draw_text_advance_3375:
-  %t1100 = load i32, i32* %t1042
-  %t1101 = add i32 %t1100, %t1039
-  store i32 %t1101, i32* %t1042
-  %t1102 = add i64 %t1045, 1
-  store i64 %t1102, i64* %t1044
-  br label %draw_text_cond_3370
-draw_text_end_3376:
-  call void @star_rc_release(i8* %t1022)
-  %t1104 = mul i32 256, 2
-  %t1105 = add i32 %t1104, 40
-  store i32 %t1105, i32* %t1103
-  %t1106 = load i8*, i8** %t2
-  %t1107 = icmp eq i8* %t1106, null
-  br i1 %t1107, label %sdl_null_window_3385, label %sdl_window_handle_ok_3386
-sdl_null_window_3385:
-  %t1108 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.126, i64 0, i64 0
-  call i32 @puts(i8* %t1108)
+  store i32 %t1020, i32* %t1091
+  call i32 @SDL_RenderFillRect(i8* %t994, i8* %t1084)
+  br label %draw_text_after_pixel_3386
+draw_text_after_pixel_3386:
+  %t1092 = add i32 %t1071, 1
+  store i32 %t1092, i32* %t1070
+  br label %draw_text_col_cond_3382
+draw_text_col_end_3384:
+  %t1093 = add i32 %t1063, 1
+  store i32 %t1093, i32* %t1062
+  br label %draw_text_row_cond_3379
+draw_text_row_end_3381:
+  br label %draw_text_advance_3377
+draw_text_advance_3377:
+  %t1094 = load i32, i32* %t1036
+  %t1095 = add i32 %t1094, %t1033
+  store i32 %t1095, i32* %t1036
+  %t1096 = add i64 %t1039, 1
+  store i64 %t1096, i64* %t1038
+  br label %draw_text_cond_3372
+draw_text_end_3378:
+  call void @star_rc_release(i8* %t1016)
+  %t1097 = load i8*, i8** %t2
+  %t1098 = icmp eq i8* %t1097, null
+  br i1 %t1098, label %sdl_null_window_3387, label %sdl_window_handle_ok_3388
+sdl_null_window_3387:
+  %t1099 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.130, i64 0, i64 0
+  call i32 @puts(i8* %t1099)
   call void @exit(i32 1)
   unreachable
-sdl_window_handle_ok_3386:
-  %t1109 = call i8* @SDL_GetRenderer(i8* %t1106)
-  %t1110 = load i32, i32* %t1103
-  %t1111 = mul i32 256, 2
-  %t1112 = and i32 25, 255
-  %t1113 = and i32 25, 255
-  %t1114 = shl i32 %t1113, 8
-  %t1115 = or i32 %t1112, %t1114
-  %t1116 = and i32 25, 255
-  %t1117 = shl i32 %t1116, 16
-  %t1118 = or i32 %t1115, %t1117
-  %t1119 = and i32 255, 255
-  %t1120 = shl i32 %t1119, 24
-  %t1121 = or i32 %t1118, %t1120
-  %t1122 = and i32 %t1121, 255
-  %t1123 = trunc i32 %t1122 to i8
-  %t1124 = lshr i32 %t1121, 8
-  %t1125 = and i32 %t1124, 255
-  %t1126 = trunc i32 %t1125 to i8
-  %t1127 = lshr i32 %t1121, 16
-  %t1128 = and i32 %t1127, 255
-  %t1129 = trunc i32 %t1128 to i8
-  %t1130 = lshr i32 %t1121, 24
-  %t1131 = and i32 %t1130, 255
-  %t1132 = trunc i32 %t1131 to i8
-  call i32 @SDL_SetRenderDrawColor(i8* %t1109, i8 %t1123, i8 %t1126, i8 %t1129, i8 %t1132)
-  %t1134 = getelementptr inbounds [16 x i8], [16 x i8]* %t1133, i64 0, i64 0
-  %t1135 = bitcast i8* %t1134 to i32*
-  store i32 0, i32* %t1135
-  %t1136 = getelementptr inbounds i8, i8* %t1134, i64 4
-  %t1137 = bitcast i8* %t1136 to i32*
-  store i32 %t1110, i32* %t1137
-  %t1138 = getelementptr inbounds i8, i8* %t1134, i64 8
-  %t1139 = bitcast i8* %t1138 to i32*
-  store i32 %t1111, i32* %t1139
-  %t1140 = getelementptr inbounds i8, i8* %t1134, i64 12
-  %t1141 = bitcast i8* %t1140 to i32*
-  store i32 22, i32* %t1141
-  call i32 @SDL_RenderFillRect(i8* %t1109, i8* %t1134)
-  %t1143 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 30
-  %t1144 = load i1, i1* %t1143
-  br i1 %t1144, label %if_then_3387, label %if_else_3388
-if_then_3387:
-  %t1145 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.127, i64 0, i32 2, i64 0
-  br label %if_end_3389
-if_else_3388:
-  %t1146 = load i1, i1* %t95
-  br i1 %t1146, label %if_then_3390, label %if_else_3391
-if_then_3390:
-  %t1147 = getelementptr inbounds { i64, i8*, [8 x i8] }, { i64, i8*, [8 x i8] }* @.str.128, i64 0, i32 2, i64 0
-  br label %if_end_3392
-if_else_3391:
-  %t1148 = getelementptr inbounds { i64, i8*, [8 x i8] }, { i64, i8*, [8 x i8] }* @.str.129, i64 0, i32 2, i64 0
-  br label %if_end_3392
-if_end_3392:
-  %t1149 = phi i8* [ %t1147, %if_then_3390 ], [ %t1148, %if_else_3391 ]
-  br label %if_end_3389
-if_end_3389:
-  %t1150 = phi i8* [ %t1145, %if_then_3387 ], [ %t1149, %if_end_3392 ]
-  store i8* %t1150, i8** %t1142
-  %t1152 = getelementptr i8*, i8** null, i32 1
-  %t1153 = ptrtoint i8** %t1152 to i64
-  %t1154 = mul i64 %t1153, 5
-  %t1155 = call i8* @malloc(i64 %t1154)
-  %t1156 = bitcast i8* %t1155 to i8**
-  %t1157 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.130, i64 0, i32 2, i64 0
-  %t1158 = getelementptr inbounds i8*, i8** %t1156, i64 0
-  store i8* %t1157, i8** %t1158
-  %t1159 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 7
-  %t1160 = load i16, i16* %t1159
-  %t1161 = zext i16 %t1160 to i32
-  %t1162 = call i8* @hex4(i32 %t1161)
-  %t1163 = getelementptr inbounds i8*, i8** %t1156, i64 1
-  store i8* %t1162, i8** %t1163
-  %t1164 = getelementptr inbounds { i64, i8*, [3 x i8] }, { i64, i8*, [3 x i8] }* @.str.131, i64 0, i32 2, i64 0
-  %t1165 = getelementptr inbounds i8*, i8** %t1156, i64 2
-  store i8* %t1164, i8** %t1165
-  %t1166 = load i8*, i8** %t1142
-  %t1167 = load i8*, i8** %t1142
-  call void @star_rc_retain(i8* %t1167)
-  %t1168 = getelementptr inbounds i8*, i8** %t1156, i64 3
-  store i8* %t1166, i8** %t1168
-  %t1169 = getelementptr inbounds { i64, i8*, [52 x i8] }, { i64, i8*, [52 x i8] }* @.str.132, i64 0, i32 2, i64 0
-  %t1170 = getelementptr inbounds i8*, i8** %t1156, i64 4
-  store i8* %t1169, i8** %t1170
-  %t1171 = bitcast void (i8*)* @list_release_str to i8*
-  %t1172 = call i8* @star_rc_alloc(i64 24, i8* %t1171)
-  %t1173 = bitcast i8* %t1172 to { i8**, i64, i64 }*
-  %t1174 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t1173, i32 0, i32 0
-  store i8** %t1156, i8*** %t1174
-  %t1175 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t1173, i32 0, i32 1
-  store i64 5, i64* %t1175
-  %t1176 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t1173, i32 0, i32 2
-  store i64 5, i64* %t1176
-  store i8* %t1172, i8** %t1151
-  %t1177 = load i8*, i8** %t2
-  %t1178 = icmp eq i8* %t1177, null
-  br i1 %t1178, label %sdl_null_window_3393, label %sdl_window_handle_ok_3394
-sdl_null_window_3393:
-  %t1179 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.133, i64 0, i64 0
-  call i32 @puts(i8* %t1179)
+sdl_window_handle_ok_3388:
+  %t1100 = call i8* @SDL_GetRenderer(i8* %t1097)
+  %t1101 = and i32 160, 255
+  %t1102 = and i32 160, 255
+  %t1103 = shl i32 %t1102, 8
+  %t1104 = or i32 %t1101, %t1103
+  %t1105 = and i32 0, 255
+  %t1106 = shl i32 %t1105, 16
+  %t1107 = or i32 %t1104, %t1106
+  %t1108 = and i32 255, 255
+  %t1109 = shl i32 %t1108, 24
+  %t1110 = or i32 %t1107, %t1109
+  %t1111 = and i32 %t1110, 255
+  %t1112 = trunc i32 %t1111 to i8
+  %t1113 = lshr i32 %t1110, 8
+  %t1114 = and i32 %t1113, 255
+  %t1115 = trunc i32 %t1114 to i8
+  %t1116 = lshr i32 %t1110, 16
+  %t1117 = and i32 %t1116, 255
+  %t1118 = trunc i32 %t1117 to i8
+  %t1119 = lshr i32 %t1110, 24
+  %t1120 = and i32 %t1119, 255
+  %t1121 = trunc i32 %t1120 to i8
+  call i32 @SDL_SetRenderDrawColor(i8* %t1100, i8 %t1112, i8 %t1115, i8 %t1118, i8 %t1121)
+  %t1123 = getelementptr inbounds [16 x i8], [16 x i8]* %t1122, i64 0, i64 0
+  %t1124 = bitcast i8* %t1123 to i32*
+  store i32 256, i32* %t1124
+  %t1125 = getelementptr inbounds i8, i8* %t1123, i64 4
+  %t1126 = bitcast i8* %t1125 to i32*
+  store i32 6, i32* %t1126
+  %t1127 = getelementptr inbounds i8, i8* %t1123, i64 8
+  %t1128 = bitcast i8* %t1127 to i32*
+  store i32 64, i32* %t1128
+  %t1129 = getelementptr inbounds i8, i8* %t1123, i64 12
+  %t1130 = bitcast i8* %t1129 to i32*
+  store i32 28, i32* %t1130
+  call i32 @SDL_RenderFillRect(i8* %t1100, i8* %t1123)
+  %t1131 = load i8*, i8** %t2
+  %t1132 = icmp eq i8* %t1131, null
+  br i1 %t1132, label %sdl_null_window_3389, label %sdl_window_handle_ok_3390
+sdl_null_window_3389:
+  %t1133 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.131, i64 0, i64 0
+  call i32 @puts(i8* %t1133)
   call void @exit(i32 1)
   unreachable
-sdl_window_handle_ok_3394:
-  %t1180 = load i8*, i8** %t80
-  %t1181 = icmp eq i8* %t1180, null
-  br i1 %t1181, label %font_null_handle_3395, label %font_handle_ok_3396
-font_null_handle_3395:
-  %t1182 = getelementptr inbounds [73 x i8], [73 x i8]* @.str.134, i64 0, i64 0
-  call i32 @puts(i8* %t1182)
+sdl_window_handle_ok_3390:
+  %t1134 = load i8*, i8** %t80
+  %t1135 = icmp eq i8* %t1134, null
+  br i1 %t1135, label %font_null_handle_3391, label %font_handle_ok_3392
+font_null_handle_3391:
+  %t1136 = getelementptr inbounds [73 x i8], [73 x i8]* @.str.132, i64 0, i64 0
+  call i32 @puts(i8* %t1136)
   call void @exit(i32 1)
   unreachable
-font_handle_ok_3396:
-  %t1183 = call i8* @SDL_GetRenderer(i8* %t1177)
-  %t1184 = and i32 200, 255
-  %t1185 = and i32 200, 255
-  %t1186 = shl i32 %t1185, 8
-  %t1187 = or i32 %t1184, %t1186
-  %t1188 = and i32 200, 255
-  %t1189 = shl i32 %t1188, 16
-  %t1190 = or i32 %t1187, %t1189
-  %t1191 = and i32 255, 255
-  %t1192 = shl i32 %t1191, 24
-  %t1193 = or i32 %t1190, %t1192
-  %t1194 = and i32 %t1193, 255
-  %t1195 = trunc i32 %t1194 to i8
-  %t1196 = lshr i32 %t1193, 8
-  %t1197 = and i32 %t1196, 255
-  %t1198 = trunc i32 %t1197 to i8
-  %t1199 = lshr i32 %t1193, 16
-  %t1200 = and i32 %t1199, 255
-  %t1201 = trunc i32 %t1200 to i8
-  %t1202 = lshr i32 %t1193, 24
-  %t1203 = and i32 %t1202, 255
-  %t1204 = trunc i32 %t1203 to i8
-  call i32 @SDL_SetRenderDrawColor(i8* %t1183, i8 %t1195, i8 %t1198, i8 %t1201, i8 %t1204)
-  %t1205 = load i8*, i8** %t1151
-  %t1206 = icmp eq i8* %t1205, null
-  br i1 %t1206, label %list_read_null_3397, label %list_read_real_3398
-list_read_null_3397:
-  br label %list_read_end_3399
-list_read_real_3398:
-  %t1207 = bitcast i8* %t1205 to { i8**, i64, i64 }*
-  %t1208 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t1207, i32 0, i32 0
-  %t1209 = load i8**, i8*** %t1208
-  %t1210 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t1207, i32 0, i32 1
-  %t1211 = load i64, i64* %t1210
-  br label %list_read_end_3399
-list_read_end_3399:
-  %t1212 = phi i8** [ null, %list_read_null_3397 ], [ %t1209, %list_read_real_3398 ]
-  %t1213 = phi i64 [ 0, %list_read_null_3397 ], [ %t1211, %list_read_real_3398 ]
-  %t1214 = getelementptr inbounds { i64, i8*, [1 x i8] }, { i64, i8*, [1 x i8] }* @.str.135, i64 0, i32 2, i64 0
-  %t1215 = icmp eq i8* %t1214, null
-  %t1216 = select i1 %t1215, i8* getelementptr inbounds ([1 x i8], [1 x i8]* @str.empty, i64 0, i64 0), i8* %t1214
-  %t1217 = call i32 @strlen(i8* %t1216)
-  %t1218 = sext i32 %t1217 to i64
-  store i64 0, i64* %t1219
-  store i64 0, i64* %t1220
-  br label %join_sum_cond_3400
-join_sum_cond_3400:
-  %t1221 = load i64, i64* %t1220
-  %t1222 = icmp slt i64 %t1221, %t1213
-  br i1 %t1222, label %join_sum_body_3401, label %join_sum_done_3402
-join_sum_body_3401:
-  %t1223 = getelementptr inbounds i8*, i8** %t1212, i64 %t1221
-  %t1224 = load i8*, i8** %t1223
-  %t1225 = icmp eq i8* %t1224, null
-  %t1226 = select i1 %t1225, i8* getelementptr inbounds ([1 x i8], [1 x i8]* @str.empty, i64 0, i64 0), i8* %t1224
-  %t1227 = call i32 @strlen(i8* %t1226)
-  %t1228 = sext i32 %t1227 to i64
-  %t1229 = load i64, i64* %t1219
-  %t1230 = add i64 %t1229, %t1228
-  store i64 %t1230, i64* %t1219
-  %t1231 = add i64 %t1221, 1
-  store i64 %t1231, i64* %t1220
-  br label %join_sum_cond_3400
-join_sum_done_3402:
-  %t1232 = load i64, i64* %t1219
-  %t1233 = icmp eq i64 %t1213, 0
-  %t1234 = sub i64 %t1213, 1
-  %t1235 = select i1 %t1233, i64 0, i64 %t1234
-  %t1236 = mul i64 %t1235, %t1218
-  %t1237 = add i64 %t1232, %t1236
-  %t1238 = add i64 %t1237, 1
-  %t1239 = call i8* @star_rc_alloc(i64 %t1238, i8* null)
-  store i8* %t1239, i8** %t1240
-  store i64 0, i64* %t1241
-  br label %join_build_cond_3403
-join_build_cond_3403:
-  %t1242 = load i64, i64* %t1241
-  %t1243 = icmp slt i64 %t1242, %t1213
-  br i1 %t1243, label %join_build_body_3404, label %join_build_done_3405
-join_build_body_3404:
-  %t1244 = getelementptr inbounds i8*, i8** %t1212, i64 %t1242
-  %t1245 = load i8*, i8** %t1244
-  %t1246 = icmp eq i8* %t1245, null
-  %t1247 = select i1 %t1246, i8* getelementptr inbounds ([1 x i8], [1 x i8]* @str.empty, i64 0, i64 0), i8* %t1245
-  %t1248 = call i32 @strlen(i8* %t1247)
-  %t1249 = sext i32 %t1248 to i64
-  %t1250 = load i8*, i8** %t1240
-  call i8* @memcpy(i8* %t1250, i8* %t1247, i64 %t1249)
-  %t1251 = getelementptr inbounds i8, i8* %t1250, i64 %t1249
-  %t1252 = add i64 %t1242, 1
-  %t1253 = icmp slt i64 %t1252, %t1213
-  br i1 %t1253, label %join_sep_3406, label %join_no_sep_3407
-join_sep_3406:
-  call i8* @memcpy(i8* %t1251, i8* %t1216, i64 %t1218)
-  %t1254 = getelementptr inbounds i8, i8* %t1251, i64 %t1218
-  br label %join_after_3408
-join_no_sep_3407:
-  br label %join_after_3408
-join_after_3408:
-  %t1255 = phi i8* [ %t1254, %join_sep_3406 ], [ %t1251, %join_no_sep_3407 ]
-  store i8* %t1255, i8** %t1240
-  store i64 %t1252, i64* %t1241
-  br label %join_build_cond_3403
-join_build_done_3405:
-  %t1256 = load i8*, i8** %t1240
-  store i8 0, i8* %t1256
-  call void @star_rc_release(i8* %t1214)
-  %t1257 = load i32, i32* %t1103
-  %t1258 = add i32 %t1257, 4
-  %t1259 = icmp sgt i32 1, 0
-  %t1260 = select i1 %t1259, i32 1, i32 1
-  %t1261 = load i8, i8* %t1180
-  %t1262 = zext i8 %t1261 to i32
-  %t1263 = getelementptr inbounds i8, i8* %t1180, i64 1
-  %t1264 = load i8, i8* %t1263
-  %t1265 = zext i8 %t1264 to i32
-  %t1266 = getelementptr inbounds i8, i8* %t1180, i64 2
-  %t1267 = load i8, i8* %t1266
-  %t1268 = zext i8 %t1267 to i32
-  %t1269 = getelementptr inbounds i8, i8* %t1180, i64 3
-  %t1270 = load i8, i8* %t1269
-  %t1271 = zext i8 %t1270 to i32
-  %t1272 = add i32 %t1262, 1
-  %t1273 = mul i32 %t1272, %t1260
-  %t1274 = add i32 %t1265, 1
-  %t1275 = mul i32 %t1274, %t1260
-  store i32 6, i32* %t1276
-  store i32 %t1258, i32* %t1277
-  store i64 0, i64* %t1278
-  br label %draw_text_cond_3409
-draw_text_cond_3409:
-  %t1279 = load i64, i64* %t1278
-  %t1280 = getelementptr inbounds i8, i8* %t1239, i64 %t1279
-  %t1281 = load i8, i8* %t1280
-  %t1282 = icmp eq i8 %t1281, 0
-  br i1 %t1282, label %draw_text_end_3415, label %draw_text_body_3410
-draw_text_body_3410:
-  %t1283 = zext i8 %t1281 to i32
-  %t1284 = icmp eq i32 %t1283, 10
-  br i1 %t1284, label %draw_text_newline_3411, label %draw_text_glyph_3412
-draw_text_newline_3411:
-  store i32 6, i32* %t1276
-  %t1285 = load i32, i32* %t1277
-  %t1286 = add i32 %t1285, %t1275
-  store i32 %t1286, i32* %t1277
-  %t1287 = add i64 %t1279, 1
-  store i64 %t1287, i64* %t1278
-  br label %draw_text_cond_3409
-draw_text_glyph_3412:
-  %t1288 = icmp sge i32 %t1283, 97
-  %t1289 = icmp sle i32 %t1283, 122
-  %t1290 = and i1 %t1288, %t1289
-  %t1291 = sub i32 %t1283, 32
-  %t1292 = select i1 %t1290, i32 %t1291, i32 %t1283
-  %t1293 = sub i32 %t1292, %t1268
-  %t1294 = icmp sge i32 %t1293, 0
-  %t1295 = icmp slt i32 %t1293, %t1271
-  %t1296 = and i1 %t1294, %t1295
-  br i1 %t1296, label %draw_text_draw_glyph_3413, label %draw_text_advance_3414
-draw_text_draw_glyph_3413:
-  %t1297 = mul i32 %t1293, %t1265
-  %t1298 = add i32 %t1297, 4
-  %t1299 = sext i32 %t1298 to i64
-  %t1300 = load i32, i32* %t1276
-  %t1301 = load i32, i32* %t1277
-  store i32 0, i32* %t1302
-  br label %draw_text_row_cond_3416
-draw_text_row_cond_3416:
-  %t1303 = load i32, i32* %t1302
-  %t1304 = icmp slt i32 %t1303, %t1265
-  br i1 %t1304, label %draw_text_row_body_3417, label %draw_text_row_end_3418
-draw_text_row_body_3417:
-  %t1305 = sext i32 %t1303 to i64
-  %t1306 = add i64 %t1299, %t1305
-  %t1307 = getelementptr inbounds i8, i8* %t1180, i64 %t1306
-  %t1308 = load i8, i8* %t1307
-  %t1309 = zext i8 %t1308 to i32
-  store i32 0, i32* %t1310
-  br label %draw_text_col_cond_3419
-draw_text_col_cond_3419:
-  %t1311 = load i32, i32* %t1310
-  %t1312 = icmp slt i32 %t1311, %t1262
-  br i1 %t1312, label %draw_text_col_body_3420, label %draw_text_col_end_3421
-draw_text_col_body_3420:
-  %t1313 = sub i32 %t1262, 1
-  %t1314 = sub i32 %t1313, %t1311
-  %t1315 = and i32 %t1314, 31
-  %t1316 = lshr i32 %t1309, %t1315
-  %t1317 = and i32 %t1316, 1
-  %t1318 = icmp ne i32 %t1317, 0
-  br i1 %t1318, label %draw_text_pixel_3422, label %draw_text_after_pixel_3423
-draw_text_pixel_3422:
-  %t1319 = mul i32 %t1311, %t1260
-  %t1320 = add i32 %t1300, %t1319
-  %t1321 = mul i32 %t1303, %t1260
-  %t1322 = add i32 %t1301, %t1321
-  %t1324 = getelementptr inbounds [16 x i8], [16 x i8]* %t1323, i64 0, i64 0
-  %t1325 = bitcast i8* %t1324 to i32*
-  store i32 %t1320, i32* %t1325
-  %t1326 = getelementptr inbounds i8, i8* %t1324, i64 4
-  %t1327 = bitcast i8* %t1326 to i32*
-  store i32 %t1322, i32* %t1327
-  %t1328 = getelementptr inbounds i8, i8* %t1324, i64 8
-  %t1329 = bitcast i8* %t1328 to i32*
-  store i32 %t1260, i32* %t1329
-  %t1330 = getelementptr inbounds i8, i8* %t1324, i64 12
-  %t1331 = bitcast i8* %t1330 to i32*
-  store i32 %t1260, i32* %t1331
-  call i32 @SDL_RenderFillRect(i8* %t1183, i8* %t1324)
-  br label %draw_text_after_pixel_3423
-draw_text_after_pixel_3423:
-  %t1332 = add i32 %t1311, 1
-  store i32 %t1332, i32* %t1310
-  br label %draw_text_col_cond_3419
-draw_text_col_end_3421:
-  %t1333 = add i32 %t1303, 1
-  store i32 %t1333, i32* %t1302
-  br label %draw_text_row_cond_3416
-draw_text_row_end_3418:
-  br label %draw_text_advance_3414
-draw_text_advance_3414:
-  %t1334 = load i32, i32* %t1276
-  %t1335 = add i32 %t1334, %t1273
-  store i32 %t1335, i32* %t1276
-  %t1336 = add i64 %t1279, 1
-  store i64 %t1336, i64* %t1278
-  br label %draw_text_cond_3409
-draw_text_end_3415:
-  call void @star_rc_release(i8* %t1239)
-  %t1337 = load i8*, i8** %t2
-  %t1338 = icmp eq i8* %t1337, null
-  br i1 %t1338, label %sdl_null_window_3424, label %sdl_window_handle_ok_3425
-sdl_null_window_3424:
-  %t1339 = getelementptr inbounds [73 x i8], [73 x i8]* @.str.136, i64 0, i64 0
-  call i32 @puts(i8* %t1339)
+font_handle_ok_3392:
+  %t1137 = call i8* @SDL_GetRenderer(i8* %t1131)
+  %t1138 = and i32 255, 255
+  %t1139 = and i32 255, 255
+  %t1140 = shl i32 %t1139, 8
+  %t1141 = or i32 %t1138, %t1140
+  %t1142 = and i32 255, 255
+  %t1143 = shl i32 %t1142, 16
+  %t1144 = or i32 %t1141, %t1143
+  %t1145 = and i32 255, 255
+  %t1146 = shl i32 %t1145, 24
+  %t1147 = or i32 %t1144, %t1146
+  %t1148 = and i32 %t1147, 255
+  %t1149 = trunc i32 %t1148 to i8
+  %t1150 = lshr i32 %t1147, 8
+  %t1151 = and i32 %t1150, 255
+  %t1152 = trunc i32 %t1151 to i8
+  %t1153 = lshr i32 %t1147, 16
+  %t1154 = and i32 %t1153, 255
+  %t1155 = trunc i32 %t1154 to i8
+  %t1156 = lshr i32 %t1147, 24
+  %t1157 = and i32 %t1156, 255
+  %t1158 = trunc i32 %t1157 to i8
+  call i32 @SDL_SetRenderDrawColor(i8* %t1137, i8 %t1149, i8 %t1152, i8 %t1155, i8 %t1158)
+  %t1159 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.133, i64 0, i32 2, i64 0
+  %t1160 = add i32 256, 6
+  %t1161 = add i32 6, 8
+  %t1162 = icmp sgt i32 2, 0
+  %t1163 = select i1 %t1162, i32 2, i32 1
+  %t1164 = load i8, i8* %t1134
+  %t1165 = zext i8 %t1164 to i32
+  %t1166 = getelementptr inbounds i8, i8* %t1134, i64 1
+  %t1167 = load i8, i8* %t1166
+  %t1168 = zext i8 %t1167 to i32
+  %t1169 = getelementptr inbounds i8, i8* %t1134, i64 2
+  %t1170 = load i8, i8* %t1169
+  %t1171 = zext i8 %t1170 to i32
+  %t1172 = getelementptr inbounds i8, i8* %t1134, i64 3
+  %t1173 = load i8, i8* %t1172
+  %t1174 = zext i8 %t1173 to i32
+  %t1175 = add i32 %t1165, 1
+  %t1176 = mul i32 %t1175, %t1163
+  %t1177 = add i32 %t1168, 1
+  %t1178 = mul i32 %t1177, %t1163
+  store i32 %t1160, i32* %t1179
+  store i32 %t1161, i32* %t1180
+  store i64 0, i64* %t1181
+  br label %draw_text_cond_3393
+draw_text_cond_3393:
+  %t1182 = load i64, i64* %t1181
+  %t1183 = getelementptr inbounds i8, i8* %t1159, i64 %t1182
+  %t1184 = load i8, i8* %t1183
+  %t1185 = icmp eq i8 %t1184, 0
+  br i1 %t1185, label %draw_text_end_3399, label %draw_text_body_3394
+draw_text_body_3394:
+  %t1186 = zext i8 %t1184 to i32
+  %t1187 = icmp eq i32 %t1186, 10
+  br i1 %t1187, label %draw_text_newline_3395, label %draw_text_glyph_3396
+draw_text_newline_3395:
+  store i32 %t1160, i32* %t1179
+  %t1188 = load i32, i32* %t1180
+  %t1189 = add i32 %t1188, %t1178
+  store i32 %t1189, i32* %t1180
+  %t1190 = add i64 %t1182, 1
+  store i64 %t1190, i64* %t1181
+  br label %draw_text_cond_3393
+draw_text_glyph_3396:
+  %t1191 = icmp sge i32 %t1186, 97
+  %t1192 = icmp sle i32 %t1186, 122
+  %t1193 = and i1 %t1191, %t1192
+  %t1194 = sub i32 %t1186, 32
+  %t1195 = select i1 %t1193, i32 %t1194, i32 %t1186
+  %t1196 = sub i32 %t1195, %t1171
+  %t1197 = icmp sge i32 %t1196, 0
+  %t1198 = icmp slt i32 %t1196, %t1174
+  %t1199 = and i1 %t1197, %t1198
+  br i1 %t1199, label %draw_text_draw_glyph_3397, label %draw_text_advance_3398
+draw_text_draw_glyph_3397:
+  %t1200 = mul i32 %t1196, %t1168
+  %t1201 = add i32 %t1200, 4
+  %t1202 = sext i32 %t1201 to i64
+  %t1203 = load i32, i32* %t1179
+  %t1204 = load i32, i32* %t1180
+  store i32 0, i32* %t1205
+  br label %draw_text_row_cond_3400
+draw_text_row_cond_3400:
+  %t1206 = load i32, i32* %t1205
+  %t1207 = icmp slt i32 %t1206, %t1168
+  br i1 %t1207, label %draw_text_row_body_3401, label %draw_text_row_end_3402
+draw_text_row_body_3401:
+  %t1208 = sext i32 %t1206 to i64
+  %t1209 = add i64 %t1202, %t1208
+  %t1210 = getelementptr inbounds i8, i8* %t1134, i64 %t1209
+  %t1211 = load i8, i8* %t1210
+  %t1212 = zext i8 %t1211 to i32
+  store i32 0, i32* %t1213
+  br label %draw_text_col_cond_3403
+draw_text_col_cond_3403:
+  %t1214 = load i32, i32* %t1213
+  %t1215 = icmp slt i32 %t1214, %t1165
+  br i1 %t1215, label %draw_text_col_body_3404, label %draw_text_col_end_3405
+draw_text_col_body_3404:
+  %t1216 = sub i32 %t1165, 1
+  %t1217 = sub i32 %t1216, %t1214
+  %t1218 = and i32 %t1217, 31
+  %t1219 = lshr i32 %t1212, %t1218
+  %t1220 = and i32 %t1219, 1
+  %t1221 = icmp ne i32 %t1220, 0
+  br i1 %t1221, label %draw_text_pixel_3406, label %draw_text_after_pixel_3407
+draw_text_pixel_3406:
+  %t1222 = mul i32 %t1214, %t1163
+  %t1223 = add i32 %t1203, %t1222
+  %t1224 = mul i32 %t1206, %t1163
+  %t1225 = add i32 %t1204, %t1224
+  %t1227 = getelementptr inbounds [16 x i8], [16 x i8]* %t1226, i64 0, i64 0
+  %t1228 = bitcast i8* %t1227 to i32*
+  store i32 %t1223, i32* %t1228
+  %t1229 = getelementptr inbounds i8, i8* %t1227, i64 4
+  %t1230 = bitcast i8* %t1229 to i32*
+  store i32 %t1225, i32* %t1230
+  %t1231 = getelementptr inbounds i8, i8* %t1227, i64 8
+  %t1232 = bitcast i8* %t1231 to i32*
+  store i32 %t1163, i32* %t1232
+  %t1233 = getelementptr inbounds i8, i8* %t1227, i64 12
+  %t1234 = bitcast i8* %t1233 to i32*
+  store i32 %t1163, i32* %t1234
+  call i32 @SDL_RenderFillRect(i8* %t1137, i8* %t1227)
+  br label %draw_text_after_pixel_3407
+draw_text_after_pixel_3407:
+  %t1235 = add i32 %t1214, 1
+  store i32 %t1235, i32* %t1213
+  br label %draw_text_col_cond_3403
+draw_text_col_end_3405:
+  %t1236 = add i32 %t1206, 1
+  store i32 %t1236, i32* %t1205
+  br label %draw_text_row_cond_3400
+draw_text_row_end_3402:
+  br label %draw_text_advance_3398
+draw_text_advance_3398:
+  %t1237 = load i32, i32* %t1179
+  %t1238 = add i32 %t1237, %t1176
+  store i32 %t1238, i32* %t1179
+  %t1239 = add i64 %t1182, 1
+  store i64 %t1239, i64* %t1181
+  br label %draw_text_cond_3393
+draw_text_end_3399:
+  call void @star_rc_release(i8* %t1159)
+  %t1240 = load i8*, i8** %t2
+  %t1241 = icmp eq i8* %t1240, null
+  br i1 %t1241, label %sdl_null_window_3408, label %sdl_window_handle_ok_3409
+sdl_null_window_3408:
+  %t1242 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.134, i64 0, i64 0
+  call i32 @puts(i8* %t1242)
   call void @exit(i32 1)
   unreachable
-sdl_window_handle_ok_3425:
-  %t1340 = call i8* @SDL_GetRenderer(i8* %t1337)
-  call void @SDL_RenderPresent(i8* %t1340)
-  %t1341 = icmp slt i32 16, 0
-  %t1342 = select i1 %t1341, i32 0, i32 16
-  call void @SDL_Delay(i32 %t1342)
-  %t1343 = load i8*, i8** %t1151
-  call void @star_rc_release(i8* %t1343)
-  %t1344 = load i8*, i8** %t1142
-  call void @star_rc_release(i8* %t1344)
-  %t1345 = load i8*, i8** %t511
-  call void @star_rc_release(i8* %t1345)
-  br label %while_cond_3145
-while_else_3147:
-  br label %while_end_3148
-while_end_3148:
-  %t1346 = load i8*, i8** %t55
-  call void @star_rc_release(i8* %t1346)
-  %t1347 = load i8*, i8** %t19
-  call void @star_rc_release(i8* %t1347)
+sdl_window_handle_ok_3409:
+  %t1243 = call i8* @SDL_GetRenderer(i8* %t1240)
+  %t1244 = and i32 0, 255
+  %t1245 = and i32 140, 255
+  %t1246 = shl i32 %t1245, 8
+  %t1247 = or i32 %t1244, %t1246
+  %t1248 = and i32 140, 255
+  %t1249 = shl i32 %t1248, 16
+  %t1250 = or i32 %t1247, %t1249
+  %t1251 = and i32 255, 255
+  %t1252 = shl i32 %t1251, 24
+  %t1253 = or i32 %t1250, %t1252
+  %t1254 = and i32 %t1253, 255
+  %t1255 = trunc i32 %t1254 to i8
+  %t1256 = lshr i32 %t1253, 8
+  %t1257 = and i32 %t1256, 255
+  %t1258 = trunc i32 %t1257 to i8
+  %t1259 = lshr i32 %t1253, 16
+  %t1260 = and i32 %t1259, 255
+  %t1261 = trunc i32 %t1260 to i8
+  %t1262 = lshr i32 %t1253, 24
+  %t1263 = and i32 %t1262, 255
+  %t1264 = trunc i32 %t1263 to i8
+  call i32 @SDL_SetRenderDrawColor(i8* %t1243, i8 %t1255, i8 %t1258, i8 %t1261, i8 %t1264)
+  %t1266 = getelementptr inbounds [16 x i8], [16 x i8]* %t1265, i64 0, i64 0
+  %t1267 = bitcast i8* %t1266 to i32*
+  store i32 328, i32* %t1267
+  %t1268 = getelementptr inbounds i8, i8* %t1266, i64 4
+  %t1269 = bitcast i8* %t1268 to i32*
+  store i32 6, i32* %t1269
+  %t1270 = getelementptr inbounds i8, i8* %t1266, i64 8
+  %t1271 = bitcast i8* %t1270 to i32*
+  store i32 64, i32* %t1271
+  %t1272 = getelementptr inbounds i8, i8* %t1266, i64 12
+  %t1273 = bitcast i8* %t1272 to i32*
+  store i32 28, i32* %t1273
+  call i32 @SDL_RenderFillRect(i8* %t1243, i8* %t1266)
+  %t1274 = load i8*, i8** %t2
+  %t1275 = icmp eq i8* %t1274, null
+  br i1 %t1275, label %sdl_null_window_3410, label %sdl_window_handle_ok_3411
+sdl_null_window_3410:
+  %t1276 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.135, i64 0, i64 0
+  call i32 @puts(i8* %t1276)
+  call void @exit(i32 1)
+  unreachable
+sdl_window_handle_ok_3411:
+  %t1277 = load i8*, i8** %t80
+  %t1278 = icmp eq i8* %t1277, null
+  br i1 %t1278, label %font_null_handle_3412, label %font_handle_ok_3413
+font_null_handle_3412:
+  %t1279 = getelementptr inbounds [73 x i8], [73 x i8]* @.str.136, i64 0, i64 0
+  call i32 @puts(i8* %t1279)
+  call void @exit(i32 1)
+  unreachable
+font_handle_ok_3413:
+  %t1280 = call i8* @SDL_GetRenderer(i8* %t1274)
+  %t1281 = and i32 255, 255
+  %t1282 = and i32 255, 255
+  %t1283 = shl i32 %t1282, 8
+  %t1284 = or i32 %t1281, %t1283
+  %t1285 = and i32 255, 255
+  %t1286 = shl i32 %t1285, 16
+  %t1287 = or i32 %t1284, %t1286
+  %t1288 = and i32 255, 255
+  %t1289 = shl i32 %t1288, 24
+  %t1290 = or i32 %t1287, %t1289
+  %t1291 = and i32 %t1290, 255
+  %t1292 = trunc i32 %t1291 to i8
+  %t1293 = lshr i32 %t1290, 8
+  %t1294 = and i32 %t1293, 255
+  %t1295 = trunc i32 %t1294 to i8
+  %t1296 = lshr i32 %t1290, 16
+  %t1297 = and i32 %t1296, 255
+  %t1298 = trunc i32 %t1297 to i8
+  %t1299 = lshr i32 %t1290, 24
+  %t1300 = and i32 %t1299, 255
+  %t1301 = trunc i32 %t1300 to i8
+  call i32 @SDL_SetRenderDrawColor(i8* %t1280, i8 %t1292, i8 %t1295, i8 %t1298, i8 %t1301)
+  %t1302 = getelementptr inbounds { i64, i8*, [5 x i8] }, { i64, i8*, [5 x i8] }* @.str.137, i64 0, i32 2, i64 0
+  %t1303 = add i32 328, 6
+  %t1304 = add i32 6, 8
+  %t1305 = icmp sgt i32 2, 0
+  %t1306 = select i1 %t1305, i32 2, i32 1
+  %t1307 = load i8, i8* %t1277
+  %t1308 = zext i8 %t1307 to i32
+  %t1309 = getelementptr inbounds i8, i8* %t1277, i64 1
+  %t1310 = load i8, i8* %t1309
+  %t1311 = zext i8 %t1310 to i32
+  %t1312 = getelementptr inbounds i8, i8* %t1277, i64 2
+  %t1313 = load i8, i8* %t1312
+  %t1314 = zext i8 %t1313 to i32
+  %t1315 = getelementptr inbounds i8, i8* %t1277, i64 3
+  %t1316 = load i8, i8* %t1315
+  %t1317 = zext i8 %t1316 to i32
+  %t1318 = add i32 %t1308, 1
+  %t1319 = mul i32 %t1318, %t1306
+  %t1320 = add i32 %t1311, 1
+  %t1321 = mul i32 %t1320, %t1306
+  store i32 %t1303, i32* %t1322
+  store i32 %t1304, i32* %t1323
+  store i64 0, i64* %t1324
+  br label %draw_text_cond_3414
+draw_text_cond_3414:
+  %t1325 = load i64, i64* %t1324
+  %t1326 = getelementptr inbounds i8, i8* %t1302, i64 %t1325
+  %t1327 = load i8, i8* %t1326
+  %t1328 = icmp eq i8 %t1327, 0
+  br i1 %t1328, label %draw_text_end_3420, label %draw_text_body_3415
+draw_text_body_3415:
+  %t1329 = zext i8 %t1327 to i32
+  %t1330 = icmp eq i32 %t1329, 10
+  br i1 %t1330, label %draw_text_newline_3416, label %draw_text_glyph_3417
+draw_text_newline_3416:
+  store i32 %t1303, i32* %t1322
+  %t1331 = load i32, i32* %t1323
+  %t1332 = add i32 %t1331, %t1321
+  store i32 %t1332, i32* %t1323
+  %t1333 = add i64 %t1325, 1
+  store i64 %t1333, i64* %t1324
+  br label %draw_text_cond_3414
+draw_text_glyph_3417:
+  %t1334 = icmp sge i32 %t1329, 97
+  %t1335 = icmp sle i32 %t1329, 122
+  %t1336 = and i1 %t1334, %t1335
+  %t1337 = sub i32 %t1329, 32
+  %t1338 = select i1 %t1336, i32 %t1337, i32 %t1329
+  %t1339 = sub i32 %t1338, %t1314
+  %t1340 = icmp sge i32 %t1339, 0
+  %t1341 = icmp slt i32 %t1339, %t1317
+  %t1342 = and i1 %t1340, %t1341
+  br i1 %t1342, label %draw_text_draw_glyph_3418, label %draw_text_advance_3419
+draw_text_draw_glyph_3418:
+  %t1343 = mul i32 %t1339, %t1311
+  %t1344 = add i32 %t1343, 4
+  %t1345 = sext i32 %t1344 to i64
+  %t1346 = load i32, i32* %t1322
+  %t1347 = load i32, i32* %t1323
+  store i32 0, i32* %t1348
+  br label %draw_text_row_cond_3421
+draw_text_row_cond_3421:
+  %t1349 = load i32, i32* %t1348
+  %t1350 = icmp slt i32 %t1349, %t1311
+  br i1 %t1350, label %draw_text_row_body_3422, label %draw_text_row_end_3423
+draw_text_row_body_3422:
+  %t1351 = sext i32 %t1349 to i64
+  %t1352 = add i64 %t1345, %t1351
+  %t1353 = getelementptr inbounds i8, i8* %t1277, i64 %t1352
+  %t1354 = load i8, i8* %t1353
+  %t1355 = zext i8 %t1354 to i32
+  store i32 0, i32* %t1356
+  br label %draw_text_col_cond_3424
+draw_text_col_cond_3424:
+  %t1357 = load i32, i32* %t1356
+  %t1358 = icmp slt i32 %t1357, %t1308
+  br i1 %t1358, label %draw_text_col_body_3425, label %draw_text_col_end_3426
+draw_text_col_body_3425:
+  %t1359 = sub i32 %t1308, 1
+  %t1360 = sub i32 %t1359, %t1357
+  %t1361 = and i32 %t1360, 31
+  %t1362 = lshr i32 %t1355, %t1361
+  %t1363 = and i32 %t1362, 1
+  %t1364 = icmp ne i32 %t1363, 0
+  br i1 %t1364, label %draw_text_pixel_3427, label %draw_text_after_pixel_3428
+draw_text_pixel_3427:
+  %t1365 = mul i32 %t1357, %t1306
+  %t1366 = add i32 %t1346, %t1365
+  %t1367 = mul i32 %t1349, %t1306
+  %t1368 = add i32 %t1347, %t1367
+  %t1370 = getelementptr inbounds [16 x i8], [16 x i8]* %t1369, i64 0, i64 0
+  %t1371 = bitcast i8* %t1370 to i32*
+  store i32 %t1366, i32* %t1371
+  %t1372 = getelementptr inbounds i8, i8* %t1370, i64 4
+  %t1373 = bitcast i8* %t1372 to i32*
+  store i32 %t1368, i32* %t1373
+  %t1374 = getelementptr inbounds i8, i8* %t1370, i64 8
+  %t1375 = bitcast i8* %t1374 to i32*
+  store i32 %t1306, i32* %t1375
+  %t1376 = getelementptr inbounds i8, i8* %t1370, i64 12
+  %t1377 = bitcast i8* %t1376 to i32*
+  store i32 %t1306, i32* %t1377
+  call i32 @SDL_RenderFillRect(i8* %t1280, i8* %t1370)
+  br label %draw_text_after_pixel_3428
+draw_text_after_pixel_3428:
+  %t1378 = add i32 %t1357, 1
+  store i32 %t1378, i32* %t1356
+  br label %draw_text_col_cond_3424
+draw_text_col_end_3426:
+  %t1379 = add i32 %t1349, 1
+  store i32 %t1379, i32* %t1348
+  br label %draw_text_row_cond_3421
+draw_text_row_end_3423:
+  br label %draw_text_advance_3419
+draw_text_advance_3419:
+  %t1380 = load i32, i32* %t1322
+  %t1381 = add i32 %t1380, %t1319
+  store i32 %t1381, i32* %t1322
+  %t1382 = add i64 %t1325, 1
+  store i64 %t1382, i64* %t1324
+  br label %draw_text_cond_3414
+draw_text_end_3420:
+  call void @star_rc_release(i8* %t1302)
+  %t1384 = mul i32 256, 2
+  %t1385 = add i32 %t1384, 40
+  store i32 %t1385, i32* %t1383
+  %t1386 = load i8*, i8** %t2
+  %t1387 = icmp eq i8* %t1386, null
+  br i1 %t1387, label %sdl_null_window_3429, label %sdl_window_handle_ok_3430
+sdl_null_window_3429:
+  %t1388 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.138, i64 0, i64 0
+  call i32 @puts(i8* %t1388)
+  call void @exit(i32 1)
+  unreachable
+sdl_window_handle_ok_3430:
+  %t1389 = call i8* @SDL_GetRenderer(i8* %t1386)
+  %t1390 = load i32, i32* %t1383
+  %t1391 = mul i32 256, 2
+  %t1392 = and i32 25, 255
+  %t1393 = and i32 25, 255
+  %t1394 = shl i32 %t1393, 8
+  %t1395 = or i32 %t1392, %t1394
+  %t1396 = and i32 25, 255
+  %t1397 = shl i32 %t1396, 16
+  %t1398 = or i32 %t1395, %t1397
+  %t1399 = and i32 255, 255
+  %t1400 = shl i32 %t1399, 24
+  %t1401 = or i32 %t1398, %t1400
+  %t1402 = and i32 %t1401, 255
+  %t1403 = trunc i32 %t1402 to i8
+  %t1404 = lshr i32 %t1401, 8
+  %t1405 = and i32 %t1404, 255
+  %t1406 = trunc i32 %t1405 to i8
+  %t1407 = lshr i32 %t1401, 16
+  %t1408 = and i32 %t1407, 255
+  %t1409 = trunc i32 %t1408 to i8
+  %t1410 = lshr i32 %t1401, 24
+  %t1411 = and i32 %t1410, 255
+  %t1412 = trunc i32 %t1411 to i8
+  call i32 @SDL_SetRenderDrawColor(i8* %t1389, i8 %t1403, i8 %t1406, i8 %t1409, i8 %t1412)
+  %t1414 = getelementptr inbounds [16 x i8], [16 x i8]* %t1413, i64 0, i64 0
+  %t1415 = bitcast i8* %t1414 to i32*
+  store i32 0, i32* %t1415
+  %t1416 = getelementptr inbounds i8, i8* %t1414, i64 4
+  %t1417 = bitcast i8* %t1416 to i32*
+  store i32 %t1390, i32* %t1417
+  %t1418 = getelementptr inbounds i8, i8* %t1414, i64 8
+  %t1419 = bitcast i8* %t1418 to i32*
+  store i32 %t1391, i32* %t1419
+  %t1420 = getelementptr inbounds i8, i8* %t1414, i64 12
+  %t1421 = bitcast i8* %t1420 to i32*
+  store i32 22, i32* %t1421
+  call i32 @SDL_RenderFillRect(i8* %t1389, i8* %t1414)
+  %t1423 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 30
+  %t1424 = load i1, i1* %t1423
+  br i1 %t1424, label %if_then_3431, label %if_else_3432
+if_then_3431:
+  %t1425 = getelementptr inbounds { i64, i8*, [7 x i8] }, { i64, i8*, [7 x i8] }* @.str.139, i64 0, i32 2, i64 0
+  br label %if_end_3433
+if_else_3432:
+  %t1426 = load i1, i1* %t96
+  br i1 %t1426, label %if_then_3434, label %if_else_3435
+if_then_3434:
+  %t1427 = getelementptr inbounds { i64, i8*, [8 x i8] }, { i64, i8*, [8 x i8] }* @.str.140, i64 0, i32 2, i64 0
+  br label %if_end_3436
+if_else_3435:
+  %t1428 = getelementptr inbounds { i64, i8*, [8 x i8] }, { i64, i8*, [8 x i8] }* @.str.141, i64 0, i32 2, i64 0
+  br label %if_end_3436
+if_end_3436:
+  %t1429 = phi i8* [ %t1427, %if_then_3434 ], [ %t1428, %if_else_3435 ]
+  br label %if_end_3433
+if_end_3433:
+  %t1430 = phi i8* [ %t1425, %if_then_3431 ], [ %t1429, %if_end_3436 ]
+  store i8* %t1430, i8** %t1422
+  %t1432 = getelementptr i8*, i8** null, i32 1
+  %t1433 = ptrtoint i8** %t1432 to i64
+  %t1434 = mul i64 %t1433, 5
+  %t1435 = call i8* @malloc(i64 %t1434)
+  %t1436 = bitcast i8* %t1435 to i8**
+  %t1437 = getelementptr inbounds { i64, i8*, [6 x i8] }, { i64, i8*, [6 x i8] }* @.str.142, i64 0, i32 2, i64 0
+  %t1438 = getelementptr inbounds i8*, i8** %t1436, i64 0
+  store i8* %t1437, i8** %t1438
+  %t1439 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t75, i32 0, i32 7
+  %t1440 = load i16, i16* %t1439
+  %t1441 = zext i16 %t1440 to i32
+  %t1442 = call i8* @hex4(i32 %t1441)
+  %t1443 = getelementptr inbounds i8*, i8** %t1436, i64 1
+  store i8* %t1442, i8** %t1443
+  %t1444 = getelementptr inbounds { i64, i8*, [3 x i8] }, { i64, i8*, [3 x i8] }* @.str.143, i64 0, i32 2, i64 0
+  %t1445 = getelementptr inbounds i8*, i8** %t1436, i64 2
+  store i8* %t1444, i8** %t1445
+  %t1446 = load i8*, i8** %t1422
+  %t1447 = load i8*, i8** %t1422
+  call void @star_rc_retain(i8* %t1447)
+  %t1448 = getelementptr inbounds i8*, i8** %t1436, i64 3
+  store i8* %t1446, i8** %t1448
+  %t1449 = getelementptr inbounds { i64, i8*, [60 x i8] }, { i64, i8*, [60 x i8] }* @.str.144, i64 0, i32 2, i64 0
+  %t1450 = getelementptr inbounds i8*, i8** %t1436, i64 4
+  store i8* %t1449, i8** %t1450
+  %t1451 = bitcast void (i8*)* @list_release_str to i8*
+  %t1452 = call i8* @star_rc_alloc(i64 24, i8* %t1451)
+  %t1453 = bitcast i8* %t1452 to { i8**, i64, i64 }*
+  %t1454 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t1453, i32 0, i32 0
+  store i8** %t1436, i8*** %t1454
+  %t1455 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t1453, i32 0, i32 1
+  store i64 5, i64* %t1455
+  %t1456 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t1453, i32 0, i32 2
+  store i64 5, i64* %t1456
+  store i8* %t1452, i8** %t1431
+  %t1457 = load i8*, i8** %t2
+  %t1458 = icmp eq i8* %t1457, null
+  br i1 %t1458, label %sdl_null_window_3437, label %sdl_window_handle_ok_3438
+sdl_null_window_3437:
+  %t1459 = getelementptr inbounds [75 x i8], [75 x i8]* @.str.145, i64 0, i64 0
+  call i32 @puts(i8* %t1459)
+  call void @exit(i32 1)
+  unreachable
+sdl_window_handle_ok_3438:
+  %t1460 = load i8*, i8** %t80
+  %t1461 = icmp eq i8* %t1460, null
+  br i1 %t1461, label %font_null_handle_3439, label %font_handle_ok_3440
+font_null_handle_3439:
+  %t1462 = getelementptr inbounds [73 x i8], [73 x i8]* @.str.146, i64 0, i64 0
+  call i32 @puts(i8* %t1462)
+  call void @exit(i32 1)
+  unreachable
+font_handle_ok_3440:
+  %t1463 = call i8* @SDL_GetRenderer(i8* %t1457)
+  %t1464 = and i32 200, 255
+  %t1465 = and i32 200, 255
+  %t1466 = shl i32 %t1465, 8
+  %t1467 = or i32 %t1464, %t1466
+  %t1468 = and i32 200, 255
+  %t1469 = shl i32 %t1468, 16
+  %t1470 = or i32 %t1467, %t1469
+  %t1471 = and i32 255, 255
+  %t1472 = shl i32 %t1471, 24
+  %t1473 = or i32 %t1470, %t1472
+  %t1474 = and i32 %t1473, 255
+  %t1475 = trunc i32 %t1474 to i8
+  %t1476 = lshr i32 %t1473, 8
+  %t1477 = and i32 %t1476, 255
+  %t1478 = trunc i32 %t1477 to i8
+  %t1479 = lshr i32 %t1473, 16
+  %t1480 = and i32 %t1479, 255
+  %t1481 = trunc i32 %t1480 to i8
+  %t1482 = lshr i32 %t1473, 24
+  %t1483 = and i32 %t1482, 255
+  %t1484 = trunc i32 %t1483 to i8
+  call i32 @SDL_SetRenderDrawColor(i8* %t1463, i8 %t1475, i8 %t1478, i8 %t1481, i8 %t1484)
+  %t1485 = load i8*, i8** %t1431
+  %t1486 = icmp eq i8* %t1485, null
+  br i1 %t1486, label %list_read_null_3441, label %list_read_real_3442
+list_read_null_3441:
+  br label %list_read_end_3443
+list_read_real_3442:
+  %t1487 = bitcast i8* %t1485 to { i8**, i64, i64 }*
+  %t1488 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t1487, i32 0, i32 0
+  %t1489 = load i8**, i8*** %t1488
+  %t1490 = getelementptr inbounds { i8**, i64, i64 }, { i8**, i64, i64 }* %t1487, i32 0, i32 1
+  %t1491 = load i64, i64* %t1490
+  br label %list_read_end_3443
+list_read_end_3443:
+  %t1492 = phi i8** [ null, %list_read_null_3441 ], [ %t1489, %list_read_real_3442 ]
+  %t1493 = phi i64 [ 0, %list_read_null_3441 ], [ %t1491, %list_read_real_3442 ]
+  %t1494 = getelementptr inbounds { i64, i8*, [1 x i8] }, { i64, i8*, [1 x i8] }* @.str.147, i64 0, i32 2, i64 0
+  %t1495 = icmp eq i8* %t1494, null
+  %t1496 = select i1 %t1495, i8* getelementptr inbounds ([1 x i8], [1 x i8]* @str.empty, i64 0, i64 0), i8* %t1494
+  %t1497 = call i32 @strlen(i8* %t1496)
+  %t1498 = sext i32 %t1497 to i64
+  store i64 0, i64* %t1499
+  store i64 0, i64* %t1500
+  br label %join_sum_cond_3444
+join_sum_cond_3444:
+  %t1501 = load i64, i64* %t1500
+  %t1502 = icmp slt i64 %t1501, %t1493
+  br i1 %t1502, label %join_sum_body_3445, label %join_sum_done_3446
+join_sum_body_3445:
+  %t1503 = getelementptr inbounds i8*, i8** %t1492, i64 %t1501
+  %t1504 = load i8*, i8** %t1503
+  %t1505 = icmp eq i8* %t1504, null
+  %t1506 = select i1 %t1505, i8* getelementptr inbounds ([1 x i8], [1 x i8]* @str.empty, i64 0, i64 0), i8* %t1504
+  %t1507 = call i32 @strlen(i8* %t1506)
+  %t1508 = sext i32 %t1507 to i64
+  %t1509 = load i64, i64* %t1499
+  %t1510 = add i64 %t1509, %t1508
+  store i64 %t1510, i64* %t1499
+  %t1511 = add i64 %t1501, 1
+  store i64 %t1511, i64* %t1500
+  br label %join_sum_cond_3444
+join_sum_done_3446:
+  %t1512 = load i64, i64* %t1499
+  %t1513 = icmp eq i64 %t1493, 0
+  %t1514 = sub i64 %t1493, 1
+  %t1515 = select i1 %t1513, i64 0, i64 %t1514
+  %t1516 = mul i64 %t1515, %t1498
+  %t1517 = add i64 %t1512, %t1516
+  %t1518 = add i64 %t1517, 1
+  %t1519 = call i8* @star_rc_alloc(i64 %t1518, i8* null)
+  store i8* %t1519, i8** %t1520
+  store i64 0, i64* %t1521
+  br label %join_build_cond_3447
+join_build_cond_3447:
+  %t1522 = load i64, i64* %t1521
+  %t1523 = icmp slt i64 %t1522, %t1493
+  br i1 %t1523, label %join_build_body_3448, label %join_build_done_3449
+join_build_body_3448:
+  %t1524 = getelementptr inbounds i8*, i8** %t1492, i64 %t1522
+  %t1525 = load i8*, i8** %t1524
+  %t1526 = icmp eq i8* %t1525, null
+  %t1527 = select i1 %t1526, i8* getelementptr inbounds ([1 x i8], [1 x i8]* @str.empty, i64 0, i64 0), i8* %t1525
+  %t1528 = call i32 @strlen(i8* %t1527)
+  %t1529 = sext i32 %t1528 to i64
+  %t1530 = load i8*, i8** %t1520
+  call i8* @memcpy(i8* %t1530, i8* %t1527, i64 %t1529)
+  %t1531 = getelementptr inbounds i8, i8* %t1530, i64 %t1529
+  %t1532 = add i64 %t1522, 1
+  %t1533 = icmp slt i64 %t1532, %t1493
+  br i1 %t1533, label %join_sep_3450, label %join_no_sep_3451
+join_sep_3450:
+  call i8* @memcpy(i8* %t1531, i8* %t1496, i64 %t1498)
+  %t1534 = getelementptr inbounds i8, i8* %t1531, i64 %t1498
+  br label %join_after_3452
+join_no_sep_3451:
+  br label %join_after_3452
+join_after_3452:
+  %t1535 = phi i8* [ %t1534, %join_sep_3450 ], [ %t1531, %join_no_sep_3451 ]
+  store i8* %t1535, i8** %t1520
+  store i64 %t1532, i64* %t1521
+  br label %join_build_cond_3447
+join_build_done_3449:
+  %t1536 = load i8*, i8** %t1520
+  store i8 0, i8* %t1536
+  call void @star_rc_release(i8* %t1494)
+  %t1537 = load i32, i32* %t1383
+  %t1538 = add i32 %t1537, 4
+  %t1539 = icmp sgt i32 1, 0
+  %t1540 = select i1 %t1539, i32 1, i32 1
+  %t1541 = load i8, i8* %t1460
+  %t1542 = zext i8 %t1541 to i32
+  %t1543 = getelementptr inbounds i8, i8* %t1460, i64 1
+  %t1544 = load i8, i8* %t1543
+  %t1545 = zext i8 %t1544 to i32
+  %t1546 = getelementptr inbounds i8, i8* %t1460, i64 2
+  %t1547 = load i8, i8* %t1546
+  %t1548 = zext i8 %t1547 to i32
+  %t1549 = getelementptr inbounds i8, i8* %t1460, i64 3
+  %t1550 = load i8, i8* %t1549
+  %t1551 = zext i8 %t1550 to i32
+  %t1552 = add i32 %t1542, 1
+  %t1553 = mul i32 %t1552, %t1540
+  %t1554 = add i32 %t1545, 1
+  %t1555 = mul i32 %t1554, %t1540
+  store i32 6, i32* %t1556
+  store i32 %t1538, i32* %t1557
+  store i64 0, i64* %t1558
+  br label %draw_text_cond_3453
+draw_text_cond_3453:
+  %t1559 = load i64, i64* %t1558
+  %t1560 = getelementptr inbounds i8, i8* %t1519, i64 %t1559
+  %t1561 = load i8, i8* %t1560
+  %t1562 = icmp eq i8 %t1561, 0
+  br i1 %t1562, label %draw_text_end_3459, label %draw_text_body_3454
+draw_text_body_3454:
+  %t1563 = zext i8 %t1561 to i32
+  %t1564 = icmp eq i32 %t1563, 10
+  br i1 %t1564, label %draw_text_newline_3455, label %draw_text_glyph_3456
+draw_text_newline_3455:
+  store i32 6, i32* %t1556
+  %t1565 = load i32, i32* %t1557
+  %t1566 = add i32 %t1565, %t1555
+  store i32 %t1566, i32* %t1557
+  %t1567 = add i64 %t1559, 1
+  store i64 %t1567, i64* %t1558
+  br label %draw_text_cond_3453
+draw_text_glyph_3456:
+  %t1568 = icmp sge i32 %t1563, 97
+  %t1569 = icmp sle i32 %t1563, 122
+  %t1570 = and i1 %t1568, %t1569
+  %t1571 = sub i32 %t1563, 32
+  %t1572 = select i1 %t1570, i32 %t1571, i32 %t1563
+  %t1573 = sub i32 %t1572, %t1548
+  %t1574 = icmp sge i32 %t1573, 0
+  %t1575 = icmp slt i32 %t1573, %t1551
+  %t1576 = and i1 %t1574, %t1575
+  br i1 %t1576, label %draw_text_draw_glyph_3457, label %draw_text_advance_3458
+draw_text_draw_glyph_3457:
+  %t1577 = mul i32 %t1573, %t1545
+  %t1578 = add i32 %t1577, 4
+  %t1579 = sext i32 %t1578 to i64
+  %t1580 = load i32, i32* %t1556
+  %t1581 = load i32, i32* %t1557
+  store i32 0, i32* %t1582
+  br label %draw_text_row_cond_3460
+draw_text_row_cond_3460:
+  %t1583 = load i32, i32* %t1582
+  %t1584 = icmp slt i32 %t1583, %t1545
+  br i1 %t1584, label %draw_text_row_body_3461, label %draw_text_row_end_3462
+draw_text_row_body_3461:
+  %t1585 = sext i32 %t1583 to i64
+  %t1586 = add i64 %t1579, %t1585
+  %t1587 = getelementptr inbounds i8, i8* %t1460, i64 %t1586
+  %t1588 = load i8, i8* %t1587
+  %t1589 = zext i8 %t1588 to i32
+  store i32 0, i32* %t1590
+  br label %draw_text_col_cond_3463
+draw_text_col_cond_3463:
+  %t1591 = load i32, i32* %t1590
+  %t1592 = icmp slt i32 %t1591, %t1542
+  br i1 %t1592, label %draw_text_col_body_3464, label %draw_text_col_end_3465
+draw_text_col_body_3464:
+  %t1593 = sub i32 %t1542, 1
+  %t1594 = sub i32 %t1593, %t1591
+  %t1595 = and i32 %t1594, 31
+  %t1596 = lshr i32 %t1589, %t1595
+  %t1597 = and i32 %t1596, 1
+  %t1598 = icmp ne i32 %t1597, 0
+  br i1 %t1598, label %draw_text_pixel_3466, label %draw_text_after_pixel_3467
+draw_text_pixel_3466:
+  %t1599 = mul i32 %t1591, %t1540
+  %t1600 = add i32 %t1580, %t1599
+  %t1601 = mul i32 %t1583, %t1540
+  %t1602 = add i32 %t1581, %t1601
+  %t1604 = getelementptr inbounds [16 x i8], [16 x i8]* %t1603, i64 0, i64 0
+  %t1605 = bitcast i8* %t1604 to i32*
+  store i32 %t1600, i32* %t1605
+  %t1606 = getelementptr inbounds i8, i8* %t1604, i64 4
+  %t1607 = bitcast i8* %t1606 to i32*
+  store i32 %t1602, i32* %t1607
+  %t1608 = getelementptr inbounds i8, i8* %t1604, i64 8
+  %t1609 = bitcast i8* %t1608 to i32*
+  store i32 %t1540, i32* %t1609
+  %t1610 = getelementptr inbounds i8, i8* %t1604, i64 12
+  %t1611 = bitcast i8* %t1610 to i32*
+  store i32 %t1540, i32* %t1611
+  call i32 @SDL_RenderFillRect(i8* %t1463, i8* %t1604)
+  br label %draw_text_after_pixel_3467
+draw_text_after_pixel_3467:
+  %t1612 = add i32 %t1591, 1
+  store i32 %t1612, i32* %t1590
+  br label %draw_text_col_cond_3463
+draw_text_col_end_3465:
+  %t1613 = add i32 %t1583, 1
+  store i32 %t1613, i32* %t1582
+  br label %draw_text_row_cond_3460
+draw_text_row_end_3462:
+  br label %draw_text_advance_3458
+draw_text_advance_3458:
+  %t1614 = load i32, i32* %t1556
+  %t1615 = add i32 %t1614, %t1553
+  store i32 %t1615, i32* %t1556
+  %t1616 = add i64 %t1559, 1
+  store i64 %t1616, i64* %t1558
+  br label %draw_text_cond_3453
+draw_text_end_3459:
+  call void @star_rc_release(i8* %t1519)
+  %t1617 = load i8*, i8** %t2
+  %t1618 = icmp eq i8* %t1617, null
+  br i1 %t1618, label %sdl_null_window_3468, label %sdl_window_handle_ok_3469
+sdl_null_window_3468:
+  %t1619 = getelementptr inbounds [73 x i8], [73 x i8]* @.str.148, i64 0, i64 0
+  call i32 @puts(i8* %t1619)
+  call void @exit(i32 1)
+  unreachable
+sdl_window_handle_ok_3469:
+  %t1620 = call i8* @SDL_GetRenderer(i8* %t1617)
+  call void @SDL_RenderPresent(i8* %t1620)
+  %t1621 = icmp slt i32 16, 0
+  %t1622 = select i1 %t1621, i32 0, i32 16
+  call void @SDL_Delay(i32 %t1622)
+  %t1623 = load i8*, i8** %t1431
+  call void @star_rc_release(i8* %t1623)
+  %t1624 = load i8*, i8** %t1422
+  call void @star_rc_release(i8* %t1624)
+  %t1625 = load i8*, i8** %t648
+  call void @star_rc_release(i8* %t1625)
+  br label %while_cond_3129
+while_else_3131:
+  br label %while_end_3132
+while_end_3132:
+  %t1626 = load i8*, i8** %t55
+  call void @star_rc_release(i8* %t1626)
+  %t1627 = load i8*, i8** %t19
+  call void @star_rc_release(i8* %t1627)
   ret i32 0
 }
 
@@ -39133,17 +39415,6 @@ list_release_end_2876:
 }
 
 
-define void @list_release_i32(i8* %objp) {
-entry:
-  %t59 = bitcast i8* %objp to { i32*, i64, i64 }*
-  %t60 = getelementptr inbounds { i32*, i64, i64 }, { i32*, i64, i64 }* %t59, i32 0, i32 0
-  %t61 = load i32*, i32** %t60
-  %t62 = bitcast i32* %t61 to i8*
-  call void @free(i8* %t62)
-  ret void
-}
-
-
 
 ; Global Constants
 @.str.0 = private unnamed_addr constant [71 x i8] c"star runtime error: integer `%` by zero (or `i32::MIN % -1` overflow)\0A\00"
@@ -39242,7 +39513,7 @@ entry:
 @.str.93 = private unnamed_addr constant { i64, i8*, [2 x i8] } { i64 -1, i8* null, [2 x i8] c"\0A\00" }
 @.str.94 = private unnamed_addr constant { i64, i8*, [2 x i8] } { i64 -1, i8* null, [2 x i8] c"#\00" }
 @.str.95 = private unnamed_addr constant [37 x i8] c"nova16: loaded '%s', entry point %d\0A\00"
-@.str.96 = private unnamed_addr constant [60 x i8] c"nova16: could not open '%s', falling back to built-in demo\0A\00"
+@.str.96 = private unnamed_addr constant [47 x i8] c"nova16: could not open '%s', waiting for Load\0A\00"
 @.str.97 = private unnamed_addr constant { i64, i8*, [1 x i8] } { i64 -1, i8* null, [1 x i8] c"\00" }
 @.str.98 = private unnamed_addr constant { i64, i8*, [8 x i8] } { i64 -1, i8* null, [8 x i8] c"Nova-16\00" }
 @.str.99 = private unnamed_addr constant { i64, i8*, [21 x i8] } { i64 -1, i8* null, [21 x i8] c"window_create failed\00" }
@@ -39250,36 +39521,48 @@ entry:
 @.str.101 = private unnamed_addr constant { i64, i8*, [1 x i8] } { i64 -1, i8* null, [1 x i8] c"\00" }
 @.str.102 = private unnamed_addr constant [417 x i8] c"\05\07\20\3B\00\00\00\00\00\00\00\04\04\04\04\04\00\04\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\04\04\00\00\00\00\00\02\04\08\08\08\04\02\08\04\02\02\02\04\08\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\04\08\00\00\00\1F\00\00\00\00\00\00\00\00\04\04\01\02\04\04\08\10\10\0E\11\13\15\19\11\0E\04\0C\04\04\04\04\0E\0E\11\01\02\04\08\1F\0E\11\01\06\01\11\0E\02\06\0A\12\1F\02\02\1F\10\1E\01\01\11\0E\06\08\10\1E\11\11\0E\1F\01\02\04\08\08\08\0E\11\11\0E\11\11\0E\0E\11\11\0F\01\02\0C\00\04\00\00\04\00\00\00\04\00\00\04\08\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0E\11\01\02\04\00\04\00\00\00\00\00\00\00\04\0A\11\11\1F\11\11\1E\11\11\1E\11\11\1E\0E\11\10\10\10\11\0E\1C\12\11\11\11\12\1C\1F\10\10\1E\10\10\1F\1F\10\10\1E\10\10\10\0E\11\10\17\11\11\0E\11\11\11\1F\11\11\11\0E\04\04\04\04\04\0E\07\02\02\02\02\12\0C\11\12\14\18\14\12\11\10\10\10\10\10\10\1F\11\1B\15\11\11\11\11\11\19\15\13\11\11\11\0E\11\11\11\11\11\0E\1E\11\11\1E\10\10\10\0E\11\11\11\15\12\0D\1E\11\11\1E\14\12\11\0F\10\10\0E\01\01\1E\1F\04\04\04\04\04\04\11\11\11\11\11\11\0E\11\11\11\11\11\0A\04\11\11\11\15\15\1B\11\11\11\0A\04\0A\11\11\11\11\0A\04\04\04\04\1F\01\02\04\08\10\1F"
 @.str.103 = private unnamed_addr constant [85 x i8] c"star runtime error: window_should_close(..) called with a null/closed window handle\0A\00"
-@.str.104 = private unnamed_addr constant [71 x i8] c"star runtime error: integer `/` by zero (or `i32::MIN / -1` overflow)\0A\00"
-@.str.105 = private unnamed_addr constant [71 x i8] c"star runtime error: integer `/` by zero (or `i32::MIN / -1` overflow)\0A\00"
-@.str.106 = private unnamed_addr constant [78 x i8] c"star runtime error: clear_screen(..) called with a null/closed window handle\0A\00"
-@.str.107 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_rect(..) called with a null/closed window handle\0A\00"
-@.str.108 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_rect(..) called with a null/closed window handle\0A\00"
-@.str.109 = private unnamed_addr constant { i64, i8*, [6 x i8] } { i64 -1, i8* null, [6 x i8] c"PAUSE\00" }
-@.str.110 = private unnamed_addr constant { i64, i8*, [6 x i8] } { i64 -1, i8* null, [6 x i8] c"START\00" }
-@.str.111 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_rect(..) called with a null/closed window handle\0A\00"
-@.str.112 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_text(..) called with a null/closed window handle\0A\00"
-@.str.113 = private unnamed_addr constant [73 x i8] c"star runtime error: draw_text(..) called with a null/closed font handle\0A\00"
-@.str.114 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_rect(..) called with a null/closed window handle\0A\00"
-@.str.115 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_text(..) called with a null/closed window handle\0A\00"
-@.str.116 = private unnamed_addr constant [73 x i8] c"star runtime error: draw_text(..) called with a null/closed font handle\0A\00"
-@.str.117 = private unnamed_addr constant { i64, i8*, [5 x i8] } { i64 -1, i8* null, [5 x i8] c"STOP\00" }
-@.str.118 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_rect(..) called with a null/closed window handle\0A\00"
-@.str.119 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_text(..) called with a null/closed window handle\0A\00"
-@.str.120 = private unnamed_addr constant [73 x i8] c"star runtime error: draw_text(..) called with a null/closed font handle\0A\00"
-@.str.121 = private unnamed_addr constant { i64, i8*, [6 x i8] } { i64 -1, i8* null, [6 x i8] c"RESET\00" }
+@.str.104 = private unnamed_addr constant { i64, i8*, [6 x i8] } { i64 -1, i8* null, [6 x i8] c"*.bin\00" }
+@.str.105 = private unnamed_addr constant [4 x i8] c"*.*\00"
+@.str.106 = private unnamed_addr constant [7 x i8] c"Files ("
+@.str.107 = private unnamed_addr constant { i64, i8*, [1 x i8] } { i64 -1, i8* null, [1 x i8] c"\00" }
+@.str.108 = private unnamed_addr constant [71 x i8] c"star runtime error: integer `/` by zero (or `i32::MIN / -1` overflow)\0A\00"
+@.str.109 = private unnamed_addr constant [71 x i8] c"star runtime error: integer `/` by zero (or `i32::MIN / -1` overflow)\0A\00"
+@.str.110 = private unnamed_addr constant { i64, i8*, [6 x i8] } { i64 -1, i8* null, [6 x i8] c"*.bin\00" }
+@.str.111 = private unnamed_addr constant [4 x i8] c"*.*\00"
+@.str.112 = private unnamed_addr constant [7 x i8] c"Files ("
+@.str.113 = private unnamed_addr constant { i64, i8*, [1 x i8] } { i64 -1, i8* null, [1 x i8] c"\00" }
+@.str.114 = private unnamed_addr constant [78 x i8] c"star runtime error: clear_screen(..) called with a null/closed window handle\0A\00"
+@.str.115 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_rect(..) called with a null/closed window handle\0A\00"
+@.str.116 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_rect(..) called with a null/closed window handle\0A\00"
+@.str.117 = private unnamed_addr constant { i64, i8*, [6 x i8] } { i64 -1, i8* null, [6 x i8] c"PAUSE\00" }
+@.str.118 = private unnamed_addr constant { i64, i8*, [6 x i8] } { i64 -1, i8* null, [6 x i8] c"START\00" }
+@.str.119 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_rect(..) called with a null/closed window handle\0A\00"
+@.str.120 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_text(..) called with a null/closed window handle\0A\00"
+@.str.121 = private unnamed_addr constant [73 x i8] c"star runtime error: draw_text(..) called with a null/closed font handle\0A\00"
 @.str.122 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_rect(..) called with a null/closed window handle\0A\00"
 @.str.123 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_text(..) called with a null/closed window handle\0A\00"
 @.str.124 = private unnamed_addr constant [73 x i8] c"star runtime error: draw_text(..) called with a null/closed font handle\0A\00"
-@.str.125 = private unnamed_addr constant { i64, i8*, [5 x i8] } { i64 -1, i8* null, [5 x i8] c"STEP\00" }
+@.str.125 = private unnamed_addr constant { i64, i8*, [5 x i8] } { i64 -1, i8* null, [5 x i8] c"STOP\00" }
 @.str.126 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_rect(..) called with a null/closed window handle\0A\00"
-@.str.127 = private unnamed_addr constant { i64, i8*, [7 x i8] } { i64 -1, i8* null, [7 x i8] c"HALTED\00" }
-@.str.128 = private unnamed_addr constant { i64, i8*, [8 x i8] } { i64 -1, i8* null, [8 x i8] c"RUNNING\00" }
-@.str.129 = private unnamed_addr constant { i64, i8*, [8 x i8] } { i64 -1, i8* null, [8 x i8] c"STOPPED\00" }
-@.str.130 = private unnamed_addr constant { i64, i8*, [6 x i8] } { i64 -1, i8* null, [6 x i8] c"PC:0x\00" }
-@.str.131 = private unnamed_addr constant { i64, i8*, [3 x i8] } { i64 -1, i8* null, [3 x i8] c"  \00" }
-@.str.132 = private unnamed_addr constant { i64, i8*, [52 x i8] } { i64 -1, i8* null, [52 x i8] c"  F5=Start/Pause F6=Stop F7=Reset F8=Step  Esc=Quit\00" }
-@.str.133 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_text(..) called with a null/closed window handle\0A\00"
-@.str.134 = private unnamed_addr constant [73 x i8] c"star runtime error: draw_text(..) called with a null/closed font handle\0A\00"
-@.str.135 = private unnamed_addr constant { i64, i8*, [1 x i8] } { i64 -1, i8* null, [1 x i8] c"\00" }
-@.str.136 = private unnamed_addr constant [73 x i8] c"star runtime error: present(..) called with a null/closed window handle\0A\00"
+@.str.127 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_text(..) called with a null/closed window handle\0A\00"
+@.str.128 = private unnamed_addr constant [73 x i8] c"star runtime error: draw_text(..) called with a null/closed font handle\0A\00"
+@.str.129 = private unnamed_addr constant { i64, i8*, [6 x i8] } { i64 -1, i8* null, [6 x i8] c"RESET\00" }
+@.str.130 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_rect(..) called with a null/closed window handle\0A\00"
+@.str.131 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_text(..) called with a null/closed window handle\0A\00"
+@.str.132 = private unnamed_addr constant [73 x i8] c"star runtime error: draw_text(..) called with a null/closed font handle\0A\00"
+@.str.133 = private unnamed_addr constant { i64, i8*, [5 x i8] } { i64 -1, i8* null, [5 x i8] c"STEP\00" }
+@.str.134 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_rect(..) called with a null/closed window handle\0A\00"
+@.str.135 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_text(..) called with a null/closed window handle\0A\00"
+@.str.136 = private unnamed_addr constant [73 x i8] c"star runtime error: draw_text(..) called with a null/closed font handle\0A\00"
+@.str.137 = private unnamed_addr constant { i64, i8*, [5 x i8] } { i64 -1, i8* null, [5 x i8] c"LOAD\00" }
+@.str.138 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_rect(..) called with a null/closed window handle\0A\00"
+@.str.139 = private unnamed_addr constant { i64, i8*, [7 x i8] } { i64 -1, i8* null, [7 x i8] c"HALTED\00" }
+@.str.140 = private unnamed_addr constant { i64, i8*, [8 x i8] } { i64 -1, i8* null, [8 x i8] c"RUNNING\00" }
+@.str.141 = private unnamed_addr constant { i64, i8*, [8 x i8] } { i64 -1, i8* null, [8 x i8] c"STOPPED\00" }
+@.str.142 = private unnamed_addr constant { i64, i8*, [6 x i8] } { i64 -1, i8* null, [6 x i8] c"PC:0x\00" }
+@.str.143 = private unnamed_addr constant { i64, i8*, [3 x i8] } { i64 -1, i8* null, [3 x i8] c"  \00" }
+@.str.144 = private unnamed_addr constant { i64, i8*, [60 x i8] } { i64 -1, i8* null, [60 x i8] c"  F5=Start/Pause F6=Stop F7=Reset F8=Step F9=Load  Esc=Quit\00" }
+@.str.145 = private unnamed_addr constant [75 x i8] c"star runtime error: draw_text(..) called with a null/closed window handle\0A\00"
+@.str.146 = private unnamed_addr constant [73 x i8] c"star runtime error: draw_text(..) called with a null/closed font handle\0A\00"
+@.str.147 = private unnamed_addr constant { i64, i8*, [1 x i8] } { i64 -1, i8* null, [1 x i8] c"\00" }
+@.str.148 = private unnamed_addr constant [73 x i8] c"star runtime error: present(..) called with a null/closed window handle\0A\00"

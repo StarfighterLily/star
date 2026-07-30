@@ -778,6 +778,7 @@ impl Codegen {
                     Some("file_write") => self.emit_file_write(args),
                     Some("file_write_bytes") => self.emit_file_write_bytes(args),
                     Some("file_exists") => self.emit_file_exists(args),
+                    Some("open_file_dialog") => self.emit_open_file_dialog(args),
                     Some("args") => self.emit_args(),
                     Some("env_get") => self.emit_env_get(args),
                     Some("env_set") => self.emit_env_set(args),

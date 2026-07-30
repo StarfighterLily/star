@@ -937,6 +937,10 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         // terminated `str`, so an embedded `0x00` byte round-trips intact.
         "file_read_bytes" => Some(Ty::Bytes),
         "file_write_bytes" => Some(Ty::Bool),
+        // Native "Open File" common dialog (Windows `GetOpenFileNameA`) --
+        // see `crate::codegen::dialog`. `""` means "the user canceled",
+        // same convention as `file_read`/`tcp_recv`.
+        "open_file_dialog" => Some(Ty::Str),
         // Minimal OS surface (todo.md #2) -- see `crate::codegen::list::emit_args`
         // and `crate::codegen::os`. `args()` includes `argv[0]` (the program
         // path/name), same convention the underlying OS argv itself uses.
