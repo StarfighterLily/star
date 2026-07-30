@@ -2180,10 +2180,25 @@ more correct, per-project alternative existed: `Cpu::reinit` resets every
 field via ordinary loop-driven writes into the *existing* `Cpu` (matching
 `nova_gui.py::CPUController.reset()`'s own "mutate in place" shape more
 closely than "construct a new object" would have anyway), which builds and
-links in the same normal time as everything else in this project. Worth a
-real compiler-level investigation if this shape (a large-aggregate-
-returning function called repeatedly from one function) ever recurs
-elsewhere.
+links in the same normal time as everything else in this project.
+
+**Update (`todo.md` P2 #4, later cycle)**: root-caused and fixed at the
+compiler level. A minimal, project-independent repro isolated the exact
+trigger: not "called repeatedly" in general (three separate fresh `let`
+bindings to a 1,000,000-byte-struct-returning call compiled in under a
+second -- already covered by the P0 #2 `sret` fix), but specifically
+*reassigning* an existing large-aggregate binding (`cpu = build_cpu()`, as
+opposed to a fresh `let`) -- confirmed with `clang-22` climbing past 3.4GB
+resident memory and eventually failing outright after 11m19s. Root cause:
+`TypedStmt::Assign` never got the same `is_large_aggregate_ty` special-case
+`TypedStmt::Let` did, so it fell into `emit_call_expr`'s one remaining
+whole-aggregate-materializing fallback (documented at the time as reachable
+only by "a rarer generic value consumer" -- reassignment turned out to be
+exactly that consumer). Fixed in `src/codegen/stmt.rs`; see `todo.md`'s P2
+#4 "Previous work" entry for the full account and
+`tests/frontend_large_aggregate_reassignment.rs` for the regression
+coverage. `Cpu::reinit` is not being reverted -- it was already judged more
+correct on its own merits, independent of this bug.
 
 Verified interactively: built `nova16.exe`, launched it, and drove the
 toolbar with real synthesized mouse input (`SetCursorPos` + `mouse_event`,

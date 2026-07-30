@@ -48,17 +48,9 @@ within the same stage that found it.**
 **P2: Process debt that's been deferred past the point of being
 defensible.**
 3. **Done.** See "Previous work" below for the rationale.
-4. Investigate the `clang` large-aggregate-returned-repeatedly build
-   pathology this stage found and worked around (not root-caused): an
-   early `main.star` draft called a function returning a fresh, megabyte-
-   plus `Cpu` by value a second/third time (for the `Reset` control), and
-   that build took several minutes and multiple gigabytes of `clang`
-   memory just to link, before being replaced with an in-place
-   `Cpu::reinit`. Worth a minimal, project-independent repro (a function
-   returning a >512KB struct, called 2-3 times from within one enclosing
-   function) to confirm or rule out whether this is the same root cause as
-   `projects/nova/NOTES.md`'s "Seven Star compiler bugs found and fixed"
-   #1's already-fixed shape, or a genuinely new one.
+4. **Done.** Root-caused and fixed as a genuine, previously-uncovered Star
+   compiler bug — not a recurrence of "Seven Star compiler bugs found and
+   fixed" #1's shape. See "Previous work" below for the full account.
 5. Nova's own remaining, deliberately-scoped-out gaps (unchanged from
    before this stage): splitting `cpu.star`'s opcode handlers across
    files; `SMIX`/`SECHO`/`SREVERB`/`SFILTER` (unimplemented, matching the
@@ -163,6 +155,86 @@ GUI verification method: a demo binary that quickly parks in a `JMP $`
 idle loop is a poor choice for verifying Step/pause behavior specifically,
 since "no visible change" is ambiguous between "broken" and "correctly
 executing a no-op instruction" without a disassembly cross-check.
+
+P2 #4, the `clang` large-aggregate-reassignment build pathology (closed this
+session): root-caused and fixed as a genuine, previously-uncovered Star
+compiler bug in `TypedStmt::Assign` (`src/codegen/stmt.rs`) -- confirmed via
+a minimal, project-independent repro to be a *different* gap from "Seven
+Star compiler bugs found and fixed" #1's already-fixed shape, not a
+recurrence of it. Repro construction: a straight-line `let a = f(); let b =
+f(); let c = f()` (three separate fresh bindings, each a call returning a
+1,000,000-byte struct) compiled in well under a second -- `TypedStmt::Let`'s
+existing `is_large_aggregate_ty` branch already routes every one of those
+through `emit_into_ptr`, so this shape was already covered by `todo.md`'s
+prior P0 #2 fix. The real Nova shape -- one `let mut cpu = f()` followed by
+`cpu = f()` *reassignments* inside `if` branches nested in a `while` loop,
+mirroring `main.star`'s per-frame hotkey/toolbar-click `Reset` handling --
+reliably reproduced the pathology: confirmed via `Get-Process` that
+`clang-22` climbed past 3.4GB resident memory while compiling it, and the
+build eventually failed outright after 11m19s wall time (`clang-22: error:
+clang frontend command failed with exit code 2147483647`) rather than ever
+completing -- worse than the original `main.star` draft's "several minutes"
+account, though the same pathology.
+
+Root cause: `TypedStmt::Assign`'s `Eq` branch (plain `=`, not `+=`/...) had
+no large-aggregate special case at all, unlike `TypedStmt::Let` right above
+it in the same file. `x = f()` fell through to `emit_expr(value)` +
+`store_target`, and `emit_expr`'s generic `Call` handling for a large
+struct/array return type has always had exactly one whole-aggregate
+materialization left in it *by design* -- `emit_call_expr`'s own doc comment
+at the time named it as reachable only by "a rarer generic value consumer
+(e.g. a bare expression-statement discarding the result)". Reassignment to
+an existing mutable binding turned out to be a second, much more consequential
+consumer of that same fallback that the comment didn't anticipate: alloca a
+temp, call into it via `sret`, `load` the *entire* struct into one SSA
+value, hand that back to `store_target`, which then `store`s the whole thing
+a second time into the target's real storage. Two copies of a giant
+aggregate *value* (as opposed to two pointers and a `memcpy`) is exactly the
+`clang` optimizer/instruction-selector shape "Seven Star compiler bugs found
+and fixed" #1 first found and fixed for *construction*, and P0 #2 later
+fixed for *return*/*parameter* passing -- reassignment was the one shape
+neither round touched, because neither round's own repro ever reassigned an
+existing large-aggregate binding, only bound fresh ones or passed/returned
+them.
+
+Fix: `TypedStmt::Assign`'s `Eq` branch now special-cases a large-aggregate
+RHS (skipping only a bare `TypedExpr::TableIndex` target, which -- per
+`Codegen::emit_place`'s own doc comment -- has no contiguous storage to
+resolve a real pointer for): build the new value into a private scratch
+`alloca` via `Codegen::emit_into_ptr` first (never straight into the
+target's own storage -- keeps `x = x`/self-referential-RHS shapes safe,
+since a fresh temp can never alias the place being overwritten, mirroring
+why the ordinary scalar path's retain-before-release ordering already
+matters), then resolve the target's real address via `Codegen::emit_place`,
+release its old contents (`Codegen::emit_release_at`, for RC correctness),
+and `Codegen::emit_memcpy_aggregate` the temp over it. Re-running the exact
+repro above after the fix: 2.4 seconds, correct output (previously 11m19s
+and a hard `clang` failure).
+
+New regression coverage: `tests/frontend_large_aggregate_reassignment.rs`
+(six tests) -- a codegen-shape/near-instant-compile-time assertion at
+megabyte scale (no `clang`, same safety rationale the existing
+`tests/frontend_large_aggregate_by_value.rs` already uses for its own
+shape assertions), plus five real `clang -O0`-compiled runtime tests at
+8192 bytes (safely above `Codegen::LARGE_AGGREGATE_THRESHOLD`, small enough
+to run instantly even if a regression reintroduced the whole-value path):
+plain reassignment actually replaces the value, the exact real-world
+if/while-nested-reassignment shape, `b = b` self-assignment safety, an
+RC-owning (`str`) field reassigned 20x in a loop (leak/double-release
+check), and reassignment through a struct field (`h.inner = f()`, exercising
+`emit_place`'s `Field` arm rather than a bare local). Full `cargo test`
+suite re-run clean afterward (75 test binaries, 0 failures) and
+`projects/nova/main.star` re-built end to end with the fixed compiler
+(`star build ... -L sdl/lib/x64 -l SDL2 -l comdlg32`, 3.6s, unchanged from
+before the fix -- expected, since `main.star`'s own `Reset` already uses
+`Cpu::reinit` rather than the reassignment shape this fix targets, so this
+was a no-behavior-change confirmation, not a fix verification, for Nova
+itself). `Cpu::reinit` is not being reverted: `NOTES.md`'s own prior writeup
+already judged it "arguably more correct" than repeated by-value
+construction regardless of this compiler bug, matching `nova_gui.py::
+CPUController.reset()`'s own mutate-in-place shape more closely -- this fix
+closes the *investigation* `todo.md` asked for, not a request to change
+Nova's design back.
 
 More out-of-band work:
 Copied over the Python reference's assembly programs to `projects/nova/asm/`

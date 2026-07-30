@@ -655,15 +655,51 @@ impl Codegen {
                 }
             }
             TypedStmt::Assign { target, op, value, .. } => {
-                let val_reg = self.emit_expr(value);
-                if *op != AssignOp::Eq {
-                    let loaded = self.load_target(target);
-                    let tty = self.expr_ty(target);
-                    let vty = self.expr_ty(value);
-                    let compound = self.emit_assign_binop(&loaded, &tty, &val_reg, &vty, *op);
-                    self.store_target(target, &compound);
+                let vty = self.expr_ty(value);
+                // Plain `x = <large-aggregate-returning-call-or-copy>` (not a
+                // fresh `let` binding) used to fall straight into the
+                // `emit_expr`+`store_target` path below, which -- unlike
+                // `TypedStmt::Let`'s matching `is_large_aggregate_ty` branch
+                // above -- materializes the whole aggregate as one SSA value
+                // (`emit_call_expr`'s own generic-aggregate-consumer fallback:
+                // alloca, sret-call, `load` the lot) and then `store`s it a
+                // second time. Two copies of a giant aggregate *value* is
+                // exactly the `clang` optimizer pathology `todo.md` P2 #4
+                // found empirically (`cpu = build_cpu()` reassigned from
+                // inside `projects/nova/main.star`'s per-frame loop took
+                // several minutes and multiple GB of `clang` memory to link)
+                // -- confirmed via a minimal, project-independent repro
+                // (see `todo.md`'s own writeup) to be *this* gap, not a
+                // recurrence of "Seven Star compiler bugs found and fixed"
+                // #1's already-fixed shape. `TypedExpr::TableIndex` is
+                // excluded: a `Table<T>` element has no contiguous storage
+                // for `emit_place` to hand back a real pointer to (see its
+                // own doc comment), so a bare `table[i] = <big>` keeps using
+                // the pre-existing `store_table_index` path unchanged.
+                if *op == AssignOp::Eq && self.is_large_aggregate_ty(&vty) && !matches!(target, TypedExpr::TableIndex { .. }) {
+                    let llvm_ty = self.llvm_ty(&vty);
+                    let tmp = self.tmp_name();
+                    self.line(&format!("  {} = alloca {}", tmp, llvm_ty));
+                    // Built into a private temp first, not straight into the
+                    // target's own storage: keeps `x = x`/self-referential
+                    // RHS shapes safe (a fresh temp can never alias the place
+                    // being overwritten) exactly like the ordinary scalar
+                    // path below already is via its own retain-before-release
+                    // ordering.
+                    self.emit_into_ptr(&tmp, value, &vty);
+                    let dest_ptr = self.emit_place(target);
+                    self.emit_release_at(&dest_ptr, &vty);
+                    self.emit_memcpy_aggregate(&dest_ptr, &tmp, &vty);
                 } else {
-                    self.store_target(target, &val_reg);
+                    let val_reg = self.emit_expr(value);
+                    if *op != AssignOp::Eq {
+                        let loaded = self.load_target(target);
+                        let tty = self.expr_ty(target);
+                        let compound = self.emit_assign_binop(&loaded, &tty, &val_reg, &vty, *op);
+                        self.store_target(target, &compound);
+                    } else {
+                        self.store_target(target, &val_reg);
+                    }
                 }
             }
             TypedStmt::Return { value, .. } => {
