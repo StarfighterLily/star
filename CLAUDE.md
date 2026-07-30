@@ -108,8 +108,11 @@ does for GDI).
 
 ## Things not to do
 
-- Don't bump the version past `0.1.0` as part of unrelated work — see
-  `readme.md`'s "Versioning" section for the actual gate.
+- Don't bump the version as part of unrelated work — see `readme.md`'s
+  "Versioning" section for the actual gate (`0.1.0` → `0.2.0` already
+  happened, at the `82be6e2` reassessment, once that gate's conditions
+  were confirmed; any future bump, e.g. a `1.0.0` push, deserves the same
+  deliberate reassessment-driven treatment, not a drive-by edit).
 - Don't `git push`, force-push, or amend published commits without
   explicit confirmation for that specific action.
 - Don't skip the reassessment trigger above because the next feature

@@ -3,10 +3,14 @@
 A game programming language with Pythonic-Rust syntax and unique memory management modes, targeting native executables via LLVM IR.
 
 ## Versioning:
-Currently 0.1.0. There is no guarantee of stability or usability. Version shall remain as such until
-the Nova project is complete (full system implementation, GUI+controls, and tooling to match Python reference, NoBASIC optional) and minimal 4 rounds of bug hunts, after which the language will be
-considered usable and a semblance of stability can be expected. From there, industry-standard SemVer
-practices will be observed to provide a reliable measure at a glance.
+`0.2.0` as of the `82be6e2` reassessment (2026-07-30). The gate that held the version at `0.1.0` —
+the Nova project complete (full system implementation, GUI+controls, and tooling to match Python
+reference, NoBASIC optional) and a minimum of 4 bug-hunt rounds — is satisfied; see
+`changelog/069_2026-07-30_82be6e2_current_status.md` for the condition-by-condition check. The
+language is usable and a semblance of stability can be expected, but this is not yet a `1.0.0`-style
+public-API stability commitment — that's reserved for after real usage beyond this repo's own
+`projects/nova` exercises the surface. From here, industry-standard SemVer practices are observed to
+provide a reliable measure at a glance.
 
 ## Design
 

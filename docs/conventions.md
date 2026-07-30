@@ -194,8 +194,11 @@ builtin:
 
 ## Versioning
 
-`0.1.0`, explicitly no stability guarantee — see `readme.md`'s
-"Versioning" section. The version stays there until the Nova project is
-complete and has survived a minimum of four bug-hunt rounds; only then
-does the project move to standard SemVer practice. Don't bump the
-version number as part of unrelated feature work.
+`0.2.0` as of the `82be6e2` reassessment (2026-07-30) — see `readme.md`'s
+"Versioning" section and `changelog/069_2026-07-30_82be6e2_current_
+status.md` for the condition-by-condition gate check. Standard SemVer
+practice now applies from here. Don't bump the version number as part of
+unrelated feature work — the `0.1.0` → `0.2.0` move happened only because
+a full reassessment cycle confirmed the gate's conditions, and any future
+bump (a `1.0.0` push, say) should get the same deliberate treatment, not
+be folded into other work.
