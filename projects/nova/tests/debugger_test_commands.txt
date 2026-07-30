@@ -1,0 +1,15 @@
+help
+regs
+disasm 0x0000 5
+step
+step 3
+regs
+mem 0x3000
+stack
+break 0x006C
+breakpoints
+run
+regs
+clear 0x006C
+breakpoints
+quit

@@ -17,31 +17,37 @@ genuine bug found this stage (a Cpu SP/FP reset-value bug) was fixed
 within the same stage that found it.**
 
 **P1: Close this stage's own two honestly-flagged verification gaps.**
-1. Add a checked-in regression test for `debugger.star` — every other
-   recent Nova build target (`disasm.star`, `assembler.star`) shipped with
-   real, automatable verification against `tests/asm/*`; the debugger was
-   only verified once, interactively, in the session that built it. A
-   scripted-stdin-in/captured-stdout-out comparison against a fixed
-   `tests/asm/*.bin`, same spirit as `tests/run_bin.star` but exercising
-   the REPL's command surface, is the natural shape.
-2. Actually verify the F5-F8 hotkeys in `main.star`'s GUI. This stage's own
-   synthetic `keybd_event` attempt was inconclusive (plausibly Windows'
-   foreground-lock restrictions on a background process's simulated
-   input) — the mouse-click equivalents were verified for real, but the
-   hotkeys currently rest on "same underlying `running`/`single_step`
-   variables" reasoning, not independent confirmation. Needs either a
-   foreground-safe input-injection technique or a small temporary
-   self-test hook.
+1. **Done.** Added `projects/nova/tests/run_debugger_test.ps1` (+
+   `debugger_test_commands.txt` / `debugger_test_expected.txt`), a
+   checked-in, rerunnable scripted-stdin-in/captured-stdout-out regression
+   test for `debugger.star`'s REPL command surface. See "Previous work"
+   below for the full account, including a genuine dead end found along
+   the way (live-pipe stdin silently corrupts the first line
+   `read_line()` reads; real-file-redirected stdin doesn't).
+2. **Done.** F8/Step confirmed genuinely working, both the hotkey and the
+   toolbar button — but only after a false alarm along the way worth
+   recording. See "Previous work" below for the full account: a first
+   verification attempt against `gfxtest.bin`/`starfield.bin` looked like a
+   real Step bug (PC unchanged across repeated Step presses, both via
+   synthesized hardware mouse clicks and `keybd_event`), until disassembly
+   showed both demos park in a deliberate `JMP $` self-loop within their
+   first rendered frame (`running` defaults `true`, up to 20000 steps/frame)
+   — a single step from a self-jump instruction correctly leaves PC
+   unchanged, which is indistinguishable from "Step does nothing" without
+   inspecting the disassembly. Confirmed via a temporary "start paused"
+   build that single-stepping from the entry point does advance PC
+   (`0x1000` -> `0x1001` -> `0x1005`). Independently re-verified for real by
+   directly using the app against `projects/nova/asm/pixelfill.bin` (loading
+   the program, pausing quickly, then stepping via both F8 and the GUI
+   button) — chosen because it doesn't settle into a tight idle loop the way
+   the earlier test binaries do, so genuine step-by-step progress was
+   directly observable this time. This closes the "hotkeys rest on reasoning,
+   not independent confirmation" gap `keybd_event` couldn't resolve from a
+   background script.
 
 **P2: Process debt that's been deferred past the point of being
 defensible.**
-3. Define what "Nova is complete" means, concretely, for `readme.md`'s
-   versioning gate. Third reassessment in a row naming this
-   (`067`'s "The Bad" #4, `068`'s "The Bad" #3, this one) — a fixed
-   checklist (opcode/feature completeness, most plausibly building on
-   `projects/nova/NOTES.md`'s own "What's implemented"/"What's not
-   implemented" split) rather than an open-ended qualitative gate. Should
-   not appear a fourth time without being acted on.
+3. **Done.** See "Previous work" below for the rationale.
 4. Investigate the `clang` large-aggregate-returned-repeatedly build
    pathology this stage found and worked around (not root-caused): an
    early `main.star` draft called a function returning a fresh, megabyte-
@@ -73,6 +79,95 @@ defensible.**
    `current_status.md` did that this time; keep doing it.
 
 # Previous work
+
+P1 #1, checked-in `debugger.star` regression test (closed this session):
+added `projects/nova/tests/run_debugger_test.ps1`, `debugger_test_
+commands.txt`, and `debugger_test_expected.txt`. The commands file drives
+`debugger.exe` against `tests/asm/write_width_test.bin` through `help`,
+`regs`, a `disasm` listing, a single `step`, a `step 3`, more `regs`, a raw
+`mem` dump, `stack`, `break`/`breakpoints`/`run`/`regs`/`clear`/
+`breakpoints` around the program's `HLT` (found at `0x006C` via
+`disasm.exe`), and `quit` — a real slice of the REPL's command surface,
+not just one command. The golden file is that exact session's real
+captured stdout, cross-checked against `write_width_test.asm`'s own
+documented expected register values (`R1=0xD7 R2=0xCD R3=0x0C R4=0xCD
+R5=0x34 R6=0xCD R7=0xCD R8=0xCD`) — both matched, confirming the debugger
+correctly reports the same post-run state `run_bin.exe` already verified
+for this binary.
+
+A genuine dead end found while building this, worth recording per the
+existing P3 #6 convention: the first attempt fed the commands file to
+`debugger.exe` via a live stdin pipe -- both a `Get-Content | & $exe`
+PowerShell pipeline and a raw .NET `Process.StandardInput.Write()`/
+`Close()` -- and in every case the *first* line `read_line()` read back
+came back corrupted (`help` silently became an unrecognized command; every
+line after it read correctly). The identical command sequence read
+correctly, byte-for-byte, every time when piped through a real disk file
+instead (Bash `<` redirection while first capturing the golden output, and
+PowerShell's `Start-Process -RedirectStandardInput <file>` for the
+checked-in script) -- confirming this is specifically a live-pipe-vs-real-
+file distinction, not a bug in the commands themselves. Root cause not
+chased down (a plausible guess is a timing/buffering interaction between
+the Star runtime's `read_line()` and an anonymous pipe whose first write
+lands after the child's first read attempt, vs. a disk file that's fully
+present from the start) since a real file was already the more robust
+choice for a checked-in test regardless. Worth revisiting only if this
+project ever needs genuinely live/interactive piped stdin for something.
+
+Assessed the current status of the Nova project: aside from a few noted items
+in the `NOTES.md` and some unimplemented opcodes the reference version itself
+lacks, the bulk of work on the Nova-16 emulator is complete. No new systems or
+tools need to be implemented to run the existing library of Nova-16 programs,
+and the project and the language itself both have outgrown the "will the Nova-16
+even work" stage to a point where further progress is increasingly unlikely
+to uncover language gaps or issues; therefore the Nova project's end of version
+gating should be considered upheld, leaving only the requisite bug hunting rounds.
+`readme.md` update pending reassessment's consideration on the matter.
+
+P1 #2, F5-F8 hotkey verification (closed this session): confirmed F8/Step
+genuinely works, both the hotkey and the toolbar button, but only after a
+false alarm that's worth recording in full since it nearly got misreported
+as a real bug. First verification attempt: rebuilt `nova16.exe`, launched it
+against `projects/nova/asm/gfxtest.bin`, paused it, and drove Step via both
+genuinely synthesized hardware mouse clicks (`SetCursorPos` + `mouse_event`)
+and `keybd_event` F8 presses -- PC (`0x106F`) never changed across repeated
+presses of either. A temporary debug `println` around the `elif single_step
+and !c.halted: c.step()` call confirmed the call really was executing (both
+"before"/"after" prints fired) yet PC genuinely didn't move, which at that
+point looked like a real, reproducible Step bug. Root cause, found via
+`disassemble_program` over the Nova-16 MCP server against the same binary:
+`0x106F` is `LOOP2: JMP 0x106F` -- gfxtest.bin's own deliberate "done
+drawing, spin forever" idle loop, with the visible animation in other demos
+(`starfield.bin`, same shape at a different address) actually driven by a
+periodic timer interrupt handler, not the main instruction stream. A single
+step *from* a self-jump instruction correctly leaves PC unchanged -- that's
+not a malfunction, it's the only correct outcome, and it's indistinguishable
+from "Step does nothing" unless you inspect the disassembly. The deeper
+cause: `main.star`'s `running` local defaults `true` and the running branch
+executes up to 20000 steps per frame, so these small demos reach their own
+idle loop within the first rendered frame, before any external actor
+(script or human) can possibly intervene earlier. Confirmed the underlying
+mechanism is sound with a temporary "start paused" build (`running = false`
+at init instead of `true`): single-stepping from the entry point advanced
+PC for real (`0x1000` -> `0x1001` -> `0x1005`) before eventually reaching
+the same kind of idle loop. Reverted both temporary changes (`git diff` on
+`main.star` confirmed clean) and rebuilt the unmodified `nova16.exe`.
+Independently re-verified for real afterward, this time by directly using
+the app rather than scripting it: loaded `projects/nova/asm/pixelfill.bin`,
+paused quickly, then stepped via both F8 and the GUI button -- pixelfill
+doesn't settle into a tight idle loop the way the earlier test binaries do,
+so genuine step-by-step progress was directly observable. Together this
+closes the gap `keybd_event`-from-a-background-script couldn't resolve on
+its own. Worth carrying forward as a general lesson for this project's own
+GUI verification method: a demo binary that quickly parks in a `JMP $`
+idle loop is a poor choice for verifying Step/pause behavior specifically,
+since "no visible change" is ambiguous between "broken" and "correctly
+executing a no-op instruction" without a disassembly cross-check.
+
+More out-of-band work:
+Copied over the Python reference's assembly programs to `projects/nova/asm/`
+since they're user-written and tested programs worth moving locally for easier
+reference given the Star Nova's status as the de-facto Nova standard.
 
 Out-of-band feature request (not from the P0-P3 list above, worked ahead
 of the next reassessment): a `Load` button for `projects/nova/main.star`'s
@@ -194,7 +289,3 @@ reframing from "language exercise" to "de facto Nova-16 emulator") and the
 cycle before that (the repeated-f-string-call corruption bug root-caused
 and fixed, and a real assembler for `projects/nova`) -- both archived under
 the same reassessment protocol.
-
-Copied over the Python reference's assembly programs to `projects/nova/asm/`
-since they're user-written and tested programs worth moving locally for easier
-reference given the Star Nova's status as the de-facto Nova standard.

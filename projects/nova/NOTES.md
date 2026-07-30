@@ -1214,6 +1214,26 @@ was checked against; not repeated here. What's checked in:
   `mouse_pending_irq` — only the host mouse does, see "Mouse plumbing"
   below) — same spirit as the BCD/string rounds' own "standalone headless
   harness", just checked in this time.
+- `tests/run_debugger_test.ps1` (+ `tests/debugger_test_commands.txt` /
+  `tests/debugger_test_expected.txt`) — a checked-in, rerunnable
+  regression test for `debugger.star`'s own REPL command surface (todo.md
+  P1 #1), added after a reassessment flagged that the debugger had only
+  ever been verified once, interactively, in the session that built it.
+  Feeds a fixed sequence of commands (`help`/`regs`/`disasm`/`step`/
+  `step N`/`mem`/`stack`/`break`/`breakpoints`/`run`/`clear`/`quit`) into
+  `debugger.exe` against `tests/asm/write_width_test.bin`, and byte-for-
+  byte compares captured stdout against a checked-in golden file (that
+  test's own real output, not hand-derived) — same spirit as
+  `run_bin.star`'s register comparisons, just driving the REPL surface
+  instead of the underlying `Cpu` directly. Both stdin and stdout are
+  real disk files via `Start-Process -RedirectStandardInput`/
+  `-RedirectStandardOutput`, not a live pipe — see the script's own header
+  comment for a dead end found along the way (feeding stdin through a
+  live pipe, either .NET's `Process.StandardInput.Write` or a `Get-Content
+  | & $exe` pipeline, silently corrupts the *first* line `read_line()`
+  reads, even though the identical script through a real file redirects
+  correctly every time; root cause not chased down since a real file
+  works and was already the plan).
 
 Every one of these was **also** run against the live Python reference
 (`python -c "..."` scripts importing `nova_memory`/`nova_gfx`/`nova_cpu`
