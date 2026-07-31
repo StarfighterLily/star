@@ -23,18 +23,39 @@ re-run this cycle, exit code 0 (confirmed by a full-output grep for
    a simple "180+" count; accurate, and leaves headroom for expansion.
 
 **P2: Real, standing items — none urgent, none blocking.**
-3. UART TCP transport remains out of scope — `net.rs`'s `tcp_recv` has no
-   non-blocking/timeout mode, so a TCP-backed bridge would freeze waiting
-   on an idle peer. Not a regression; carried forward for visibility.
-8. `draw_pixels`/`texture_create`/`texture_update`/`texture_draw`/
-   `texture_destroy` (`src/codegen/sdl.rs`, added since this reseed — see
-   "Previous work" below) have no dedicated `tests/frontend_*.rs` file of
-   their own yet, unlike every other SDL builtin in this compiler. Existing
-   SDL test files didn't regress, but that's coverage-by-absence, not
-   coverage — the natural next step is a `frontend_sdl_bulk_pixel_blit.rs`
-   (or similar) covering arg-type checks, the `par`/`swarm` ban, and a real
-   `SDL_VIDEODRIVER=dummy` round-trip for both the one-shot and
-   cached-handle forms.
+3. **Done.** Still genuinely out of scope (no code change: `net.rs`'s
+   `tcp_recv` still has no non-blocking/timeout mode, and adding one is a
+   real feature, not a test-writing task) — but the claim itself is no
+   longer just prose. New `runtime_tcp_recv_on_idle_open_connection_blocks_
+   forever_end_to_end` (`tests/frontend_networking.rs`) spins up a real
+   `TcpListener` peer that accepts the connection and then deliberately
+   sends nothing and doesn't close it (distinct from the existing
+   `runtime_tcp_recv_on_peer_closed_connection_returns_empty_end_to_end`,
+   which covers the *closed*-peer EOF path), spawns the compiled Star
+   binary, and polls `Child::try_wait` for 1.5s confirming it's still
+   blocked inside `tcp_recv` the whole time before killing it. If `tcp_recv`
+   ever grows a timeout, this is the test that starts failing — the signal
+   to update this item, not just delete the test.
+8. **Done.** New `tests/frontend_sdl_bulk_pixel_blit.rs`, 29 tests: arg-type/
+   arity checks for all five builtins (including the easy `Bytes`-vs-`str`
+   mixup `texture_update`/`draw_pixels` share with `file_write_bytes`), a
+   `par`/`swarm` ban-list rejection test (mirroring the existing SDL-hazard
+   tests), two structural null-handle-abort codegen checks, and six real
+   `SDL_VIDEODRIVER=dummy` runtime round-trips covering both the one-shot
+   (`draw_pixels`) and cached-handle (`texture_create`/`update`/`draw`)
+   forms — including a row-major-layout check (2x1 buffer, distinct colors
+   per pixel, catches a column/row mixup a uniform-fill test can't), a
+   destination-offset-vs-background-isolation check for both forms, and a
+   handle-reuse check (`texture_update` called twice on the same handle,
+   confirming the second draw shows the *new* upload rather than stale data
+   from the first). Also found and fixed a bug in the two structural codegen
+   tests themselves along the way: the abort message text is a global
+   constant defined outside the function body, so asserting it against
+   `extract_fn_body`'s slice always failed — moved those two assertions to
+   check the whole-module `ir` instead (matches `frontend_networking.rs`'s
+   own `codegen_tcp_close_aborts_on_null_handle`, which only checks
+   fn-body-local control flow, not message text). Full `cargo test` (76
+   binaries) reconfirmed clean after both additions.
 4. The permanent structural caveats (Windows-only fonts, "special guest"
    types unified in docs not mechanism, non-dynamic monomorphized-only
    traits, warning-only stack-budget check) — not gaps to close, a
@@ -93,6 +114,24 @@ and frame pacing" section for the full investigation this came out of
 round's own follow-on tuning) — the Nova-side half of that work
 (`main.star`'s `STEPS_PER_FRAME`/`STEP_TIME_BUDGET_MS` frame-pacing model)
 lives entirely in that project and doesn't touch the compiler.
+
+P2 #8: Closed the gap the paragraph above flagged — added
+`tests/frontend_sdl_bulk_pixel_blit.rs` (29 tests: arg-type/arity checks,
+`par`/`swarm` ban-list rejection, two structural null-handle-abort codegen
+checks, and six real `SDL_VIDEODRIVER=dummy` runtime round-trips for both
+the one-shot `draw_pixels` and cached-handle `texture_*` forms). Along the
+way, fixed a bug in the two structural codegen tests' own assertions (the
+abort message text lives in a global constant outside the function body,
+so `extract_fn_body`-scoped assertions on it always failed regardless of
+the codegen's correctness) before either test was ever committed. See
+P2 #8's own entry above for the fuller test-by-test breakdown.
+
+P2 #3: Confirmed and pinned down as a real regression test, not just
+prose — `runtime_tcp_recv_on_idle_open_connection_blocks_forever_end_to_end`
+(`tests/frontend_networking.rs`) spawns a real listener that accepts the
+connection and then stays silent and open, then polls the compiled Star
+binary for 1.5s confirming `tcp_recv` is still blocked, before killing it.
+No code change — the no-timeout limitation is real and still out of scope.
 
 P1 #1: Corrected the stale UART frame mode claims and directed the reader
 to the file and line number (`uart.star`:13) of the comment section describing

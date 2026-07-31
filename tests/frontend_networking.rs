@@ -212,6 +212,81 @@ fn runtime_tcp_send_aborts_on_null_handle_end_to_end() {
     assert_eq!(output.status.code(), Some(1), "should exit cleanly with code 1, not crash/segfault: {:?}", output.status);
 }
 
+/// `tcp_recv` has no non-blocking/timeout mode (`net.rs`'s own module doc
+/// comment says nothing about one, and `todo.md`'s P2 #3 carries forward the
+/// consequence: "a TCP-backed bridge would freeze waiting on an idle peer").
+/// Not a regression, not blocking -- but a real, standing limitation that's
+/// easy to let go stale as prose nobody re-checks. This pins it down as an
+/// actual regression test instead: a peer that accepts the connection but
+/// never sends anything and never closes it (unlike `runtime_tcp_recv_on_
+/// peer_closed_connection_returns_empty_end_to_end`'s immediate close, which
+/// exercises the *other*, already-handled EOF path) must leave the compiled
+/// program still blocked inside the real `recv()` call a full 1.5 seconds
+/// later, never reaching the `println` just after it. If a future change
+/// ever gives `tcp_recv` a timeout, this is the test that should start
+/// failing -- the signal to update `todo.md`'s P2 #3 note, not just delete
+/// this test.
+#[test]
+fn runtime_tcp_recv_on_idle_open_connection_blocks_forever_end_to_end() {
+    use std::sync::mpsc;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("failed to bind scratch listener");
+    let port = listener.local_addr().expect("failed to read local addr").port();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let server = std::thread::spawn(move || {
+        let (conn, _) = listener.accept().expect("failed to accept connection");
+        // Keep the connection open and silent until the test is done polling
+        // the child process -- dropping or writing to `conn` early would
+        // turn this into the already-covered graceful-close/data-arrives
+        // cases instead of the "still open, still idle" one under test.
+        let _ = done_rx.recv();
+        drop(conn);
+    });
+
+    let src = format!(
+        "fn main():\n    let h = tcp_connect(\"127.0.0.1\", {port})\n    let reply = tcp_recv(h)\n    println(f\"reply:{{reply}}\")\n",
+        port = port
+    );
+    let module = Driver::parse(&src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let exe = std::env::temp_dir().join("star_test_tcp_recv_idle_open_blocks.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let status = std::process::Command::new("clang")
+        .args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap(), "-lws2_32"])
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR");
+
+    let mut child = std::process::Command::new(&exe).stdout(std::process::Stdio::piped()).spawn().expect("failed to spawn compiled test binary");
+
+    // Poll for up to 1.5s -- long enough that a real, unbuffered `recv()`
+    // call would already have returned if it had any timeout at all; short
+    // enough to keep this test fast when the (expected) hang holds.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    let mut exited = false;
+    while std::time::Instant::now() < deadline {
+        if child.try_wait().expect("failed to poll child status").is_some() {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = done_tx.send(());
+    server.join().expect("server thread panicked");
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&exe);
+
+    assert!(
+        !exited,
+        "tcp_recv on an idle, still-open connection should still be blocked after 1.5s -- if it now returns, todo.md's P2 #3 no-timeout caveat is stale and should be updated, not just have this test deleted"
+    );
+}
+
 // --- cross-platform codegen (`crate::codegen::platform::Target`) ----------
 //
 // `Target::LinuxGnu`'s `tcp_*` arm is IR-shape/internal-verifier tested here
