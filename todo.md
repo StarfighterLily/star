@@ -12,10 +12,19 @@ own work still has loose ends (two uncommitted files, one stale doc
 reference).
 
 **U0: User-added items**
-1. Multi-line comments and other niceties would be worth scoping out.
-   Populate a `docs/requests.md` file with such features that might be
-   worth adding to the language that won't neccessarily unblock anything
-   but would be useful/easier/etc.
+1. **Done.** New `docs/requests.md`, six niceties, each checked against the
+   current lexer/parser (not just guessed) to confirm it's a real gap
+   rather than already-supported syntax: multi-line/block comments (only
+   `#` line comments exist in `src/lexer.rs`), digit separators in numeric
+   literals (`Lexer::scan_number` only accepts bare `is_ascii_digit()`
+   runs), `if let`/`while let` pattern binding (today only a full `match`
+   covers this), inclusive/stepped `for` ranges (`parse_for_stmt` hardcodes
+   exclusive ascending step-1 via a bare `DotDot`), multi-line/triple-quoted
+   string literals (no `TripleStr`/`RawStr` token exists), and default
+   parameter values in function definitions (`Param` has no default-value
+   slot, even though call sites already support `name = expr` named
+   arguments via `parse_call_args`). Scoped out, not implemented — explicitly
+   framed in the doc as not unblocking anything.
 
 **P0: Nothing to fix.** Full `cargo +stable-x86_64-pc-windows-gnu test`
 re-run this cycle, exit code 0. No false "Done." markers found.
