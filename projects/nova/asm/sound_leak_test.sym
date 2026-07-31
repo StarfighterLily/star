@@ -1,0 +1,5 @@
+# Symbol table
+# Format: <symbol> <value>
+MAIN 0x1000
+RETRIGGER_LOOP 0x100D
+STRIG_LOOP 0x101D

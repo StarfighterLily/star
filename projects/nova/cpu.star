@@ -137,6 +137,16 @@ struct Cpu:
     # since it's never read/written by any opcode and only ever cycles
     # through the small fixed range 8-15, never wrapping a full byte.
     mut next_strig_channel: i32
+    # The `sound_load` handle (`todo.md` P2 #3) currently occupying each of
+    # the 16 mixer channels this port ever addresses (0-7 the `SPLAY`
+    # hardware voices, 8-15 `STRIG`'s rotating one-shot pool -- exactly
+    # `crate::codegen::audio::NUM_CHANNELS`), or `null_ptr()` if that
+    # channel has never played anything. `cpu_sound.star::op_splay`/
+    # `op_strig` free a channel's previous handle the instant a new one
+    # replaces it there; `op_sstop`/`Cpu::reinit` free every tracked handle
+    # outright. See `sound.star`'s header comment for the full "why this is
+    # safe with no per-channel completion callback" writeup.
+    mut sound_channel_handles: [ptr; 16]
 
     mut mx: Wrapping<u8>
     mut my: Wrapping<u8>

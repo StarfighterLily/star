@@ -16,16 +16,11 @@ it, with new regression coverage.**
 
 **P1: The one decision this whole cycle has been building toward.**
 1. **Done.** The version has been bumped to `0.2.0`. See below for details.
-2. Once a number is chosen: update `readme.md`'s Versioning section,
-   `Cargo.toml`'s `version` field, and `docs/conventions.md`'s own
-   "Versioning" section together in the same change (the last of these
-   currently still says "`0.1.0`, explicitly no stability guarantee" and
-   would otherwise immediately contradict the new `readme.md` text).
+2. **Done.** See `P1 #1 & #2` for details.
 
 **P2: Real, still-open gaps — none block the version question above,
 since the gate never named them.**
-3. `sound.star`'s leaked WAV handles — the one remaining named audio
-   simplification (see `current_status.md` "The Bad" #2).
+3. **Done.** `sound.star`'s leaked WAV handles. See below for details.
 4. `SMIX`/`SECHO`/`SREVERB`/`SFILTER` and `debugger.star` source-line
    breakpoints — both still genuinely out of scope, carried forward for
    visibility, not active work items.
@@ -45,7 +40,65 @@ since the gate never named them.**
    running have now made this adjustment; keep doing it.
 
 # Previous work
-P1 #1: Bumped version to an honest `0.2.0` across `cargo.toml` and `readme.md`, 
+P2 #3: Fixed `sound.star`'s leaked WAV handles, the one remaining named
+audio simplification. Every `SPLAY`/`STRIG` trigger built a fresh WAV
+buffer, `sound_load`d it, and played it, but the returned handle was
+discarded — `crate::codegen::audio`'s `sound_load` `malloc`s a fresh copy
+of the whole file per call, so this leaked real heap memory on every
+retrigger with no bound, growing without limit under sustained play (e.g.
+a looping `SPLAY` retriggered every frame, or a `STRIG` sound effect fired
+repeatedly). Fix: `sound.star`'s `play_pcm_wav_on_channel`/`play_tone`/
+`play_memory_sample`/`trigger_effect` now return the new `ptr` handle
+(`null_ptr()` on failure) instead of a bare `bool`; a new `Cpu` field,
+`sound_channel_handles: [ptr; 16]` (`cpu.star`), tracks the one handle
+currently occupying each of the 16 mixer channels this port addresses (0-7
+`SPLAY`'s hardware voices, 8-15 `STRIG`'s round-robin pool); and
+`cpu_sound.star`'s new `replace_channel_handle`/`free_all_sound_handles`
+free a channel's previous occupant the instant a new one replaces it
+there (safe with no per-channel "finished playing" callback, since
+`sound_play_channel` has already overwritten that channel's `chan_base` to
+the new buffer by the time the old one is freed — `sound_free`'s own
+"stop any channel still using this buffer" scan finds no match for the
+outgoing handle) or `SSTOP`/`Cpu::reinit` (`Reset`) free every tracked
+handle outright. Every `Cpu`-constructing site (`main.star`,
+`tests/run_bin.star`, `debugger.star`, `uart_bridge.star`) updated for the
+new field. Verified with a new checked-in regression test,
+`projects/nova/asm/sound_leak_test.asm`/`.bin` (retriggers the same
+`SPLAY` hardware channel 20 times in a row with no wait for real playback
+to finish, then saturates `STRIG`'s 8-slot round-robin pool twice over,
+then `SSTOP`), run via `tests/run_bin.exe` — confirmed running clean to
+`HLT` (exit code 0). Confirmed the test actually has teeth by temporarily
+removing the null-handle guard in `replace_channel_handle`: the same test
+then aborted immediately with `sound_free`'s own "null/freed sound handle"
+runtime error, as expected, before the guard was restored. The existing
+`sound_channel_test.bin` (todo.md P2 #5's own retrigger-a-looping-channel
+scenario) and the full `tests/asm/*.bin` suite were re-run and still halt
+clean. `main.star`/`debugger.star`/`uart_bridge.star` all rebuilt
+successfully with the new field (`main.star`'s build needed `-l comdlg32`
+in addition to `-l SDL2`, a pre-existing requirement for its native
+"Open File" dialog, not a regression). `NOTES.md`'s "What's implemented"/
+"What's not implemented"/"Known simplifications" sections and
+`sound.star`/`cpu_sound.star`'s own header comments updated to describe
+the fix rather than the former "intentionally leaked" framing.
+
+Also surveyed the rest of the Nova project for any other undocumented
+simplifications per this cycle's direct ask, cross-referencing `NOTES.md`'s
+curated "What's not implemented"/"Known simplifications" sections (and a
+fresh grep of every `.star` file under `projects/nova` for `leak`/`race`/
+`stub`/`TODO`/`silently drop`/etc.) against what's already tracked here.
+Nothing new surfaced: every remaining item is either already carried
+forward as P2 #4/#5 above, or is explicitly documented as a deliberate,
+justified design choice rather than a shortcut — e.g. `SBLEND` being a
+stub is a confirmed bug-for-bug match with the Python reference (it never
+calls its own blend-aware pixel write either), the timer ticking once per
+instruction rather than per host clock cycle is inherent to writing an
+interpreter rather than a cycle-accurate simulator, and the math library's
+`f32`-vs-reference's-`f64` precision gap (reachable only in `POWR`/`EXP`'s
+overflow thresholds) is already fully traced and accepted in `NOTES.md`'s
+"Math library / Q8.8 fixed-point" section. No new P2 item warranted from
+this pass.
+
+P1 #1 & #2: Bumped version to an honest `0.2.0` across `cargo.toml` and `readme.md`, 
 modified both `CLAUDE.md` and `.clinerules/general.md` to reflect the unbounded
 version bump while raising the point to keep the version in sync across load-bearing
 files and documentation alike to avoid stale version numbers anywhere, and 

@@ -1032,10 +1032,11 @@ estimate):
 - Sound: `SPLAY SSTOP STRIG` — real waveform synthesis and playback, now
   with a true per-8-independent-hardware-channel voice model (`SW`'s
   channel-select bits 3-5, todo.md P2 #5) rather than one shared loop
-  channel plus a one-shot pool; see `sound.star` and "Known
-  simplifications" below for the simplifications this *does* still carry
-  (leaked WAV handles). `SMIX SECHO SREVERB SFILTER` are unimplemented in
-  the reference itself, see "What's not implemented" below.
+  channel plus a one-shot pool, and per-channel handle tracking that frees
+  a channel's previous `sound_load` handle instead of leaking it (todo.md
+  P2 #3); see `sound.star`/`cpu_sound.star`. `SMIX SECHO SREVERB SFILTER`
+  are unimplemented in the reference itself, see "What's not implemented"
+  below.
 - Keyboard: `KEYIN KEYSTAT KEYCOUNT KEYCLEAR KEYCTRL`
 - `MOUSECTRL` (real host mouse plumbing — see "Mouse plumbing" below).
 - Every register-code target (`R0-R9, P0-P9, SP, FP, VX, VY, VM, VL, VC,
@@ -1088,8 +1089,9 @@ in:
   `sound_stop_channel` compiler builtin pair (`crate::codegen::audio`)
   gives `SPLAY` a true per-8-hardware-channel voice model, and waveform 6
   now runs the same one-pole IIR filter the Python reference's own
-  `_generate_waveform_sample` uses. Leaked WAV handles remain (see
-  `sound.star`'s own header comment for why).
+  `_generate_waveform_sample` uses. The one remaining named audio
+  simplification — leaked WAV handles — is closed as of todo.md P2 #3 (see
+  `sound.star`'s own header comment for the fix).
 - **UART framed-mode protocol parsing** (start byte + length + payload +
   checksum) — still out of scope, no opcode drives it either way. **The
   host bridge itself is now implemented** (todo.md P0 #1, reversing this
@@ -1145,8 +1147,13 @@ in:
   changed. `SPLAY` now gets a true 8-independent-hardware-channel voice
   model and waveform 6 a real one-pole pink-noise filter (todo.md P2 #5,
   reversing this bullet's own former "one loop channel + one one-shot
-  pool"/"approximated pink noise" wording) — leaked WAV handles remain the
-  one simplification still standing.
+  pool"/"approximated pink noise" wording). Every generated WAV handle used
+  to be intentionally leaked, never `sound_free`d — todo.md P2 #3 closed
+  that: `Cpu::sound_channel_handles` now tracks the one handle each of the
+  16 mixer channels currently holds and frees a channel's previous
+  occupant the instant a new one replaces it there (or `SSTOP`/`Reset`
+  frees every tracked handle outright), leaving no standing audio
+  simplification.
 - **DIV/MOD/DIVH by zero print a diagnostic and leave the destination
   unchanged**, rather than raising a hardware fault/trap — a defensive
   choice so a buggy test program halts with a readable message instead of
@@ -2718,6 +2725,62 @@ verified two ways instead:
    executing it, since there's nothing to execute it *with* on either
    side) to confirm the enable-gate-at-both-set-time-and-dispatch-time
    behavior and the vector-3/priority assignment match.
+
+## Host keyboard mapping: from "A-Z only" to the full reference layout
+
+The "GUI+controls parity" section above (and `keyboard.star`'s own header
+comment) flagged `main.star`'s host-scancode -> Nova-16 key-code table as
+"a small, arbitrary map... good enough to prove KEYIN/KEYSTAT/KEYCOUNT/
+KEYCLEAR/KEYCTRL work end to end; not a full keyboard layout" — it only
+ever forwarded SDL scancodes 4-29 (`A`-`Z`, always sent uppercase
+regardless of Shift). Running a real keytest program
+(NoBASIC's `getkey.bin`, `while key = 0: key = getkey()` then display it)
+against that stopgap surfaced the gap directly: digits, space, enter,
+punctuation, arrows, and most F-keys never reached the guest at all —
+pressing them did nothing, since nothing ever called `Keyboard::push_key`
+for those scancodes, so `getkey()`'s wait loop just spun forever.
+
+Fixed by replacing the 26-entry `A`-`Z`-only table with `host_key_to_code`,
+covering SDL scancodes 4-82 against `docs/Keyboard Implementation.md`'s
+full "Key Codes" table (the same table the upstream reference's
+`nova_keyboard.py::_create_key_mapping` implements): letters now respect
+live Left/Right-Shift state (`SDL_SCANCODE_LSHIFT`/`RSHIFT` = 225/229) for
+case instead of always sending uppercase; digits 1-9/0 send their shifted
+US-QWERTY symbols (`!@#$%^&*()`) the same way; Enter/Backspace/Tab/Space
+and the punctuation row (`-=[]\;',./` and their shifted pairs) are now
+forwarded; and the 0x80-0x9F special-key block (arrows, F1-F4/F10-F12,
+Insert/Delete/Home/End/PageUp/PageDown) is now populated. Escape (41) and
+F5-F9 (62-66) are deliberately still excluded from this table — they're
+this window's own quit/toolbar hotkeys, not guest keyboard input, matching
+`nova_gui.py::map_event_to_nova_key`'s identical hotkey-interception-first
+behavior. `prev_down` grew from a 26-slot `A`-`Z` array to a 79-slot one
+(`prev_down[sc - 4]`) so every one of those scancodes gets the same
+edge-triggered debounce the letters already had.
+
+**Not this port's bug, found during the same investigation:** the other
+symptom reported alongside "some keys don't respond" — certain keys
+displaying `0` instead of their actual code — traces to NoBASIC's own
+codegen, not this project. `getkey.asm`'s compiled exit path is:
+```
+L1:
+XOR R0, R0        ; R0 = 0
+MOV P1, P2        ; P1 = current key
+CMP P1, R0
+JNZ L2            ; if key != 0, jump to L2 -- R0 is still 0 here!
+KEYIN R0          ; (only reached when key == 0)
+...
+L2:
+ITOS P1, R0       ; converts the STALE R0 (always 0) to a string
+MOV R0, P2        ; too late -- the string was already built
+TEXT P1           ; always prints "0"
+```
+`ITOS` reads `R0` before `R0` is reloaded from `P2`, on the loop's exit
+branch specifically (the branch that skips the `KEYIN`/`MOV R0, P2` pair
+entirely). Confirmed this isn't stale/rebuilt-from-an-old-compiler output:
+the same `R0`-before-reload ordering is generic to how
+`compiler/codegen/generator.py` emits `ITOS` for a `Disp` of a
+while-loop-updated variable, not specific to this one `.asm`. Left
+unfixed here since it's NoBASIC's compiler, a separate project.
 
 ## Ideas for future work
 

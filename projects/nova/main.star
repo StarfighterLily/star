@@ -147,6 +147,7 @@ fn new_cpu() -> cpu::Cpu:
         sv = Wrapping<u8>(0 as u8),
         sw = Wrapping<u8>(0 as u8),
         next_strig_channel = 8,
+        sound_channel_handles = [null_ptr(); 16],
         mx = Wrapping<u8>(0 as u8),
         my = Wrapping<u8>(0 as u8),
         mb = Wrapping<u8>(0 as u8),
@@ -254,6 +255,11 @@ impl cpu::Cpu:
         self.sv = Wrapping<u8>(0 as u8)
         self.sw = Wrapping<u8>(0 as u8)
         self.next_strig_channel = 8
+        # `todo.md` P2 #3: `Reset` must not silently leak every handle
+        # `sound_channel_handles` is still tracking when the rest of the
+        # emulator's state gets wiped out from under it -- free them for
+        # real instead (`cpu_sound.star::free_all_sound_handles`).
+        self.free_all_sound_handles()
         self.mx = Wrapping<u8>(0 as u8)
         self.my = Wrapping<u8>(0 as u8)
         self.mb = Wrapping<u8>(0 as u8)
@@ -287,6 +293,98 @@ fn hex4(v: i32) -> str:
         shift -= 4
     s
 
+# Host SDL scancode -> Nova-16 key code (docs/Keyboard Implementation.md's
+# "Key Codes" table), mirroring the upstream reference's own
+# `nova_keyboard.py::_create_key_mapping`/`nova_gui.py::map_event_to_nova_key`
+# as closely as a physical-scancode source (vs. their OS-resolved-unicode
+# source) allows: standard US-QWERTY shifted punctuation, plus the
+# 0x80-0x8F/0x90-0x9F special-key block for arrows/F-keys/nav keys. Returns
+# `0` for anything unmapped (including Escape/41 and F5-F9/62-66, which the
+# main loop below reserves for its own quit/toolbar hotkeys -- matching
+# `nova_gui.py`'s own hotkey interception ahead of the general key path) so
+# callers can treat `0` as "don't push this to the buffer" uniformly.
+fn host_key_to_code(sc: i32, shift: bool) -> u8:
+    if sc >= 4 and sc <= 29:
+        # a-z / A-Z (SDL scancode 4 = 'a')
+        let base = if shift: 65 else: 97
+        (base + (sc - 4)) as u8
+    elif sc >= 30 and sc <= 38:
+        # 1-9, or shifted !@#$%^&*(
+        if shift:
+            match sc:
+                30 -> 33 as u8
+                31 -> 64 as u8
+                32 -> 35 as u8
+                33 -> 36 as u8
+                34 -> 37 as u8
+                35 -> 94 as u8
+                36 -> 38 as u8
+                37 -> 42 as u8
+                38 -> 40 as u8
+                _ -> 0 as u8
+        else:
+            (49 + (sc - 30)) as u8
+    else:
+        match sc:
+            39 ->
+                let v = if shift: 41 else: 48
+                v as u8
+            40 -> 10 as u8   # Enter
+            42 -> 8 as u8    # Backspace
+            43 -> 9 as u8    # Tab
+            44 -> 32 as u8   # Space
+            45 ->
+                let v = if shift: 95 else: 45
+                v as u8      # - / _
+            46 ->
+                let v = if shift: 43 else: 61
+                v as u8      # = / +
+            47 ->
+                let v = if shift: 123 else: 91
+                v as u8      # [ / {
+            48 ->
+                let v = if shift: 125 else: 93
+                v as u8      # ] / }
+            49 ->
+                let v = if shift: 124 else: 92
+                v as u8      # \ / |
+            51 ->
+                let v = if shift: 58 else: 59
+                v as u8      # ; / :
+            52 ->
+                let v = if shift: 34 else: 39
+                v as u8      # ' / "
+            53 ->
+                let v = if shift: 126 else: 96
+                v as u8      # ` / ~
+            54 ->
+                let v = if shift: 60 else: 44
+                v as u8      # , / <
+            55 ->
+                let v = if shift: 62 else: 46
+                v as u8      # . / >
+            56 ->
+                let v = if shift: 63 else: 47
+                v as u8      # / / ?
+            58 -> 0x84 as u8 # F1
+            59 -> 0x85 as u8 # F2
+            60 -> 0x86 as u8 # F3
+            61 -> 0x87 as u8 # F4
+            67 -> 0x8D as u8 # F10
+            68 -> 0x8E as u8 # F11
+            69 -> 0x8F as u8 # F12
+            73 -> 0x90 as u8 # Insert
+            74 -> 0x98 as u8 # Home
+            75 -> 0x94 as u8 # Page Up
+            76 -> 0x91 as u8 # Delete
+            77 -> 0x99 as u8 # End
+            78 -> 0x95 as u8 # Page Down
+            79 -> 0x81 as u8 # Right
+            80 -> 0x80 as u8 # Left
+            81 -> 0x83 as u8 # Down
+            82 -> 0x82 as u8 # Up
+            _ -> 0 as u8
+
 fn main():
     let w = window_create("Nova-16", SCREEN_SIZE * 2, SCREEN_SIZE * 2 + TOOLBAR_H + STATUS_H)
     if is_null(w):
@@ -310,11 +408,15 @@ fn main():
     let font = default_font()
 
     let escape_sc = 41
-    # A small, arbitrary host-scancode -> Nova-16 key-code map (letters A-Z
-    # start at SDL scancode 4). Good enough to prove KEYIN/KEYSTAT/KEYCOUNT/
-    # KEYCLEAR/KEYCTRL work end to end; not a full keyboard layout -- see
-    # NOTES.md.
-    let mut prev_down: [bool; 26] = [false; 26]
+    # Host-scancode -> Nova-16 key-code plumbing for KEYIN/KEYSTAT/KEYCOUNT/
+    # KEYCLEAR/KEYCTRL, via `host_key_to_code` above. Covers SDL scancodes
+    # 4-82 (letters, digits, punctuation, Enter/Backspace/Tab/Space,
+    # F1-F4/F10-F12, arrows, and the Insert/Delete/Home/End/PageUp/PageDown
+    # block) -- Escape (41) and F5-F9 (62-66) are excluded on purpose, see
+    # `host_key_to_code`'s own comment. `prev_down[sc - 4]` debounces each
+    # scancode in that range the same edge-triggered way the F5-F9/mouse
+    # state below does.
+    let mut prev_down: [bool; 79] = [false; 79]
     # Edge-triggered (not held-triggered) toolbar/hotkey state -- every one
     # of these needs a "just pressed this frame" transition, not a
     # continuous "is it down right now" level, or holding a key/mouse button
@@ -376,14 +478,17 @@ fn main():
                 running = true
         prev_f9 = f9_down
 
-        let mut k = 0
-        while k < 26:
-            let sc = 4 + k
+        let key_shift = key_down(225) or key_down(229)
+        let mut sc = 4
+        while sc <= 82:
+            let idx = sc - 4
             let down = key_down(sc)
-            if down and !prev_down[k]:
-                c.kbd.push_key((65 + k) as u8)
-            prev_down[k] = down
-            k += 1
+            if down and !prev_down[idx]:
+                let code = host_key_to_code(sc, key_shift)
+                if code != (0 as u8):
+                    c.kbd.push_key(code)
+            prev_down[idx] = down
+            sc += 1
 
         # Mouse plumbing (MOUSECTRL/MX/MY/MB -- see cpu.star's op_mousectrl
         # comment): only overwrites MX/MY/MB, and only raises the mouse

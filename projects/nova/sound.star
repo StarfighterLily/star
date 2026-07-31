@@ -43,12 +43,6 @@
 #
 # Known, documented simplifications (todo.md P0 #1's own "minimal version"
 # framing, not oversights):
-# - Every generated WAV handle is intentionally leaked, never `sound_free`d.
-#   `audio.rs`'s mixer has no "notify when this channel finishes playing"
-#   callback a Star-level caller could use to free safely -- freeing on
-#   retrigger could race an still-playing previous handle on another
-#   channel. A real resource leak under sustained play, same "document
-#   rather than hand-wave" standard as `screen.star`'s `SBLEND` stub.
 # - `SSTOP` has no operand in this port's ISA (`docs/nova16_instruction_
 #   reference.md`: 0 operands, unlike the upstream Python reference's
 #   `SSTOP`/`SSTOP reg` split) -- `stop_all()` below always stops
@@ -120,6 +114,33 @@
 #   noise" (waveform 6) as the gap -- `synth_noise_decay`'s existing 3-tap
 #   approximation of that separate 10-tap shape is untouched, a pre-existing
 #   simplification this round didn't touch.
+#
+# todo.md P2 #3 ("sound.star's leaked WAV handles") closes the one
+# remaining named audio simplification: every `play_pcm_wav_on_channel`
+# call now *returns* the `sound_load`d handle (`ptr`, `null_ptr()` on any
+# failure -- same "null on failure, checked with `is_null`" idiom every
+# other loader builtin in this codebase already uses) instead of a bare
+# `bool`, and `play_tone`/`play_memory_sample`/`trigger_effect` all
+# propagate that return value up to their caller (`cpu_sound.star`,
+# `sound.star` itself has no `Cpu` access -- see above). `cpu_sound.star`
+# is where the actual fix lives: `Cpu::sound_channel_handles` (`cpu.star`)
+# tracks the one handle each of the 16 mixer channels this port ever
+# addresses (0-7 hardware voices, 8-15 the `STRIG` pool) currently holds,
+# and frees the *previous* occupant the instant a new one successfully
+# replaces it on that exact channel -- safe with no "notify when this
+# channel finishes playing" callback because `sound_play_channel`'s
+# `emit_channel_start` has *already* overwritten that channel's
+# `chan_base` to the new buffer by the time the old handle is freed, so
+# `sound_free`'s own "stop any channel still pointing at this buffer,
+# then free" scan can find no match for the outgoing one -- nothing is
+# still reading it. `SSTOP` (`op_sstop`) additionally frees and clears
+# every tracked handle outright (`Cpu::free_all_sound_handles`), since
+# "stop everything" leaves no channel `playing` a freed handle wouldn't
+# immediately identify as unreferenced. A handle backing a still-*playing*
+# loop or one-shot is never touched -- only ever a channel's superseded or
+# fully-stopped former occupant -- so this closes the leak without
+# reintroducing the freed-while-playing race the original leak-it
+# decision was avoiding.
 
 const SAMPLE_RATE: i32 = 44100
 const PI: f32 = 3.14159265
@@ -433,33 +454,41 @@ fn effect_temp_path() -> str:
 # hardware voices (`SPLAY`) or the STRIG one-shot pool's current rotating
 # slot (`Cpu::next_strig_channel`) -- see this file's header comment for
 # why sharing these two fixed temp paths across every channel stays safe.
-# False (silent, non-fatal -- matches `audio.rs`'s own "never crash, just
-# don't make sound" convention) if the temp file couldn't be written or the
-# roundtrip failed to load back as valid audio.
-fn play_pcm_wav_on_channel(path: str, wav: Bytes, channel: u8, looped: bool) -> bool:
+# `null_ptr()` (checked with `is_null`, same "never crash, just don't make
+# sound" convention as every other loader builtin in this codebase) if the
+# temp file couldn't be written or the roundtrip failed to load back as
+# valid audio; otherwise the live `sound_load`d handle now playing on
+# `channel` -- the caller (`cpu_sound.star`) is responsible for freeing
+# whatever handle previously occupied that channel once this one
+# successfully replaces it (see this file's header comment, "todo.md P2
+# #3").
+fn play_pcm_wav_on_channel(path: str, wav: Bytes, channel: u8, looped: bool) -> ptr:
     let fh = file_open(path, "wb")
     if is_null(fh):
-        return false
+        return null_ptr()
     let wrote = file_write_bytes(fh, wav)
     file_close(fh)
     if !wrote:
-        return false
+        return null_ptr()
     let handle = sound_load(path)
     if is_null(handle):
-        return false
+        return null_ptr()
     sound_play_channel(handle, channel as i32, looped)
-    true
+    handle
 
 # `cpu.star::op_splay`'s entry point for waveforms 1-6 (tone-shaped).
-# `channel` is `SW`'s own decoded channel-select bits (3-5).
-fn play_tone(waveform: u8, freq: f32, volume: u8, looped: bool, channel: u8) -> bool:
+# `channel` is `SW`'s own decoded channel-select bits (3-5). Returns the new
+# handle now playing on `channel`, or `null_ptr()` on failure -- see
+# `play_pcm_wav_on_channel`'s own doc comment.
+fn play_tone(waveform: u8, freq: f32, volume: u8, looped: bool, channel: u8) -> ptr:
     if looped:
         play_pcm_wav_on_channel(loop_temp_path(), synth_loop_tone(waveform, freq, volume), channel, true)
     else:
         play_pcm_wav_on_channel(effect_temp_path(), synth_tone(waveform, freq, volume, 0.35), channel, false)
 
-# `cpu.star::op_splay`'s entry point for waveform 7 (memory sample).
-fn play_memory_sample(samples: Bytes, volume: u8, looped: bool, channel: u8) -> bool:
+# `cpu.star::op_splay`'s entry point for waveform 7 (memory sample). Same
+# "new handle or `null_ptr()`" return as `play_tone`.
+fn play_memory_sample(samples: Bytes, volume: u8, looped: bool, channel: u8) -> ptr:
     if looped:
         play_pcm_wav_on_channel(loop_temp_path(), synth_memory_sample(samples, volume), channel, true)
     else:
@@ -467,8 +496,9 @@ fn play_memory_sample(samples: Bytes, volume: u8, looped: bool, channel: u8) -> 
 
 # `cpu.star::op_strig`'s entry point -- `effect` is STRIG's operand value
 # clamped/wrapped to the documented 0-7 range by the caller, `channel` is
-# `Cpu::next_strig_channel`'s current rotating slot (8-15, see header).
-fn trigger_effect(effect: u8, volume: u8, channel: u8) -> bool:
+# `Cpu::next_strig_channel`'s current rotating slot (8-15, see header). Same
+# "new handle or `null_ptr()`" return as `play_tone`.
+fn trigger_effect(effect: u8, volume: u8, channel: u8) -> ptr:
     if effect == (0 as u8): # Simple Beep
         play_pcm_wav_on_channel(effect_temp_path(), synth_tone(2 as u8, 800.0, volume, 0.15), channel, false)
     elif effect == (1 as u8): # Rising Tone

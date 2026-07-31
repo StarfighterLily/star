@@ -112,6 +112,7 @@ fn new_cpu() -> cpu::Cpu:
         sv = Wrapping<u8>(0 as u8),
         sw = Wrapping<u8>(0 as u8),
         next_strig_channel = 8,
+        sound_channel_handles = [null_ptr(); 16],
         mx = Wrapping<u8>(0 as u8),
         my = Wrapping<u8>(0 as u8),
         mb = Wrapping<u8>(0 as u8),
