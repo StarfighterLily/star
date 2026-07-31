@@ -18,17 +18,9 @@ re-run this cycle, exit code 0 (confirmed by a full-output grep for
 `FAILED`/`error[`, not just the tail). No false "Done." markers found.
 
 **P1: Small, concrete, worth doing before new feature work.**
-1. Fix `projects/nova/NOTES.md`'s "Ideas for future work" bullet (line
-   2938) still calling UART framed-mode parsing a "remaining gap" —
-   directly contradicted by the same commit's own "Framed-mode parsing is
-   now implemented" paragraph earlier in the same file. One-line fix.
-2. Fix `projects/nova/NOTES.md`'s "What's implemented" opcode-count
-   summary (line 995), still reading "171 opcodes (of the 180..." without
-   folding in `SERFSTAT` (a genuinely new, Star-original opcode added this
-   cycle) to either number. Re-derive the actual count rather than just
-   incrementing both by hand — the file itself describes this count as
-   mechanically cross-checked against `cpu.star`'s `decode_operands` call
-   sites.
+1. **Done.** Simple one-line replacement with pointer to relevant info.
+2. **Done.** Trimmed the whole explanatory parenthetical and provided
+   a simple "180+" count; accurate, and leaves headroom for expansion.
 
 **P2: Real, standing items — none urgent, none blocking.**
 3. UART TCP transport remains out of scope — `net.rs`'s `tcp_recv` has no
@@ -62,6 +54,10 @@ re-run this cycle, exit code 0 (confirmed by a full-output grep for
    running have now made this adjustment; keep doing it.
 
 # Previous work
+
+P1 #1: Corrected the stale UART frame mode claims and directed the reader
+to the file and line number (`uart.star`:13) of the comment section describing
+the implementation.
 
 This cycle (seeded from `070`'s "Next steps", closed before this reseed):
 committed `docs/design.md`'s already-written "Known Permanent Caveats"

@@ -992,16 +992,7 @@ mechanical version's and are identical.
 ## What's implemented
 
 The full CPU/memory/register-file/flags architecture, the fetch-decode-
-execute cycle, all four addressing modes, and 171 opcodes (of the 180
-`docs/nova16_instruction_reference.md` documents as real instructions —
-the 9 gap is exactly "What's not implemented" below: 6 hardware-debugging
-opcodes and `STREXT`/`STREXTI`/`MEMCMP`. `SMIX`/`SECHO`/`SREVERB`/`SFILTER`
-moved out of that gap this round — see the Sound bullet below and `todo.md`
-P2 #4. This count, and every opcode's exact operand count below, was
-mechanically cross-checked against `cpu.star`'s own `decode_operands(N)`
-call sites while building the disassembler — see "Disassembler" below,
-which is also where this replaces this section's own former "roughly 140"
-estimate):
+execute cycle, all four addressing modes, and 180+ opcodes:
 
 - No-operand: `HLT NOP RET IRET CLI STI`
 - Data movement: `MOV MOVZ MOVNZ XCHNG SWAP LEA`
@@ -2935,7 +2926,8 @@ unfixed here since it's NoBASIC's compiler, a separate project.
   average. ~~`SMIX`/`SECHO`/`SREVERB`/`SFILTER`~~ — also done (todo.md P2
   #4), see "What's implemented"/"What's not implemented" above; there was
   no reference to match, so this was genuine new DSP design, not a port.
-  Remaining gap in this area: UART framed-mode parsing.
+  ~~UART framed-mode parsing~~ is now complete, see `uart.star`:13 for
+  details.
 - ~~Splitting `cpu.star`'s ~100 opcode-handler methods across files by
   group~~ — done (todo.md P2 #5): `cpu_data.star`/`cpu_arith.star`/
   `cpu_math.star`/`cpu_bitwise.star`/`cpu_stack.star`/`cpu_control.star`/
