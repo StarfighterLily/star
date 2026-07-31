@@ -89,8 +89,8 @@ const STATUS_H: i32 = 22
 # stops being the right host frame rate; `STEPS_PER_FRAME`/`FRAME_DELAY_MS`
 # both derive from it so they can't drift apart from each other the way a
 # second hardcoded `delay(16)` literal would risk.
-const TARGET_FPS: i32 = 60
-const VIRTUAL_CLOCK_HZ: i32 = 16000000
+const TARGET_FPS: i32 = 120
+const VIRTUAL_CLOCK_HZ: i32 = 64000000
 const STEPS_PER_FRAME: i32 = VIRTUAL_CLOCK_HZ / TARGET_FPS
 const FRAME_DELAY_MS: i32 = 1000 / TARGET_FPS
 
