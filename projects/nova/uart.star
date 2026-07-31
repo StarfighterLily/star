@@ -7,8 +7,30 @@
 # used to describe as future work -- see `../uart_bridge.star` for the
 # actual stdin-driven driver that calls it. TX is real too: `cpu.star`'s
 # `op_serout` prints every transmitted byte to the process's own stdout, so
-# a real host terminal (or anything piping its output) sees it -- no buffer
-# on this side, `write_data` below only updates the register model.
+# a real host terminal (or anything piping its output) sees it -- `write_data`
+# below also queues the byte into `tx_queue` (a real FIFO, unrelated to
+# `rx_available`/`data_register`'s own single-register model) for any bridge
+# that wants transmitted bytes as data instead of stdout text -- see
+# "TCP transport" below.
+#
+# TCP transport (this round): previously out of scope because `tcp_recv` had
+# no non-blocking mode (`net.rs`'s own module doc comment, and this file's
+# own older header comment, both used to say so) -- a TCP-backed bridge loop
+# would freeze on every read with no peer data ready, exactly the problem
+# `uart_bridge.star`'s header comment explains stdin/stdout sidesteps by
+# being genuinely supposed to block between lines. Now that `tcp_set_
+# nonblocking`/`tcp_recv`'s would-block-vs-closed distinction exists
+# (`net.rs`'s module doc comment), `../uart_tcp_bridge.star` is the
+# `TCPSocketBridge`-equivalent (the upstream Python reference's own naming,
+# see NOTES.md's "UART" section) this project's own docs used to describe as
+# unported: it drives `host_push_rx` from real (non-blocking) `tcp_recv`
+# polls the same way `uart_bridge.star` drives it from `read_line()`, and
+# drains `tx_queue` below (via `drain_tx_byte`) to `tcp_send` every
+# transmitted byte out over the wire instead of relying on stdout. It's a
+# TCP *client* only (`tcp_connect`, dialing out to a host:port) -- this
+# language has no `listen`/`accept` builtins, only `tcp_connect`, so a
+# `TCPServerBridge`-equivalent (accepting inbound connections) stays out of
+# scope; see `../uart_tcp_bridge.star`'s own header comment.
 #
 # Framed-mode parsing (todo.md P2 #3): previously deliberately unported
 # because "no opcode drives framing" -- true until now. `write_control`
@@ -67,6 +89,13 @@ const FRAME_STATE_PAYLOAD: u8 = 2 as u8
 const FRAME_STATE_CHECKSUM: u8 = 3 as u8
 
 const RX_QUEUE_SIZE: i32 = 256
+# TX FIFO (this round, TCP transport) -- deliberately the same size/shape as
+# `rx_queue` above, but unconditional (not gated behind `framed_mode`):
+# every `SEROUT`, raw or framed, queues its byte here in addition to the
+# existing `data_register`/stdout path, so `../uart_tcp_bridge.star` can
+# drain real transmitted bytes as data without touching this process's own
+# stdout at all.
+const TX_QUEUE_SIZE: i32 = 256
 
 struct Uart:
     mut data_register: u8
@@ -87,6 +116,12 @@ struct Uart:
     mut rx_head: i32
     mut rx_tail: i32
     mut rx_count: i32
+    # TX FIFO (this round, TCP transport) -- see `queue_tx_byte`/
+    # `drain_tx_byte` below.
+    mut tx_queue: [u8; 256]
+    mut tx_head: i32
+    mut tx_tail: i32
+    mut tx_count: i32
 
 fn new_uart() -> Uart:
     Uart(
@@ -95,6 +130,7 @@ fn new_uart() -> Uart:
         framed_mode = false, frame_state = FRAME_STATE_IDLE, frame_len = 0 as u8,
         frame_pos = 0, frame_buf = [0 as u8; 256], frame_checksum_error = false,
         rx_queue = [0 as u8; 256], rx_head = 0, rx_tail = 0, rx_count = 0,
+        tx_queue = [0 as u8; 256], tx_head = 0, tx_tail = 0, tx_count = 0,
     )
 
 impl Uart:
@@ -233,12 +269,40 @@ impl Uart:
                 self.pending_interrupt = true
 
     # SEROUT: stage the byte and report TX-complete immediately (no real
-    # transport to wait on).
+    # transport to wait on). Also queues into `tx_queue` (this round, TCP
+    # transport) so a bridge can drain real transmitted bytes as data --
+    # unconditional, unlike `parse_frame_byte`'s RX-side FIFO, since there's
+    # no "framed" TX mode to gate it behind.
     fn write_data(mut self, value: u8):
         self.data_register = value
         self.tx_complete = true
+        self.queue_tx_byte(value)
         if self.interrupt_enabled:
             self.pending_interrupt = true
+
+    # Push one transmitted byte into the TX FIFO -- shared by `write_data`'s
+    # own call above, mirroring `queue_rx_byte`'s "silently drop on overflow"
+    # behavior (a bridge that never drains falls behind and loses the
+    # oldest-undrained bytes, rather than this method blocking or growing
+    # unbounded).
+    fn queue_tx_byte(mut self, value: u8):
+        if self.tx_count < TX_QUEUE_SIZE:
+            self.tx_queue[self.tx_tail] = value
+            self.tx_tail = (self.tx_tail + 1) % TX_QUEUE_SIZE
+            self.tx_count += 1
+
+    # Pop one transmitted byte for a host bridge to forward (e.g. over TCP --
+    # `../uart_tcp_bridge.star`). Tuple return mirrors `keyboard.star::pop_key`'s
+    # existing "(value, had_one)" convention rather than a sentinel value,
+    # since `0x00` is itself a perfectly legitimate transmitted byte.
+    fn drain_tx_byte(mut self) -> (u8, bool):
+        if self.tx_count > 0:
+            let v = self.tx_queue[self.tx_head]
+            self.tx_head = (self.tx_head + 1) % TX_QUEUE_SIZE
+            self.tx_count -= 1
+            (v, true)
+        else:
+            (0 as u8, false)
 
     fn irq_pending(self) -> bool:
         self.pending_interrupt

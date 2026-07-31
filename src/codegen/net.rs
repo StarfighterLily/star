@@ -17,10 +17,39 @@
 //! opaque-handle shape as a C `FILE*`, so it reuses `Ty::Ptr` the same way
 //! file handles do. `tcp_send` returns `bool` (all bytes written or not,
 //! matching `file_write`); `tcp_recv` returns an empty `str` on a graceful
-//! close *or* a socket error alike, matching `file_read`/`read_line`'s
+//! close *or* a genuine socket error, matching `file_read`/`read_line`'s
 //! established EOF convention. Calling `tcp_send`/`tcp_recv`/`tcp_close`
 //! with a null/closed handle aborts loudly (`abort_if_null_socket`), same
 //! philosophy as `file_io.rs`'s `abort_if_null_handle`.
+//!
+//! ## Non-blocking mode (`tcp_set_nonblocking`)
+//! Previously a real, documented gap -- this module's own history has
+//! `projects/nova/uart_bridge.star`'s header comment (and `todo.md`) calling
+//! out "no `ioctlsocket`/`setsockopt` builtin exists" as the reason a
+//! TCP-backed host bridge would freeze on every read with no peer data
+//! ready. `tcp_set_nonblocking(handle: ptr, enabled: bool) -> bool` closes
+//! that gap: `ioctlsocket(sock, FIONBIO, &mode)` on Windows, a
+//! `fcntl(fd, F_GETFL)`-then-`fcntl(fd, F_SETFL, ..)` read-modify-write pair
+//! on Linux (preserving whatever other flags a real socket might carry,
+//! rather than clobbering them with a bare `F_SETFL`). Returns whether the
+//! underlying call reported success -- same "did the syscall actually work"
+//! bool convention `tcp_send` already uses.
+//!
+//! A non-blocking `recv()` that has no data yet returns `-1` with
+//! `WSAEWOULDBLOCK`/`EAGAIN` -- indistinguishable, pre-`tcp_set_nonblocking`,
+//! from a graceful close (`recv` returning `0`) or a genuine error, both of
+//! which already normalized to `""`. That ambiguity would make non-blocking
+//! mode useless (a caller polling in a loop couldn't tell "nothing yet, try
+//! again" from "the peer is gone, stop trying"), so `emit_tcp_recv` now
+//! checks the platform's last-error code whenever `recv()` returns negative:
+//! a would-block error returns a null `ptr` instead of `""`, reusing the
+//! same `is_null` check `tcp_connect`'s own failure path already trained
+//! callers to use, while a graceful close or any other error still
+//! normalizes to `""` exactly as before. Blocking-mode callers (the
+//! default, unchanged) never see this path: a blocking `recv()` doesn't
+//! return `EWOULDBLOCK`/`EAGAIN`, so `tcp_recv`'s behavior for every program
+//! that never calls `tcp_set_nonblocking` is bit-for-bit identical to before
+//! this addition.
 //!
 //! Linking note: unlike `fopen`/`getenv`/`CreateThread` (resolved from
 //! libraries already linked by default on this target), Winsock2 symbols
@@ -87,6 +116,10 @@ impl Codegen {
                 self.line("declare i32 @send(i8*, i8*, i32, i32)");
                 self.line("declare i32 @recv(i8*, i8*, i32, i32)");
                 self.line("declare i32 @closesocket(i8*)");
+                // `tcp_set_nonblocking`/`emit_tcp_recv`'s would-block check
+                // -- see this module's own doc comment.
+                self.line("declare i32 @ioctlsocket(i8*, i32, i32*)");
+                self.line("declare i32 @WSAGetLastError()");
             }
             Target::LinuxGnu => {
                 self.line("declare i32 @socket(i32, i32, i32)");
@@ -97,6 +130,18 @@ impl Codegen {
                 self.line("declare i64 @send(i32, i8*, i64, i32)");
                 self.line("declare i64 @recv(i32, i8*, i64, i32)");
                 self.line("declare i32 @close(i32)");
+                // `tcp_set_nonblocking`/`emit_tcp_recv`'s would-block check
+                // -- `fcntl` is C-variadic but every call site here only
+                // ever passes plain `i32` arguments, which the x86-64 SysV
+                // ABI passes identically whether the callee's declared
+                // signature is variadic or not, so a fixed 3-`i32` signature
+                // is safe to declare here (same reasoning this codebase
+                // already applies to every other libc call in this module).
+                // `errno` is thread-local storage on glibc, reached only
+                // through the real accessor function, never a plain
+                // `@errno` global.
+                self.line("declare i32 @fcntl(i32, i32, i32)");
+                self.line("declare i32* @__errno_location()");
             }
         }
         self.line("declare i16 @htons(i16)");
@@ -354,10 +399,17 @@ impl Codegen {
     /// `tcp_recv(handle: ptr) -> str`: a single `recv` call into a
     /// fixed 4095-byte buffer (the raw floor -- no read-until-length
     /// looping), returning exactly the bytes received as a fresh, owned
-    /// `str`. A graceful close (`recv` returning `0`) and a socket error
-    /// (a negative return) both normalize to `""`, matching
-    /// `file_read`/`read_line`'s established EOF convention rather than
-    /// introducing a distinct error signal.
+    /// `str`. A graceful close (`recv` returning `0`) and a genuine socket
+    /// error both normalize to `""`, matching `file_read`/`read_line`'s
+    /// established EOF convention rather than introducing a distinct error
+    /// signal. A *would-block* error (`recv` returning a negative count
+    /// while `WSAGetLastError`/`errno` reports `WSAEWOULDBLOCK`/`EAGAIN` --
+    /// only reachable after `tcp_set_nonblocking(handle, true)`, see this
+    /// module's own doc comment) is the one case that returns a null `ptr`
+    /// instead: "nothing to read yet, the connection is still alive, ask
+    /// again later" is a genuinely different condition from "" (closed) and
+    /// callers need to tell them apart to poll a non-blocking socket
+    /// meaningfully.
     pub(super) fn emit_tcp_recv(&mut self, args: &[TypedExpr]) -> String {
         let Some(arg) = args.first() else {
             self.err("tcp_recv(..) expects 1 argument", Span::dummy());
@@ -386,6 +438,47 @@ impl Codegen {
             }
         };
 
+        // Only bother checking the last-error code when `n` is actually
+        // negative -- `recv` returning `0` (graceful close) never sets a
+        // would-block error, and skips straight to `finish_label`'s
+        // unchanged "empty string" path.
+        let n_is_neg = self.tmp_name();
+        self.line(&format!("  {} = icmp slt i32 {}, 0", n_is_neg, n));
+        let neg_check_label = self.block_label("tcp_recv_neg");
+        let finish_label = self.block_label("tcp_recv_finish");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", n_is_neg, neg_check_label, finish_label));
+
+        self.open_block(&neg_check_label);
+        let is_would_block = match self.target {
+            Target::WindowsGnu => {
+                let err = self.tmp_name();
+                self.line(&format!("  {} = call i32 @WSAGetLastError()", err));
+                let is_wb = self.tmp_name();
+                self.line(&format!("  {} = icmp eq i32 {}, 10035", is_wb, err)); // WSAEWOULDBLOCK
+                is_wb
+            }
+            Target::LinuxGnu => {
+                let errno_ptr = self.tmp_name();
+                self.line(&format!("  {} = call i32* @__errno_location()", errno_ptr));
+                let err = self.tmp_name();
+                self.line(&format!("  {} = load i32, i32* {}", err, errno_ptr));
+                let is_wb = self.tmp_name();
+                self.line(&format!("  {} = icmp eq i32 {}, 11", is_wb, err)); // EAGAIN == EWOULDBLOCK on Linux
+                is_wb
+            }
+        };
+        let wb_label = self.block_label("tcp_recv_would_block");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_would_block, wb_label, finish_label));
+
+        let end_label = self.block_label("tcp_recv_end");
+
+        self.open_block(&wb_label);
+        // No data ready and nothing to return -- release the scratch buffer
+        // this call already allocated rather than leaking it.
+        self.line(&format!("  call void @star_rc_release(i8* {})", buf));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&finish_label);
         let is_pos = self.tmp_name();
         self.line(&format!("  {} = icmp sgt i32 {}, 0", is_pos, n));
         let n64 = self.tmp_name();
@@ -395,7 +488,73 @@ impl Codegen {
         let nul_ptr = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", nul_ptr, buf, safe_n));
         self.line(&format!("  store i8 0, i8* {}", nul_ptr));
-        buf
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
+        let result = self.tmp_name();
+        self.line(&format!("  {} = phi i8* [ null, %{} ], [ {}, %{} ]", result, wb_label, buf, finish_label));
+        result
+    }
+
+    /// `tcp_set_nonblocking(handle: ptr, enabled: bool) -> bool`: flips the
+    /// socket's blocking mode -- see this module's own doc comment for the
+    /// gap this closes. `ioctlsocket(sock, FIONBIO, &mode)` on Windows;
+    /// on Linux, a `fcntl(fd, F_GETFL)`-then-`F_SETFL` read-modify-write
+    /// pair that only ever flips the `O_NONBLOCK` bit, preserving any other
+    /// flag the fd might carry rather than clobbering it with a bare
+    /// `F_SETFL`. Returns whether the underlying call reported success --
+    /// same "did the syscall actually work" bool convention `tcp_send`
+    /// already uses.
+    pub(super) fn emit_tcp_set_nonblocking(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 2 {
+            self.err("tcp_set_nonblocking(..) expects 2 arguments (handle, enabled)", Span::dummy());
+            return "i1 false".into();
+        }
+        let hval = self.emit_expr(&args[0]);
+        let handle = self.untag(&hval, &Ty::Ptr);
+        self.abort_if_null_socket(&handle, "tcp_set_nonblocking");
+        let eval = self.emit_expr(&args[1]);
+        let enabled = self.untag(&eval, &Ty::Bool);
+
+        let ok = match self.target {
+            Target::WindowsGnu => {
+                // FIONBIO = _IOW('f', 126, u_long) = 0x8004667E -- computed
+                // as an unsigned 32-bit literal then bit-reinterpreted to
+                // `i32` so the hex value round-trips exactly regardless of
+                // how Rust's own `{}` formats a negative number.
+                const FIONBIO: i32 = 0x8004667Eu32 as i32;
+                let mode_buf = self.tmp_name();
+                self.line(&format!("  {} = alloca i32", mode_buf));
+                let mode = self.tmp_name();
+                self.line(&format!("  {} = zext i1 {} to i32", mode, enabled));
+                self.line(&format!("  store i32 {}, i32* {}", mode, mode_buf));
+                let ret = self.tmp_name();
+                self.line(&format!("  {} = call i32 @ioctlsocket(i8* {}, i32 {}, i32* {})", ret, handle, FIONBIO, mode_buf));
+                let ok = self.tmp_name();
+                self.line(&format!("  {} = icmp eq i32 {}, 0", ok, ret));
+                ok
+            }
+            Target::LinuxGnu => {
+                const F_GETFL: i32 = 3;
+                const F_SETFL: i32 = 4;
+                const O_NONBLOCK: i32 = 0o4000;
+                let fd = self.socket_handle_to_fd(&handle);
+                let flags = self.tmp_name();
+                self.line(&format!("  {} = call i32 @fcntl(i32 {}, i32 {}, i32 0)", flags, fd, F_GETFL));
+                let or_flags = self.tmp_name();
+                self.line(&format!("  {} = or i32 {}, {}", or_flags, flags, O_NONBLOCK));
+                let and_flags = self.tmp_name();
+                self.line(&format!("  {} = and i32 {}, {}", and_flags, flags, !O_NONBLOCK));
+                let new_flags = self.tmp_name();
+                self.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", new_flags, enabled, or_flags, and_flags));
+                let ret = self.tmp_name();
+                self.line(&format!("  {} = call i32 @fcntl(i32 {}, i32 {}, i32 {})", ret, fd, F_SETFL, new_flags));
+                let ok = self.tmp_name();
+                self.line(&format!("  {} = icmp ne i32 {}, -1", ok, ret));
+                ok
+            }
+        };
+        format!("i1 {}", ok)
     }
 
     /// `tcp_close(handle: ptr)`: `closesocket`/`close`, no return value.

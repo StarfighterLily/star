@@ -603,7 +603,8 @@ impl Codegen {
         // for whichever `Target` this `Codegen` was built for by
         // `crate::codegen::os::declare_os_externs`.
         self.declare_os_externs();
-        // `tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close` builtins -- see
+        // `tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close`/
+        // `tcp_set_nonblocking` builtins -- see
         // `crate::codegen::net`, declared for whichever `Target` this
         // `Codegen` was built for by `crate::codegen::net::declare_net_externs`
         // (mirroring `declare_platform_threading_externs`'s own pattern

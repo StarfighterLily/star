@@ -212,20 +212,20 @@ fn runtime_tcp_send_aborts_on_null_handle_end_to_end() {
     assert_eq!(output.status.code(), Some(1), "should exit cleanly with code 1, not crash/segfault: {:?}", output.status);
 }
 
-/// `tcp_recv` has no non-blocking/timeout mode (`net.rs`'s own module doc
-/// comment says nothing about one, and `todo.md`'s P2 #3 carries forward the
-/// consequence: "a TCP-backed bridge would freeze waiting on an idle peer").
-/// Not a regression, not blocking -- but a real, standing limitation that's
-/// easy to let go stale as prose nobody re-checks. This pins it down as an
-/// actual regression test instead: a peer that accepts the connection but
+/// `tcp_recv` on the *default* blocking socket (no `tcp_set_nonblocking`
+/// call) still has no timeout -- `tcp_set_nonblocking` (added after this
+/// test was first written; see `crate::codegen::net`'s module doc comment)
+/// is opt-in, so every program that never calls it keeps the exact blocking
+/// behavior this test pins down. A peer that accepts the connection but
 /// never sends anything and never closes it (unlike `runtime_tcp_recv_on_
 /// peer_closed_connection_returns_empty_end_to_end`'s immediate close, which
 /// exercises the *other*, already-handled EOF path) must leave the compiled
 /// program still blocked inside the real `recv()` call a full 1.5 seconds
 /// later, never reaching the `println` just after it. If a future change
-/// ever gives `tcp_recv` a timeout, this is the test that should start
-/// failing -- the signal to update `todo.md`'s P2 #3 note, not just delete
-/// this test.
+/// ever makes *blocking*-mode `tcp_recv` time out on its own, this is the
+/// test that should start failing -- see
+/// `runtime_tcp_recv_nonblocking_on_idle_open_connection_returns_null_
+/// immediately_end_to_end` below for the opt-in non-blocking counterpart.
 #[test]
 fn runtime_tcp_recv_on_idle_open_connection_blocks_forever_end_to_end() {
     use std::sync::mpsc;
@@ -285,6 +285,226 @@ fn runtime_tcp_recv_on_idle_open_connection_blocks_forever_end_to_end() {
         !exited,
         "tcp_recv on an idle, still-open connection should still be blocked after 1.5s -- if it now returns, todo.md's P2 #3 no-timeout caveat is stale and should be updated, not just have this test deleted"
     );
+}
+
+// ===== Non-blocking mode (`tcp_set_nonblocking`) ===========================
+//
+// Closes the gap `uart_bridge.star`'s own header comment used to describe:
+// "no `ioctlsocket`/`setsockopt` builtin exists". `tcp_set_nonblocking`
+// type-checks to `bool` and, once enabled on a handle, makes `tcp_recv`
+// return a null `ptr` (not `""`) when there's no data ready yet -- see
+// `crate::codegen::net`'s module doc comment for the full design.
+
+/// `tcp_set_nonblocking` type-checks to `bool`.
+#[test]
+fn checks_tcp_set_nonblocking_returns_bool() {
+    let src = "fn t():\n    let h = tcp_connect(\"127.0.0.1\", 80)\n    let ok: bool = tcp_set_nonblocking(h, true)\n";
+    let module = Driver::parse(src).expect("should parse");
+    Driver::check(&module).expect("tcp_set_nonblocking(..) should type-check as bool");
+}
+
+/// Wrong argument count is caught at type-check time, same as every other
+/// `tcp_*` builtin.
+#[test]
+fn checker_rejects_tcp_set_nonblocking_wrong_arg_count() {
+    let src = "fn t():\n    let h = tcp_connect(\"127.0.0.1\", 80)\n    tcp_set_nonblocking(h)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("tcp_set_nonblocking with 1 argument should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`tcp_set_nonblocking` expects 2 argument(s)")), "{:?}", diags);
+}
+
+/// First argument must be `ptr` (the socket handle), not e.g. `str`.
+#[test]
+fn checker_rejects_tcp_set_nonblocking_wrong_first_arg_type() {
+    let src = "fn t():\n    tcp_set_nonblocking(\"not a handle\", true)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("tcp_set_nonblocking with a str handle should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`tcp_set_nonblocking` argument 1 expected `ptr`")), "{:?}", diags);
+}
+
+/// Second argument must be `bool` (enable/disable), not e.g. `int`.
+#[test]
+fn checker_rejects_tcp_set_nonblocking_wrong_second_arg_type() {
+    let src = "fn t():\n    let h = tcp_connect(\"127.0.0.1\", 80)\n    tcp_set_nonblocking(h, 1)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Err(diags) = Driver::check(&module) else { panic!("tcp_set_nonblocking with an int enabled flag should fail to type-check") };
+    assert!(diags.iter().any(|d| d.message.contains("`tcp_set_nonblocking` argument 2 expected `bool`")), "{:?}", diags);
+}
+
+/// `tcp_set_nonblocking` on a possibly-null handle aborts before ever
+/// calling `@ioctlsocket` -- same shape as `codegen_tcp_close_aborts_on_null_handle`.
+#[test]
+fn codegen_tcp_set_nonblocking_aborts_on_null_handle() {
+    let src = "fn t():\n    let h = tcp_connect(\"127.0.0.1\", 80)\n    let ok = tcp_set_nonblocking(h, true)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let fn_ir = extract_fn_body(&ir, "define void @t(");
+    assert!(fn_ir.contains("icmp eq i8* "), "should compare the handle against null: {}", fn_ir);
+    assert!(fn_ir.contains("call void @exit(i32 1)"), "should abort on a null handle: {}", fn_ir);
+    assert!(fn_ir.contains("unreachable"), "{}", fn_ir);
+    assert!(fn_ir.contains("call i32 @ioctlsocket"), "the ok path should still call ioctlsocket: {}", fn_ir);
+}
+
+/// `tcp_recv`'s would-block check (`WSAGetLastError`/`icmp eq i32 .., 10035`)
+/// is only emitted on the negative-`n` path -- a structural check that the
+/// new branch exists in the IR at all, independent of the runtime tests
+/// below actually exercising it.
+#[test]
+fn codegen_tcp_recv_checks_wsa_last_error_for_would_block() {
+    let src = "fn t():\n    let h = tcp_connect(\"127.0.0.1\", 80)\n    let r = tcp_recv(h)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("call i32 @WSAGetLastError()"), "{}", ir);
+    assert!(ir.contains("icmp eq i32 ") && ir.contains(", 10035"), "should compare against WSAEWOULDBLOCK: {}", ir);
+    assert!(ir.contains("phi i8* [ null,"), "the would-block path should phi in a null ptr: {}", ir);
+}
+
+/// Calling `tcp_set_nonblocking` on a null handle (from a failed
+/// `tcp_connect`) aborts loudly instead of crashing -- mirrors
+/// `runtime_tcp_send_aborts_on_null_handle_end_to_end`.
+#[test]
+fn runtime_tcp_set_nonblocking_aborts_on_null_handle_end_to_end() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("failed to bind scratch listener");
+    let port = listener.local_addr().expect("failed to read local addr").port();
+    drop(listener);
+
+    let src = format!(
+        "fn main():\n    let h = tcp_connect(\"127.0.0.1\", {port})\n    println(\"before\")\n    let ok = tcp_set_nonblocking(h, true)\n    println(\"should not reach here\")\n",
+        port = port
+    );
+    let output = compile_and_run_linked("tcp_set_nonblocking_null_handle", &src, &["ws2_32"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("before"), "{}", stdout);
+    assert!(!stdout.contains("should not reach here"), "must abort before the null handle is ever used: {}", stdout);
+    assert!(stdout.contains("null/closed socket handle"), "should print a diagnostic: {}", stdout);
+    assert_eq!(output.status.code(), Some(1), "should exit cleanly with code 1, not crash/segfault: {:?}", output.status);
+}
+
+/// `tcp_set_nonblocking(h, true)` on a real, live connection reports success.
+#[test]
+fn runtime_tcp_set_nonblocking_returns_true_on_live_socket_end_to_end() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("failed to bind scratch listener");
+    let port = listener.local_addr().expect("failed to read local addr").port();
+    let server = std::thread::spawn(move || {
+        let (conn, _) = listener.accept().expect("failed to accept connection");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        drop(conn);
+    });
+
+    let src = format!(
+        "fn main():\n    let h = tcp_connect(\"127.0.0.1\", {port})\n    let ok = tcp_set_nonblocking(h, true)\n    println(f\"nonblocking:{{ok}}\")\n    tcp_close(h)\n",
+        port = port
+    );
+    let output = compile_and_run_linked("tcp_set_nonblocking_live", &src, &["ws2_32"]);
+    server.join().expect("server thread panicked");
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "nonblocking:true", "{}", stdout);
+}
+
+/// The headline behavior this whole feature exists for: on a non-blocking
+/// socket, `tcp_recv` against a peer that accepted the connection but is
+/// deliberately silent and still open returns a null `ptr` (checked via
+/// `is_null`) essentially immediately, rather than blocking -- the direct
+/// opposite of `runtime_tcp_recv_on_idle_open_connection_blocks_forever_
+/// end_to_end`'s blocking-mode behavior against the identical peer setup.
+#[test]
+fn runtime_tcp_recv_nonblocking_on_idle_open_connection_returns_null_immediately_end_to_end() {
+    use std::sync::mpsc;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("failed to bind scratch listener");
+    let port = listener.local_addr().expect("failed to read local addr").port();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let server = std::thread::spawn(move || {
+        let (conn, _) = listener.accept().expect("failed to accept connection");
+        let _ = done_rx.recv();
+        drop(conn);
+    });
+
+    let src = format!(
+        "fn main():\n    let h = tcp_connect(\"127.0.0.1\", {port})\n    let ok = tcp_set_nonblocking(h, true)\n    let reply = tcp_recv(h)\n    println(f\"would_block:{{is_null(reply)}}\")\n    tcp_close(h)\n",
+        port = port
+    );
+    let output = compile_and_run_linked("tcp_recv_nonblocking_idle_open", &src, &["ws2_32"]);
+    let _ = done_tx.send(());
+    server.join().expect("server thread panicked");
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim_end(),
+        "would_block:true",
+        "a non-blocking recv on an idle, still-open connection should return a null ptr immediately, not hang: {}",
+        stdout
+    );
+}
+
+/// A non-blocking `tcp_recv` against a peer that closes gracefully still
+/// returns `""` (not null) -- the would-block/null path must not swallow
+/// the real EOF case.
+#[test]
+fn runtime_tcp_recv_nonblocking_on_peer_closed_connection_returns_empty_end_to_end() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("failed to bind scratch listener");
+    let port = listener.local_addr().expect("failed to read local addr").port();
+    let server = std::thread::spawn(move || {
+        let (conn, _) = listener.accept().expect("failed to accept connection");
+        // Give the client a moment to flip on non-blocking mode before the
+        // close lands, so this genuinely exercises the closed-peer path on
+        // a non-blocking socket rather than racing the `tcp_connect` itself.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        drop(conn);
+    });
+
+    let src = format!(
+        // Busy-polls a generous 5,000,000 times rather than a small fixed
+        // count -- a tight non-blocking poll loop with no pacing between
+        // iterations (no plain `sleep` builtin exists to add one, see
+        // `crate::codegen::os`) runs fast enough that a small cap can race
+        // ahead of the peer's 100ms delayed close and exit the loop early
+        // while `reply` is still null, which is exactly the flake this
+        // number is sized to avoid rather than tuning around by hand.
+        "fn main():\n    let h = tcp_connect(\"127.0.0.1\", {port})\n    let ok = tcp_set_nonblocking(h, true)\n    let mut reply = tcp_recv(h)\n    let mut tries = 0\n    while is_null(reply) and tries < 5000000:\n        reply = tcp_recv(h)\n        tries += 1\n    println(f\"reply:{{reply}}\")\n    tcp_close(h)\n",
+        port = port
+    );
+    let output = compile_and_run_linked("tcp_recv_nonblocking_peer_closed", &src, &["ws2_32"]);
+    server.join().expect("server thread panicked");
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim_end(), "reply:", "a gracefully closed peer should still yield an empty (not null) recv in non-blocking mode: {}", stdout);
+}
+
+/// A non-blocking `tcp_recv`, polled in a loop, eventually sees real data
+/// once the peer actually sends it -- confirms the would-block path doesn't
+/// also swallow legitimate data that just arrives a little late.
+#[test]
+fn runtime_tcp_recv_nonblocking_eventually_returns_data_end_to_end() {
+    use std::io::Write;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("failed to bind scratch listener");
+    let port = listener.local_addr().expect("failed to read local addr").port();
+    let server = std::thread::spawn(move || {
+        let (mut conn, _) = listener.accept().expect("failed to accept connection");
+        // Deliberately delayed, so the client's first several `tcp_recv`
+        // polls genuinely observe "no data yet" before this write lands.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        conn.write_all(b"hello").expect("failed to write reply");
+    });
+
+    let src = format!(
+        // Same generous 5,000,000-iteration cap as
+        // `runtime_tcp_recv_nonblocking_on_peer_closed_connection_returns_
+        // empty_end_to_end` above, and for the same reason.
+        "fn main():\n    let h = tcp_connect(\"127.0.0.1\", {port})\n    let ok = tcp_set_nonblocking(h, true)\n    let mut reply = tcp_recv(h)\n    let mut tries = 0\n    while is_null(reply) and tries < 5000000:\n        reply = tcp_recv(h)\n        tries += 1\n    println(f\"reply:{{reply}}\")\n    println(f\"saw_would_block:{{tries > 0}}\")\n    tcp_close(h)\n",
+        port = port
+    );
+    let output = compile_and_run_linked("tcp_recv_nonblocking_data_arrives", &src, &["ws2_32"]);
+    server.join().expect("server thread panicked");
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.first(), Some(&"reply:hello"), "{}", stdout);
+    assert_eq!(lines.get(1), Some(&"saw_would_block:true"), "should have observed at least one would-block poll before data arrived: {}", stdout);
 }
 
 // --- cross-platform codegen (`crate::codegen::platform::Target`) ----------
@@ -397,4 +617,68 @@ fn codegen_default_target_still_uses_winsock_after_linux_seam_added() {
     assert!(ir.contains("call i32 @WSAStartup("), "{}", ir);
     assert!(ir.contains("call i32 @closesocket("), "{}", ir);
     assert!(!ir.contains("declare i32 @close(i32)"), "{}", ir);
+}
+
+// --- `tcp_set_nonblocking` cross-platform codegen --------------------------
+
+const TCP_NONBLOCKING_LINUX_SRC: &str =
+    "fn main():\n    let h = tcp_connect(\"127.0.0.1\", 80)\n    let ok = tcp_set_nonblocking(h, true)\n    let reply = tcp_recv(h)\n    tcp_close(h)\n";
+
+/// `Target::LinuxGnu` implements `tcp_set_nonblocking` via a real
+/// `fcntl(fd, F_GETFL)`/`fcntl(fd, F_SETFL, ..)` read-modify-write pair, and
+/// `tcp_recv`'s would-block check reads glibc's thread-local `errno` through
+/// `__errno_location()` -- never `ioctlsocket`/`WSAGetLastError`, which are
+/// Windows-only.
+#[test]
+fn codegen_linux_target_tcp_set_nonblocking_uses_fcntl_not_ioctlsocket() {
+    let module = Driver::parse(TCP_NONBLOCKING_LINUX_SRC).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let v = Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen");
+    let ir = v.ir;
+
+    assert!(ir.contains("declare i32 @fcntl(i32, i32, i32)"), "{}", ir);
+    assert!(ir.contains("declare i32* @__errno_location()"), "{}", ir);
+    assert!(ir.contains("call i32 @fcntl("), "{}", ir);
+    assert!(ir.contains("call i32* @__errno_location()"), "{}", ir);
+    assert!(ir.contains("icmp eq i32 ") && ir.contains(", 11"), "should compare errno against EAGAIN/EWOULDBLOCK (11): {}", ir);
+
+    for windows_sym in ["ioctlsocket", "WSAGetLastError", "10035"] {
+        assert!(!ir.contains(windows_sym), "Target::LinuxGnu IR should never mention `{}`: {}", windows_sym, ir);
+    }
+}
+
+/// `crate::ir_check`'s structural verifier accepts `tcp_set_nonblocking`'s
+/// extra branching (the would-block check in `tcp_recv`, plus
+/// `tcp_set_nonblocking`'s own `fcntl` read-modify-write) just as cleanly as
+/// the simpler `tcp_*` IR `codegen_linux_target_tcp_ir_passes_internal_
+/// verifier` already covers.
+#[test]
+fn codegen_linux_target_tcp_set_nonblocking_ir_passes_internal_verifier() {
+    let module = Driver::parse(TCP_NONBLOCKING_LINUX_SRC).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let v = Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen");
+    assert!(
+        v.errors.is_empty(),
+        "Target::LinuxGnu tcp_set_nonblocking IR should pass the internal verifier: {:?}",
+        v.errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// The default (Windows) target uses `ioctlsocket`/`WSAGetLastError`, never
+/// `fcntl`/`__errno_location` -- the Windows-side mirror of the Linux-only
+/// assertions above.
+#[test]
+fn codegen_default_target_tcp_set_nonblocking_uses_ioctlsocket_not_fcntl() {
+    let module = Driver::parse(TCP_NONBLOCKING_LINUX_SRC).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+
+    assert!(ir.contains("declare i32 @ioctlsocket(i8*, i32, i32*)"), "{}", ir);
+    assert!(ir.contains("declare i32 @WSAGetLastError()"), "{}", ir);
+    assert!(ir.contains("call i32 @ioctlsocket("), "{}", ir);
+    assert!(ir.contains("call i32 @WSAGetLastError()"), "{}", ir);
+
+    for linux_sym in ["@fcntl", "__errno_location"] {
+        assert!(!ir.contains(linux_sym), "default target IR should never mention `{}`: {}", linux_sym, ir);
+    }
 }

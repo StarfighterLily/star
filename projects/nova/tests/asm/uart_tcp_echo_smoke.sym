@@ -1,0 +1,5 @@
+# Symbol table
+# Format: <symbol> <value>
+START 0x1000
+WAIT 0x1000
+DONE 0x1021

@@ -958,8 +958,13 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         // connection/error (same convention as `file_read`).
         "tcp_connect" => Some(Ty::Ptr),
         "tcp_send" => Some(Ty::Bool),
+        // `tcp_recv` returns a null `ptr` (not `""`) specifically when a
+        // non-blocking socket (`tcp_set_nonblocking`) has no data ready yet
+        // -- see `crate::codegen::net`'s module doc comment for why that
+        // needs to be distinguishable from a closed connection.
         "tcp_recv" => Some(Ty::Str),
         "tcp_close" => Some(Ty::Named("unknown".into())),
+        "tcp_set_nonblocking" => Some(Ty::Bool),
         // `docs/design.md`'s "Math and geometry" section -- see
         // `crate::codegen::geometry` for each function's lowering.
         // `quat_identity` takes no argument (the identity rotation);

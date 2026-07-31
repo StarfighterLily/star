@@ -240,6 +240,9 @@ step.
   graphical loop the same way `uart_bridge.star` is. See "Debugger" below.
 - `uart_bridge.star` — a headless stdin/stdout UART host bridge entry
   point, separate from `main.star`'s graphical loop. See "UART" below.
+- `uart_tcp_bridge.star` — the TCP-client sibling of `uart_bridge.star`
+  (this round): bridges `SERIN`/`SEROUT` over a real non-blocking TCP
+  connection instead of stdin/stdout. See "UART" below.
 - `tests/` — checked-in headless regression tests: `run_bin.star` (a
   generic `.bin` runner/register-dumper, built as its own small executable,
   no SDL needed), a handful of direct-field-poke Star harnesses for things
@@ -1037,8 +1040,9 @@ execute cycle, all four addressing modes, and 180+ opcodes:
   sprites" below).
 - Layers: `LSWAP LMOVE LCOPY` (see "Layer compositing and sprites" below).
 - Sprites: `SPBLIT SPBLITALL` (see "Layer compositing and sprites" below).
-- UART: `SERIN SEROUT SERSTAT SERCTRL`, plus a real host bridge
-  (`uart_bridge.star`) — see "UART" below.
+- UART: `SERIN SEROUT SERSTAT SERCTRL`, plus real host bridges
+  (`uart_bridge.star` for stdin/stdout, `uart_tcp_bridge.star` for a
+  non-blocking TCP connection) — see "UART" below.
 - Sound: `SPLAY SSTOP STRIG` — real waveform synthesis and playback, now
   with a true per-8-independent-hardware-channel voice model (`SW`'s
   channel-select bits 3-5, todo.md P2 #5) rather than one shared loop
@@ -1112,16 +1116,21 @@ in:
   `_generate_waveform_sample` uses. The one remaining named audio
   simplification — leaked WAV handles — is closed as of todo.md P2 #3 (see
   `sound.star`'s own header comment for the fix).
-- **UART framed-mode protocol parsing** (start byte + length + payload +
-  checksum) — still out of scope, no opcode drives it either way. **The
-  host bridge itself is now implemented** (todo.md P0 #1, reversing this
-  section's own earlier "left out, no opcode can drive it" entry):
-  `uart.star::host_push_rx` feeds a real host byte into the RX path, and
-  `projects/nova/uart_bridge.star` is a headless stdin/stdout driver for
-  it — see "UART" below and `uart_bridge.star`'s own header comment for why
-  stdin/stdout (blocking, `read_line()`-driven) was chosen over TCP (no
-  non-blocking/timeout mode exists at the language level, which would
-  freeze a bridge loop waiting on an idle peer).
+- ~~UART framed-mode protocol parsing~~ (start byte + length + payload +
+  checksum) — **now implemented** (todo.md P2 #3): `uart.star`'s
+  `parse_frame_byte`, gated behind `SERCTRL` control bit 2, plus the new
+  `SERFSTAT` opcode (`0xB4`) for reading back framed-mode-enabled/latched
+  checksum-error state. **The host bridge itself is also implemented**
+  (todo.md P0 #1, reversing this section's own earlier "left out, no opcode
+  can drive it" entry): `uart.star::host_push_rx` feeds a real host byte
+  into the RX path, and `projects/nova/uart_bridge.star` is a headless
+  stdin/stdout driver for it, blocking (`read_line()`-driven) between
+  bursts of CPU execution. **TCP transport is now implemented too** (this
+  round): `projects/nova/uart_tcp_bridge.star` is the TCP-client
+  equivalent, made possible by the compiler gaining `tcp_set_nonblocking`
+  and a would-block-aware `tcp_recv` — see "UART" below (its "TCP
+  transport" subsection) for the full design and the two real bugs its own
+  first hand-run smoke test caught.
 - **Hardware debugging opcodes** (`SETBP CLRBP ENABRK DISBRK ENATRAP
   DISATRAP`) — still unimplemented; matching the reference (see
   `disasm.star`'s own opcode table, where these are marked doc-only/
@@ -2912,10 +2921,11 @@ whatever `SEROUT` last wrote. **The host bridge itself is now implemented**
 `projects/nova/uart_bridge.star` is a headless stdin/stdout driver that
 calls it, blocking on `read_line()` between bursts of CPU execution the
 same way a real interactive terminal blocks for the next line of input.
-TCP transport is still out of scope — see `uart_bridge.star`'s own header
-comment for why (`net.rs`'s `tcp_recv` has no non-blocking/timeout mode, so
-it would freeze the bridge loop waiting on an idle peer); unrelated to
-framing, so it staying out of scope doesn't block anything below.
+TCP transport was out of scope for that round — `net.rs`'s `tcp_recv` had no
+non-blocking/timeout mode, so it would have frozen the bridge loop waiting
+on an idle peer; unrelated to framing, so it staying out of scope didn't
+block anything below. **TCP transport is now implemented** (this round) —
+see "TCP transport" below, after framed mode.
 
 **Framed-mode parsing is now implemented** (todo.md P2 #3), closing the
 other half of "no opcode drives framing": `SERCTRL`'s control bit 2
@@ -2953,6 +2963,92 @@ philosophy (`docs/design.md`), unlike a real UART's silent wraparound, and
 `cpu.star::mask_to_width`'s own `(value as u8) as i32` is this same
 "compute wide, cast down" idiom already used throughout this port's opcode
 handlers.
+
+### TCP transport
+
+**Now implemented** (this round), closing the gap the "Host bridge" section
+above used to describe as out of scope -- the upstream Python reference's
+own `TCPSocketBridge` naming (see the paragraph above) is the closest
+analogue, and that's genuinely the shape this ended up taking: a TCP
+*client* bridge, dialing out to a host:port, not a `TCPServerBridge`
+(accepting inbound connections) -- this language has no `listen`/`accept`
+builtins, only `tcp_connect`, so a server-side bridge stays out of scope.
+
+The blocker was real and specific: `net.rs`'s `tcp_recv` was a single
+blocking `recv` call with no way to poll it, so a bridge loop that also
+needs to keep the CPU moving between reads would freeze solid the moment
+the peer went quiet. The compiler side of this cycle's work (not a
+`projects/nova/` change) added exactly the missing piece: `tcp_set_
+nonblocking(handle, bool) -> bool` (`ioctlsocket`/`fcntl` under the hood),
+plus a `tcp_recv` that now returns a null `ptr` (checked via `is_null`,
+widened to also accept a `str` argument -- see `crate::codegen::net`'s own
+module doc comment in the compiler repo) instead of `""` specifically when
+a non-blocking socket has no data ready yet, keeping that case
+distinguishable from an actual closed connection.
+
+On the Nova side: `uart.star::write_data` (the `SEROUT` handler) now also
+queues every transmitted byte into a new `tx_queue` FIFO -- unconditional,
+unlike the RX-side FIFO framed mode added, since there's no "framed" TX
+mode to gate it behind -- drained one byte at a time via the new
+`drain_tx_byte` method (tuple return, mirroring `keyboard.star::pop_key`'s
+existing convention, since `0x00` is itself a legitimate transmitted byte).
+This is additive alongside the pre-existing stdout `print(chr(..))` path in
+`cpu_io.star::op_serout`, which is untouched -- a local terminal watching
+this process's stdout still sees everything a TCP peer would.
+
+`projects/nova/uart_tcp_bridge.star` is the actual bridge: same `Cpu`
+construction and `run_burst` shape as `uart_bridge.star`, but instead of
+`read_line()`-driven stdin, it `tcp_connect`s out, flips on non-blocking
+mode, and every outer loop iteration drains `tx_queue` to `tcp_send`, polls
+`tcp_recv` (a null reply means "nothing yet, keep going"; `""` means the
+peer actually closed), and runs a CPU burst -- with a `run_burst` call
+between *each* pushed RX byte when multiple bytes arrive in one poll, not
+just once per poll, because raw mode's `host_push_rx` overwrites the single
+`data_register` (no FIFO) exactly the same way `write_data`/`SEROUT` does;
+skipping that per-byte burst would silently drop every byte but the last
+one the program never got a chance to `SERIN` first (a real bug this file's
+own first hand-run smoke test caught -- see below).
+
+No plain `sleep` builtin exists in this language (only `delay`, which wraps
+`SDL_Delay` and would drag an otherwise-headless bridge into an SDL link
+dependency it's never needed), so this is a genuine busy-poll loop with no
+pacing between iterations -- a documented, deliberate tradeoff (one CPU
+core pegged at 100% for the bridge's lifetime), not an oversight.
+
+**Hand-verified against a real peer** (not part of the automated `cargo
+test`/`.star` regression suite -- there's no way to drive a real inbound
+TCP connection from inside a headless `.star` test the way `host_push_rx`
+lets framed-mode/mouse tests drive their own inputs directly): a throwaway
+`tests/asm/uart_tcp_echo_smoke.asm` program that waits for `SERSTAT`'s
+rx-available bit, echoes every received byte back via `SEROUT`, and halts
+on a sentinel byte, run against a real `System.Net.Sockets.TcpListener`
+peer. First run caught two real bugs before this landed: (1) the missing
+per-byte `run_burst` described above (only the *last* byte of a multi-byte
+poll ever reached `SERIN` without it -- confirmed by watching a 2-byte
+"Hi" send only echo back the second byte), and (2) the smoke test's own
+choice of `0x00` as a sentinel collided with `str`'s NUL-termination limit
+-- a real single-byte `0x00` payload and a true zero-byte close both read
+back as `len(reply) == 0` from a `str`-typed `tcp_recv`, so the bridge's
+"peer closed" branch fired before the sentinel byte was ever processed.
+Fixed by switching the smoke test to `0xFF`, not by trying to work around
+`str`'s NUL limit inside the bridge (an already-documented, pre-existing
+gap this port inherits everywhere `str`-based I/O touches raw bytes --
+`cpu_io.star::op_serout`'s own doc comment flags the identical limitation
+for `print(chr(..))`); the bridge's own header comment now calls this out
+explicitly for anyone bridging a protocol where `0x00` is a legitimate
+payload byte, not just a sentinel. After both fixes: connect, "Hi" sent by
+the peer, echoed back byte-for-byte over the wire, sentinel received,
+clean halt -- confirmed by both sides' own logs, not just the bridge's exit
+code.
+
+Also fixed in passing, found while building this: `uart_bridge.star`'s own
+usage comment was missing `-L sdl/lib/x64 -l SDL2` -- a real, independently
+confirmed link requirement (`cpu_sound.star`'s SDL_mixer calls are pulled
+in transitively through `cpu.star`/`cpu_io.star`, the same reason
+`tests/uart_framed_test.star`'s header comment already documents those
+flags), not something that went stale; linking `uart_bridge.star` with the
+usage comment's old command line fails outright with undefined `SDL_Init`/
+`SDL_OpenAudioDevice`/etc. symbols.
 
 ### Verification
 
@@ -3117,7 +3213,8 @@ unfixed here since it's NoBASIC's compiler, a separate project.
   #4), see "What's implemented"/"What's not implemented" above; there was
   no reference to match, so this was genuine new DSP design, not a port.
   ~~UART framed-mode parsing~~ is now complete, see `uart.star`:13 for
-  details.
+  details. ~~TCP transport~~ is now complete too (this round) — see
+  "UART"'s "TCP transport" subsection and `uart_tcp_bridge.star`.
 - ~~Splitting `cpu.star`'s ~100 opcode-handler methods across files by
   group~~ — done (todo.md P2 #5): `cpu_data.star`/`cpu_arith.star`/
   `cpu_math.star`/`cpu_bitwise.star`/`cpu_stack.star`/`cpu_control.star`/

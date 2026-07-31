@@ -21,8 +21,15 @@
 # byte of it to the running program before blocking again.
 #
 # Usage:
-#   star build projects/nova/uart_bridge.star -o projects/nova/uart_bridge.exe
+#   star build projects/nova/uart_bridge.star -o projects/nova/uart_bridge.exe -L sdl/lib/x64 -l SDL2
 #   projects/nova/uart_bridge.exe path/to/prog.bin [burst_cycles]
+# The `-L`/`-l SDL2` flags are a real link-time requirement despite this
+# tool never touching a window/audio device -- `cpu_sound.star`'s SDL_mixer
+# calls are pulled in transitively through `cpu.star`/`cpu_io.star` the same
+# way `tests/uart_framed_test.star`'s own header comment already documents
+# for that file's identical `run_bin.star`-style build line; this comment
+# used to omit them (a real, independently confirmed gap, not prose that
+# just went stale), found and fixed while adding `../uart_tcp_bridge.star`.
 # Type a line and press Enter to push its bytes into the UART RX path one at
 # a time (each followed by a burst of CPU execution so the program can react
 # before the next byte arrives -- a real UART receives one byte at a time

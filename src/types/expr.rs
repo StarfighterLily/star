@@ -2410,7 +2410,21 @@ impl Checker {
                     self.error(format!("`rand_seed` expects an `int` argument, found `{:?}`", arg_tys[0]), span);
                 }
             }
-            "is_null" | "ptr_to_str" | "file_close" | "file_read" | "file_read_bytes" | "file_read_line" | "tcp_close" | "tcp_recv" => {
+            // `is_null` alone also accepts `Str`, not just `Ptr` -- both
+            // share the exact same `i8*` runtime representation (see
+            // `crate::codegen::builtins::emit_is_null`, which is already
+            // fully type-agnostic under the hood), and `tcp_recv`
+            // (`crate::codegen::net`'s module doc comment) now legitimately
+            // returns a null-backed `str` to signal "no data yet" on a
+            // non-blocking socket -- callers need `is_null` to check that
+            // *before* the `str` is otherwise usable, since a real `str`
+            // method call on a null `i8*` would crash.
+            "is_null" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Ptr) && !tys_eq(&arg_tys[0], &Ty::Str) {
+                    self.error(format!("`is_null` expects a `ptr` or `str` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "ptr_to_str" | "file_close" | "file_read" | "file_read_bytes" | "file_read_line" | "tcp_close" | "tcp_recv" => {
                 if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Ptr) {
                     self.error(format!("`{}` expects a `ptr` argument, found `{:?}`", name, arg_tys[0]), span);
                 }
@@ -2488,6 +2502,16 @@ impl Checker {
                     }
                     if !tys_eq(&arg_tys[1], &Ty::Str) {
                         self.error(format!("`tcp_send` argument 2 expected `str`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "tcp_set_nonblocking" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`tcp_set_nonblocking` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Bool) {
+                        self.error(format!("`tcp_set_nonblocking` argument 2 expected `bool`, found `{:?}`", arg_tys[1]), span);
                     }
                 }
             }

@@ -23,19 +23,19 @@ re-run this cycle, exit code 0 (confirmed by a full-output grep for
    a simple "180+" count; accurate, and leaves headroom for expansion.
 
 **P2: Real, standing items — none urgent, none blocking.**
-3. **Done.** Still genuinely out of scope (no code change: `net.rs`'s
-   `tcp_recv` still has no non-blocking/timeout mode, and adding one is a
-   real feature, not a test-writing task) — but the claim itself is no
-   longer just prose. New `runtime_tcp_recv_on_idle_open_connection_blocks_
-   forever_end_to_end` (`tests/frontend_networking.rs`) spins up a real
-   `TcpListener` peer that accepts the connection and then deliberately
-   sends nothing and doesn't close it (distinct from the existing
-   `runtime_tcp_recv_on_peer_closed_connection_returns_empty_end_to_end`,
-   which covers the *closed*-peer EOF path), spawns the compiled Star
-   binary, and polls `Child::try_wait` for 1.5s confirming it's still
-   blocked inside `tcp_recv` the whole time before killing it. If `tcp_recv`
-   ever grows a timeout, this is the test that starts failing — the signal
-   to update this item, not just delete the test.
+3. **Done, then superseded (see "Since this reseed" below).** Originally
+   closed as "still genuinely out of scope" with a regression test pinning
+   down *blocking*-mode `tcp_recv`'s no-timeout behavior
+   (`runtime_tcp_recv_on_idle_open_connection_blocks_forever_end_to_end`,
+   `tests/frontend_networking.rs`: a real `TcpListener` peer accepts the
+   connection, sends nothing, doesn't close it, and the test polls
+   `Child::try_wait` for 1.5s confirming the compiled binary is still
+   blocked). That test still exists and still passes unchanged — blocking
+   mode (no `tcp_set_nonblocking` call) is still genuinely blocking, by
+   design. What's no longer true: "no code change... adding one is a real
+   feature, not a test-writing task" — a real feature request landed this
+   cycle and added exactly that non-blocking mode as opt-in. See "Since
+   this reseed" below for the actual implementation.
 8. **Done.** New `tests/frontend_sdl_bulk_pixel_blit.rs`, 29 tests: arg-type/
    arity checks for all five builtins (including the easy `Bytes`-vs-`str`
    mixup `texture_update`/`draw_pixels` share with `file_write_bytes`), a
@@ -84,6 +84,59 @@ re-run this cycle, exit code 0 (confirmed by a full-output grep for
    running have now made this adjustment; keep doing it.
 
 # Previous work
+
+**Since this reseed** (not from the seeded board above — a direct feature
+request, not a planned P-item): added non-blocking TCP mode to the
+compiler and wired it into `projects/nova`'s UART host bridge.
+`src/codegen/net.rs` gained `tcp_set_nonblocking(handle: ptr, enabled: bool)
+-> bool` (`ioctlsocket`/`WSAGetLastError` on Windows, a real
+`fcntl(F_GETFL)`/`fcntl(F_SETFL)` read-modify-write pair plus
+`__errno_location` on Linux), and `tcp_recv` now returns a null `ptr`
+(instead of `""`) specifically when a non-blocking socket's `recv()` fails
+with `WSAEWOULDBLOCK`/`EAGAIN` — distinguishable from a real closed
+connection (still `""`) via the existing `is_null` builtin, which had to be
+widened to also accept a `str` argument (previously `ptr`-only) since both
+share the identical `i8*` runtime representation and `tcp_recv` is
+declared `Str`. Blocking-mode `tcp_recv` (the default, no
+`tcp_set_nonblocking` call) is bit-for-bit unchanged — confirmed by the
+pre-existing `runtime_tcp_recv_on_idle_open_connection_blocks_forever_
+end_to_end` test (P2 #3, above) still passing untouched. Registered
+through every builtin touchpoint (`types/mod.rs`, `types/expr.rs`,
+`codegen/expr.rs`); 14 new tests added to `tests/frontend_networking.rs`
+(checker arity/type checks, structural null-handle-abort and would-block
+codegen checks for both targets, and real runtime round-trips: returns
+true on a live socket, aborts on a null handle, returns null immediately
+on an idle-but-open connection instead of blocking, still returns `""` on
+a genuinely closed peer, and eventually returns real data once the peer
+sends it). Full `cargo test` (76 binaries) reconfirmed clean.
+
+On the `projects/nova` side: `uart.star::write_data` (the `SEROUT`
+handler) now also queues every transmitted byte into a new `tx_queue` FIFO
+(`queue_tx_byte`/`drain_tx_byte`, tuple return mirroring
+`keyboard.star::pop_key`), additive alongside the pre-existing stdout
+`print(chr(..))` path. New `projects/nova/uart_tcp_bridge.star` is the
+TCP-client sibling of `uart_bridge.star` (this language has no
+`listen`/`accept` builtins, so it dials out rather than accepting inbound
+connections): same `Cpu`/`run_burst` shape, but polls a non-blocking
+`tcp_recv` instead of blocking on `read_line()`, and drains `tx_queue` to
+`tcp_send` every transmitted byte. Hand-verified against a real
+`System.Net.Sockets.TcpListener` peer (not part of the automated suite —
+no way to drive a real inbound TCP connection from inside a headless
+`.star` test); the first run caught two real bugs before this landed: a
+missing per-byte `run_burst` in the RX-injection loop (raw mode's
+single-register `host_push_rx` silently drops all but the last byte of a
+multi-byte poll without one), and a smoke-test design mistake (a `0x00`
+sentinel byte is indistinguishable from a true EOF through a `str`-typed
+`tcp_recv`, since `str` truncates at the first NUL) — fixed by switching
+the smoke test to `0xFF` and documenting the `str`/NUL limitation in the
+bridge's own header comment rather than trying to work around it (a
+pre-existing, already-documented gap, not new here). Also fixed in
+passing: `uart_bridge.star`'s own usage comment was missing the `-L
+sdl/lib/x64 -l SDL2` flags `cpu_sound.star`'s transitive SDL_mixer
+dependency actually requires to link — confirmed by trying the old command
+line and watching it fail with undefined `SDL_Init`/etc. symbols. See
+`projects/nova/NOTES.md`'s "UART" section (new "TCP transport"
+subsection) for the full design and test-by-test detail.
 
 **Since this reseed** (not from the seeded board above — real compiler work
 that came up live, driven by a `projects/nova/` performance investigation,

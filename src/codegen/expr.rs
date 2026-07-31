@@ -786,6 +786,7 @@ impl Codegen {
                     Some("tcp_send") => self.emit_tcp_send(args),
                     Some("tcp_recv") => self.emit_tcp_recv(args),
                     Some("tcp_close") => { self.emit_tcp_close(args); "%undef".into() }
+                    Some("tcp_set_nonblocking") => self.emit_tcp_set_nonblocking(args),
                     // `docs/design.md`'s "Math and geometry" section -- see
                     // `crate::codegen::geometry`.
                     Some("quat_identity") => self.emit_quat_identity(),
