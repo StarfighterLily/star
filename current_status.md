@@ -1,259 +1,289 @@
 # Star Language: A Technical Assessment
 
-*Reviewed at commit `4082b7b` (2026-07-30), one stage after the prior
-review at `82be6e2` (archived as
-[changelog/070_2026-07-30_4082b7b_current_status.md](changelog/070_2026-07-30_4082b7b_current_status.md)
+*Reviewed at commit `fbec0ec` (2026-07-31), one stage after the prior
+review at `4082b7b` (archived as
+[changelog/071_2026-07-31_fbec0ec_current_status.md](changelog/071_2026-07-31_fbec0ec_current_status.md)
 and
-[changelog/070_2026-07-30_4082b7b_todo.md](changelog/070_2026-07-30_4082b7b_todo.md)).
-This stage's own `todo.md` had every item across every tier marked
-**Done.**, including its P3 items — closed out explicitly this cycle as
-process/cadence notes rather than concrete asks, per the user's own
-framing — which is this cycle's trigger per `CLAUDE.md`/`docs/
-conventions.md`. It was also, separately, called for by name: the user
-asked to run the reassessment directly right after that P3 closeout. Two
-files were left uncommitted in the working tree going into this review
-(`docs/design.md`, `todo.md`) — see "The Bad" #1 below; this review reads
-and evaluates them as they stand on disk, since that's the real state of
-the project regardless of git's index. `cargo +stable-x86_64-pc-windows-gnu
-test` was run fresh for this review (not inherited from the last pass) and
-finished with exit code 0; see "The Good" #3 for what that claim does and
-doesn't cover.*
+[changelog/071_2026-07-31_fbec0ec_todo.md](changelog/071_2026-07-31_fbec0ec_todo.md)).
+This stage's `todo.md` had every
+item marked **Done.** across every tier, including a new `U0` "user-added"
+tier this cycle introduced (a direct ask to populate `docs/requests.md`,
+tracked outside the usual P0-P3 scheme) — full completion of a todo that
+includes a non-P0-P3 tier is itself worth noting, since it's the first time
+the automatic trigger has fired off something other than a P0-P3-only
+board. It was also, separately, asked for directly, immediately after that
+closeout — same two-ways-at-once trigger shape `070` itself named. The
+working tree was clean going into this review (`git status` showed nothing
+to commit) — no repeat of `070`'s own "two uncommitted files" finding.
+`cargo +stable-x86_64-pc-windows-gnu test` was started before this document
+was drafted, per `070`'s own P3 #6; see "The Good" #5 for what its result
+does and doesn't cover by the time of writing.
 
 ## The pitch, then and now
 
 Unchanged: *"a game programming language with Pythonic-Rust syntax and
 unique memory management modes, targeting native executables via LLVM
-IR."* This stage is the first since the version moved off `0.1.0` — the
-work itself, per the five commits since `82be6e2`, stayed entirely in the
-same two lanes the last several stages have: closing `projects/nova/`'s
-remaining named gaps, and the process/documentation work of executing the
-version decision the last review recommended rather than made.
+IR."* This stage, unlike `070`'s, did no version/process work at all — its
+five commits split between finishing `070`'s own carried-over P1/P2 items
+(committing an already-written doc section, fixing one stale reference,
+implementing the one standing UART gap) and a single new, small,
+documentation-only ask (`docs/requests.md`) that doesn't touch the compiler
+or `projects/nova/` at all.
 
 ---
 
-## This stage (`82be6e2` → `4082b7b`, 2026-07-30)
+## This stage (`4082b7b` → `fbec0ec`, 2026-07-31)
 
-Five commits: `5791bf0` (reassessment and version bump), `15c5ccc`
-(version-relevant docs updates), `c07d13a` (Nova fixes/expansion),
-`690562b` (cross-platform expansion), `4082b7b` (Nova expansion). In
-substance, this closed every item the prior review's "Next steps" P1/P2
-named:
+Five commits: `84f6021` (reassessment: archived `070`, reseeded
+`current_status.md`/`todo.md`, and committed `docs/design.md`'s already-
+written-but-uncommitted "Known Permanent Caveats" section alongside it),
+`ac76b8b` (documentation cleanup: `070`'s P1 #2), `c7e1bed` (Nova project
+expansion: `070`'s P2 #3, UART framed-mode parsing), `5543cc8` (fixed a
+regression in `mouse_interrupt_test.star` found while touching adjacent
+UART test infrastructure), and `fbec0ec` (this cycle's own `U0` #1,
+`docs/requests.md`). In substance:
 
-- **The version decision was made and executed, not just recommended.**
-  `Cargo.toml`, `readme.md`'s Versioning section, and `docs/
-  conventions.md`'s own Versioning section all now read `0.2.0`,
-  consistently. `CLAUDE.md` and `.clinerules/general.md` both gained the
-  same new "Versioning" and "Things not to do" language (verified
-  line-for-line identical in substance; a raw `diff` flags every line as
-  changed only because of a pre-existing CRLF/LF mismatch between the two
-  files, not a real content divergence).
-- **`sound.star`'s leaked WAV handles, closed.** A new `Cpu.
-  sound_channel_handles: [ptr; 16]` (confirmed present in `cpu.star`)
-  tracks the one handle occupying each of the 16 addressable mixer
-  channels and frees the outgoing one the instant a new one replaces it,
-  or on `SSTOP`/reset.
-- **`SMIX`/`SECHO`/`SREVERB`/`SFILTER` and `debugger.star` source-line
-  breakpoints, both closed.** `projects/nova/NOTES.md`'s own opcode count
-  moved from 167/180 to **171/180** (confirmed by direct read), and
-  `cpu.star` gained `sound_channel_last_wav: List<Bytes>` backing the new
-  DSP opcodes. `debugger.star` confirmed to have real `load_line_table`/
-  `parse_break_location` functions and `break`/`clear` now accept `:<line>`
-  — a genuine addition with no upstream Python-debugger behavior to match,
-  since `nova_debugger.py`'s own breakpoints are address-only too.
-- **The permanent structural caveats given a durable home.** `docs/
-  design.md` gained a new "Known Permanent Caveats" section consolidating
-  the "special guest" types / non-dynamic traits / warning-only
-  stack-budget caveats that previously only lived in `current_status.md`
-  (overwritten every cycle). Confirmed present and reads as described —
-  **but this change is not committed**; see "The Bad" #1.
-- **The Linux devbox came online and closed out `docs/
-  cross_platform_scope.md`'s entire priority order except the
-  deliberately-unstarted fonts gap.** Confirmed by direct read of that
-  doc: `codegen/net.rs` (`tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close`),
-  `codegen/os.rs` (`env_set`), `codegen/platform.rs` (the `par`/`swarm`
-  thread pool, previously only IR-shape-tested), and SDL2/gamepad
-  packaging are all now stated as devbox-link-verified, each with a
-  concrete verification story (a real ELF binary built and run on the
-  devbox, a `par` program run repeatedly under contention with no races,
-  a real SDL2 window/pixel round-trip under `SDL_VIDEODRIVER=dummy`).
-  `readme.md`'s "Platform Support" section matches this: only
-  `font_load_system`/`font_load_ttf`/`draw_text_ttf` remain Windows-only
-  by construction.
+- **`070`'s own uncommitted work landed, and the reassessment named it
+  explicitly rather than treating it as invisible.** `84f6021`'s diff
+  includes `docs/design.md` (+55/-… lines) alongside the archival and
+  reseed — the "Known Permanent Caveats" section `070`'s "The Bad" #1
+  flagged as real-but-uncommitted is now in `git show HEAD:docs/design.md`
+  (confirmed directly: `grep -n "Known Permanent Caveats" docs/design.md`
+  and the equivalent `git show HEAD:...` both find it at the same line).
+- **`projects/nova/NOTES.md`'s stale `0.1.0` reference, fixed as scoped.**
+  Line 2150 now reads "...for the language-wide `0.1.0` gate, which has
+  since been bumped to at least `0.2.0`" — matches `070`'s own P1 #2
+  exactly (a fragment next to the stale reference, intentionally imprecise
+  about the exact current number to avoid a second spot needing upkeep).
+  Confirmed by direct grep; zero remaining bare `0.1.0`-as-current-version
+  references in that file.
+- **UART framed-mode protocol parsing, implemented and verified by
+  actually running the new test, not just reading `todo.md`'s claim.**
+  `SERCTRL`'s control bit 2 (`0x04`) now gates a real byte-at-a-time frame
+  parser in `uart.star` (`parse_frame_byte`, driven from `host_push_rx`),
+  and a new opcode, `SERFSTAT` (`0xB4` — checked against every opcode
+  table, not just `cpu.star`'s dispatch switch, before landing on a number
+  clear of the reserved-but-unimplemented `0xA6`-`0xAB` debugger
+  pseudo-opcodes), exposes framed-mode-enabled and a latched, read-and-
+  clear checksum-error bit `SERSTAT` never had. This review built nothing
+  itself but **ran** `tests/uart_framed_test.exe` directly: all 10 printed
+  checks read `PASS`, matching `todo.md`'s claim line for line (good
+  frame's two payload bytes come back via `SERIN`, no false checksum error,
+  a bad frame's checksum error latches and its payload never reaches the
+  RX FIFO, `SERFSTAT` read-clears). `docs/UART_SYSTEM.md` and
+  `projects/nova/docs/nova16_instruction_reference.md` were both updated in
+  the same commit to describe `SERFSTAT`/`0xB4` — confirmed present in
+  both, not just in the narrative `NOTES.md` prose (see "The Bad" #1-2 for
+  where this same commit's own doc sweep still missed two spots).
+- **A real, silent regression in `mouse_interrupt_test.star` found and
+  fixed, not just claimed.** The file's inline `Cpu` struct literal had
+  drifted against `cpu.star`'s current field set (missing
+  `next_strig_channel`/`sound_channel_handles`/`sound_channel_last_wav`,
+  added by an earlier sound-channel round) and was also missing the
+  `cpu_*.star` op-table imports and `-L sdl/lib/x64 -l SDL2` build flags
+  needed to rebuild at all — the checked-in `.exe` kept passing only
+  because it predated the drift and was never rebuilt. This review ran the
+  rebuilt `tests/mouse_interrupt_test.exe` directly: all 5 `PASS` lines
+  print, confirming the fix is real, not just a "Done." marker sitting on
+  top of an untested rebuild.
+- **`docs/requests.md`, this cycle's own `U0` #1, checked against source
+  rather than guessed.** Six niceties (multi-line/block comments, numeric
+  digit separators, `if let`/`while let` pattern binding, inclusive/stepped
+  `for` ranges, multi-line string literals, default parameter values) —
+  this review independently re-derived each claim against `src/lexer.rs`
+  and `src/parser/`: `Lexer::scan_number` only accepts bare
+  `is_ascii_digit()` runs (no `_`), `parse_for_stmt` hardcodes an exclusive
+  `<start>..<end>` via a bare `DotDot` with no `..=` sibling and no step,
+  `Param` (`src/parser/items.rs`) has no default-value field, and no
+  `TripleStr`/`RawStr`-shaped token exists in the lexer. All four spot-
+  checked claims held up; the other two (block comments, `if let`) were
+  confirmed by this cycle's own prior work rather than re-derived fresh
+  here. Purely a scoping document — no implementation, no test surface, and
+  it says so explicitly, matching the ask's own framing.
 
-Net: every item the prior review hedged on ("recommended, not decided")
-got executed, and every item it deferred as future work got closed. This
-is the first stage in several where "Next steps" and "what actually
-happened" match exactly, rather than partially rolling over.
+Net: this stage closed every carried-over item from `070`'s "Next steps"
+with the same discipline `070` itself established (verify against real
+files/tests, not against what `todo.md` claims), and added one small,
+self-contained documentation deliverable that doesn't touch compiler or
+runtime code at all.
 
 ---
 
 ## The Good
 
-**1. The version decision stopped being deferred.** Three prior reviews
-(`067`, `068`, `069`) all independently confirmed the gate's conditions
-were met and all three routed the actual number/edit decision back to the
-user rather than deciding it themselves, per `CLAUDE.md`'s own "Things not
-to do." This stage is the first where that decision was actually made and
-executed in the same cycle it was asked for — `0.2.0`, matching `069`'s
-own recommendation, applied consistently across every load-bearing file
-this review checked.
+**1. Every claim in this cycle's `todo.md` was checked against something
+outside `todo.md` itself, and held up.** All five of this stage's
+substantive items name a concrete artifact to check (a committed file, a
+specific line of prose, a test binary) rather than asking the reader to
+trust the write-up — and in the two cases with an actual executable to
+run (`uart_framed_test.exe`, the rebuilt `mouse_interrupt_test.exe`), this
+review ran them directly instead of re-reading the source and assuming.
+Both matched their claimed pass counts (10/10, 5/5) exactly.
 
-**2. The Linux-port claims are now backed by real execution, not just
-plausible-looking IR.** Every item in `docs/cross_platform_scope.md`'s
-priority order that this stage touched was verified by actually linking
-and running a binary on the devbox — a `tcp_connect`/send/recv round trip
-against a live Python echo server, a `par`-spawned 200-entity concurrent
-job repeated at multiple worker counts with no races, a real SDL2 pixel
-round-trip. This project's own history (`067`'s ten operand-count
-documentation bugs, this stage's own catch of `069`'s Known Permanent
-Caveats section going uncommitted) is that "looks right on paper" and "is
-right" diverge here more often than a casual read would suggest, so an
-actually-executed verification story is worth naming explicitly as a
-strength rather than assumed by default.
+**2. A real, previously-silent regression was caught and fixed as a side
+effect of unrelated work, and the write-up said so plainly instead of
+folding it into the UART item's own scope.** `mouse_interrupt_test.star`
+had been silently broken (unbuildable, in fact — not just logically wrong)
+since an earlier round added fields to `Cpu` that this one test's hand-
+written struct literal never picked up, and nothing caught it because its
+stale `.exe` kept "passing." This is exactly the failure mode `069`'s
+own P0 process (checking for false "Done." markers) exists to catch, and
+this time it surfaced from ordinary adjacent work rather than a dedicated
+audit — worth naming as the system catching a real bug through normal
+cycle activity, not just through the reassessment ritual itself.
 
-**3. The full test suite was re-run fresh for this review and finished
-clean.** `cargo +stable-x86_64-pc-windows-gnu test` was started before
-this document was drafted (matching the practice `069`'s own P3 #7 asked
-to keep) and completed with **exit code 0**. As `069` itself noted, this
-session's own tooling truncates captured output from long-running test
-binaries to the tail — the last 4 of the (many) top-level test binaries'
-own "test result: ok. N passed; 0 failed" lines are directly visible in
-this run's captured output, and the run's exit code, not a full
-transcript, is the authoritative signal, same caveat as last cycle.
+**3. The `SERFSTAT` opcode-number choice was made carefully, with the
+scars of a specific documented near-miss.** `0xA6`-`0xAB` looked free by
+reading `cpu.star`'s dispatch switch alone (it's silent about them), but
+are in fact reserved by the assembler for unimplemented debugger pseudo-
+opcodes (`SETBP`/`CLRBP`/`ENABRK`/`DISBRK`/`ENATRAP`/`DISATRAP`) — caught
+only by grepping the assembler/disassembler/debugger opcode tables
+directly rather than trusting the one file that looked authoritative but
+wasn't. This project has hit exactly this shape of bug before (`067`'s ten
+operand-count documentation bugs); avoiding a repeat by checking multiple
+sources instead of one is worth calling out as the right instinct, not
+assumed.
 
-**4. The permanent-caveats consolidation did what it set out to do.**
-`docs/design.md`'s new section (once committed — see "The Bad" #1) gives
-the "special guest" types / non-dynamic traits / stack-budget caveats a
-home that survives reassessment cycles instead of being rewritten from
-`current_status.md`'s memory each time, which is exactly the gap `069`'s
-own P2 #5 named.
+**4. `docs/requests.md` re-derives its own claims rather than asserting
+them.** Each of the six entries names the specific function/token/struct
+checked (`Lexer::scan_number`, `parse_for_stmt`, `Param`, the absence of a
+`TripleStr`/`RawStr` token) instead of a general "Star doesn't support X"
+claim — this review independently re-checked four of the six against
+current source and found no daylight between the doc's claims and the
+code. A small thing, but it's the same discipline `069`'s own P2 #5 asked
+for applied to a brand-new doc on day one, rather than something that has
+to be re-taught next cycle.
+
+**5. The full test suite was started before this document was drafted,
+matching `070`'s own P3 #6, and finished clean.** `cargo +stable-x86_64-pc-
+windows-gnu test` was kicked off at the top of this review, ran
+concurrently with the verification work above, and completed with **exit
+code 0**: every printed `test result: ok. N passed; 0 failed` block in the
+captured output (frontend suites down to `frontend_wrapping_fixed_time.rs`'s
+39, plus the doc-tests) confirms this, and a direct `grep` for
+`FAILED`/`error[` across the full captured output returns zero matches —
+not just relying on the tail, same caveat about long-run output truncation
+`069`/`070` both noted, but this time cross-checked with a full-output grep
+rather than the tail alone.
 
 ---
 
 ## The Bad
 
-**1. Two pieces of this cycle's own described work are not actually
-committed.** `docs/design.md`'s "Known Permanent Caveats" section (P2 #5's
-deliverable, per the committed `todo.md`'s own "Previous work" writeup)
-and this cycle's `todo.md` P3 closeout both exist only in the working
-tree, not in git history — `git show HEAD:docs/design.md` has none of the
-new section. This is exactly the failure mode `CLAUDE.md`'s own
-Versioning section warns about in spirit ("taking time out to do so
-explicitly so no staleness grows in some hidden corner") applied to git
-state rather than version strings: a `todo.md` entry that reads as
-"Done." and describes a doc change in detail, sitting on top of a repo
-where that change was never actually recorded. Nothing is lost — the
-content is present and correct on disk — but the repo's committed history
-currently doesn't match its own `todo.md`'s claims. Not fixed unilaterally
-here: committing is a shared-state action this session's own operating
-rules ask to confirm before taking, not something to fold into a
-reassessment document. See "Next steps" P1 #1.
+**1. `NOTES.md`'s "Ideas for future work" section contradicts its own
+"UART" section, from the same commit.** Line 2938 still reads "Remaining
+gap in this area: UART framed-mode parsing" — directly false as of the
+same `c7e1bed` commit that added a full "Framed-mode parsing is now
+implemented" paragraph earlier in the same file (the "UART" section,
+confirmed present and accurate). This isn't drift across cycles like
+`070`'s NOTES.md finding was; it's a single commit's own doc sweep missing
+one of two places the old "still a gap" framing appeared. Small and
+mechanical, but exactly the kind of same-file internal inconsistency this
+project's own conventions ask to avoid.
 
-**2. `projects/nova/NOTES.md` has one stale version-gate reference.** Line
-2143 still reads "the language-wide `0.1.0` gate," describing the
-debugger's tooling-parity role in a gate that closed and moved to `0.2.0`
-this same cycle. A `grep` for `0.2.0` across `NOTES.md` returns zero
-matches — the file's ~3000 lines of detailed, otherwise-accurate history
-were never touched by the version-sync pass that updated `readme.md`/
-`CLAUDE.md`/`.clinerules`/`docs/conventions.md`. Small, mechanical, and
-exactly the kind of drift `CLAUDE.md`'s versioning section exists to
-prevent — it just missed a file outside the four the version-bump commit
-explicitly listed.
+**2. `NOTES.md`'s "What's implemented" opcode-count summary is now stale
+by one.** Line 995 still reads "171 opcodes (of the 180 ... instructions",
+a count this file itself describes as mechanically cross-checked against
+`cpu.star`'s `decode_operands` call sites — but `SERFSTAT` is a genuinely
+new, Star-original opcode (no upstream Python reference has it), added by
+this same cycle's `c7e1bed`, and isn't reflected in either the numerator or
+the denominator. Should read something like "172 opcodes (of the 181...)"
+once someone re-derives the count rather than incrementing both numbers by
+hand without re-checking. Same root cause as finding #1 above: one commit,
+two places in one file describing opcode-set totals, one updated and one
+not.
 
-**3. UART framed-mode protocol parsing remains the one deliberately
-out-of-scope Nova gap.** `NOTES.md`'s own "Ideas for future work" names it
-directly after listing `SMIX`/`SECHO`/`SREVERB`/`SFILTER` as closed —
-same shape those four opcodes had before this stage (no opcode drives it,
-so implementing it has no observable effect without also inventing a
-reason to exercise it), not a regression, but this project's own recent
-precedent (P2 #4 closing SMIX/etc. on request, with no reference to port
-from) shows a "deliberately unimplemented" tag isn't permanent by default
-here the way the Windows-only-fonts caveat is.
+**3. The standing structural caveats are all still true, unchanged, and
+untouched this stage** — Windows-only fonts, "special guest" type families
+(documented, not unified in mechanism), non-dynamic monomorphized-only
+traits, warning-only stack-budget checks. Not a regression; nothing in
+this stage's scope touched any of them. Carried forward again, same as
+every prior cycle.
 
-**4. Every prior stage's structural caveats still stand, unchanged.** The
-Windows-only-fonts gap, the "special guest" type families (documented,
-not unified in mechanism), non-dynamic monomorphized-only traits, and the
-warning-only stack-budget check are all still true and still just
-documented design choices, not regressions. None were the focus of this
-stage.
+**4. `docs/requests.md`'s six items are, by design, not yet acted on.**
+Explicitly scoped rather than implemented, per the ask itself — noted here
+only so a future cycle doesn't read the doc's existence as having closed
+anything. None are blocking; see "Next steps" P2.
 
 ---
 
 ## Goals vs. reality, honestly
 
-Unlike the last three cycles, this one's central question isn't whether
-the gate's conditions are met (`069` already re-derived that from first
-principles) — it's whether the *decision* that followed was executed
-faithfully. Checked directly against the current tree:
+This cycle's central question is narrower than `070`'s ("was the version
+decision executed faithfully") or `069`'s ("are the gate's conditions
+really met") — it's simply "did every item `070` carried forward, plus one
+new small ask, actually land, and does the evidence hold up under direct
+re-checking rather than a re-read of `todo.md`'s own prose." Checked
+directly against the current tree and, where an executable exists, by
+running it:
 
-- **Version number.** `0.2.0` in `Cargo.toml` (`version = "0.2.0"`),
-  `readme.md`'s Versioning section, and `docs/conventions.md`'s Versioning
-  section — all three read, all three match. `CLAUDE.md`'s and
-  `.clinerules/general.md`'s new Versioning/Things-not-to-do language
-  matches between the two files (content-identical past a line-ending
-  artifact). The one place version language went stale is `NOTES.md` (see
-  "The Bad" #2) — a Nova-project-internal doc, not one of the four
-  load-bearing files the bump commit targeted, but still a real instance
-  of exactly the drift `CLAUDE.md` asks to watch for.
-- **`readme.md`'s Versioning section prose itself.** Reads "There is no
-  guarantee of stability or usability" replaced with gate-cleared language
-  and a pointer to `changelog/069`'s condition-by-condition check — matches
-  what `069`'s own "Next steps" P1 #2 asked for verbatim.
-- **The prior review's P2 items (real, still-open gaps).** All three
-  closed: the sound-handle leak (fixed, regression-tested per `todo.md`'s
-  own writeup), `SMIX`/`SECHO`/`SREVERB`/`SFILTER` plus debugger line
-  breakpoints (fixed, both confirmed present in source), and the permanent
-  caveats given a durable doc home (present on disk, not yet committed).
+- **`070`'s P1 #1 (commit the two outstanding working-tree changes).**
+  Done — `docs/design.md`'s caveats section is in `git show HEAD`.
+- **`070`'s P1 #2 (fix `NOTES.md`'s stale `0.1.0` reference).** Done, and
+  the exact wording matches what was promised (an imprecise "at least
+  `0.2.0`" fragment, not a hard-coded second spot to maintain).
+- **`070`'s P2 #3 (UART framed-mode parsing).** Done, and independently
+  re-verified by running the new test binary rather than trusting the
+  write-up — 10/10 checks pass, matching the claim exactly.
+- **`070`'s P2 #4 (permanent caveats' durable home).** Done as a
+  consequence of P1 #1 landing `docs/design.md` in git.
+- **This cycle's own `U0` #1 (`docs/requests.md`).** Done, and four of its
+  six claims independently re-derived against current lexer/parser source
+  by this review rather than taken on faith.
 
-This review found no case of a `todo.md` "Done." claim describing work
-that isn't actually present in the tree — every item checked against real
-files. The one process gap is narrower than that: work that's real and
-correct on disk but not yet handed to git, which is a different failure
-mode than a false "Done." marker (`069`'s own P0 explicitly checked for
-and ruled out that latter case; this review's version of the same check
-comes out the same way, with the added git-state caveat above).
+Two new, small, genuine findings surfaced by this review that weren't in
+any prior cycle's list (see "The Bad" #1-2) — both same-commit doc-sweep
+misses in `NOTES.md`, not regressions in behavior. This review found no
+case of a `todo.md` "Done." claim describing work that isn't actually
+present or doesn't actually pass when run — every substantive claim this
+cycle made checked out against a real file, a real grep, or a real
+executable run.
 
 ---
 
 ## Next steps, prioritized
 
 **P0 — Nothing broken.** Full `cargo +stable-x86_64-pc-windows-gnu test`
-re-run this cycle, exit code 0, no failures in the captured tail output
-(same truncation caveat as `069`; the exit code is the authoritative
-signal). No false "Done." markers found in this cycle's `todo.md`.
+re-run this cycle, exit code 0, zero `FAILED`/`error[` matches across the
+full captured output (not just the tail). No false "Done." claims found —
+every substantive item this cycle made was checked against a real file, a
+real grep, or a real executable run (see "Goals vs. reality").
 
-**P1 — Small, concrete, and worth doing before new feature work.**
-1. **Decide whether to commit the two outstanding working-tree changes**
-   (`docs/design.md`'s "Known Permanent Caveats" section, and this cycle's
-   `todo.md` P3 closeout) — both are real, correct, already-described-as-
-   done work sitting uncommitted. This is a call for the user per this
-   session's own git safety rules (committing is not something to do
-   unprompted), not something this document decides.
-2. **Fix `projects/nova/NOTES.md`'s stale `0.1.0` reference** (line 2143,
-   "the language-wide `0.1.0` gate") to reflect the `0.2.0` move — a
-   one-line, mechanical doc fix, small enough to be the natural first pick
-   from a freshly seeded `todo.md`.
+**P1 — Small, concrete, worth doing before new feature work.**
+1. **Fix `NOTES.md`'s two stale spots found this cycle** (see "The Bad"
+   #1-2): the "Ideas for future work" bullet still calling UART
+   framed-mode parsing a "remaining gap" (line 2938), and the "What's
+   implemented" opcode-count summary still reading "171 opcodes (of the
+   180..." without `SERFSTAT` folded into either number (line 995). Both
+   one-line, mechanical fixes in a single file, same shape as `070`'s own
+   P1 #2.
 
-**P2 — Real, standing items, none urgent.**
-3. **UART framed-mode protocol parsing** (see "The Bad" #3) — carried
-   forward for visibility, matching how `SMIX`/etc. were tracked before
-   this stage closed them. Not an active ask; no opcode currently drives
-   it, so there is nothing to observably test yet without also deciding to
-   invent that opcode surface, which is a bigger, separate design
-   question.
-4. **The permanent structural caveats** (Windows-only fonts, "special
+**P2 — Real, standing items, none urgent, none blocking.**
+2. **UART TCP transport** remains out of scope, unchanged — `net.rs`'s
+   `tcp_recv` still has no non-blocking/timeout mode, so a TCP-backed
+   bridge would freeze waiting on an idle peer. Not a regression; carried
+   forward for visibility the same way framed-mode parsing itself was
+   before this stage closed it.
+3. **The permanent structural caveats** (Windows-only fonts, "special
    guest" types, non-dynamic traits, warning-only stack-budget check) —
-   not gaps to close, a standing line item so a future version decision
-   (a `1.0.0` push) doesn't have to rediscover them. Now has a durable home
-   in `docs/design.md` once P1 #1 lands it in git.
+   still just standing, documented design choices with a durable home in
+   `docs/design.md`. Not gaps to close.
+4. **`docs/requests.md`'s six niceties** are now a real backlog of small
+   language-ergonomics work, distinct from the Nova-project-heavy cadence
+   of the last several cycles. None are blocking or urgent; the two most
+   self-contained (numeric digit separators — a lexer-only change with no
+   type-system implications; multi-line block comments) would be the
+   natural first pick if a future cycle wants compiler-side work instead of
+   another `projects/nova/` round.
 
 **P3 — Keep the cadence honest.**
-5. This cycle was triggered by full `todo.md` completion (including the
-   P3 items themselves, closed out this cycle specifically because they
-   were process notes rather than concrete asks) and a direct user request
-   for the reassessment, arriving back to back. Worth naming again: the
-   automatic trigger and a direct ask converging is the system working as
-   intended, not a coincidence to explain away.
-6. Continue starting the full `cargo test` run before drafting this
-   document rather than concurrently with it — three reviews running have
-   now made this adjustment; keep doing it.
+5. **This cycle's trigger fired off a `todo.md` whose only remaining open
+   items lived in a new `U0` tier, not the usual P0-P3 board** — the first
+   time that's happened. Worth confirming explicitly: `CLAUDE.md`'s trigger
+   language ("every item in `todo.md` is marked Done... no open P0-P3 items
+   remain") reads naturally as covering any tier, and this cycle treated it
+   that way without needing to special-case `U0`. No change needed to the
+   convention; just naming that the broader reading was tested for the
+   first time and held.
+6. **Continue starting the full `cargo test` run before drafting this
+   document** — this is now the fourth cycle running that adjustment; kept.
