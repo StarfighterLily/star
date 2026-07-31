@@ -29,25 +29,107 @@
 //! same way binding an external library through `extern "C"` FFI needs an
 //! explicit `--lib`/`-l`.
 //!
-//! ## Windows-only today, but cheap to port
+//! ## `Target::LinuxGnu`: seamed, devbox-link-verified
 //! Unlike `crate::codegen::system_font`'s GDI calls, this module has no
 //! fundamental portability problem -- BSD sockets are Winsock's own
 //! ancestor API, so `socket`/`connect`/`send`/`recv` already share Winsock's
-//! names and signatures on Linux almost exactly. It just hasn't been given
-//! a `Target::LinuxGnu` arm the way `crate::codegen::platform` has for
-//! threads/semaphores yet: no `WSAStartup`/`WSACleanup` equivalent is
-//! needed on POSIX, `close` replaces `closesocket`, and (the one real
-//! representation change) a POSIX socket is a plain `int` fd with `-1` as
-//! its failure sentinel rather than this module's pointer-shaped `SOCKET`
-//! handle with a null-pointer sentinel. See `docs/cross_platform_scope.md`
-//! for the concrete per-call plan.
+//! names and signatures on Linux almost exactly. No `WSAStartup`/
+//! `WSACleanup` equivalent is needed on POSIX (`emit_tcp_connect` skips that
+//! call entirely under `Target::LinuxGnu`), `close` replaces `closesocket`,
+//! and real `send`/`recv` take a 64-bit `size_t` length and return a 64-bit
+//! `ssize_t` on x86-64 glibc rather than Winsock's `int`/`int` -- widened
+//! with `sext`/`trunc` around the existing `i32` length/result this module's
+//! callers already expect.
+//!
+//! The one real representation change: a POSIX socket is a plain `i32` fd,
+//! not a pointer. Rather than giving socket handles a second `Ty` per
+//! target (Star's `ptr` type has to stay `Ty::Ptr`/`i8*` either way -- every
+//! call site here uses `untag(.., &Ty::Ptr)`), `socket_handle_to_fd`/the
+//! `Target::LinuxGnu` arm of `sock` production in `emit_tcp_connect` pack
+//! the fd into an `i8*`-shaped register with `sext`/`inttoptr` and unpack it
+//! back with `ptrtoint`/`trunc` immediately before each real POSIX call.
+//! That packing is why the existing `INVALID_SOCKET` check
+//! (`icmp eq i8* sock, inttoptr (i64 -1 to i8*)`) and `abort_if_null_socket`
+//! (`icmp eq i8* handle, null`) need no `Target` branch at all: `sext`ing a
+//! `-1` fd to `i64` and `inttoptr`ing it produces the exact same bit pattern
+//! Windows' own `INVALID_SOCKET` check already compares against, and
+//! `tcp_connect`'s phi node collapses every failure path to a literal `i8*
+//! null` on both targets, so a "no handle" socket is always genuinely null,
+//! never a live-looking `-1`-tagged pointer.
+//!
+//! Link-verified against a real Debian devbox (`clang`/`ld`/glibc headers,
+//! no cross-linking from this Windows-hosted toolchain -- `star emit llvm
+//! --target=linux` produces the `.ll`, which is shipped to the devbox and
+//! linked there) rather than eyeballed IR; see
+//! `docs/cross_platform_scope.md`'s "Already seamed" section.
 
 use crate::diagnostics::Span;
 use crate::types::*;
 
-use super::Codegen;
+use super::{Codegen, Target};
 
 impl Codegen {
+    /// `declare` every C symbol this module's `emit_*` methods call, for
+    /// whichever `Target` this `Codegen` was constructed with -- called once
+    /// from `emit_builtins`, unconditionally, mirroring
+    /// `crate::codegen::platform::declare_platform_threading_externs`'s own
+    /// reasoning (an unreferenced `declare` costs nothing at link time, so
+    /// there's no reason to gate this on whether a program actually calls
+    /// `tcp_*`). `htons`/`inet_addr` are POSIX-standard with identical
+    /// signatures on both targets, so they're declared once, unconditionally,
+    /// rather than duplicated in both match arms.
+    pub(super) fn declare_net_externs(&mut self) {
+        match self.target {
+            Target::WindowsGnu => {
+                self.line("declare i32 @WSAStartup(i16, i8*)");
+                self.line("declare i8* @socket(i32, i32, i32)");
+                self.line("declare i32 @connect(i8*, i8*, i32)");
+                self.line("declare i32 @send(i8*, i8*, i32, i32)");
+                self.line("declare i32 @recv(i8*, i8*, i32, i32)");
+                self.line("declare i32 @closesocket(i8*)");
+            }
+            Target::LinuxGnu => {
+                self.line("declare i32 @socket(i32, i32, i32)");
+                self.line("declare i32 @connect(i32, i8*, i32)");
+                // `size_t`/`ssize_t` are 64-bit on x86-64 glibc, unlike
+                // Winsock's `int`-width `send`/`recv` -- see this module's
+                // own doc comment.
+                self.line("declare i64 @send(i32, i8*, i64, i32)");
+                self.line("declare i64 @recv(i32, i8*, i64, i32)");
+                self.line("declare i32 @close(i32)");
+            }
+        }
+        self.line("declare i16 @htons(i16)");
+        self.line("declare i32 @inet_addr(i8*)");
+    }
+
+    /// `closesocket(handle)` (Windows) or `close(fd)` (Linux, unpacked from
+    /// `handle`'s stashed bit pattern via `socket_handle_to_fd`) -- shared by
+    /// `emit_tcp_connect`'s own cleanup paths and `emit_tcp_close`, so the
+    /// fd-packing scheme only needs writing once.
+    fn emit_close_socket(&mut self, handle: &str) {
+        match self.target {
+            Target::WindowsGnu => {
+                self.line(&format!("  call i32 @closesocket(i8* {})", handle));
+            }
+            Target::LinuxGnu => {
+                let fd = self.socket_handle_to_fd(handle);
+                self.line(&format!("  call i32 @close(i32 {})", fd));
+            }
+        }
+    }
+
+    /// Unpack the `i32` fd `emit_tcp_connect`'s `Target::LinuxGnu` arm
+    /// packed into `handle` (an `i8*`-shaped Star `ptr` value) via
+    /// `ptrtoint`/`trunc` -- the inverse of that packing step. Linux-only;
+    /// every call site is itself inside a `Target::LinuxGnu` match arm.
+    fn socket_handle_to_fd(&mut self, handle: &str) -> String {
+        let as_i64 = self.tmp_name();
+        self.line(&format!("  {} = ptrtoint i8* {} to i64", as_i64, handle));
+        let fd = self.tmp_name();
+        self.line(&format!("  {} = trunc i64 {} to i32", fd, as_i64));
+        fd
+    }
     /// Abort (matches `file_io.rs`'s `abort_if_null_handle` shape exactly,
     /// with socket-specific wording) if `handle` is a null `ptr`. Used by
     /// every builtin here except `tcp_connect`, which has no handle to
@@ -92,15 +174,39 @@ impl Codegen {
         // WSAStartup(MAKEWORD(2, 2), &wsaData) -- `wsaData` is discarded
         // (nothing here reads a `WSADATA` field), so a generously oversized
         // scratch buffer sidesteps needing to hand-lay-out the struct's
-        // real (platform-dependent) size exactly.
-        let wsa_buf = self.tmp_name();
-        self.line(&format!("  {} = alloca [512 x i8]", wsa_buf));
-        let wsa_ptr = self.tmp_name();
-        self.line(&format!("  {} = getelementptr inbounds [512 x i8], [512 x i8]* {}, i64 0, i64 0", wsa_ptr, wsa_buf));
-        self.line(&format!("  call i32 @WSAStartup(i16 514, i8* {})", wsa_ptr));
+        // real (platform-dependent) size exactly. POSIX sockets need no
+        // per-process init at all, so `Target::LinuxGnu` skips this whole
+        // block.
+        if self.target == Target::WindowsGnu {
+            let wsa_buf = self.tmp_name();
+            self.line(&format!("  {} = alloca [512 x i8]", wsa_buf));
+            let wsa_ptr = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds [512 x i8], [512 x i8]* {}, i64 0, i64 0", wsa_ptr, wsa_buf));
+            self.line(&format!("  call i32 @WSAStartup(i16 514, i8* {})", wsa_ptr));
+        }
 
-        let sock = self.tmp_name();
-        self.line(&format!("  {} = call i8* @socket(i32 2, i32 1, i32 6)", sock)); // AF_INET, SOCK_STREAM, IPPROTO_TCP
+        // AF_INET, SOCK_STREAM, IPPROTO_TCP. Windows' `socket` already
+        // returns the pointer-shaped `SOCKET` handle this module treats as
+        // its uniform `i8*` "handle" everywhere; Linux's real `socket`
+        // returns a plain `i32` fd, packed into the same `i8*` shape via
+        // `sext`/`inttoptr` -- see this module's own doc comment for why
+        // that keeps the `INVALID_SOCKET` check just below `Target`-agnostic.
+        let sock = match self.target {
+            Target::WindowsGnu => {
+                let sock = self.tmp_name();
+                self.line(&format!("  {} = call i8* @socket(i32 2, i32 1, i32 6)", sock));
+                sock
+            }
+            Target::LinuxGnu => {
+                let fd = self.tmp_name();
+                self.line(&format!("  {} = call i32 @socket(i32 2, i32 1, i32 6)", fd));
+                let fd64 = self.tmp_name();
+                self.line(&format!("  {} = sext i32 {} to i64", fd64, fd));
+                let sock = self.tmp_name();
+                self.line(&format!("  {} = inttoptr i64 {} to i8*", sock, fd64));
+                sock
+            }
+        };
 
         let is_invalid = self.tmp_name();
         self.line(&format!("  {} = icmp eq i8* {}, inttoptr (i64 -1 to i8*)", is_invalid, sock)); // INVALID_SOCKET
@@ -141,7 +247,7 @@ impl Codegen {
         self.line(&format!("  br i1 {}, label %{}, label %{}", addr_invalid, addr_bad, addr_good));
 
         self.open_block(&addr_bad);
-        self.line(&format!("  call i32 @closesocket(i8* {})", sock));
+        self.emit_close_socket(&sock);
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&addr_good);
@@ -173,7 +279,15 @@ impl Codegen {
         self.line(&format!("  store i64 0, i64* {}", zero_ptr));
 
         let conn = self.tmp_name();
-        self.line(&format!("  {} = call i32 @connect(i8* {}, i8* {}, i32 16)", conn, sock, sa_ptr));
+        match self.target {
+            Target::WindowsGnu => {
+                self.line(&format!("  {} = call i32 @connect(i8* {}, i8* {}, i32 16)", conn, sock, sa_ptr));
+            }
+            Target::LinuxGnu => {
+                let fd = self.socket_handle_to_fd(&sock);
+                self.line(&format!("  {} = call i32 @connect(i32 {}, i8* {}, i32 16)", conn, fd, sa_ptr));
+            }
+        }
         let conn_failed = self.tmp_name();
         self.line(&format!("  {} = icmp ne i32 {}, 0", conn_failed, conn));
         let connect_fail = self.block_label("tcp_connect_fail");
@@ -181,7 +295,7 @@ impl Codegen {
         self.line(&format!("  br i1 {}, label %{}, label %{}", conn_failed, connect_fail, connect_ok));
 
         self.open_block(&connect_fail);
-        self.line(&format!("  call i32 @closesocket(i8* {})", sock));
+        self.emit_close_socket(&sock);
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&connect_ok);
@@ -212,8 +326,23 @@ impl Codegen {
         let data = self.emit_raw_str_ptr(&args[1]);
         let len = self.tmp_name();
         self.line(&format!("  {} = call i32 @strlen(i8* {})", len, data));
-        let n = self.tmp_name();
-        self.line(&format!("  {} = call i32 @send(i8* {}, i8* {}, i32 {}, i32 0)", n, handle, data, len));
+        let n = match self.target {
+            Target::WindowsGnu => {
+                let n = self.tmp_name();
+                self.line(&format!("  {} = call i32 @send(i8* {}, i8* {}, i32 {}, i32 0)", n, handle, data, len));
+                n
+            }
+            Target::LinuxGnu => {
+                let fd = self.socket_handle_to_fd(&handle);
+                let len64 = self.tmp_name();
+                self.line(&format!("  {} = sext i32 {} to i64", len64, len));
+                let n64 = self.tmp_name();
+                self.line(&format!("  {} = call i64 @send(i32 {}, i8* {}, i64 {}, i32 0)", n64, fd, data, len64));
+                let n32 = self.tmp_name();
+                self.line(&format!("  {} = trunc i64 {} to i32", n32, n64));
+                n32
+            }
+        };
         // `data` is done being read -- release whatever `emit_raw_str_ptr`
         // left us owning (see its own doc comment).
         self.line(&format!("  call void @star_rc_release(i8* {})", data));
@@ -241,8 +370,21 @@ impl Codegen {
         const CAP: u64 = 4096;
         let buf = self.tmp_name();
         self.line(&format!("  {} = call i8* @star_rc_alloc(i64 {}, i8* null)", buf, CAP));
-        let n = self.tmp_name();
-        self.line(&format!("  {} = call i32 @recv(i8* {}, i8* {}, i32 {}, i32 0)", n, handle, buf, CAP - 1));
+        let n = match self.target {
+            Target::WindowsGnu => {
+                let n = self.tmp_name();
+                self.line(&format!("  {} = call i32 @recv(i8* {}, i8* {}, i32 {}, i32 0)", n, handle, buf, CAP - 1));
+                n
+            }
+            Target::LinuxGnu => {
+                let fd = self.socket_handle_to_fd(&handle);
+                let n64 = self.tmp_name();
+                self.line(&format!("  {} = call i64 @recv(i32 {}, i8* {}, i64 {}, i32 0)", n64, fd, buf, CAP - 1));
+                let n32 = self.tmp_name();
+                self.line(&format!("  {} = trunc i64 {} to i32", n32, n64));
+                n32
+            }
+        };
 
         let is_pos = self.tmp_name();
         self.line(&format!("  {} = icmp sgt i32 {}, 0", is_pos, n));
@@ -256,7 +398,7 @@ impl Codegen {
         buf
     }
 
-    /// `tcp_close(handle: ptr)`: `closesocket`, no return value.
+    /// `tcp_close(handle: ptr)`: `closesocket`/`close`, no return value.
     pub(super) fn emit_tcp_close(&mut self, args: &[TypedExpr]) {
         let Some(arg) = args.first() else {
             self.err("tcp_close(..) expects 1 argument", Span::dummy());
@@ -265,7 +407,7 @@ impl Codegen {
         let val = self.emit_expr(arg);
         let handle = self.untag(&val, &Ty::Ptr);
         self.abort_if_null_socket(&handle, "tcp_close");
-        self.line(&format!("  call i32 @closesocket(i8* {})", handle));
+        self.emit_close_socket(&handle);
         // Null out the caller's own variable, if `arg` is a bare one --
         // same fix, same rationale, as `file_io.rs`'s `emit_file_close`
         // (see its doc comment): `closesocket` doesn't invalidate the

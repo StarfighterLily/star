@@ -25,45 +25,51 @@ See [docs/design.md](docs/design.md) and [docs/features.md](docs/features.md) fo
 
 ## Platform Support
 
-A compiled Star program only runs on Windows today. Three surfaces are
-Windows-only by construction, not one:
+Windows is `star build`'s default and only vendored-toolchain target, but
+as of 2026-07-30 most of the language's builtin surface has a real,
+devbox-link-verified second implementation for `--target linux`
+(`x86_64-unknown-linux-gnu`) too — not just plausible-looking IR. One
+surface remains genuinely Windows-only by construction:
 
 - `font_load_system`/`font_load_ttf`/`draw_text_ttf`
   (`crate::codegen::system_font`) bind Windows GDI directly, with no
   portable equivalent bound at all — see that module's own doc comment for
   why GDI text rendering isn't a cheap retrofit (there's no POSIX syscall
-  that rasterizes a TrueType glyph).
-- `tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close` (`crate::codegen::net`)
-  bind Winsock2 directly.
-- `env_set` (`crate::codegen::os`) calls `_putenv_s`, a Microsoft CRT
-  extension, not POSIX.
+  that rasterizes a TrueType glyph). `crate::codegen::font`'s hand-rolled
+  5x7 bitmap font is the already-portable fallback for a program that needs
+  *some* text under both targets today.
 
-Unlike fonts, the networking and env-var gaps are cheap — POSIX has a
-near-identical BSD-sockets API and a `setenv` equivalent respectively — they
-just haven't been given a `Target`-gated second implementation yet.
-`window_create`/audio/gamepad (`crate::codegen::sdl`/`audio`/`gamepad`) bind
-SDL2, which already ships real Linux builds; that gap is packaging (this
-repo only vendors a Windows SDL2 build), not codegen. See
-[docs/cross_platform_scope.md](docs/cross_platform_scope.md) for the full
-inventory and per-surface plan.
+Everything else now has a real `Target::LinuxGnu` arm, each link/run-tested
+against a Debian devbox (real `clang`/`ld`/glibc, not cross-linked from this
+Windows-hosted toolchain):
 
-One piece *is* target-abstracted today: the `par`/`swarm` worker-thread pool
-(`crate::codegen::platform`) has a real second implementation using POSIX
-threads/semaphores instead of Win32 primitives, selectable with `--target
-linux` on `star build`/`star emit llvm`. This is best-effort cross-*emission*
-of that one subsystem, not a supported cross-compile story: nothing in this
-repo vendors, detects, or verifies a Linux sysroot/libc, and any program
-touching a window/audio/gamepad/font/net/env builtin still won't link under
-that target regardless. Use it to inspect the generated IR shape or hand it
-to a real Linux toolchain, not to expect `star build --target=linux` to
-produce a working binary out of the box.
+- **Threading** (`par`/`swarm`, `Symbol`, `rand` — `crate::codegen::platform`):
+  real `pthread_create`/`sem_init`/`sysconf` instead of Win32 primitives.
+- **Networking** (`tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close` —
+  `crate::codegen::net`): real POSIX sockets instead of Winsock2.
+- **Environment variables** (`env_set` — `crate::codegen::os`): real
+  `setenv` instead of `_putenv_s`, a Microsoft CRT extension.
+- **Graphics/audio/input** (`window_create`/audio/gamepad —
+  `crate::codegen::sdl`/`audio`/`gamepad`): SDL2's own C ABI is already
+  cross-platform; only linking needed sorting out. Under `--target linux`,
+  link with a bare `-l SDL2` against a system-package `libsdl2-dev` install
+  (`apt install libsdl2-dev`) — no `-L` flag needed at all, unlike Windows'
+  vendored `-L sdl/lib/x64 -l SDL2`. This repo vendors no Linux SDL2 build.
 
-**Cross-platform Linux support is a genuinely intended goal, not a maybe** —
-see [docs/cross_platform_scope.md](docs/cross_platform_scope.md)'s status
-line. It's gated on getting a real Linux devbox running: every claim above
-is currently IR-shape-verified only (inspected by eye), never actually
-linked or run, and closing that gap for real needs a real `clang`/`ld`/libc
-to build and test against rather than more IR inspection.
+See [docs/cross_platform_scope.md](docs/cross_platform_scope.md) for the
+per-surface implementation notes and what was actually run to verify each
+one (not just IR inspected by eye).
+
+**What `--target linux` still isn't**: a supported one-command cross-compile.
+Nothing in this repo vendors, detects, or verifies a Linux sysroot/libc for
+you — `star build --target=linux` emits and (if `clang` on your `PATH`
+happens to support it) attempts to link Linux IR, but the devbox-verified
+proof above was produced by `star emit llvm --target=linux` followed by
+transferring the `.ll` to a real Linux machine and linking it there with a
+native `clang`/`ld`, the same way you'd need to. Use `--target linux` to
+inspect the generated IR shape or hand it to a real Linux toolchain, not to
+expect a working binary to fall out of this Windows-hosted compiler
+directly.
 
 ## Compilation Toolchain
 

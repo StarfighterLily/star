@@ -18,11 +18,22 @@
 //! a single unit.
 //!
 //! Linking note: like `tcp_*`'s `ws2_32` (see `net.rs`'s own doc comment), a
-//! Star program calling any of these needs `-L sdl/lib/x64 -l SDL2` passed
-//! explicitly at build time (`star build foo.star -L sdl/lib/x64 -l SDL2`),
-//! and `sdl/lib/x64/SDL2.dll` must be discoverable at run time (next to the
-//! built `.exe`, or on `PATH`) -- SDL2 isn't part of this target's
-//! implicitly-linked default libraries.
+//! Star program calling any of these needs `-l SDL2` passed explicitly at
+//! build time -- nothing in this module is Win32-specific code needing a
+//! `Target` branch (confirmed by `tests/frontend_sdl_graphics_input_and_
+//! geometry_audit.rs`'s `codegen_sdl_and_gamepad_ir_is_target_invariant`:
+//! the call-site IR is byte-identical across targets), so the gap between
+//! targets is purely which `-L`/runtime story backs that `-l SDL2`. Under
+//! the default `Target::WindowsGnu`, that's `-L sdl/lib/x64` against this
+//! repo's vendored copy, and `sdl/lib/x64/SDL2.dll` must be discoverable at
+//! run time (next to the built `.exe`, or on `PATH`). Under
+//! `Target::LinuxGnu`, **no `-L` flag is needed at all** -- devbox-link-
+//! verified 2026-07-30 against a system-package `libsdl2-dev` install
+//! (`apt install libsdl2-dev`; this repo vendors no Linux SDL2 build), with
+//! a real window-create/`clear_screen`/`draw_rect`/`present`/`get_pixel`
+//! round trip run headless (`SDL_VIDEODRIVER=dummy`) reading back exactly
+//! the colors drawn. See `docs/cross_platform_scope.md`'s "Already seamed"
+//! section.
 //!
 //! Error model: `window_create` returns a null `ptr` if `SDL_Init`/
 //! `SDL_CreateWindow`/`SDL_CreateRenderer` fails, checked with the existing

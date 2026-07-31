@@ -211,3 +211,115 @@ fn runtime_tcp_send_aborts_on_null_handle_end_to_end() {
     assert!(stdout.contains("null/closed socket handle"), "should print a diagnostic: {}", stdout);
     assert_eq!(output.status.code(), Some(1), "should exit cleanly with code 1, not crash/segfault: {:?}", output.status);
 }
+
+// --- cross-platform codegen (`crate::codegen::platform::Target`) ----------
+//
+// `Target::LinuxGnu`'s `tcp_*` arm is IR-shape/internal-verifier tested here
+// (this crate's test suite runs on Windows and has no Linux clang/ld to
+// actually link against) -- mirroring `tests/frontend_par_swarm.rs`'s own
+// `Target::LinuxGnu` coverage of `crate::codegen::platform`. Real linking
+// and execution was verified by hand against a Debian devbox (`clang`
+// 19.1.7, GNU `ld` 2.44) -- see `docs/cross_platform_scope.md`'s "Already
+// seamed" section.
+
+const TCP_LINUX_SRC: &str =
+    "fn main():\n    let h = tcp_connect(\"127.0.0.1\", 80)\n    let ok = tcp_send(h, \"ping\")\n    let reply = tcp_recv(h)\n    tcp_close(h)\n";
+
+/// `Target::LinuxGnu` declares/calls the real POSIX socket API (plain `i32`
+/// fd-taking `socket`/`connect`/`close`, 64-bit-`size_t`-taking
+/// `send`/`recv`) and never mentions a single Winsock symbol -- no
+/// `WSAStartup` call, no `closesocket`, no pointer-returning `@socket`.
+#[test]
+fn codegen_linux_target_uses_posix_sockets_not_winsock() {
+    let module = Driver::parse(TCP_LINUX_SRC).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let v = Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen");
+    let ir = v.ir;
+
+    assert!(ir.contains("declare i32 @socket(i32, i32, i32)"), "{}", ir);
+    assert!(ir.contains("declare i32 @connect(i32, i8*, i32)"), "{}", ir);
+    assert!(ir.contains("declare i64 @send(i32, i8*, i64, i32)"), "{}", ir);
+    assert!(ir.contains("declare i64 @recv(i32, i8*, i64, i32)"), "{}", ir);
+    assert!(ir.contains("declare i32 @close(i32)"), "{}", ir);
+    assert!(ir.contains("call i32 @close("), "tcp_close should call close, not closesocket: {}", ir);
+
+    for winsock_sym in ["WSAStartup", "closesocket", "declare i8* @socket"] {
+        assert!(!ir.contains(winsock_sym), "Target::LinuxGnu IR should never mention `{}`: {}", winsock_sym, ir);
+    }
+}
+
+/// The `i32` fd `socket`/`connect` produce/consume is packed into the same
+/// `i8*`-shaped "handle" every other target uses for Star's `ptr` type via
+/// `sext`/`inttoptr` (see `crate::codegen::net`'s own doc comment), and
+/// unpacked back with `ptrtoint`/`trunc` immediately before each real POSIX
+/// call -- this is the one representation change the doc comment calls out,
+/// so it's worth pinning down as its own regression rather than only
+/// asserting the surrounding declares/calls.
+#[test]
+fn codegen_linux_target_packs_fd_into_pointer_shaped_handle() {
+    let module = Driver::parse(TCP_LINUX_SRC).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let v = Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen");
+    let ir = v.ir;
+
+    assert!(ir.contains("sext i32 ") && ir.contains(" to i64"), "socket()'s fd result should be sign-extended: {}", ir);
+    assert!(ir.contains("inttoptr i64 ") && ir.contains(" to i8*"), "the widened fd should be packed into a pointer-shaped handle: {}", ir);
+    assert!(ir.contains("ptrtoint i8* ") && ir.contains(" to i64"), "the handle should be unpacked back to an integer before each POSIX call: {}", ir);
+
+    // `INVALID_SOCKET` and null-handle checks stay target-agnostic (see this
+    // module's own doc comment): no `Target`-specific `icmp eq i32 .., -1`
+    // fd-sentinel comparison should appear anywhere in this IR.
+    assert!(ir.contains("icmp eq i8* "), "should still compare the packed handle, not a bare i32 fd: {}", ir);
+}
+
+/// `emit_tcp_connect`'s `Target::LinuxGnu` arm skips the whole
+/// `WSAStartup`/scratch-buffer block entirely -- POSIX sockets need no
+/// per-process init, so there should be no `alloca [512 x i8]` scratch
+/// buffer in this IR at all (its only purpose under `Target::WindowsGnu` is
+/// backing that now-skipped call).
+#[test]
+fn codegen_linux_target_skips_wsastartup_scratch_buffer() {
+    let module = Driver::parse(TCP_LINUX_SRC).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let v = Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen");
+    assert!(!v.ir.contains("alloca [512 x i8]"), "{}", v.ir);
+}
+
+/// `crate::ir_check`'s structural verifier (target-agnostic) accepts
+/// `Target::LinuxGnu`'s `tcp_*` IR just as cleanly as the default target's --
+/// mirrors `frontend_par_swarm.rs`'s
+/// `codegen_linux_target_ir_passes_internal_verifier`.
+#[test]
+fn codegen_linux_target_tcp_ir_passes_internal_verifier() {
+    let module = Driver::parse(TCP_LINUX_SRC).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let v = Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen");
+    assert!(
+        v.errors.is_empty(),
+        "Target::LinuxGnu tcp_* IR should pass the internal verifier: {:?}",
+        v.errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// The default target (no `--target` involved, plain `Driver::codegen`) is
+/// untouched by `Target::LinuxGnu`'s existence -- still Winsock, still
+/// `WSAStartup`/`closesocket`/pointer-returning `socket`, exactly as every
+/// pre-existing test above this section already exercises. Regression guard
+/// for the `declare_net_externs`/`emit_close_socket`/`socket_handle_to_fd`
+/// refactor itself, not just the new Linux arm.
+#[test]
+fn codegen_default_target_still_uses_winsock_after_linux_seam_added() {
+    let module = Driver::parse(TCP_LINUX_SRC).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+
+    assert!(ir.contains("target triple = \"x86_64-w64-windows-gnu\""), "{}", ir);
+    assert!(ir.contains("declare i8* @socket(i32, i32, i32)"), "{}", ir);
+    assert!(ir.contains("declare i32 @connect(i8*, i8*, i32)"), "{}", ir);
+    assert!(ir.contains("declare i32 @send(i8*, i8*, i32, i32)"), "{}", ir);
+    assert!(ir.contains("declare i32 @recv(i8*, i8*, i32, i32)"), "{}", ir);
+    assert!(ir.contains("declare i32 @closesocket(i8*)"), "{}", ir);
+    assert!(ir.contains("call i32 @WSAStartup("), "{}", ir);
+    assert!(ir.contains("call i32 @closesocket("), "{}", ir);
+    assert!(!ir.contains("declare i32 @close(i32)"), "{}", ir);
+}

@@ -29,8 +29,10 @@
 //! depending on some other builtin having been called first.
 //!
 //! Linking note: same as `crate::codegen::sdl`'s own note -- needs
-//! `-L sdl/lib/x64 -l SDL2` at build time and `SDL2.dll` discoverable at run
-//! time.
+//! `-l SDL2` at build time, plus `-L sdl/lib/x64` and a discoverable
+//! `SDL2.dll` at run time under the default `Target::WindowsGnu` (no `-L`
+//! needed at all under `Target::LinuxGnu`, against a system-package
+//! `libsdl2-dev` install).
 
 use crate::diagnostics::Span;
 use crate::types::*;

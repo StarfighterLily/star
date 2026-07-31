@@ -17,17 +17,21 @@
 //! a real, large feature addition, not a seam retrofit. See that module's
 //! own doc comment: it stays an explicit, acknowledged Windows-only
 //! dependency, with `crate::codegen::font`'s hand-rolled bitmap font as the
-//! already-portable fallback. `crate::codegen::net`'s Winsock calls and
-//! `crate::codegen::os`'s `_putenv_s` call are also Windows-only and not yet
-//! seamed here -- unlike fonts, both are cheap (BSD sockets and `setenv`
-//! are close POSIX equivalents), just not yet built. Every `declare` this
-//! crate emits for these still-Windows-only surfaces stays unconditional
-//! regardless of `Target` (an unreferenced `declare` costs nothing at link
-//! time) -- only the primitives actually load-bearing for `par`/`swarm`
-//! (threads, semaphores, core count) have a second implementation today.
-//! See `docs/cross_platform_scope.md` for the full inventory, a concrete
-//! per-surface porting plan for each remaining gap, and why none of it is
-//! scheduled yet (no Linux devbox to build/link/run against).
+//! already-portable fallback. Text rendering is now the *only* unseamed
+//! Windows-only surface left -- `crate::codegen::net`'s Winsock calls and
+//! `crate::codegen::os`'s `_putenv_s` call each got their own
+//! `Target::LinuxGnu` arm (not centralized here), and this module's own
+//! `pthread_create`/`sem_init`/`sysconf` arm -- the oldest cross-platform
+//! claim in this crate -- went from IR-shape-inspected to devbox-link-
+//! verified 2026-07-30, right alongside them: a real `par` dispatch across
+//! 200 entities produced the correct result under real concurrent
+//! `pthread_create`/`sem_wait`/`sem_post`, not just serial fallback, at
+//! several `STAR_WORKERS` counts and repeated runs with no races observed.
+//! Every `declare` this crate emits for a still-Windows-only surface stays
+//! unconditional regardless of `Target` (an unreferenced `declare` costs
+//! nothing at link time). See `docs/cross_platform_scope.md` for the full
+//! inventory and the fonts gap's own concrete (still unscheduled)
+//! porting plan.
 //!
 //! ## Semaphore representation
 //! Win32's `CreateSemaphoreA` returns an opaque kernel `HANDLE` (`i8*`);

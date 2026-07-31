@@ -441,3 +441,69 @@ fn runtime_print_fstring_interpolates_color32_and_palette_index_end_to_end() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines, vec!["color: 673059850", "index: 7"], "{}", stdout);
 }
+
+// --- cross-platform codegen (`crate::codegen::platform::Target`) ----------
+//
+// `crate::codegen::sdl` (and `audio.rs`/`gamepad.rs`) bind SDL2's own C ABI
+// directly, with no Win32-specific code anywhere in them -- unlike
+// `net.rs`/`os.rs`, there is no `Target` branch to write here at all; the
+// Linux gap was pure packaging (this repo only vendors a Windows SDL2
+// build), not codegen. Link/run-verified by hand against the Debian devbox
+// 2026-07-30 (system `libsdl2-dev`, linked with a bare `-lSDL2`, no `-L`
+// needed unlike Windows' vendored `-L sdl/lib/x64`): a real window create /
+// clear_screen / draw_rect / present / get_pixel round trip under
+// `SDL_VIDEODRIVER=dummy` read back exactly the colors drawn, and
+// `gamepad_count`/`key_down`/`mouse_x`/`mouse_y` all returned safe defaults
+// with no gamepad/display attached. See `docs/cross_platform_scope.md`'s
+// "Already seamed" section. The one thing worth pinning down as a checked
+// regression (this crate's test suite has no Linux clang/ld to link
+// against, so it can't repeat the link/run proof itself) is the claim this
+// whole section rests on: that SDL-builtin IR is genuinely target-invariant,
+// not just assumed to be.
+
+/// `window_create`/`clear_screen`/`draw_rect`/`present`/`get_pixel`/
+/// `gamepad_count`'s call-site IR (the `@main` body, with its leading
+/// `@sym.lock`/`@rng.lock` init block stripped out) is byte-identical under
+/// `Target::LinuxGnu` and the default `Target::WindowsGnu` -- confirming
+/// there is genuinely no Win32-specific branch hiding in
+/// `crate::codegen::sdl`/`gamepad`, unlike `net.rs`/`os.rs` which each
+/// needed a real `Target` match arm. `@main` always initializes those two
+/// locks unconditionally (`Codegen::emit_sym_lock_init`/
+/// `emit_rng_lock_init`), regardless of whether a program uses `Symbol`/
+/// `rand` at all, and those genuinely do route through
+/// `crate::codegen::platform`'s `Target`-gated semaphore primitives
+/// (`CreateSemaphoreA` vs. `malloc`+`sem_init`, a different *line count*
+/// per target, not just different call names) -- left in, a whole-body
+/// comparison would fail for a reason that has nothing to do with SDL, so
+/// every line belonging to that block is filtered out here.
+#[test]
+fn codegen_sdl_and_gamepad_ir_is_target_invariant() {
+    let src = "fn main():\n    \
+               let w = window_create(\"t\", 64, 48)\n    \
+               clear_screen(w, Color32(10, 20, 30, 255))\n    \
+               draw_rect(w, 5, 5, 10, 10, Color32(200, 100, 50, 255))\n    \
+               present(w)\n    \
+               let p = get_pixel(w, 8, 8)\n    \
+               println(f\"{color32_r(p)}\")\n    \
+               println(f\"{gamepad_count()}\")\n    \
+               window_destroy(w)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+
+    let windows_ir = Driver::codegen(&typed).expect("should codegen for the default (Windows) target");
+    let linux_v = Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen for Target::LinuxGnu");
+
+    let lock_init_markers = ["sym.lock", "rng.lock", "CreateSemaphoreA", "@sem_init", "malloc(i64 32)"];
+    let strip_lock_init = |ir: &str| -> String {
+        extract_fn_body(ir, "define i32 @main(")
+            .lines()
+            .filter(|l| !lock_init_markers.iter().any(|m| l.contains(m)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(
+        strip_lock_init(&windows_ir),
+        strip_lock_init(&linux_v.ir),
+        "SDL/gamepad call-site IR in @main should be identical across targets aside from lock init"
+    );
+}

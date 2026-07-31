@@ -3,20 +3,43 @@
 //! `List<str>` and lives alongside the rest of `List<T>`'s construction
 //! logic instead -- see `crate::codegen::list::emit_args`.
 //!
-//! ## Windows-only today, but the cheapest gap in the codebase
+//! ## `Target::LinuxGnu`: seamed, devbox-link-verified
 //! `getenv` (`emit_env_get`) is already POSIX-standard and needs no
-//! `Target` branch at all. `_putenv_s` (`emit_env_set`) is a Microsoft CRT
-//! extension, not POSIX -- the direct equivalent is glibc's
-//! `setenv(name, value, 1) -> i32`, same argument shape, "0 on success"
-//! convention preserved. A single `Target::LinuxGnu` match arm in
-//! `emit_env_set` closes this; see `docs/cross_platform_scope.md`.
+//! `Target` branch at all. `_putenv_s` (`emit_env_set`) was a Microsoft CRT
+//! extension, not POSIX -- `Target::LinuxGnu` now calls glibc's
+//! `setenv(name, value, 1) -> i32` instead, same argument shape (just one
+//! extra fixed `overwrite` argument), "0 on success" convention preserved
+//! (`setenv` returns `-1` on failure, not an arbitrary nonzero `errno_t`,
+//! but `emit_env_set`'s existing `icmp eq i32 result, 0` check needed no
+//! change either way). Link/run-verified against the Debian devbox the same
+//! way `crate::codegen::net` was -- see `docs/cross_platform_scope.md`'s
+//! "Already seamed" section.
 
 use crate::diagnostics::Span;
 use crate::types::*;
 
-use super::Codegen;
+use super::{Codegen, Target};
 
 impl Codegen {
+    /// `declare` every C symbol this module's `emit_*` methods call, for
+    /// whichever `Target` this `Codegen` was constructed with -- called once
+    /// from `emit_builtins`, unconditionally, mirroring
+    /// `crate::codegen::net::declare_net_externs`'s own reasoning (an
+    /// unreferenced `declare` costs nothing at link time). `getenv` is
+    /// POSIX-standard on both targets, so it's declared once, outside the
+    /// match.
+    pub(super) fn declare_os_externs(&mut self) {
+        self.line("declare i8* @getenv(i8*)");
+        match self.target {
+            Target::WindowsGnu => {
+                self.line("declare i32 @_putenv_s(i8*, i8*)");
+            }
+            Target::LinuxGnu => {
+                self.line("declare i32 @setenv(i8*, i8*, i32)");
+            }
+        }
+    }
+
     /// `env_get(name: str) -> str`: `getenv`, copied into a fresh, owned
     /// `str` the same way `emit_ptr_to_str` bridges any other foreign
     /// `char*` -- a missing variable yields `""` rather than a null `ptr`,
@@ -81,7 +104,18 @@ impl Codegen {
         let value = self.emit_raw_str_ptr(&args[1]);
 
         let result = self.tmp_name();
-        self.line(&format!("  {} = call i32 @_putenv_s(i8* {}, i8* {})", result, name, value));
+        match self.target {
+            Target::WindowsGnu => {
+                self.line(&format!("  {} = call i32 @_putenv_s(i8* {}, i8* {})", result, name, value));
+            }
+            Target::LinuxGnu => {
+                // `overwrite = 1` -- `env_set` has always unconditionally
+                // replaced an existing value (matching `_putenv_s`'s own
+                // behavior), never the "only set if unset" `overwrite = 0`
+                // mode.
+                self.line(&format!("  {} = call i32 @setenv(i8* {}, i8* {}, i32 1)", result, name, value));
+            }
+        }
         // `name`/`value` are done being read -- release whatever
         // `emit_raw_str_ptr` left us owning for each (see its own doc
         // comment).

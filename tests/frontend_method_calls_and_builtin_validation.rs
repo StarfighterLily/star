@@ -527,6 +527,61 @@ fn runtime_env_set_survives_heap_churn_after_repeated_calls_end_to_end() {
     assert_eq!(lines, expected, "{}", stdout);
 }
 
+// --- cross-platform codegen (`crate::codegen::platform::Target`) ----------
+//
+// `Target::LinuxGnu`'s `env_set` arm is IR-shape/internal-verifier tested
+// here (this crate's test suite runs on Windows and has no Linux clang/ld
+// to actually link against) -- mirroring `tests/frontend_networking.rs`'s
+// own `Target::LinuxGnu` coverage of `crate::codegen::net`. Real linking and
+// execution was verified by hand against the same Debian devbox -- see
+// `docs/cross_platform_scope.md`'s "Already seamed" section.
+
+/// `Target::LinuxGnu` declares/calls glibc's `setenv(name, value, 1)`
+/// instead of `_putenv_s`, and never mentions the Windows-only symbol at
+/// all.
+#[test]
+fn codegen_linux_target_env_set_uses_setenv_not_putenv_s() {
+    let src = "fn main():\n    let ok = env_set(\"X\", \"Y\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let v = Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen");
+    let ir = v.ir;
+
+    assert!(ir.contains("declare i32 @setenv(i8*, i8*, i32)"), "{}", ir);
+    assert!(ir.contains("call i32 @setenv("), "{}", ir);
+    assert!(!ir.contains("_putenv_s"), "Target::LinuxGnu IR should never mention `_putenv_s`: {}", ir);
+}
+
+/// `crate::ir_check`'s structural verifier accepts `Target::LinuxGnu`'s
+/// `env_set` IR just as cleanly as the default target's.
+#[test]
+fn codegen_linux_target_env_set_ir_passes_internal_verifier() {
+    let src = "fn main():\n    let ok = env_set(\"X\", \"Y\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let v = Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen");
+    assert!(
+        v.errors.is_empty(),
+        "Target::LinuxGnu env_set IR should pass the internal verifier: {:?}",
+        v.errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// The default target is untouched by `Target::LinuxGnu`'s existence --
+/// still `_putenv_s`, still no `setenv` declared at all. Regression guard
+/// for the `declare_os_externs` refactor itself, not just the new Linux arm.
+#[test]
+fn codegen_default_target_still_uses_putenv_s_after_linux_seam_added() {
+    let src = "fn main():\n    let ok = env_set(\"X\", \"Y\")\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+
+    assert!(ir.contains("declare i32 @_putenv_s(i8*, i8*)"), "{}", ir);
+    assert!(ir.contains("call i32 @_putenv_s("), "{}", ir);
+    assert!(!ir.contains("@setenv"), "{}", ir);
+}
+
 /// An f-string used as an ordinary value (bound to a `let`, not passed
 /// directly as `print`/`println`'s sole argument) must actually substitute
 /// its interpolated values, not just return the raw, unformatted

@@ -62,8 +62,10 @@
 //! length from the WAV's `data` chunk header).
 //!
 //! Linking note: same as `crate::codegen::sdl`'s own note -- needs
-//! `-L sdl/lib/x64 -l SDL2` at build time and `SDL2.dll` discoverable at
-//! run time.
+//! `-l SDL2` at build time, plus `-L sdl/lib/x64` and a discoverable
+//! `SDL2.dll` at run time under the default `Target::WindowsGnu` (no `-L`
+//! needed at all under `Target::LinuxGnu`, against a system-package
+//! `libsdl2-dev` install).
 //!
 //! `sound_play_channel`/`sound_stop_channel` (added for `todo.md` P2 #5,
 //! Nova-16's own 8-independent-sound-channel port) generalize `music_play`'s

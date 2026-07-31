@@ -599,22 +599,20 @@ impl Codegen {
         self.line("declare i32 @fseek(i8*, i32, i32)");
         self.line("declare i32 @ftell(i8*)");
         self.line("declare i32 @fgetc(i8*)");
-        // `env_get`/`env_set` builtins -- see `crate::codegen::os`.
-        self.line("declare i8* @getenv(i8*)");
-        self.line("declare i32 @_putenv_s(i8*, i8*)");
+        // `env_get`/`env_set` builtins -- see `crate::codegen::os`, declared
+        // for whichever `Target` this `Codegen` was built for by
+        // `crate::codegen::os::declare_os_externs`.
+        self.declare_os_externs();
         // `tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close` builtins -- see
-        // `crate::codegen::net`. Winsock2 (`ws2_32.dll`) isn't part of this
-        // target's implicitly-linked default libraries the way libc/
-        // kernel32 are, so a Star program calling any of these needs
-        // `-l ws2_32` passed explicitly at build time.
-        self.line("declare i32 @WSAStartup(i16, i8*)");
-        self.line("declare i8* @socket(i32, i32, i32)");
-        self.line("declare i32 @connect(i8*, i8*, i32)");
-        self.line("declare i32 @send(i8*, i8*, i32, i32)");
-        self.line("declare i32 @recv(i8*, i8*, i32, i32)");
-        self.line("declare i32 @closesocket(i8*)");
-        self.line("declare i16 @htons(i16)");
-        self.line("declare i32 @inet_addr(i8*)");
+        // `crate::codegen::net`, declared for whichever `Target` this
+        // `Codegen` was built for by `crate::codegen::net::declare_net_externs`
+        // (mirroring `declare_platform_threading_externs`'s own pattern
+        // below). Under `Target::WindowsGnu`, Winsock2 (`ws2_32.dll`) isn't
+        // part of this target's implicitly-linked default libraries the way
+        // libc/kernel32 are, so a Star program calling any of these needs
+        // `-l ws2_32` passed explicitly at build time; `Target::LinuxGnu`
+        // needs no extra `-l` flag at all (plain glibc, already linked).
+        self.declare_net_externs();
         // `window_create`/`window_destroy`/`window_should_close`/
         // `clear_screen`/`draw_pixel`/`draw_rect`/`draw_line`/`present`/
         // `key_down`/`mouse_x`/`mouse_y`/`mouse_button_down`/`delay`/`ticks`
