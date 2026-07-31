@@ -2140,8 +2140,8 @@ fix) along the way.
 `debugger.star` (new, todo.md P2 #3): a headless CLI REPL, matching a piece
 of the upstream Python toolchain's own tooling (`nova_debugger.py`) that
 `readme.md`'s "Versioning" section names as part of "tooling to match
-Python reference" for the language-wide `0.1.0` gate. Command set is a
-close, deliberate port of `nova_debugger.py::NovaDebugger::handle_command`:
+Python reference" for the language-wide `0.1.0` gate, which has since been bumped to at least `0.2.0`.
+Command set is a close, deliberate port of `nova_debugger.py::NovaDebugger::handle_command`:
 `step`/`s` (single or `s N`), `run`/`continue`/`cont`, `regs`/`r`, `mem
 <addr>`, `stack`, `disasm`/`d [addr] [n]`, `break`/`b <addr>`,
 `breakpoints`/`bp`, `clear`/`c <addr>`, `load <file>`, `help`/`h`/`?`,

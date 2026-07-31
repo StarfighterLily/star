@@ -11,18 +11,21 @@ honestly" for the full verification and "The Bad" for where this cycle's
 own work still has loose ends (two uncommitted files, one stale doc
 reference).
 
+**U0: User-added items**
+1. Multi-line comments and other niceties would be worth scoping out.
+   Populate a `docs/requests.md` file with such features that might be
+   worth adding to the language that won't neccessarily unblock anything
+   but would be useful/easier/etc.
+
 **P0: Nothing to fix.** Full `cargo +stable-x86_64-pc-windows-gnu test`
 re-run this cycle, exit code 0. No false "Done." markers found.
 
 **P1: Small, concrete, worth doing before new feature work.**
-1. Decide whether to commit the two outstanding working-tree changes —
-   `docs/design.md`'s "Known Permanent Caveats" section (P2 #5 from the
-   `069` cycle, real and correct on disk but never committed) and this
-   cycle's own `todo.md` P3 closeout. A call for the user, not something
-   to do unprompted.
-2. Fix `projects/nova/NOTES.md`'s stale `0.1.0` reference (line 2143,
-   "the language-wide `0.1.0` gate") to reflect the `0.2.0` move.
-   One-line, mechanical.
+1. **Done.** I had simply forgotten to do so before the reassessment triggered.
+   Now committed along with the fresh reassessment and todo.
+2. **Done.** Added a fragment next to the stale `0.1.0` reference indicating
+   the version bump to "at least `0.2.0`", indicating advancement
+   but intentionally imprecise to avoid having to update another spot continuously.
 
 **P2: Real, standing items — none urgent, none blocking.**
 3. UART framed-mode protocol parsing (start byte + length + payload +
@@ -31,25 +34,34 @@ re-run this cycle, exit code 0. No false "Done." markers found.
    opcode currently drives it, so there's nothing to observably test
    without first deciding to invent that opcode surface. Carried forward
    for visibility, not as an active ask.
-4. The permanent structural caveats (Windows-only fonts, "special guest"
+4. **Done.** The permanent structural caveats (Windows-only fonts, "special guest"
    types unified in docs not mechanism, non-dynamic monomorphized-only
    traits, warning-only stack-budget check) — not gaps to close, a
    standing line item so a future version decision (a `1.0.0` push)
    doesn't have to rediscover them from scratch. Durable home is `docs/
    design.md`'s "Known Permanent Caveats" section once P1 #1 lands it in
-   git.
+   git. --Now done.
 
 **P3: Keep the cadence honest.**
-5. This cycle triggered two ways at once again — `todo.md`'s own full
+5. **Done.** This cycle triggered two ways at once again — `todo.md`'s own full
    completion (including its P3 items, closed out specifically because
    they were process notes rather than concrete asks) and a direct user
    request for the reassessment, back to back. The automatic trigger and
    a direct ask converging is the system working as intended.
-6. Continue starting the full `cargo test` run before drafting
+6. **Done.** Continue starting the full `cargo test` run before drafting
    `current_status.md` rather than concurrently with it — three reviews
    running have now made this adjustment; keep doing it.
 
 # Previous work
+P3: Marked off as done now so a task that closes out the todo can trigger a reassessment.
+Worth keeping this convention: having visible items get marked as done in acknowledgement
+instead of starting off as such ensures the items get seen and considered at least once.
+
+Out-of-band: Updated Claude/Cline files to check the `docs/cross_platform_scope.md`
+document for cross-platform reference without the "Windows only" statements preceding it.
+
+P1: The uncommitted changes called out were committed alongside this round's
+reassessment.
 
 See `changelog/070_2026-07-30_4082b7b_todo.md` and
 `changelog/070_2026-07-30_4082b7b_current_status.md` for the full history

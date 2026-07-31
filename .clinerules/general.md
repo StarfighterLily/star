@@ -41,7 +41,7 @@ general "don't explain what, explain why" standard.
 
 ## Platform scope
 
-Windows-only today, by construction — see `docs/cross_platform_scope.md`.
+See `docs/cross_platform_scope.md`.
 New OS-facing builtins should follow the existing thin-C-ABI-wrapper shape
 (`net.rs`/`os.rs`/`file_io.rs`) and leave a `Target`-gated seam even if
 the Linux arm isn't implemented yet, unless there's genuinely no cheap
