@@ -26,6 +26,15 @@ re-run this cycle, exit code 0 (confirmed by a full-output grep for
 3. UART TCP transport remains out of scope — `net.rs`'s `tcp_recv` has no
    non-blocking/timeout mode, so a TCP-backed bridge would freeze waiting
    on an idle peer. Not a regression; carried forward for visibility.
+8. `draw_pixels`/`texture_create`/`texture_update`/`texture_draw`/
+   `texture_destroy` (`src/codegen/sdl.rs`, added since this reseed — see
+   "Previous work" below) have no dedicated `tests/frontend_*.rs` file of
+   their own yet, unlike every other SDL builtin in this compiler. Existing
+   SDL test files didn't regress, but that's coverage-by-absence, not
+   coverage — the natural next step is a `frontend_sdl_bulk_pixel_blit.rs`
+   (or similar) covering arg-type checks, the `par`/`swarm` ban, and a real
+   `SDL_VIDEODRIVER=dummy` round-trip for both the one-shot and
+   cached-handle forms.
 4. The permanent structural caveats (Windows-only fonts, "special guest"
    types unified in docs not mechanism, non-dynamic monomorphized-only
    traits, warning-only stack-budget check) — not gaps to close, a
@@ -54,6 +63,36 @@ re-run this cycle, exit code 0 (confirmed by a full-output grep for
    running have now made this adjustment; keep doing it.
 
 # Previous work
+
+**Since this reseed** (not from the seeded board above — real compiler work
+that came up live, driven by a `projects/nova/` performance investigation,
+not a planned P-item): added two new SDL builtin families to the compiler
+itself — `draw_pixels(handle, pixels: Bytes, width, height, dst_x, dst_y,
+dst_w, dst_h)` and the cached-handle sibling `texture_create`/
+`texture_update`/`texture_draw`/`texture_destroy` (`src/codegen/sdl.rs`).
+Both replace a per-pixel `draw_rect` render-loop pattern (up to 65,536 real
+`SDL_SetRenderDrawColor`+`SDL_RenderFillRect` calls a frame — confirmed via
+direct measurement to be the actual bottleneck behind a Nova-16
+pixel-fill benchmark barely outrunning a Python reference) with a single
+bulk-texture-upload call. The two families share internal helpers
+(`emit_texture_create_raw`/`emit_texture_update_raw`) so their actual
+`SDL_CreateTexture`/`SDL_UpdateTexture` shape can't drift apart, and reuse
+`crate::codegen::system_font`'s existing `emit_build_rect` (widened from
+private to `pub(super)`) rather than re-deriving the `SDL_Rect`-building
+dance a third time. Registered through all five of this compiler's builtin
+touchpoints (`types/mod.rs`'s return-type table, `types/expr.rs`'s
+arg-type checks, `types/par_analysis.rs`'s `par`/`swarm` ban list,
+`codegen/expr.rs`'s dispatch, and the `sdl.rs` implementation itself). Full
+`cargo test` suite (75 binaries) re-verified clean, twice, after these
+changes and again after `main.star`'s own subsequent frame-pacing fixes —
+no regressions in the existing SDL/font/audio/snake test files, though see
+P2 #8 above for the real gap this left (no dedicated test file of the new
+builtins' own). See `projects/nova/NOTES.md`'s new "Render-loop performance
+and frame pacing" section for the full investigation this came out of
+(four distinct findings, two of them genuine bugs introduced by this
+round's own follow-on tuning) — the Nova-side half of that work
+(`main.star`'s `STEPS_PER_FRAME`/`STEP_TIME_BUDGET_MS` frame-pacing model)
+lives entirely in that project and doesn't touch the compiler.
 
 P1 #1: Corrected the stale UART frame mode claims and directed the reader
 to the file and line number (`uart.star`:13) of the comment section describing

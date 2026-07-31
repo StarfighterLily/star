@@ -2698,6 +2698,78 @@ impl Checker {
                     }
                 }
             }
+            // `draw_pixels(handle, pixels: Bytes, width, height, dst_x,
+            // dst_y, dst_w, dst_h)` -- `pixels` must be exactly `width *
+            // height * 4` bytes, tightly packed row-major RGBA (checked at
+            // runtime by `emit_draw_pixels`, not here -- this checker has no
+            // way to relate a `Bytes` value's runtime length to two `int`
+            // arguments at type-check time).
+            "draw_pixels" => {
+                if arity_ok(8, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`draw_pixels` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Bytes) {
+                        self.error(format!("`draw_pixels` argument 2 expected `Bytes`, found `{:?}`", arg_tys[1]), span);
+                    }
+                    for (i, t) in arg_tys[2..8].iter().enumerate() {
+                        if !tys_eq(t, &Ty::Int) {
+                            self.error(format!("`draw_pixels` argument {} expected `int`, found `{:?}`", i + 3, t), span);
+                        }
+                    }
+                }
+            }
+            // `texture_create`/`texture_update`/`texture_draw`/
+            // `texture_destroy` -- the cached-handle sibling of `draw_pixels`
+            // above (`crate::codegen::sdl::emit_texture_create`'s own doc
+            // comment).
+            "texture_create" => {
+                if arity_ok(3, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`texture_create` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    for (i, t) in arg_tys[1..3].iter().enumerate() {
+                        if !tys_eq(t, &Ty::Int) {
+                            self.error(format!("`texture_create` argument {} expected `int`, found `{:?}`", i + 2, t), span);
+                        }
+                    }
+                }
+            }
+            "texture_update" => {
+                if arity_ok(4, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`texture_update` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Bytes) {
+                        self.error(format!("`texture_update` argument 2 expected `Bytes`, found `{:?}`", arg_tys[1]), span);
+                    }
+                    for (i, t) in arg_tys[2..4].iter().enumerate() {
+                        if !tys_eq(t, &Ty::Int) {
+                            self.error(format!("`texture_update` argument {} expected `int`, found `{:?}`", i + 3, t), span);
+                        }
+                    }
+                }
+            }
+            "texture_draw" => {
+                if arity_ok(6, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`texture_draw` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Ptr) {
+                        self.error(format!("`texture_draw` argument 2 expected `ptr`, found `{:?}`", arg_tys[1]), span);
+                    }
+                    for (i, t) in arg_tys[2..6].iter().enumerate() {
+                        if !tys_eq(t, &Ty::Int) {
+                            self.error(format!("`texture_draw` argument {} expected `int`, found `{:?}`", i + 3, t), span);
+                        }
+                    }
+                }
+            }
+            "texture_destroy" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                    self.error(format!("`texture_destroy` expects a `ptr` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
             "key_down" | "mouse_button_down" | "delay" => {
                 if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Int) {
                     self.error(format!("`{}` expects an `int` argument, found `{:?}`", name, arg_tys[0]), span);

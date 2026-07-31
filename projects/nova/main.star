@@ -67,6 +67,54 @@ const SCREEN_SIZE: i32 = 256
 const TOOLBAR_H: i32 = 40
 const STATUS_H: i32 = 22
 
+# Frame-pacing model, matching the sibling C++ reference implementation's
+# own `Emulator::kTargetFPS`/`kDefaultCyclesPerFrame` exactly (`tachyon++/
+# include/tachyon/emulator.hpp`) rather than an arbitrary guess: `TT`/`TS`
+# (docs/CPU Specification.md's timer registers) are calibrated against an
+# assumed ~16MHz emulated Nova-16 clock (see `tachyon++/src/cpu.cpp::
+# set_timer_speed`'s own "Base divisor scales ~140KHz Python Nova to ~16MHz
+# C++" comment) -- so a program that paces its own animation off the timer
+# (`gfxtest.bin`/`starfield.bin`, unlike the pixel-fill benchmark that
+# originally motivated raising this cap) needs *exactly* that many cycles
+# to elapse per real second, not "as many as fit in a host frame". Cycles
+# per host frame must therefore be `virtual_clock_hz / target_fps`, not an
+# unrelated constant -- an earlier round here tried a flat 2000000 (roughly
+# 7.5x too many at 60 FPS) purely to make a CPU-bound batch program finish
+# in one frame instead of dozens, without noticing it also let up to 100x
+# more timer ticks elapse per host frame than any real Nova-16 clock rate
+# implies, breaking every timer-paced program's animation speed (reported
+# as "jerky at any TS value" -- exactly the symptom of skipping most
+# intermediate animation frames because 100x too much virtual time passes
+# between presents). `TARGET_FPS` is the one knob to retune if 60 ever
+# stops being the right host frame rate; `STEPS_PER_FRAME`/`FRAME_DELAY_MS`
+# both derive from it so they can't drift apart from each other the way a
+# second hardcoded `delay(16)` literal would risk.
+const TARGET_FPS: i32 = 60
+const VIRTUAL_CLOCK_HZ: i32 = 16000000
+const STEPS_PER_FRAME: i32 = VIRTUAL_CLOCK_HZ / TARGET_FPS
+const FRAME_DELAY_MS: i32 = 1000 / TARGET_FPS
+
+# Wall-clock safety net on top of `STEPS_PER_FRAME`'s instruction-count cap
+# -- `STEPS_PER_FRAME` counts *opcodes*, not real work, and Nova-16's bulk
+# graphics opcodes (`SFILL`/`SBLIT`/`VBLIT`/`SROL`/`SROT`/`SSHFT`/`SFLIP`/
+# `SINV`/`LSWAP`/`LMOVE`/`LCOPY`/`SPBLITALL`, `screen.star`) each do a real
+# 65536-element loop internally but count as exactly 1 step, same as a
+# `MOV`. `asm/screenflash.asm` (`SETUP: SFILL 0x0F; SFILL 0x00; JMP SETUP`,
+# looping forever) fits ~88888 passes into one frame's 266666-step budget --
+# ~11.65 billion real memory writes attempted before that frame's stepping
+# would otherwise be allowed to stop, hanging the whole process for tens of
+# seconds (reported as needing a manual force-kill). `STEP_TIME_BUDGET_MS`
+# bounds *wall-clock* time spent stepping per frame regardless of which
+# opcodes ran, so a run of unexpectedly heavy ones can't blow past the
+# frame budget by orders of magnitude -- worst-case overshoot is bounded to
+# one more opcode's real cost (a single `SFILL` is sub-millisecond), not
+# however many fit in the instruction-count cap. Set well above the ~13ms
+# a full 266666-step budget of *ordinary* (cheap) opcodes actually takes
+# (measured directly), so this never clips a normal timer-paced program's
+# real per-frame cycle budget -- it only ever fires for the pathological
+# heavy-opcode-loop case this exists to catch.
+const STEP_TIME_BUDGET_MS: i32 = 30
+
 const BTN_Y: i32 = 6
 const BTN_H: i32 = 28
 const BTN_START_X: i32 = 8
@@ -431,6 +479,39 @@ fn main():
     let mut prev_mouse_left = false
     let mut running = true
 
+    # RGBA scratch buffer for the emulator-screen render loop below, built
+    # once here (not per-frame) and reused every frame via index assignment
+    # -- `texture_update`/`texture_draw` (`crate::codegen::sdl`) replace what
+    # used to be a per-pixel `composite_pixel`+`draw_rect` loop (up to 65536
+    # real `SDL_SetRenderDrawColor`+`SDL_RenderFillRect` pairs every single
+    # frame -- profiling found this, not CPU-interpretation speed, was the
+    # real cost behind a "pixel-by-pixel screen fill" wall-clock time barely
+    # beating the Python reference's own, since both share this same
+    # per-pixel-SDL-call architecture) with one bulk texture upload per
+    # frame. Pre-filled with `SCREEN_SIZE * SCREEN_SIZE * 4` zero bytes via
+    # `push` up front so every later frame can index-assign into it directly
+    # instead of paying `Bytes`' growth-doubling reallocation cost on every
+    # single frame.
+    let mut pixel_buf = Bytes()
+    let mut prefill = 0
+    while prefill < SCREEN_SIZE * SCREEN_SIZE * 4:
+        pixel_buf.push(0 as u8)
+        prefill += 1
+
+    # The screen texture itself is created once here and reused every frame
+    # via `texture_update` -- `draw_pixels` (the one-shot alternative, still
+    # used by nothing in this file now) creates and destroys a fresh texture
+    # every call, which is fine for an occasional blit but is needless
+    # per-frame SDL texture churn for a loop that redraws at up to 60fps.
+    # Caching it here instead (matching the sibling C++ reference
+    # implementation's own persistent `screen_texture_`, created once at
+    # startup) is what closed the remaining gap after switching off
+    # per-pixel `draw_rect` calls.
+    let screen_tex = texture_create(w, SCREEN_SIZE, SCREEN_SIZE)
+    if is_null(screen_tex):
+        println("texture_create failed")
+        return
+
     while !window_should_close(w):
         if key_down(escape_sc):
             break
@@ -556,23 +637,47 @@ fn main():
 
         if running:
             let mut n = 0
-            while !c.halted and n < 20000:
+            let step_deadline = ticks() + STEP_TIME_BUDGET_MS
+            while !c.halted and n < STEPS_PER_FRAME and ticks() < step_deadline:
                 c.step()
                 n += 1
         elif single_step and !c.halted:
             c.step()
 
         clear_screen(w, Color32(20, 20, 20, 255))
+        # Bulk-blit the emulator screen: fill `pixel_buf` (row-major RGBA,
+        # one `composite_pixel`/`palette_color` lookup per pixel, same as
+        # before) then `texture_update`+`texture_draw` scale it 2x into the
+        # screen area against the persistent `screen_tex` created once above
+        # -- replacing what used to be up to 65536 individual `draw_rect`
+        # calls (a real `SDL_SetRenderDrawColor`+`SDL_RenderFillRect` pair
+        # each) with one `SDL_UpdateTexture` + `SDL_RenderCopy` pair per
+        # frame, with no per-frame `SDL_CreateTexture`/`SDL_DestroyTexture`
+        # churn (unlike the one-shot `draw_pixels` builtin this replaced).
+        # Background-colored pixels (`idx == 0`) are written explicitly here
+        # (matching `clear_screen`'s own (20, 20, 20) above) since the
+        # texture overwrites the whole screen area rather than leaving zero
+        # pixels untouched the way the old conditional `draw_rect` did.
         let mut y = 0
         while y < SCREEN_SIZE:
             let mut x = 0
             while x < SCREEN_SIZE:
                 let idx = c.screen.composite_pixel(x, y)
+                let off = (y * SCREEN_SIZE + x) * 4
                 if idx != (0 as u8):
                     let rgb = pal::palette_color(idx)
-                    draw_rect(w, x * 2, y * 2 + TOOLBAR_H, 2, 2, Color32(rgb.0 as i32, rgb.1 as i32, rgb.2 as i32, 255))
+                    pixel_buf[off] = rgb.0
+                    pixel_buf[off + 1] = rgb.1
+                    pixel_buf[off + 2] = rgb.2
+                else:
+                    pixel_buf[off] = 20 as u8
+                    pixel_buf[off + 1] = 20 as u8
+                    pixel_buf[off + 2] = 20 as u8
+                pixel_buf[off + 3] = 255 as u8
                 x += 1
             y += 1
+        texture_update(screen_tex, pixel_buf, SCREEN_SIZE, SCREEN_SIZE)
+        texture_draw(w, screen_tex, 0, TOOLBAR_H, SCREEN_SIZE * 2, SCREEN_SIZE * 2)
 
         # Toolbar.
         draw_rect(w, 0, 0, SCREEN_SIZE * 2, TOOLBAR_H, Color32(40, 40, 40, 255))
@@ -597,4 +702,4 @@ fn main():
         draw_text(w, font, str_join(status, ""), 6, status_y + 4, 1, Color32(200, 200, 200, 255))
 
         present(w)
-        delay(16)
+        delay(FRAME_DELAY_MS)

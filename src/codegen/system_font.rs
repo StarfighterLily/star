@@ -251,8 +251,11 @@ impl Codegen {
     /// own doc comment for the identical 16-byte layout) and return its
     /// pointer, without drawing anything -- `SDL_RenderCopy` (unlike
     /// `SDL_RenderFillRect`) needs *two* such rects (source and
-    /// destination) per call.
-    fn emit_build_rect(&mut self, x: &str, y: &str, w: &str, h: &str) -> String {
+    /// destination) per call. `pub(super)` (not private) so
+    /// `crate::codegen::sdl::emit_draw_pixels` can reuse it for its own
+    /// `SDL_RenderCopy` destination rect instead of duplicating this same
+    /// 16-byte-layout dance a third time.
+    pub(super) fn emit_build_rect(&mut self, x: &str, y: &str, w: &str, h: &str) -> String {
         let rect_buf = self.tmp_name();
         self.line(&format!("  {} = alloca [16 x i8]", rect_buf));
         let rect_ptr = self.tmp_name();

@@ -424,9 +424,256 @@ impl Codegen {
         self.line(&format!("  call i32 @SDL_RenderDrawLine(i8* {}, i32 {}, i32 {}, i32 {}, i32 {})", renderer, x1, y1, x2, y2));
     }
 
+    /// `376_840_196` == `SDL_PIXELFORMAT_RGBA32`, i.e. `SDL_PIXELFORMAT_
+    /// ABGR8888` on this little-endian target -- SDL's own alias for "the
+    /// packed format whose in-memory byte order is R,G,B,A regardless of
+    /// host endianness" (see `SDL_pixels.h`'s `#else` branch for
+    /// `SDL_BYTEORDER == SDL_LIL_ENDIAN`). Same constant `crate::codegen::
+    /// font`'s `get_pixel` already uses for the read direction; this is the
+    /// write direction of the identical byte layout, confirmed against a
+    /// small standalone C program built with this repo's own vendored SDL2
+    /// headers rather than assumed. Shared by `draw_pixels` and
+    /// `texture_create` -- both bulk-pixel-upload paths need the identical
+    /// format.
+    const SDL_PIXELFORMAT_RGBA32: u32 = 376_840_196;
+    const SDL_TEXTUREACCESS_STATIC: u32 = 0;
+
+    /// Abort (matches `abort_if_null_window`'s exact shape, texture-specific
+    /// wording) if `handle` is a null `ptr` -- used by every `texture_*`
+    /// builtin below except `texture_create`, which has no handle to misuse
+    /// yet (same reasoning as `abort_if_null_window`'s own doc comment).
+    fn abort_if_null_texture(&mut self, handle: &str, builtin_name: &str) {
+        let is_null = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i8* {}, null", is_null, handle));
+        let fail_label = self.block_label("sdl_null_texture");
+        let ok_label = self.block_label("sdl_texture_handle_ok");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, fail_label, ok_label));
+
+        self.open_block(&fail_label);
+        let msg = format!("star runtime error: {}(..) called with a null/destroyed texture handle\n", builtin_name);
+        let g = self.global_name();
+        let escaped = msg.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
+        self.global_defs.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", g, msg.len() + 1, escaped));
+        let msg_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0", msg_ptr, msg.len() + 1, msg.len() + 1, g));
+        self.line(&format!("  call i32 @puts(i8* {})", msg_ptr));
+        self.line("  call void @exit(i32 1)");
+        self.line("  unreachable");
+
+        self.open_block(&ok_label);
+    }
+
+    /// Raw `SDL_CreateTexture` call (`SDL_PIXELFORMAT_RGBA32`/
+    /// `SDL_TEXTUREACCESS_STATIC`, no null-branching) -- the shared tail of
+    /// `texture_create` and `draw_pixels`, factored out so a fresh texture is
+    /// built identically whether the caller wants to cache the handle itself
+    /// (`texture_create`) or let `draw_pixels` create-use-destroy it in one
+    /// shot.
+    fn emit_texture_create_raw(&mut self, renderer: &str, width: &str, height: &str) -> String {
+        let tex = self.tmp_name();
+        self.line(&format!(
+            "  {} = call i8* @SDL_CreateTexture(i8* {}, i32 {}, i32 {}, i32 {}, i32 {})",
+            tex, renderer, Self::SDL_PIXELFORMAT_RGBA32, Self::SDL_TEXTUREACCESS_STATIC, width, height
+        ));
+        tex
+    }
+
+    /// Raw `SDL_UpdateTexture` call (no null-branching -- callers check
+    /// `tex` themselves first, either via `abort_if_null_texture` or a
+    /// `create`-failure skip branch) -- the shared tail of `texture_update`
+    /// and `draw_pixels`.
+    fn emit_texture_update_raw(&mut self, tex: &str, data: &str, pitch: &str) {
+        self.line(&format!("  call i32 @SDL_UpdateTexture(i8* {}, i8* null, i8* {}, i32 {})", tex, data, pitch));
+    }
+
+    /// `texture_create(handle: ptr, width: int, height: int) -> ptr`:
+    /// creates a `width x height` streaming-format texture (`SDL_
+    /// PIXELFORMAT_RGBA32`) for a caller that wants to upload into and draw
+    /// the *same* texture across many frames -- see `texture_update`/
+    /// `texture_draw`/`texture_destroy` below, and `draw_pixels` above for
+    /// the one-shot alternative that doesn't need a handle at all. Null on
+    /// failure, same convention as `window_create`/`font_load`, checked with
+    /// `is_null` rather than aborting (a `SDL_CreateTexture` failure is the
+    /// expected, checkable failure point here, not a misused handle).
+    pub(super) fn emit_texture_create(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 3 {
+            self.err("texture_create(..) expects 3 arguments (window, width, height)", Span::dummy());
+            return "i8* null".into();
+        }
+        let val = self.emit_expr(&args[0]);
+        let window = self.untag(&val, &Ty::Ptr);
+        self.abort_if_null_window(&window, "texture_create");
+        let renderer = self.emit_sdl_get_renderer(&window);
+        let wv = self.emit_expr(&args[1]);
+        let width = self.untag(&wv, &Ty::Int);
+        let hv = self.emit_expr(&args[2]);
+        let height = self.untag(&hv, &Ty::Int);
+        let tex = self.emit_texture_create_raw(&renderer, &width, &height);
+        format!("i8* {}", tex)
+    }
+
+    /// `texture_update(tex: ptr, pixels: Bytes, width: int, height: int)`:
+    /// uploads `pixels` (tightly packed row-major RGBA, `width * height * 4`
+    /// bytes) into an existing texture from `texture_create` via one
+    /// `SDL_UpdateTexture` call -- the per-frame half of the cached-texture
+    /// pair, paired with `texture_draw` below.
+    pub(super) fn emit_texture_update(&mut self, args: &[TypedExpr]) {
+        if args.len() < 4 {
+            self.err("texture_update(..) expects 4 arguments (tex, pixels, width, height)", Span::dummy());
+            return;
+        }
+        let tval = self.emit_expr(&args[0]);
+        let tex = self.untag(&tval, &Ty::Ptr);
+        self.abort_if_null_texture(&tex, "texture_update");
+        let (data, _len) = self.list_fields(&args[1], &Ty::U8);
+        let wv = self.emit_expr(&args[2]);
+        let width = self.untag(&wv, &Ty::Int);
+        let pitch = self.tmp_name();
+        self.line(&format!("  {} = mul i32 {}, 4", pitch, width));
+        self.emit_texture_update_raw(&tex, &data, &pitch);
+    }
+
+    /// `texture_draw(handle: ptr, tex: ptr, dst_x: int, dst_y: int, dst_w:
+    /// int, dst_h: int)`: `SDL_RenderCopy`s an existing texture (from
+    /// `texture_create`, most recently filled by `texture_update`) scaled
+    /// into the `(dst_x, dst_y, dst_w, dst_h)` destination rect.
+    pub(super) fn emit_texture_draw(&mut self, args: &[TypedExpr]) {
+        if args.len() < 6 {
+            self.err("texture_draw(..) expects 6 arguments (window, tex, dst_x, dst_y, dst_w, dst_h)", Span::dummy());
+            return;
+        }
+        let val = self.emit_expr(&args[0]);
+        let window = self.untag(&val, &Ty::Ptr);
+        self.abort_if_null_window(&window, "texture_draw");
+        let renderer = self.emit_sdl_get_renderer(&window);
+        let tval = self.emit_expr(&args[1]);
+        let tex = self.untag(&tval, &Ty::Ptr);
+        self.abort_if_null_texture(&tex, "texture_draw");
+        let dxv = self.emit_expr(&args[2]);
+        let dst_x = self.untag(&dxv, &Ty::Int);
+        let dyv = self.emit_expr(&args[3]);
+        let dst_y = self.untag(&dyv, &Ty::Int);
+        let dwv = self.emit_expr(&args[4]);
+        let dst_w = self.untag(&dwv, &Ty::Int);
+        let dhv = self.emit_expr(&args[5]);
+        let dst_h = self.untag(&dhv, &Ty::Int);
+        let dst_rect = self.emit_build_rect(&dst_x, &dst_y, &dst_w, &dst_h);
+        self.line(&format!("  call i32 @SDL_RenderCopy(i8* {}, i8* {}, i8* null, i8* {})", renderer, tex, dst_rect));
+    }
+
+    /// `texture_destroy(tex: ptr)`: `SDL_DestroyTexture`, nulling the
+    /// caller's own binding afterward -- same convention as `window_destroy`/
+    /// `font_free` (see either's doc comment for why: destroying a texture
+    /// doesn't invalidate the handle *value* itself, which a later,
+    /// unrelated `texture_create` may reuse for a different texture).
+    pub(super) fn emit_texture_destroy(&mut self, args: &[TypedExpr]) {
+        let Some(arg) = args.first() else {
+            self.err("texture_destroy(..) expects 1 argument", Span::dummy());
+            return;
+        };
+        let val = self.emit_expr(arg);
+        let tex = self.untag(&val, &Ty::Ptr);
+        self.abort_if_null_texture(&tex, "texture_destroy");
+        self.line(&format!("  call void @SDL_DestroyTexture(i8* {})", tex));
+        if let TypedExpr::Ident { .. } = arg {
+            let place = self.emit_place(arg);
+            self.line(&format!("  store i8* null, i8** {}", place));
+        }
+    }
+
+    /// `draw_pixels(handle: ptr, pixels: Bytes, width: int, height: int,
+    /// dst_x: int, dst_y: int, dst_w: int, dst_h: int)`: bulk pixel blit --
+    /// uploads `pixels` (tightly packed row-major RGBA, `width * height * 4`
+    /// bytes, one `SDL_UpdateTexture` call) into a fresh `width x height`
+    /// texture and `SDL_RenderCopy`s it scaled into the `(dst_x, dst_y,
+    /// dst_w, dst_h)` destination rect, in place of a caller looping
+    /// `draw_pixel`/`draw_rect` once per source pixel.
+    ///
+    /// Exists for exactly the shape `projects/nova/main.star`'s render loop
+    /// had before this builtin: recomposite every one of a 256x256 layered
+    /// framebuffer's pixels every frame, then call `draw_rect` (a real
+    /// `SDL_SetRenderDrawColor` + `SDL_RenderFillRect` pair each,
+    /// `emit_draw_rect` above) for every nonzero one -- up to ~131,000 real
+    /// SDL calls per frame. Profiling (see that project's own NOTES.md) found
+    /// this, not raw opcode-interpretation speed, was the actual bottleneck
+    /// behind a native build's screen-fill wall time barely beating the
+    /// Python reference's: both share the same per-pixel-SDL-call
+    /// architecture, so neither's interpreter speed ever gets to matter. This
+    /// collapses that to a handful of calls per frame regardless of pixel
+    /// count.
+    ///
+    /// Creates and destroys its own texture every call -- for a caller
+    /// making the same-sized call every frame (`projects/nova/main.star`'s
+    /// own render loop, now), `texture_create`/`texture_update`/
+    /// `texture_draw`/`texture_destroy` above avoid that per-frame texture
+    /// churn by letting the caller hold the handle across frames instead.
+    /// This one-shot form stays for a caller that doesn't want to manage a
+    /// handle at all -- reusing `emit_texture_create_raw`/`emit_texture_
+    /// update_raw` so the actual `SDL_CreateTexture`/`SDL_UpdateTexture`
+    /// shape can't drift between the two paths.
+    pub(super) fn emit_draw_pixels(&mut self, args: &[TypedExpr]) {
+        if args.len() < 8 {
+            self.err(
+                "draw_pixels(..) expects 8 arguments (window, pixels, width, height, dst_x, dst_y, dst_w, dst_h)",
+                Span::dummy(),
+            );
+            return;
+        }
+        let val = self.emit_expr(&args[0]);
+        let window = self.untag(&val, &Ty::Ptr);
+        self.abort_if_null_window(&window, "draw_pixels");
+        let renderer = self.emit_sdl_get_renderer(&window);
+
+        // `list_fields` reads `pixels`'s `(ptr, len)` fields directly,
+        // exactly like `file_io.rs::emit_file_write_bytes` does for its own
+        // `Bytes` argument -- no by-value copy of a potentially-256KB+
+        // buffer.
+        let (data, _len) = self.list_fields(&args[1], &Ty::U8);
+
+        let wv = self.emit_expr(&args[2]);
+        let width = self.untag(&wv, &Ty::Int);
+        let hv = self.emit_expr(&args[3]);
+        let height = self.untag(&hv, &Ty::Int);
+        let dxv = self.emit_expr(&args[4]);
+        let dst_x = self.untag(&dxv, &Ty::Int);
+        let dyv = self.emit_expr(&args[5]);
+        let dst_y = self.untag(&dyv, &Ty::Int);
+        let dwv = self.emit_expr(&args[6]);
+        let dst_w = self.untag(&dwv, &Ty::Int);
+        let dhv = self.emit_expr(&args[7]);
+        let dst_h = self.untag(&dhv, &Ty::Int);
+
+        let tex = self.emit_texture_create_raw(&renderer, &width, &height);
+        let tex_null = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i8* {}, null", tex_null, tex));
+        let skip_label = self.block_label("draw_pixels_skip");
+        let ok_label = self.block_label("draw_pixels_ok");
+        let end_label = self.block_label("draw_pixels_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", tex_null, skip_label, ok_label));
+
+        // `SDL_CreateTexture` can fail (e.g. renderer lost) -- same
+        // "skip the draw, don't crash" convention every other builtin here
+        // uses for a non-fatal SDL failure (contrast `abort_if_null_window`,
+        // reserved for a misused *handle*, not a transient driver failure).
+        self.open_block(&skip_label);
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&ok_label);
+        let pitch = self.tmp_name();
+        self.line(&format!("  {} = mul i32 {}, 4", pitch, width));
+        self.emit_texture_update_raw(&tex, &data, &pitch);
+        let dst_rect = self.emit_build_rect(&dst_x, &dst_y, &dst_w, &dst_h);
+        self.line(&format!("  call i32 @SDL_RenderCopy(i8* {}, i8* {}, i8* null, i8* {})", renderer, tex, dst_rect));
+        self.line(&format!("  call void @SDL_DestroyTexture(i8* {})", tex));
+        self.line(&format!("  br label %{}", end_label));
+
+        self.open_block(&end_label);
+    }
+
     /// `present(handle: ptr)`: `SDL_RenderPresent` -- flips the backbuffer
-    /// built up by `clear_screen`/`draw_pixel`/`draw_rect`/`draw_line` to the
-    /// screen. Nothing drawn this frame is visible until this is called.
+    /// built up by `clear_screen`/`draw_pixel`/`draw_rect`/`draw_line`/
+    /// `draw_pixels`/`texture_draw` to the screen. Nothing drawn this frame
+    /// is visible until this is called.
     pub(super) fn emit_present(&mut self, args: &[TypedExpr]) {
         let Some(arg) = args.first() else {
             self.err("present(..) expects 1 argument", Span::dummy());

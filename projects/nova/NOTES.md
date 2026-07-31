@@ -148,6 +148,24 @@ of a second/third full struct-literal-returning call, which builds and
 links normally. Worth investigating for real if this shape ever recurs
 elsewhere.
 
+**Performance round** (user-reported: "a pixel-by-pixel screen fill takes
+~2 seconds, barely faster than the Python reference's ~5"): found and fixed
+a real per-pixel-SDL-call bottleneck in `main.star`'s render loop, then two
+further bugs the fix's own follow-on tuning introduced along the way — a
+frame-pacing regression that made every timer-paced program (`gfxtest.bin`/
+`starfield.bin`) jerky, and a wall-clock hang in a heavy-bulk-opcode program
+(`screenflash.bin`) bad enough to need a manual process kill. See
+"Render-loop performance and frame pacing" below for the full arc,
+including a headless-CPU-only measurement that ruled out interpreter speed
+as the bottleneck (confirmed the *opposite* of the obvious guess) and a
+direct `clang -O2` IR check that ruled out `execute()`'s ~190-arm opcode
+`match` too. Two new compiler builtin families came out of it — `draw_pixels`
+and `texture_create`/`texture_update`/`texture_draw`/`texture_destroy`
+(`src/codegen/sdl.rs`) — this project's first genuinely new addition to the
+Star language's SDL surface since the original graphics/input floor was
+built. Full `cargo test` suite (75 binaries) re-verified clean after every
+step.
+
 ## Contents
 
 - `star.toml` — project manifest.
@@ -232,7 +250,7 @@ elsewhere.
 ## Building and running
 
 ```
-star build projects/nova/main.star -L sdl/lib/x64 -l SDL2 -o projects/nova/nova16.exe
+star build projects/nova/main.star -L sdl/lib/x64 -l SDL2 -l comdlg32 -o projects/nova/nova16.exe
 ```
 
 `sdl/lib/x64/SDL2.dll` must sit next to the built `.exe` (or be on `PATH`).
@@ -1129,7 +1147,15 @@ in:
 
 - **The timer ticks once per emulated instruction**, not once per host
   clock cycle. This is an interpreter, not a cycle-accurate simulator —
-  documented as a deliberate simplification, not an oversight.
+  documented as a deliberate simplification, not an oversight. Related but
+  distinct: how many emulated instructions/how much wall-clock time elapse
+  per *host frame* is `main.star`'s own concern, not `cpu.star`'s — see
+  "Render-loop performance and frame pacing" below for the
+  `STEPS_PER_FRAME`/`STEP_TIME_BUDGET_MS` model this round settled on
+  (calibrated against an assumed ~16MHz virtual clock, matching the
+  sibling Tachyon++ C++ reference implementation) and why a genuinely
+  cycle-accurate opcode-cost model was considered and set aside in favor
+  of a simpler wall-clock backstop.
 - **Timer catch-up is capped at +1 per tick** rather than "advance by
   however many divisor-periods elapsed," which only differs from the
   reference under a `TS` so small relative to instruction throughput that
@@ -2319,6 +2345,170 @@ script process were inconclusive in this environment (Windows' foreground-
 lock restrictions can silently drop a background process's simulated
 keystrokes), which is an environment limitation of this verification
 attempt, not evidence of a bug in the hotkey code itself.
+
+## Render-loop performance and frame pacing
+
+Triggered by a real user report: "a pixel-by-pixel screen fill takes ~2
+seconds, barely faster than the Python reference's ~5" — surprising, since
+this is a natively-compiled interpreter running against a CPython one. Four
+distinct findings came out of chasing that down, two of them genuine bugs
+introduced by this round's own earlier fixes rather than pre-existing —
+recorded in full because the dead ends (ruled out by direct measurement,
+not assumption) are as informative as what actually mattered.
+
+**Finding 1 — the bottleneck was never CPU-interpretation speed.** A
+throwaway `.asm` benchmark (pixel-by-pixel `SWRITE` over the full 256x256
+screen, 328,450 cycles) run through the headless `tests/run_bin.exe`
+harness completed in **0.097 seconds** — over 20x faster than the reported
+~2s, and nowhere near slow enough to be the cause. This also gave a clean
+opportunity to check a plausible-looking suspect directly instead of taking
+it on faith: `cpu.star::execute()`'s ~190-arm `match` on the opcode byte
+lowers to a genuine linear chain of `icmp`+`br` pairs at the Star-IR level
+(`Codegen`'s `match` codegen only ever emits compare-and-branch chains, never
+an LLVM `switch`, confirmed by reading `src/codegen/expr.rs`) — worth
+checking because a 190-way linear scan on every single instruction sounded
+like exactly the kind of hidden cost that would explain this. It doesn't:
+`star emit llvm` + `clang -S -emit-llvm -O2` on the real `main.star` showed
+clang's own `SimplifyCFG` pass reconstructing a real jump-table `switch`
+from that chain for the whole contiguous opcode range (confirmed by
+grepping the optimized IR for `switch i8 %opcode` and seeing every `0`-`126`
+case land in one instruction) — a `-O2` build effectively gets O(1)
+dispatch already, so this was never a lead worth chasing further. (A
+similar chain in `palette.star::palette_color` — 15 `<=` range-compare arms,
+not equality — does *not* get this treatment, since `SimplifyCFG`'s switch
+formation only applies to equality chains against a shared value; confirmed
+the same way. It turned out not to matter either — see Finding 2 — but is
+worth remembering if a genuinely hot range-compare chain ever shows up in a
+profile.)
+
+**Finding 2 — the real cost was per-pixel SDL calls, not Star code at
+all.** `main.star`'s render loop called `draw_rect` (a real
+`SDL_SetRenderDrawColor`+`SDL_RenderFillRect` pair, `crate::codegen::sdl::
+emit_draw_rect`) once per nonzero composited pixel — up to 65,536 real SDL
+calls a frame. Both this port and the Python reference (`nova_gui.py`)
+share this same per-pixel-draw-call architecture, which is exactly why
+native compilation barely helped: the bottleneck was host-side SDL/OS call
+overhead common to both, not anything either interpreter's own speed could
+touch. Fixed by adding a new compiler builtin, **`draw_pixels(handle: ptr,
+pixels: Bytes, width: int, height: int, dst_x: int, dst_y: int, dst_w: int,
+dst_h: int)`** (`src/codegen/sdl.rs`): builds one RGBA buffer in Star code
+(still one `composite_pixel`/`palette_color` lookup per pixel, but no FFI
+call per pixel) and blits it in a single `SDL_CreateTexture`+
+`SDL_UpdateTexture`+`SDL_RenderCopy`+`SDL_DestroyTexture` sequence.
+Registered through all five of this compiler's builtin touchpoints
+(`types/mod.rs`'s return-type table, `types/expr.rs`'s arg-type checks,
+`types/par_analysis.rs`'s `par`/`swarm` ban list — it touches the shared
+renderer, same reasoning as every other SDL builtin there — `codegen/
+expr.rs`'s dispatch, and the `emit_draw_pixels` implementation itself).
+User-observed result: ~2s down to ~1s.
+
+Chasing the texture-management shape further against the sibling C++
+reference implementation, **Tachyon++** (`c:\Code\projects\cpp\tachyon++`,
+a from-scratch Nova-16 emulator, not a port of this project or the Python
+one) showed its own render path already does exactly the same
+create-texture-then-`SDL_RenderCopy` blit `main.star` had just been given
+— confirming the fix's shape independently — but with one difference:
+Tachyon++ creates its screen texture **once** at startup and reuses it via
+`SDL_UpdateTexture` every frame, while `draw_pixels` creates and destroys a
+fresh texture every call. Added the cached-handle sibling family —
+**`texture_create(handle, width, height) -> ptr`**, **`texture_update(tex,
+pixels, width, height)`**, **`texture_draw(handle, tex, dst_x, dst_y,
+dst_w, dst_h)`**, **`texture_destroy(tex)`** — sharing internal helpers
+(`emit_texture_create_raw`/`emit_texture_update_raw`) with `draw_pixels` so
+the actual `SDL_CreateTexture`/`SDL_UpdateTexture` shape can't drift
+between the one-shot and cached-handle paths, and reusing `crate::codegen::
+system_font`'s existing `emit_build_rect` helper (widened from private to
+`pub(super)`) rather than re-deriving the `SDL_Rect`-building dance a third
+time. `main.star` now creates `screen_tex` once before the main loop and
+calls `texture_update`/`texture_draw` per frame. User-observed result:
+**no noticeable difference** — the per-frame texture churn this targeted
+was never actually the bottleneck either, which the next finding explains.
+
+**Finding 3 — the actual remaining cost was frame *count*, not frame
+*content*.** Instrumented per-frame timing (a temporary `ticks()`-wrapped
+copy of the render loop, run both headless under `SDL_VIDEODRIVER=dummy`
+and for real in an actual window) showed every phase — CPU stepping,
+buffer fill, texture update/draw, toolbar/status UI, present — costing
+1-3ms a frame. The original 20,000-instruction-per-frame cap (a pre-existing
+constant, not part of this round's own changes) meant a CPU-bound program
+needing far more than 20,000 cycles paid the loop's flat `delay(16)` once
+per 20,000-cycle slice rather than running to completion in one or two
+frames — 17 frames of mostly-idle 16ms sleeps to run the 328,450-cycle
+fill benchmark. Raised to 2,000,000 as a first attempt (`STEPS_PER_FRAME`
+in `main.star`) — the fill became near-instant — but this broke every
+timer-paced program's animation speed instead: `gfxtest.bin`/
+`starfield.bin` (both explicitly program `TT`/`TM`/`TS`/`TC` to drive their
+own animation off the timer interrupt, `asm/starfield.asm`:14-17) became
+"jerky at any TS value," because up to ~100x more virtual cycles (and
+therefore timer ticks) now elapsed between presents than any real Nova-16
+clock rate implies — most intermediate animation frames were being computed
+and immediately overwritten, never actually presented.
+
+Root-caused, again, by checking Tachyon++ directly rather than re-guessing:
+its `Emulator::kTargetFPS = 60` and `kDefaultCyclesPerFrame = 16'000'000 /
+kTargetFPS` (`tachyon++/include/tachyon/emulator.hpp`) derive the per-frame
+cycle budget from an explicit target frame rate and an assumed ~16MHz
+virtual Nova-16 clock — the same clock rate `tachyon++/src/cpu.cpp::
+set_timer_speed`'s own comment documents scaling the timer divisor against
+("Base divisor scales ~140KHz Python Nova to ~16MHz C++"). `main.star` now
+uses the identical, verified-correct model instead of an arbitrary guess:
+
+```
+const TARGET_FPS: i32 = 60
+const VIRTUAL_CLOCK_HZ: i32 = 16000000
+const STEPS_PER_FRAME: i32 = VIRTUAL_CLOCK_HZ / TARGET_FPS   # 266666
+const FRAME_DELAY_MS: i32 = 1000 / TARGET_FPS                # 16
+```
+
+`delay(16)`'s literal argument is now `delay(FRAME_DELAY_MS)`, so the step
+budget and the frame sleep both derive from the one `TARGET_FPS` constant
+and can't drift apart the way two independent hardcoded literals could.
+266,666 cycles is still comfortably more than the pixel-fill benchmark
+needs (finishes in ~2 frames instead of 1 — imperceptible), while restoring
+correct real-time pacing for timer-driven animation. User-confirmed:
+`gfxtest.bin`/`starfield.bin` animation speed restored, fill still
+near-instant.
+
+**Finding 4 — the step budget counts instructions, not real work.** A
+fourth program, `asm/screenflash.asm` (`SETUP: SFILL 0x0F; SFILL 0x00; JMP
+SETUP`, an intentional infinite flash loop), brought the whole process to
+its knees badly enough to need a manual kill. Root cause: `STEPS_PER_FRAME`
+counts *opcodes*, not real cost, and Nova-16's bulk graphics opcodes
+(`SFILL`/`SBLIT`/`VBLIT`/`SROL`/`SROT`/`SSHFT`/`SFLIP`/`SINV`/`LSWAP`/
+`LMOVE`/`LCOPY`/`SPBLITALL`, `screen.star`) each run a real 65,536-element
+loop internally but count as exactly 1 step, same as a `MOV`. At
+`STEPS_PER_FRAME = 266,666`, ~88,888 passes through `screenflash.bin`'s
+3-instruction loop fit in one frame's budget, each doing 2 `SFILL`s x
+65,536 writes — **~11.65 billion memory writes attempted before that
+frame's stepping would even be allowed to stop**, a multi-second-to-a-minute
+hang by construction, regardless of how fast `Screen::sfill`'s own
+implementation is. Fixed with a wall-clock safety net alongside the
+existing instruction-count cap — `STEP_TIME_BUDGET_MS = 30`, checked via
+`ticks()` in the step loop's own condition — bounding worst-case per-frame
+stepping time to roughly one more opcode's real cost regardless of which
+opcodes ran, instead of however many fit in the instruction-count cap.
+Verified directly (the same instrumented per-frame timing as Finding 3):
+`screenflash.bin` now shows `step_ms=30` (hitting the new wall-clock
+cutoff) and only ~920-940 steps executed per frame, instead of the
+runaway. Chosen with headroom above the ~13ms a full 266,666-step budget of
+*ordinary* (cheap) opcodes actually takes, measured directly, so it only
+ever fires for this pathological heavy-opcode-loop case, never clipping a
+normal program's real per-frame cycle budget. User-confirmed:
+`screenflash.bin` now flashes as intended, and `gfxtest.bin`/
+`starfield.bin`/the pixel-fill benchmark all still work correctly.
+
+A genuine cycle-accuracy question came up along the way ("would switching
+to a more accurate simulation help performance?") and is worth recording
+the answer to directly: no, and it's closer to the *opposite* — modeling
+each opcode's real per-cycle hardware cost is a fidelity feature, not a
+speed one, and would add bookkeeping overhead rather than remove it. What
+Finding 4 actually needed was a *cost-aware step budget* (weighting
+`STEPS_PER_FRAME` by each opcode's real relative cost instead of counting
+every opcode as 1) or, as implemented, a wall-clock backstop that doesn't
+need per-opcode cost modeling at all. Both are legitimate; the wall-clock
+version was chosen here for being the smaller, more general fix — it
+protects against *any* unexpectedly expensive opcode, present or future,
+not just the ones enumerated above.
 
 ## Load button and `open_file_dialog`
 

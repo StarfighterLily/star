@@ -817,6 +817,11 @@ impl Codegen {
                     Some("draw_pixel") => { self.emit_draw_pixel(args); "%undef".into() }
                     Some("draw_rect") => { self.emit_draw_rect(args); "%undef".into() }
                     Some("draw_line") => { self.emit_draw_line(args); "%undef".into() }
+                    Some("draw_pixels") => { self.emit_draw_pixels(args); "%undef".into() }
+                    Some("texture_create") => self.emit_texture_create(args),
+                    Some("texture_update") => { self.emit_texture_update(args); "%undef".into() }
+                    Some("texture_draw") => { self.emit_texture_draw(args); "%undef".into() }
+                    Some("texture_destroy") => { self.emit_texture_destroy(args); "%undef".into() }
                     Some("present") => { self.emit_present(args); "%undef".into() }
                     Some("key_down") => self.emit_key_down(args),
                     Some("mouse_x") => self.emit_mouse_x(),

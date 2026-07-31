@@ -986,6 +986,24 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "window_destroy" | "clear_screen" | "draw_pixel" | "draw_rect" | "draw_line" | "present" | "delay" => {
             Some(Ty::Named("unknown".into()))
         }
+        // `draw_pixels(handle: ptr, pixels: Bytes, width: int, height: int,
+        // dst_x: int, dst_y: int, dst_w: int, dst_h: int)`: bulk pixel blit
+        // for the "build one RGBA buffer, upload it once" pattern -- see
+        // `crate::codegen::sdl::emit_draw_pixels`'s own doc comment for why
+        // this exists alongside `draw_pixel`/`draw_rect` rather than making
+        // callers loop those per-pixel themselves.
+        "draw_pixels" => Some(Ty::Named("unknown".into())),
+        // `texture_create(handle: ptr, width: int, height: int) -> ptr`/
+        // `texture_update(tex: ptr, pixels: Bytes, width: int, height: int)`/
+        // `texture_draw(handle: ptr, tex: ptr, dst_x: int, dst_y: int, dst_w:
+        // int, dst_h: int)`/`texture_destroy(tex: ptr)` -- the cached-handle
+        // sibling of `draw_pixels` above, for a caller that draws the same
+        // texture every frame (see `crate::codegen::sdl::emit_texture_create`'s
+        // own doc comment). `texture_create` reuses `Ty::Ptr` as an opaque
+        // `SDL_Texture*` handle, null on failure, same convention as
+        // `window_create`/`font_load`.
+        "texture_create" => Some(Ty::Ptr),
+        "texture_update" | "texture_draw" | "texture_destroy" => Some(Ty::Named("unknown".into())),
         "window_should_close" | "key_down" | "mouse_button_down" => Some(Ty::Bool),
         "mouse_x" | "mouse_y" | "ticks" => Some(Ty::Int),
         // Text-rendering/font-loading builtins -- see `crate::codegen::font`
