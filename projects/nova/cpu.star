@@ -147,6 +147,19 @@ struct Cpu:
     # outright. See `sound.star`'s header comment for the full "why this is
     # safe with no per-channel completion callback" writeup.
     mut sound_channel_handles: [ptr; 16]
+    # The raw, still-dry WAV buffer `op_splay` (`cpu_sound.star`) most
+    # recently synthesized for each of Nova's 8 *addressable* hardware
+    # channels (0-7 only -- `STRIG`'s 8-15 one-shot pool isn't cached here,
+    # see `sound.star`'s "SMIX/SECHO/SREVERB/SFILTER" header section for
+    # why). `todo.md` P2 #4: since neither the upstream reference nor this
+    # port had a real handler for `SMIX`/`SECHO`/`SREVERB`/`SFILTER`, this
+    # cache is what lets those four opcodes have *something real* to process
+    # without a new "read back the live mixer buffer" native builtin --
+    # `List<Bytes>` (dynamic, unlike `sound_channel_handles`'s fixed `[ptr;
+    # 16]`) because a `Bytes`'s zero/default value isn't a usable "empty
+    # buffer" the way `null_ptr()` already is for `ptr`; `new_channel_wav_cache`
+    # below explicitly seeds all 8 slots with a real (empty) `Bytes()`.
+    mut sound_channel_last_wav: List<Bytes>
 
     mut mx: Wrapping<u8>
     mut my: Wrapping<u8>
@@ -158,6 +171,22 @@ struct Cpu:
 
     mut halted: bool
     mut cycles: i64
+
+# `Cpu::sound_channel_last_wav`'s only valid initial state -- 8 real empty
+# `Bytes()` values (one per hardware channel), not a bare `List<Bytes>()`
+# left to grow lazily, so every index 0-7 is always safe to read/write from
+# construction onward. Shared by `new_cpu` (`main.star`) and
+# `Cpu::reinit`/`cpu_sound.star::free_all_sound_handles` (`SSTOP`/`Reset`
+# both need to clear this cache exactly like `sound_channel_handles`, since
+# there's nothing left to apply `SECHO`/`SREVERB`/`SFILTER` to once
+# everything's been stopped/reset).
+fn new_channel_wav_cache() -> List<Bytes>:
+    let mut l: List<Bytes> = List<Bytes>()
+    let mut i = 0
+    while i < 8:
+        l.push(Bytes())
+        i += 1
+    l
 
 impl Cpu:
     # ── Register-code address space ────────────────────────────────────
@@ -1134,6 +1163,14 @@ impl Cpu:
                 self.op_memtest()
             0x7E ->
                 self.op_memmove()
+            0x7F ->
+                self.op_smix()
+            0x80 ->
+                self.op_secho()
+            0x81 ->
+                self.op_sreverb()
+            0x82 ->
+                self.op_sfilter()
             0x83 ->
                 self.op_itob()
             0x84 ->

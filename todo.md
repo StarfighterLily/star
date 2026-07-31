@@ -21,9 +21,8 @@ it, with new regression coverage.**
 **P2: Real, still-open gaps — none block the version question above,
 since the gate never named them.**
 3. **Done.** `sound.star`'s leaked WAV handles. See below for details.
-4. `SMIX`/`SECHO`/`SREVERB`/`SFILTER` and `debugger.star` source-line
-   breakpoints — both still genuinely out of scope, carried forward for
-   visibility, not active work items.
+4. **Done.** `SMIX`/`SECHO`/`SREVERB`/`SFILTER` and `debugger.star`
+   source-line breakpoints. See below for details.
 5. The permanent structural caveats ("special guest" types unified in docs
    not mechanism, non-dynamic monomorphized-only traits, warning-only
    stack-budget check) — not gaps to close, but worth keeping as a standing
@@ -56,6 +55,105 @@ since the gate never named them.**
    running have now made this adjustment; keep doing it.
 
 # Previous work
+P2 #4: Closed out both halves of the item this cycle explicitly carried
+forward for visibility rather than as an active work item, at the user's
+direct request ("close out these issues and implementations once and for
+all"). Neither half had a reference to port from, so both required real
+design decisions rather than transcription:
+
+`SMIX`/`SECHO`/`SREVERB`/`SFILTER` have no upstream implementation at all
+(the Python reference's own `opcodes.py` marks all four `# unimplemented`
+too), which is exactly why every prior cycle left them alone rather than
+inventing bug-for-bug-unmatchable behavior. Asked the user which shape to
+build before writing any code, since the options genuinely diverged in
+effort and architecture, not just detail: real DSP built entirely in Star
+against a new per-channel cached dry buffer (no native codegen changes), a
+version requiring new native `crate::codegen::audio` "read back the live
+mixer" builtins, or a minimal accept-but-inert wiring that stops short of
+real audio. User picked the first. Design: `Cpu::sound_channel_last_wav`
+(`cpu.star`, a `List<Bytes>` sized 8 for hardware channels 0-7 only —
+`STRIG`'s 8-15 one-shot pool isn't cached, nothing stable there to apply an
+effect to) caches the raw WAV buffer `op_splay` (`cpu_sound.star`) most
+recently synthesized per channel; `play_tone`/`play_memory_sample`
+(`sound.star`) now return `(handle, wav)` instead of just `handle` so that
+cache has something to populate itself with. `SECHO`/`SREVERB`/`SFILTER
+channel, param` (new `op_secho`/`op_sreverb`/`op_sfilter`) read that cache,
+run it through new `sound.star` DSP (`apply_echo`: two decaying taps at a
+20-500ms delay mapped from the operand; `apply_reverb`: a fixed 4-tap comb
+scaled by the operand; `apply_filter`: a one-pole low/high/band-pass IIR,
+reusing the same "one-pole running filter" shape `waveform_sample`'s
+existing pink-noise case already established rather than introducing a new
+technique), and re-trigger playback of the processed buffer on the same
+channel via the existing `play_pcm_wav_on_channel` — an immediate "applies"
+semantics matching `docs/nova16_instruction_reference.md`'s own present-tense
+wording. `SMIX output` (new `op_smix`) averages all 8 cached buffers
+sample-by-sample (`sound.star::mix_wavs`) onto `output`, which becomes that
+channel's new cached buffer too, so a `SMIX` result is itself chainable into
+a further effect. New `wav_sample_at`/`push_frame_amp` in `sound.star`
+invert/mirror the existing `push_frame` encoding to read/write already-
+amplitude-scaled samples (the cached buffer is already volume-scaled at
+synthesis time). `assembler.star`'s `build_unimplemented()` no longer lists
+these four (previously rejected at assembly time, mirroring the Python
+assembler's own `UNIMPLEMENTED_INSTRUCTIONS` check); `cpu.star::execute`
+gained real dispatch arms for `0x7F`-`0x82`; `disasm.star`/`debugger.star`'s
+opcode tables flip their `verified` flag from `false` to `true` for all
+four, since there's now a real handler to have cross-checked their operand
+counts against. Every `Cpu`-constructing site (`main.star`, `debugger.star`,
+`tests/run_bin.star`, `uart_bridge.star`) updated for the new field, backed
+by a new `cpu::new_channel_wav_cache()` shared by construction and by
+`free_all_sound_handles` (now also clearing this cache on `SSTOP`/`Reset`,
+same as it already did for `sound_channel_handles`).
+
+`debugger.star`'s source-line breakpoints needed a real line->address map
+that didn't exist anywhere in this project — `assembler.star` gained a
+fourth sidecar, `.lines` (`write_lines`), one `<source_line> <address>` row
+per line that actually emits an instruction. A new `AsmLine::source_line`
+field is threaded through `parse_line`/`finish_directive_line`/
+`finish_instruction_line` from `main`'s own `raw_lines` loop index, and
+`second_pass` records each `has_instruction` line's address (computed the
+same way segment addresses already were, before that line's own bytes are
+emitted) into two new parallel lists. `debugger.star`'s `break`/`b`/
+`clear`/`c` now accept `:<line>` alongside the existing raw-address form
+(`parse_break_location`, resolved through a new `load_line_table` — loaded
+automatically next to `.sym`, both at startup and on `load`), and
+`breakpoints`/`bp` plus a breakpoint hit during `run`/`continue` label their
+address with `[line N]` (`line_suffix`, mirroring the existing
+`symbol_suffix`) whenever the table has one. No upstream `nova_debugger.py`
+behavior to match here — its own breakpoints are address-only too — so this
+is a genuine addition, not a port.
+
+Verified without any Rust-level changes (this was entirely Nova `.star`
+source work) by rebuilding every Nova build target (`assembler.exe`,
+`disasm.exe`, `debugger.exe`, `nova16.exe`, `tests/run_bin.exe`,
+`uart_bridge.exe`) clean, then: (1) reassembling every checked-in
+`tests/asm/*.asm`/`asm/*.asm` with the updated assembler and diffing the
+resulting `.bin`/`.org`/`.sym` byte-for-byte against their pre-change
+versions — all identical, confirming the new `source_line` tracking changes
+nothing about actual code generation; (2) re-running the full existing
+`tests/asm/*.bin` suite through `tests/run_bin.exe` — same `halted`/
+`cycles_run`/`pc` as before on every file, no regression from the new
+`Cpu` field or opcode dispatch entries; (3) a new checked-in smoke test,
+`asm/sound_fx_test.asm` (same spirit as `sound_channel_test.asm`/
+`sound_leak_test.asm` — no reference expected values exist for these four
+opcodes, so this checks "runs clean to `HLT`, exercises every operand,
+doesn't crash on an empty cache" rather than exact register values),
+run via both `tests/run_bin.exe` (`halted=true`, exit 0) and `debugger.exe`
+stepping all 29 instructions headlessly, plus confirming the underlying
+temp WAV file's size actually reflects real DSP processing (117KB with the
+echo/reverb tail padding vs. ~62KB for the dry buffer alone) rather than a
+silent no-op; (4) `tests/debugger_test_commands.txt`/
+`tests/debugger_test_expected.txt` extended with `break :1` (no code on
+that comment line — confirms the error path), `break :67`/`breakpoints`/
+`clear :67`/`breakpoints` (line 67 of `write_width_test.asm` is its `HLT`,
+`0x006C` — the same address the pre-existing address-only breakpoint
+commands already use, cross-checking both syntaxes against one known-good
+address), regenerated via the script's own documented procedure, and
+`run_debugger_test.ps1` re-run clean. `NOTES.md`'s "What's implemented"/
+"What's not implemented"/"Assembler"/"Debugger"/"Ideas for future work"
+sections and `sound.star`/`cpu_sound.star`/`assembler.star`/`debugger.star`'s
+own header comments all updated to describe the real implementation rather
+than the former "genuinely out of scope" framing.
+
 P2 #6: A Linux devbox came online (user-set-up WSL2 Debian, reachable via
 SSH at `localhost:2222`) and `docs/cross_platform_scope.md`'s
 previously-unscheduled Linux-port plan became active work. Bootstrapping

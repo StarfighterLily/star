@@ -12,4 +12,9 @@ run
 regs
 clear 0x006C
 breakpoints
+break :1
+break :67
+breakpoints
+clear :67
+breakpoints
 quit

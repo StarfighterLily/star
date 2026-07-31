@@ -94,6 +94,7 @@ fn new_cpu() -> cpu::Cpu:
         sw = Wrapping<u8>(0 as u8),
         next_strig_channel = 8,
         sound_channel_handles = [null_ptr(); 16],
+        sound_channel_last_wav = cpu::new_channel_wav_cache(),
         mx = Wrapping<u8>(0 as u8),
         my = Wrapping<u8>(0 as u8),
         mb = Wrapping<u8>(0 as u8),

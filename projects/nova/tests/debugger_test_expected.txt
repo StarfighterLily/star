@@ -5,8 +5,8 @@ Nova-16 Debugger CLI. Type 'help' for commands.
   step <n>, s <n>   Step <n> instructions
   run, continue     Run until breakpoint or halt
   disasm [addr] [n] Show disassembly (default: PC, 5 instructions)
-  break <addr>, b   Set breakpoint at address
-  clear <addr>, c   Clear breakpoint at address
+  break <addr>, b   Set breakpoint at address (hex/decimal), or :<line> for a source line
+  clear <addr>, c   Clear breakpoint at address, or :<line> for a source line
   breakpoints, bp   List all breakpoints
   regs, r           Show CPU registers
   mem <addr>        Show memory at <addr>
@@ -74,11 +74,11 @@ FLAGS: T=false S=false O=false B=false D=false I=false C=false Z=false P=true H=
   FP: 0xFFFF (frame pointer)
   Stack contents (top to bottom):
   0x0006
-(nova-debug) Breakpoint set at 0x006C
+(nova-debug) Breakpoint set at 0x006C [line 67]
 (nova-debug) Breakpoints:
-  0x006C
+  0x006C [line 67]
 (nova-debug) Running until breakpoint...
-Breakpoint hit at 0x006C
+Breakpoint hit at 0x006C [line 67]
 0x006C:  00 HLT
 PC: 0x006C
 R0-R9: R0:0x0C R1:0xD7 R2:0xCD R3:0x0C R4:0xCD R5:0x34 R6:0xCD R7:0xCD R8:0xCD R9:0x00
@@ -99,6 +99,12 @@ VM: 0x00 VX: 0x00 VY: 0x00 VL: 0x00 VC: 0x00
 SA: 0x0000 SF: 0x00 SV: 0x00 SW: 0x00
 TT: 0x00 TM: 0x00 TC: 0x00 TS: 0x00
 FLAGS: T=false S=false O=false B=false D=false I=false C=false Z=false P=false H=false A=false E=false
-(nova-debug) Breakpoint cleared at 0x006C
+(nova-debug) Breakpoint cleared at 0x006C [line 67]
+(nova-debug) No breakpoints set
+(nova-debug) No code at line :1
+(nova-debug) Breakpoint set at 0x006C [line 67]
+(nova-debug) Breakpoints:
+  0x006C [line 67]
+(nova-debug) Breakpoint cleared at 0x006C [line 67]
 (nova-debug) No breakpoints set
 (nova-debug) 

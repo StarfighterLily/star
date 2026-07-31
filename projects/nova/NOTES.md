@@ -992,11 +992,12 @@ mechanical version's and are identical.
 ## What's implemented
 
 The full CPU/memory/register-file/flags architecture, the fetch-decode-
-execute cycle, all four addressing modes, and 167 opcodes (of the 180
+execute cycle, all four addressing modes, and 171 opcodes (of the 180
 `docs/nova16_instruction_reference.md` documents as real instructions —
-the 13 gap is exactly "What's not implemented" below: 6 hardware-debugging
-opcodes, `STREXT`/`STREXTI`/`MEMCMP`, and `SMIX`/`SECHO`/`SREVERB`/
-`SFILTER`. This count, and every opcode's exact operand count below, was
+the 9 gap is exactly "What's not implemented" below: 6 hardware-debugging
+opcodes and `STREXT`/`STREXTI`/`MEMCMP`. `SMIX`/`SECHO`/`SREVERB`/`SFILTER`
+moved out of that gap this round — see the Sound bullet below and `todo.md`
+P2 #4. This count, and every opcode's exact operand count below, was
 mechanically cross-checked against `cpu.star`'s own `decode_operands(N)`
 call sites while building the disassembler — see "Disassembler" below,
 which is also where this replaces this section's own former "roughly 140"
@@ -1035,8 +1036,15 @@ estimate):
   channel plus a one-shot pool, and per-channel handle tracking that frees
   a channel's previous `sound_load` handle instead of leaking it (todo.md
   P2 #3); see `sound.star`/`cpu_sound.star`. `SMIX SECHO SREVERB SFILTER`
-  are unimplemented in the reference itself, see "What's not implemented"
-  below.
+  are now real too (todo.md P2 #4) — genuine, Star-original DSP (there's no
+  reference implementation to match at all; `opcodes.py` leaves all four
+  unimplemented), built as post-synthesis processing of a per-channel cached
+  dry buffer rather than new native "read back the live mixer" codegen: a
+  2-tap decaying echo, a 4-tap comb reverb, a one-pole low/high/band-pass
+  filter, and an averaging channel mixer. See `sound.star`'s own "SMIX/
+  SECHO/SREVERB/SFILTER" header section for the full design and why it fits
+  this project's existing "synthesize a WAV buffer, then play it"
+  architecture.
 - Keyboard: `KEYIN KEYSTAT KEYCOUNT KEYCLEAR KEYCTRL`
 - `MOUSECTRL` (real host mouse plumbing — see "Mouse plumbing" below).
 - Every register-code target (`R0-R9, P0-P9, SP, FP, VX, VY, VM, VL, VC,
@@ -1073,11 +1081,14 @@ in:
   library, now implemented — see "String library and integer/string
   conversion" below) and **`MEMCMP`** — both 4-operand opcodes; see
   "4-operand instructions are out of scope" above.
-- **`SMIX SECHO SREVERB SFILTER`** specifically — still genuinely
-  unimplemented, unlike `SPLAY`/`SSTOP`/`STRIG` (see `sound.star` below):
-  the reference's own `opcodes.py` marks these four `# unimplemented` too
-  (no handler exists there either), so leaving them unimplemented here
-  stays a bug-for-bug match, not a gap. **`SPLAY`/`SSTOP`/`STRIG` waveform
+- ~~`SMIX SECHO SREVERB SFILTER`~~ — **now implemented** (todo.md P2 #4),
+  reversing this section's own earlier "leaving them unimplemented stays a
+  bug-for-bug match" entry. There was never a reference implementation to
+  match (`opcodes.py` marks all four `# unimplemented` too), so closing this
+  out meant genuine, Star-original DSP design rather than a port — see the
+  Sound bullet in "What's implemented" above and `sound.star`'s own "SMIX/
+  SECHO/SREVERB/SFILTER" header section for the design and why it doesn't
+  need new native `crate::codegen::audio` code. **`SPLAY`/`SSTOP`/`STRIG` waveform
   synthesis itself is now implemented** (todo.md P0 #1, reversing this
   section's own earlier "a host-audio concern, not implemented" entry) —
   see `sound.star`'s header comment for the WAV-file-roundtrip approach
@@ -1263,6 +1274,30 @@ was checked against; not repeated here. What's checked in:
   reads, even though the identical script through a real file redirects
   correctly every time; root cause not chased down since a real file
   works and was already the plan).
+- `asm/sound_fx_test.asm` (+ `.bin`) — added with `todo.md` P2 #4's `SMIX`/
+  `SECHO`/`SREVERB`/`SFILTER` work, same spirit as `sound_channel_test.asm`/
+  `sound_leak_test.asm`: a smoke test, not a register-value comparison,
+  since there's no upstream reference behavior for these four opcodes to
+  compare against. Exercises every documented operand (`SECHO`/`SREVERB`/
+  `SFILTER`'s channel + delay/amount/type, `SMIX`'s output), a channel with
+  nothing cached yet (documented no-op path), and re-processing an
+  already-processed channel (`SFILTER` applied twice in a row). Verified via
+  `tests/run_bin.exe` (`halted=true`, exit 0) and via `debugger.exe`
+  stepping the full 29 instructions to completion, both headless
+  (`SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=dummy`); also confirmed the DSP
+  actually runs (not just no-ops through) by checking the resulting temp WAV
+  file's real size grows well past what a single dry buffer would produce
+  (117KB vs. the ~62KB dry effect buffer alone), consistent with
+  `apply_echo`/`apply_reverb`'s own padded-tail design.
+- `tests/debugger_test_commands.txt`/`tests/debugger_test_expected.txt`
+  extended (not replaced) for `todo.md` P2 #4's source-line breakpoints:
+  `break :1` (no instruction on that line), `break :67`/`breakpoints`/
+  `clear :67`/`breakpoints` (line 67 of `write_width_test.asm` is its
+  `HLT`, address `0x006C` — the same address the pre-existing address-only
+  breakpoint commands already used, so both syntaxes are cross-checked
+  against the same known-good address in one fixture) appended after the
+  existing sequence. Regenerated via the script's own documented
+  regeneration command, then `run_debugger_test.ps1` re-run clean.
 
 Every one of these was **also** run against the live Python reference
 (`python -c "..."` scripts importing `nova_memory`/`nova_gfx`/`nova_cpu`
@@ -1861,10 +1896,11 @@ future reader who spots the shared handler in `cpu.star` doesn't mistake it
 for a missing-opcode bug.
 
 Opcodes with no `cpu.star` handler at all (hardware debugging, `STREXT`/
-`STREXTI`/`MEMCMP`, `SMIX`/`SECHO`/`SREVERB`/`SFILTER` — see "What's not
-implemented" above) have no running code to cross-check against, so their
-operand counts are still doc-sourced and flagged `unverified` in
-`disasm.star`'s own table.
+`STREXTI`/`MEMCMP` — see "What's not implemented" above) have no running
+code to cross-check against, so their operand counts are still doc-sourced
+and flagged `unverified` in `disasm.star`'s own table. `SMIX`/`SECHO`/
+`SREVERB`/`SFILTER` used to be in that same bucket; `todo.md` P2 #4 gave
+them real handlers, so `disasm.star`'s table now flags them `verified` too.
 
 One earlier suspected doc gap that turned out **not** to be real, corrected
 before it was written down anywhere permanent: a first pass over
@@ -1916,6 +1952,21 @@ inputs. Named as the single biggest remaining named-tooling gap since the
 disassembler round (todo.md P1 #2, "Ideas for future work"): the binary
 loader and disassembler gave an assembler's output somewhere to go and a
 way to check it immediately, which wasn't true before either existed.
+
+**Later addition (todo.md P2 #4)**: a fourth sidecar, `.lines` (`write_lines`)
+— one `<source_line> <address>` row per line that actually emits an
+instruction, tracked via a new `AsmLine::source_line` field threaded through
+`parse_line`/`finish_directive_line`/`finish_instruction_line` from `main`'s
+own `raw_lines` loop index. Unlike `.org`/`.sym`, this has no upstream
+Python-assembler equivalent to match — it exists purely to unblock
+`debugger.star`'s new `break :N` source-line breakpoint syntax (see
+"Debugger" below). Verified byte-identical `.bin`/`.org`/`.sym` output
+across every checked-in `tests/asm/*.asm`/`asm/*.asm` after adding this
+(the new field only ever gets *read*, never changes what bytes get emitted
+or in what order), plus a hand-checked `.lines` table for
+`write_width_test.asm` (line 67's `HLT` maps to `0x006C`, matching that
+file's own pre-existing `debugger_test_commands.txt` breakpoint address
+exactly).
 
 ### Design: reuse the disassembler's own verified tables, don't re-derive
 
@@ -2100,6 +2151,26 @@ addresses by symbol name in disassembly/breakpoint output, matching
 `nova_debugger.py::load_symbol_table`'s identical behavior. Not ported:
 the Python CLI's `--steps N` startup flag (the REPL's own `step N` command
 already covers it interactively).
+
+**Later addition (todo.md P2 #4, "source-line breakpoints")**: `break`/`b`/
+`clear`/`c` now also accept `:<line>` — a source line number instead of a
+raw address, resolved through a `.lines` sidecar (also automatically loaded
+next to `.bin`, produced by `assembler.star`'s new `write_lines`; see
+"Assembler" above) via a new `load_line_table`/`parse_break_location`.
+There is no upstream `nova_debugger.py` behavior to match here (its own
+breakpoints are address-only too, same as this port's were until now) — a
+genuine addition, not a port. `breakpoints`/`bp` and a breakpoint hit during
+`run`/`continue` both label their address with `[line N]` (via a new
+`line_suffix`, mirroring the existing `symbol_suffix`) whenever the `.lines`
+table has one, alongside the pre-existing `(symbol)` label. Verified against
+`tests/asm/write_width_test.bin`: `break :67` resolves to `0x006C` (its
+`HLT`, the exact address the pre-existing address-only breakpoint test
+already used), `break :1` (a comment line, no instruction) correctly reports
+"No code at line :1" instead of silently breaking at address 0, and a `run`
+lands on the line-set breakpoint with the same register values the existing
+address-based test already confirmed — folded into the checked-in
+`run_debugger_test.ps1` regression (`debugger_test_commands.txt`/
+`debugger_test_expected.txt` both extended, not replaced).
 
 Deliberately duplicates a handful of small helpers from `disasm.star`
 (the full opcode/operand-formatting tables) and `assembler.star`
@@ -2792,9 +2863,10 @@ unfixed here since it's NoBASIC's compiler, a separate project.
   one-loop-channel-plus-one-shot-pool collapse with 8 independently
   addressable hardware channels (`SW` bits 3-5), and waveform 6 now runs
   the reference's own one-pole IIR filter instead of a 3-tap running
-  average. Real remaining gap in this area: `SMIX`/`SECHO`/`SREVERB`/
-  `SFILTER` (still genuinely unimplemented, matching the reference) and
-  UART framed-mode parsing.
+  average. ~~`SMIX`/`SECHO`/`SREVERB`/`SFILTER`~~ — also done (todo.md P2
+  #4), see "What's implemented"/"What's not implemented" above; there was
+  no reference to match, so this was genuine new DSP design, not a port.
+  Remaining gap in this area: UART framed-mode parsing.
 - ~~Splitting `cpu.star`'s ~100 opcode-handler methods across files by
   group~~ — done (todo.md P2 #5): `cpu_data.star`/`cpu_arith.star`/
   `cpu_math.star`/`cpu_bitwise.star`/`cpu_stack.star`/`cpu_control.star`/
@@ -2813,11 +2885,14 @@ unfixed here since it's NoBASIC's compiler, a separate project.
   "GUI+controls parity" above (todo.md P2 #3). These were the last two
   named-tooling gaps in `readme.md`'s versioning gate's "tooling to match
   Python reference" condition; every concrete piece that gate names is now
-  built (see the file's own framing note at the top). Real remaining gaps,
-  by deliberate scope cut rather than oversight: `debugger.star` has no
-  source-line breakpoints (only numeric-address ones — nothing in this
-  project maps a `.asm` source line back to an address at debug time, only
-  symbol *names*, which it does support).
+  built (see the file's own framing note at the top). ~~`debugger.star` has
+  no source-line breakpoints~~ — also done (todo.md P2 #4): `assembler.star`
+  now emits a `.lines` sidecar (source line -> address, `write_lines`) next
+  to `.bin`/`.org`/`.sym`, and `break`/`clear` accept `:<line>` alongside the
+  existing numeric-address form, resolved through that sidecar
+  (`load_line_table`). There's no upstream `nova_debugger.py` behavior to
+  match here — its own breakpoints are address-only too — so this is a
+  genuine addition, not a port.
 - ~~A file-dialog-backed "Load" button~~ — done, see "Load button and
   `open_file_dialog`" above: a new `open_file_dialog` compiler builtin
   (Windows `GetOpenFileNameA`) backs a real `Load` toolbar button/F9

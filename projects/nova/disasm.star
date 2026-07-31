@@ -41,9 +41,11 @@
 # real two-operand example). Wherever `cpu.star` has a real handler, that
 # handler's own `decode_operands` call is what's encoded below; the doc is
 # only trusted for opcodes with no handler at all (hardware debugging,
-# STREXT/STREXTI/MEMCMP, SMIX/SECHO/SREVERB/SFILTER -- see NOTES.md "What's
-# not implemented") since there's no running code to check those against --
-# each is commented below as doc-only/unverified.
+# STREXT/STREXTI/MEMCMP -- see NOTES.md "What's not implemented") since
+# there's no running code to check those against -- each is commented below
+# as doc-only/unverified. SMIX/SECHO/SREVERB/SFILTER used to be in that same
+# doc-only bucket; `todo.md` P2 #4 gave them real `cpu.star` handlers, so
+# they're now verified like everything else.
 #
 # Two same-byte aliases, confirmed intentional (not bugs) by reading the
 # Python reference's own handlers directly rather than assuming: `INTGR`
@@ -195,10 +197,14 @@ fn reg_name(code: u8) -> str:
         _ -> concat("0x", hex_byte(code as i32))
 
 # Opcode -> (mnemonic, operand count, verified-against-a-real-handler).
-# `verified=false` entries (hardware debugging, STREXT/STREXTI/MEMCMP,
-# SMIX/SECHO/SREVERB/SFILTER) have no `cpu.star` handler to cross-check at
-# all -- their operand count is the doc's own claim, unverified, matching
-# NOTES.md's own "What's not implemented" list.
+# `verified=false` entries (hardware debugging, STREXT/STREXTI/MEMCMP) have
+# no `cpu.star` handler to cross-check at all -- their operand count is the
+# doc's own claim, unverified, matching NOTES.md's own "What's not
+# implemented" list. SMIX/SECHO/SREVERB/SFILTER (0x7F/0x80/0x81/0x82) *are*
+# verified now (`todo.md` P2 #4, `cpu_sound.star::op_smix`/`op_secho`/
+# `op_sreverb`/`op_sfilter`) -- their operand counts were always right (the
+# doc happened to match `cpu.star`'s own `decode_operands` calls once those
+# existed), only `verified` itself needed flipping.
 fn opcode_info(op: u8) -> (str, i32, bool):
     match op as i32:
         0x00 -> ("HLT", 0, true)
@@ -377,10 +383,10 @@ fn opcode_info(op: u8) -> (str, i32, bool):
         0x57 -> ("SPLAY", 0, true)
         0x58 -> ("SSTOP", 0, true)
         0x59 -> ("STRIG", 1, true)
-        0x7F -> ("SMIX", 1, false)
-        0x80 -> ("SECHO", 2, false)
-        0x81 -> ("SREVERB", 2, false)
-        0x82 -> ("SFILTER", 2, false)
+        0x7F -> ("SMIX", 1, true)
+        0x80 -> ("SECHO", 2, true)
+        0x81 -> ("SREVERB", 2, true)
+        0x82 -> ("SFILTER", 2, true)
         _ -> ("???", 0, false)
 
 # Formats one operand starting at `data[pos]` per `cpu.star::decode_operand`'s

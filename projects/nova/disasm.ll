@@ -74,6 +74,7 @@ declare i8* @CreateDIBSection(i8*, i8*, i32, i8**, i8*, i32)
 declare i32 @TextOutA(i8*, i32, i32, i8*, i32)
 declare i32 @AddFontResourceExA(i8*, i32, i8*)
 declare i32 @RemoveFontResourceExA(i8*, i32, i8*)
+declare i32 @GetOpenFileNameA(i8*)
 declare i8* @SDL_CreateTexture(i8*, i32, i32, i32, i32)
 declare i32 @SDL_UpdateTexture(i8*, i8*, i8*, i32)
 declare i32 @SDL_SetTextureBlendMode(i8*, i32)
@@ -4938,7 +4939,7 @@ match_then_176_1589:
   %t1595 = getelementptr inbounds { i8*, i32, i1 }, { i8*, i32, i1 }* %t1592, i32 0, i32 1
   store i32 1, i32* %t1595
   %t1596 = getelementptr inbounds { i8*, i32, i1 }, { i8*, i32, i1 }* %t1592, i32 0, i32 2
-  store i1 false, i1* %t1596
+  store i1 true, i1* %t1596
   %t1597 = load { i8*, i32, i1 }, { i8*, i32, i1 }* %t1592
   br label %match_end_3
 match_next_176_1590:
@@ -4951,7 +4952,7 @@ match_then_177_1598:
   %t1604 = getelementptr inbounds { i8*, i32, i1 }, { i8*, i32, i1 }* %t1601, i32 0, i32 1
   store i32 2, i32* %t1604
   %t1605 = getelementptr inbounds { i8*, i32, i1 }, { i8*, i32, i1 }* %t1601, i32 0, i32 2
-  store i1 false, i1* %t1605
+  store i1 true, i1* %t1605
   %t1606 = load { i8*, i32, i1 }, { i8*, i32, i1 }* %t1601
   br label %match_end_3
 match_next_177_1599:
@@ -4964,7 +4965,7 @@ match_then_178_1607:
   %t1613 = getelementptr inbounds { i8*, i32, i1 }, { i8*, i32, i1 }* %t1610, i32 0, i32 1
   store i32 2, i32* %t1613
   %t1614 = getelementptr inbounds { i8*, i32, i1 }, { i8*, i32, i1 }* %t1610, i32 0, i32 2
-  store i1 false, i1* %t1614
+  store i1 true, i1* %t1614
   %t1615 = load { i8*, i32, i1 }, { i8*, i32, i1 }* %t1610
   br label %match_end_3
 match_next_178_1608:
@@ -4977,7 +4978,7 @@ match_then_179_1616:
   %t1622 = getelementptr inbounds { i8*, i32, i1 }, { i8*, i32, i1 }* %t1619, i32 0, i32 1
   store i32 2, i32* %t1622
   %t1623 = getelementptr inbounds { i8*, i32, i1 }, { i8*, i32, i1 }* %t1619, i32 0, i32 2
-  store i1 false, i1* %t1623
+  store i1 true, i1* %t1623
   %t1624 = load { i8*, i32, i1 }, { i8*, i32, i1 }* %t1619
   br label %match_end_3
 match_next_179_1617:
@@ -7875,8 +7876,8 @@ list_read_end_631:
   br i1 %t36, label %if_then_632, label %if_else_633
 if_then_632:
   %t37 = getelementptr inbounds { i64, i8*, [47 x i8] }, { i64, i8*, [47 x i8] }* @.str.299, i64 0, i32 2, i64 0
-  call void @star_rc_release(i8* %t37)
   call i32 (i8*, ...) @printf(i8* %t37)
+  call void @star_rc_release(i8* %t37)
   %t38 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.300, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t38)
   %t39 = load i8*, i8** %t2
@@ -8061,8 +8062,8 @@ join_build_done_658:
   %t145 = load i8*, i8** %t129
   store i8 0, i8* %t145
   call void @star_rc_release(i8* %t103)
-  call void @star_rc_release(i8* %t128)
   call i32 (i8*, ...) @printf(i8* %t128)
+  call void @star_rc_release(i8* %t128)
   %t146 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.305, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t146)
   %t147 = load i8*, i8** %t61
@@ -8728,8 +8729,8 @@ join_build_done_754:
   %t548 = load i8*, i8** %t532
   store i8 0, i8* %t548
   call void @star_rc_release(i8* %t506)
-  call void @star_rc_release(i8* %t531)
   call i32 (i8*, ...) @printf(i8* %t531)
+  call void @star_rc_release(i8* %t531)
   %t549 = getelementptr inbounds [2 x i8], [2 x i8]* @.str.315, i64 0, i64 0
   call i32 (i8*, ...) @printf(i8* %t549)
   %t550 = load i1, i1* %t373

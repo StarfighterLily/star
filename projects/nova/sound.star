@@ -448,6 +448,14 @@ fn loop_temp_path() -> str:
 fn effect_temp_path() -> str:
     f"{temp_dir()}\\nova16_synth_effect.wav"
 
+# Third fixed temp path, dedicated to `SMIX`/`SECHO`/`SREVERB`/`SFILTER`
+# (`todo.md` P2 #4) so a channel-effect re-trigger can never race the
+# `SPLAY`/`STRIG` temp paths above -- same "safe to reuse, `sound_load` fully
+# reads the file into its own independent buffer before returning" reasoning
+# as `loop_temp_path`/`effect_temp_path` (see this file's header comment).
+fn fx_temp_path() -> str:
+    f"{temp_dir()}\\nova16_synth_fx.wav"
+
 # Writes `wav` to `path`, loads it back, and starts playback on the exact
 # mixer channel `channel` (`crate::codegen::audio::sound_play_channel`) --
 # `looped` matches SW's own loop bit, `channel` is either one of Nova's 8
@@ -477,22 +485,31 @@ fn play_pcm_wav_on_channel(path: str, wav: Bytes, channel: u8, looped: bool) -> 
     handle
 
 # `cpu.star::op_splay`'s entry point for waveforms 1-6 (tone-shaped).
-# `channel` is `SW`'s own decoded channel-select bits (3-5). Returns the new
-# handle now playing on `channel`, or `null_ptr()` on failure -- see
-# `play_pcm_wav_on_channel`'s own doc comment.
-fn play_tone(waveform: u8, freq: f32, volume: u8, looped: bool, channel: u8) -> ptr:
+# `channel` is `SW`'s own decoded channel-select bits (3-5). Returns
+# `(handle, wav)`: the new handle now playing on `channel` (or `null_ptr()`
+# on failure, see `play_pcm_wav_on_channel`'s own doc comment), *and* the raw
+# synthesized WAV bytes -- `cpu_sound.star::op_splay` caches the latter into
+# `Cpu::sound_channel_last_wav` (`todo.md` P2 #4) so `SECHO`/`SREVERB`/
+# `SFILTER`/`SMIX` have real dry audio to process later; see
+# `cpu_sound.star`'s header comment for why that cache, not a "read back the
+# live mixer buffer" builtin, is this project's answer to those four opcodes
+# having no reference implementation to match.
+fn play_tone(waveform: u8, freq: f32, volume: u8, looped: bool, channel: u8) -> (ptr, Bytes):
     if looped:
-        play_pcm_wav_on_channel(loop_temp_path(), synth_loop_tone(waveform, freq, volume), channel, true)
+        let wav = synth_loop_tone(waveform, freq, volume)
+        (play_pcm_wav_on_channel(loop_temp_path(), wav, channel, true), wav)
     else:
-        play_pcm_wav_on_channel(effect_temp_path(), synth_tone(waveform, freq, volume, 0.35), channel, false)
+        let wav = synth_tone(waveform, freq, volume, 0.35)
+        (play_pcm_wav_on_channel(effect_temp_path(), wav, channel, false), wav)
 
 # `cpu.star::op_splay`'s entry point for waveform 7 (memory sample). Same
-# "new handle or `null_ptr()`" return as `play_tone`.
-fn play_memory_sample(samples: Bytes, volume: u8, looped: bool, channel: u8) -> ptr:
+# "new handle or `null_ptr()`, plus the raw wav" return as `play_tone`.
+fn play_memory_sample(samples: Bytes, volume: u8, looped: bool, channel: u8) -> (ptr, Bytes):
+    let wav = synth_memory_sample(samples, volume)
     if looped:
-        play_pcm_wav_on_channel(loop_temp_path(), synth_memory_sample(samples, volume), channel, true)
+        (play_pcm_wav_on_channel(loop_temp_path(), wav, channel, true), wav)
     else:
-        play_pcm_wav_on_channel(effect_temp_path(), synth_memory_sample(samples, volume), channel, false)
+        (play_pcm_wav_on_channel(effect_temp_path(), wav, channel, false), wav)
 
 # `cpu.star::op_strig`'s entry point -- `effect` is STRIG's operand value
 # clamped/wrapped to the documented 0-7 range by the caller, `channel` is
@@ -526,3 +543,218 @@ fn trigger_effect(effect: u8, volume: u8, channel: u8) -> ptr:
 fn stop_all():
     sound_stop_all()
     music_stop()
+
+# ── SMIX/SECHO/SREVERB/SFILTER: post-synthesis channel effects (todo.md P2
+# #4) ─────────────────────────────────────────────────────────────────────
+#
+# Unlike `SPLAY`/`SSTOP`/`STRIG` above, these four have **no reference
+# implementation to match**: the upstream Python `opcodes.py` marks all four
+# `# unimplemented` too (no handler there either), which is exactly why
+# earlier cycles left them alone rather than inventing bug-for-bug-unmatchable
+# behavior. Closing them out for real means designing genuine DSP from
+# scratch -- the design below, and why it fits this project's existing
+# architecture instead of requiring new native code:
+#
+# - This port's whole `SPLAY`/`STRIG` model is "synthesize a complete WAV
+#   buffer in Star, write it to a temp file, `sound_load` it back, play it"
+#   (see this file's own header comment) -- `crate::codegen::audio`'s mixer
+#   has no "read back the raw samples of a currently-playing/already-loaded
+#   channel" builtin, and adding one would mean new native codegen work, a
+#   materially bigger and more invasive change than four fantasy-console
+#   opcodes call for.
+# - So instead, `Cpu::sound_channel_last_wav` (`cpu.star`) caches the raw,
+#   still-dry WAV buffer `op_splay` most recently synthesized for each of
+#   Nova's 8 addressable hardware channels (0-7 -- the same channels `SW`'s
+#   channel-select bits name, *not* `STRIG`'s ephemeral 8-15 one-shot pool,
+#   which fires-and-forgets with nothing stable worth applying an effect to
+#   afterward). `SECHO`/`SREVERB`/`SFILTER ch, param` read that cache,
+#   process it with the functions below, and re-trigger playback of the
+#   *processed* buffer on the same channel via the existing
+#   `play_pcm_wav_on_channel` -- an immediate "apply this to what's on the
+#   channel right now" semantics, matching `docs/nova16_instruction_
+#   reference.md`'s present-tense "Applies echo"/"Applies reverb"/"Applies
+#   filter" wording more literally than a "sets a param for next time"
+#   design would. `SMIX output` mixes all 8 cached buffers down (simple
+#   average, so a single active channel isn't quietened by silent ones) and
+#   plays the result on `output`, which also becomes that channel's new
+#   cached buffer -- so `SMIX` output can itself be chained into a further
+#   `SECHO`/`SREVERB`/`SFILTER`.
+# - All three effects and the mixer operate directly on WAV sample bytes
+#   (`wav_sample_at`/`push_frame_amp` below invert/mirror `push_frame`'s own
+#   byte encoding), not on the normalized `[-1, 1]` domain `push_frame`
+#   itself takes -- the cached buffer is already volume-scaled at synthesis
+#   time, and there's no reason to re-derive an original "sample before
+#   volume" that was never kept separately.
+# - `apply_filter`'s one-pole low/high/band-pass IIR deliberately reuses the
+#   same "one-pole running filter" shape `waveform_sample`'s own pink-noise
+#   case already established (`0.99*prev + 0.01*new`-style state carried
+#   sample to sample) -- consistent math, not a new technique introduced
+#   just for this.
+# - Every operand/type value here clamps into its valid range the same way
+#   `trigger_effect`'s own `effect` operand already does ("any out-of-range
+#   value clamps here") -- there is no invalid input that crashes rather
+#   than silently doing something reasonable, matching this whole file's
+#   established "never crash, just don't make sound" convention.
+
+# Number of live PCM sample frames in a WAV buffer built by `wav_header`
+# (44-byte canonical header, 4 bytes/frame -- see `wav_header`'s own doc
+# comment). `<= 0` (header-only or absent) means "nothing to process".
+fn wav_sample_count(wav: Bytes) -> i32:
+    (wav.len() - 44) / 4
+
+# Inverse of `push_frame`'s own encoding: the signed 16-bit amplitude
+# (roughly `[-32000, 32000]`, already volume-scaled -- *not* renormalized
+# back to `[-1, 1]`) of sample frame `i`, or `0.0` (silence) if `i` falls
+# outside `[0, wav_sample_count(wav))`. Only the left channel is read back
+# since `push_frame` always writes identical left/right samples.
+fn wav_sample_at(wav: Bytes, i: i32) -> f32:
+    let n = wav_sample_count(wav)
+    if i < 0 or i >= n:
+        return 0.0
+    let off = 44 + i * 4
+    let lo = wav[off] as i32
+    let hi = wav[off + 1] as i32
+    let mut s16 = (hi << 8) | lo
+    s16 = s16 & 0xFFFF
+    if s16 >= 32768:
+        s16 = s16 - 65536
+    s16 as f32
+
+# Appends one stereo 16-bit little-endian frame from an already-amplitude-
+# scaled sample (as `wav_sample_at` returns, *not* normalized `[-1, 1]` --
+# unlike `push_frame`, which takes a normalized sample and multiplies by
+# `amp` itself). Same "takes `buf` by value, returns the updated buffer"
+# shape as `push_frame`, for the same reason (see that function's own doc
+# comment) -- every call site below must reassign.
+fn push_frame_amp(buf: Bytes, amplitude: f32) -> Bytes:
+    let mut b = buf
+    let clamped = clamp(amplitude, -32000.0, 32000.0)
+    let s16 = clamped as i32
+    let lo = (s16 & 255) as u8
+    let hi = ((s16 >> 8) & 255) as u8
+    b.push(lo)
+    b.push(hi)
+    b.push(lo)
+    b.push(hi)
+    b
+
+# `SECHO channel, delay` -- two decaying echo taps from the dry source
+# (`delay` maps 0-255 onto 20ms-500ms; a fixed 0.45 decay per tap, matching
+# `trigger_effect`'s own "fixed decay envelope" style elsewhere in this
+# file). Output is padded with two extra `delay_samples` of tail so the
+# echo isn't truncated.
+fn apply_echo(wav: Bytes, delay_byte: u8) -> Bytes:
+    let n = wav_sample_count(wav)
+    if n <= 0:
+        return wav
+    let delay_ms = 20.0 + ((delay_byte as f32) / 255.0) * 480.0
+    let mut delay_samples = ((delay_ms / 1000.0) * (SAMPLE_RATE as f32)) as i32
+    if delay_samples < 1:
+        delay_samples = 1
+    let decay = 0.45
+    let total = n + delay_samples * 2
+    let mut buf = wav_header(total * 4)
+    let mut i = 0
+    while i < total:
+        let dry = wav_sample_at(wav, i)
+        let echo1 = wav_sample_at(wav, i - delay_samples) * decay
+        let echo2 = wav_sample_at(wav, i - delay_samples * 2) * decay * decay
+        buf = push_frame_amp(buf, dry + echo1 + echo2)
+        i += 1
+    buf
+
+# `SREVERB channel, amount` -- a small fixed 4-tap comb reverb (taps at
+# 30/50/80/130ms, decreasing per-tap gain), each tap additionally scaled by
+# `amount` (0-255 -> 0.0-1.0) so `amount=0` reduces to the dry signal
+# unchanged and `amount=255` is the reverb at full strength.
+fn apply_reverb(wav: Bytes, amount_byte: u8) -> Bytes:
+    let n = wav_sample_count(wav)
+    if n <= 0:
+        return wav
+    let amt = (amount_byte as f32) / 255.0
+    let tap1 = (0.03 * (SAMPLE_RATE as f32)) as i32
+    let tap2 = (0.05 * (SAMPLE_RATE as f32)) as i32
+    let tap3 = (0.08 * (SAMPLE_RATE as f32)) as i32
+    let tap4 = (0.13 * (SAMPLE_RATE as f32)) as i32
+    let total = n + tap4 + 1
+    let mut buf = wav_header(total * 4)
+    let mut i = 0
+    while i < total:
+        let dry = wav_sample_at(wav, i)
+        let r1 = wav_sample_at(wav, i - tap1) * amt * 0.6
+        let r2 = wav_sample_at(wav, i - tap2) * amt * 0.4
+        let r3 = wav_sample_at(wav, i - tap3) * amt * 0.3
+        let r4 = wav_sample_at(wav, i - tap4) * amt * 0.2
+        buf = push_frame_amp(buf, dry + r1 + r2 + r3 + r4)
+        i += 1
+    buf
+
+# `SFILTER channel, type` -- a one-pole low-pass (`type=0`), the
+# complementary high-pass (`type=1`, `dry - lowpass`), or a low-pass-of-the-
+# high-pass band-pass (`type=2`), all sharing one fixed-`alpha` IIR stage
+# (same "one-pole running filter" shape as `waveform_sample`'s own pink-noise
+# case). Any other `type` value (3+) passes the signal through unchanged --
+# same "out-of-range clamps to a safe default" convention as
+# `trigger_effect`'s own `effect` operand.
+fn apply_filter(wav: Bytes, filter_type: u8) -> Bytes:
+    let n = wav_sample_count(wav)
+    if n <= 0:
+        return wav
+    let mut buf = wav_header(n * 4)
+    let alpha = 0.3
+    let mut lp_state = 0.0
+    let mut bp_state = 0.0
+    let mut i = 0
+    while i < n:
+        let x = wav_sample_at(wav, i)
+        let next_lp = lp_state + alpha * (x - lp_state)
+        let hp = x - next_lp
+        lp_state = next_lp
+        let next_bp = bp_state + alpha * (hp - bp_state)
+        bp_state = next_bp
+        let mut y = x
+        if filter_type == (0 as u8):
+            y = next_lp
+        elif filter_type == (1 as u8):
+            y = hp
+        elif filter_type == (2 as u8):
+            y = next_bp
+        buf = push_frame_amp(buf, y)
+        i += 1
+    buf
+
+# `SMIX output` -- averages every non-empty buffer in `bufs` (`Cpu::
+# sound_channel_last_wav`, one entry per hardware channel 0-7) sample by
+# sample, out to the longest buffer's own length (shorter buffers contribute
+# silence past their own end, via `wav_sample_at`'s own out-of-range-is-0.0
+# behavior). Averaging by the *count of non-empty channels*, not a fixed 8,
+# means a single active channel mixed alone isn't quietened by seven silent
+# ones. An empty `Bytes` result (header-only, `wav_header(0)`) means "no
+# channel had anything cached" -- the caller checks `wav_sample_count(..) >
+# 0` before playing it, same convention as every other "don't crash, just
+# don't make sound" case in this file.
+fn mix_wavs(bufs: List<Bytes>) -> Bytes:
+    let mut max_n = 0
+    let mut count = 0
+    let mut i = 0
+    while i < bufs.len():
+        let n = wav_sample_count(bufs[i])
+        if n > 0:
+            count += 1
+            if n > max_n:
+                max_n = n
+        i += 1
+    if count == 0 or max_n == 0:
+        return wav_header(0)
+    let mut buf = wav_header(max_n * 4)
+    let inv_count = 1.0 / (count as f32)
+    let mut s = 0
+    while s < max_n:
+        let mut sum = 0.0
+        let mut j = 0
+        while j < bufs.len():
+            sum += wav_sample_at(bufs[j], s)
+            j += 1
+        buf = push_frame_amp(buf, sum * inv_count)
+        s += 1
+    buf

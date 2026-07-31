@@ -45,6 +45,16 @@
 # see its own "Assembler" section in NOTES.md) is loaded automatically, if
 # present, to label addresses in disassembly/breakpoint output by symbol
 # name -- matching `nova_debugger.py::load_symbol_table`'s own behavior.
+#
+# `break`/`b`/`clear`/`c` also accept `:<line>` (`todo.md` P2 #4, "source-
+# line breakpoints") -- a source line number instead of a raw address,
+# resolved through a `.lines` sidecar next to the `.bin` (also produced by
+# `assembler.star`, `write_lines`, loaded the same automatic way as `.sym`).
+# There is no upstream `nova_debugger.py` behavior to match here (its own
+# breakpoints are address-only too) -- this is a genuine addition, not a
+# port. `breakpoints`/`bp` and a breakpoint hit during `run`/`continue` both
+# label their address with `[line N]` when the `.lines` table has one,
+# alongside the existing `(symbol)` label.
 
 import "bits.star" as bits
 import "cpu.star" as cpu
@@ -113,6 +123,7 @@ fn new_cpu() -> cpu::Cpu:
         sw = Wrapping<u8>(0 as u8),
         next_strig_channel = 8,
         sound_channel_handles = [null_ptr(); 16],
+        sound_channel_last_wav = cpu::new_channel_wav_cache(),
         mx = Wrapping<u8>(0 as u8),
         my = Wrapping<u8>(0 as u8),
         mb = Wrapping<u8>(0 as u8),
@@ -436,10 +447,10 @@ fn opcode_info(op: u8) -> (str, i32, bool):
         0x57 -> ("SPLAY", 0, true)
         0x58 -> ("SSTOP", 0, true)
         0x59 -> ("STRIG", 1, true)
-        0x7F -> ("SMIX", 1, false)
-        0x80 -> ("SECHO", 2, false)
-        0x81 -> ("SREVERB", 2, false)
-        0x82 -> ("SFILTER", 2, false)
+        0x7F -> ("SMIX", 1, true)
+        0x80 -> ("SECHO", 2, true)
+        0x81 -> ("SREVERB", 2, true)
+        0x82 -> ("SFILTER", 2, true)
         _ -> ("???", 0, false)
 
 fn format_operand(data: Bytes, pos: i32, mode: i32, direct: bool, indexed: bool) -> (str, i32):
@@ -545,6 +556,58 @@ fn symbol_suffix(addr: i32, reverse_syms: Map<i32, str>) -> str:
     match reverse_syms.get(addr):
         Option::Some(name) -> f" ({name})"
         Option::None -> ""
+
+# ---------------------------------------------------------------------------
+# Line table (.lines sidecar, written by `assembler.star`'s `write_lines`,
+# `todo.md` P2 #4 "source-line breakpoints") -- unlike the symbol table
+# above, *both* directions are needed: `line_to_addr` turns a `break :N`
+# command into a real address, `addr_to_line` labels a hit/listed breakpoint
+# (and the current instruction) with its source line the same way
+# `symbol_suffix` already labels one with its symbol name.
+# ---------------------------------------------------------------------------
+
+fn load_line_table(lines_path: str) -> (Map<i32, i32>, Map<i32, i32>):
+    let mut line_to_addr: Map<i32, i32> = Map<i32, i32>()
+    let mut addr_to_line: Map<i32, i32> = Map<i32, i32>()
+    let h = file_open(lines_path, "r")
+    if is_null(h):
+        return (line_to_addr, addr_to_line)
+    let content = file_read(h)
+    file_close(h)
+    let lines = str_split(content, "\n")
+    let mut li = 0
+    while li < lines.len():
+        let line = str_trim(lines[li])
+        if len(line) > 0 and !str_starts_with(line, "#"):
+            let (num_tok, rest) = split_first_token(line)
+            if len(rest) > 0:
+                let line_num = atoi(num_tok)
+                let addr = strtol(rest, null_ptr(), 0)
+                line_to_addr.insert(line_num, addr)
+                addr_to_line.insert(addr, line_num)
+        li += 1
+    (line_to_addr, addr_to_line)
+
+fn line_suffix(addr: i32, addr_to_line: Map<i32, i32>) -> str:
+    match addr_to_line.get(addr):
+        Option::Some(n) -> f" [line {n}]"
+        Option::None -> ""
+
+# Resolves a `break`/`clear` command's location argument: `:N` looks up
+# source line `N` in `line_to_addr` (`ok=false` if that line never emitted
+# an instruction -- e.g. a label-only or data-directive line, or a line
+# number outside the source entirely); anything else is a plain address,
+# parsed and wrapped into `[0, 65536)` exactly like this command's own
+# address-only parsing always has.
+fn parse_break_location(rest: str, line_to_addr: Map<i32, i32>) -> (i32, bool):
+    if str_starts_with(rest, ":"):
+        let line_num = atoi(substr(rest, 1, len(rest)))
+        match line_to_addr.get(line_num):
+            Option::Some(addr) -> (addr, true)
+            Option::None -> (0, false)
+    else:
+        let addr = ((strtol(rest, null_ptr(), 0) % 65536) + 65536) % 65536
+        (addr, true)
 
 # ---------------------------------------------------------------------------
 # Cpu-inspecting commands, as methods (via a cross-module `impl`, matching
@@ -675,8 +738,8 @@ fn print_help():
     println("  step <n>, s <n>   Step <n> instructions")
     println("  run, continue     Run until breakpoint or halt")
     println("  disasm [addr] [n] Show disassembly (default: PC, 5 instructions)")
-    println("  break <addr>, b   Set breakpoint at address")
-    println("  clear <addr>, c   Clear breakpoint at address")
+    println("  break <addr>, b   Set breakpoint at address (hex/decimal), or :<line> for a source line")
+    println("  clear <addr>, c   Clear breakpoint at address, or :<line> for a source line")
     println("  breakpoints, bp   List all breakpoints")
     println("  regs, r           Show CPU registers")
     println("  mem <addr>        Show memory at <addr>")
@@ -689,6 +752,8 @@ fn main():
     let cli = args()
     let mut c = new_cpu()
     let mut reverse_symbols: Map<i32, str> = Map<i32, str>()
+    let mut line_to_addr: Map<i32, i32> = Map<i32, i32>()
+    let mut addr_to_line: Map<i32, i32> = Map<i32, i32>()
     let mut breakpoints: [bool; 65536] = [false; 65536]
 
     if cli.len() > 1:
@@ -698,6 +763,9 @@ fn main():
             c.pc = Wrapping<u16>(ep as u16)
             println(f"Loaded '{bin_path}' at entry point 0x{hex_word(ep)}")
             reverse_symbols = load_symbol_table(str_replace(bin_path, ".bin", ".sym"))
+            let (l2a, a2l) = load_line_table(str_replace(bin_path, ".bin", ".lines"))
+            line_to_addr = l2a
+            addr_to_line = a2l
         else:
             println(f"nova-debugger: could not open '{bin_path}'")
     else:
@@ -756,11 +824,14 @@ fn main():
                 c.print_disasm(addr, count, reverse_symbols)
             elif cmd == "break" or cmd == "b":
                 if len(rest) == 0:
-                    println("Usage: break <address> or b <address>")
+                    println("Usage: break <address> or b <address>, or break :<line>")
                 else:
-                    let addr = ((strtol(rest, null_ptr(), 0) % 65536) + 65536) % 65536
-                    breakpoints[addr] = true
-                    println(f"Breakpoint set at 0x{hex_word(addr)}")
+                    let (addr, ok) = parse_break_location(rest, line_to_addr)
+                    if ok:
+                        breakpoints[addr] = true
+                        println(f"Breakpoint set at 0x{hex_word(addr)}{symbol_suffix(addr, reverse_symbols)}{line_suffix(addr, addr_to_line)}")
+                    else:
+                        println(f"No code at line {rest}")
             elif cmd == "breakpoints" or cmd == "bp":
                 let mut any_bp = false
                 let mut scan = 0
@@ -773,18 +844,20 @@ fn main():
                     let mut addr = 0
                     while addr < 65536:
                         if breakpoints[addr]:
-                            println(f"  0x{hex_word(addr)}{symbol_suffix(addr, reverse_symbols)}")
+                            println(f"  0x{hex_word(addr)}{symbol_suffix(addr, reverse_symbols)}{line_suffix(addr, addr_to_line)}")
                         addr += 1
                 else:
                     println("No breakpoints set")
             elif cmd == "clear" or cmd == "c":
                 if len(rest) == 0:
-                    println("Usage: clear <address> or c <address>")
+                    println("Usage: clear <address> or c <address>, or clear :<line>")
                 else:
-                    let addr = ((strtol(rest, null_ptr(), 0) % 65536) + 65536) % 65536
-                    if breakpoints[addr]:
+                    let (addr, ok) = parse_break_location(rest, line_to_addr)
+                    if !ok:
+                        println(f"No code at line {rest}")
+                    elif breakpoints[addr]:
                         breakpoints[addr] = false
-                        println(f"Breakpoint cleared at 0x{hex_word(addr)}")
+                        println(f"Breakpoint cleared at 0x{hex_word(addr)}{symbol_suffix(addr, reverse_symbols)}{line_suffix(addr, addr_to_line)}")
                     else:
                         println(f"No breakpoint at 0x{hex_word(addr)}")
             elif cmd == "run" or cmd == "continue" or cmd == "cont":
@@ -806,8 +879,9 @@ fn main():
                     c.step()
                     steps += 1
                     if breakpoints[(c.pc as u16) as i32]:
-                        println(f"Breakpoint hit at 0x{hex_word((c.pc as u16) as i32)}")
-                        c.print_disasm((c.pc as u16) as i32, 1, reverse_symbols)
+                        let hit_addr = (c.pc as u16) as i32
+                        println(f"Breakpoint hit at 0x{hex_word(hit_addr)}{symbol_suffix(hit_addr, reverse_symbols)}{line_suffix(hit_addr, addr_to_line)}")
+                        c.print_disasm(hit_addr, 1, reverse_symbols)
                         going = false
                     elif c.halted:
                         println("Program halted")
@@ -826,6 +900,9 @@ fn main():
                         c.pc = Wrapping<u16>(ep as u16)
                         println(f"Loaded {rest} at entry point 0x{hex_word(ep)}")
                         reverse_symbols = load_symbol_table(str_replace(rest, ".bin", ".sym"))
+                        let (l2a, a2l) = load_line_table(str_replace(rest, ".bin", ".lines"))
+                        line_to_addr = l2a
+                        addr_to_line = a2l
                         c.print_disasm((c.pc as u16) as i32, 1, reverse_symbols)
                         c.dump_registers()
                     else:

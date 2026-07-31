@@ -48,11 +48,12 @@
 #   capability gap in this port's CPU, not something newly discovered here.
 #   Encoding them anyway would silently produce a `.bin` this port's own
 #   `cpu.star` cannot run (an "unknown opcode" halt partway through), so
-#   this assembler rejects them at assembly time instead, the same way it
-#   rejects `SMIX`/`SECHO`/`SREVERB`/`SFILTER` below.
-# - `SMIX`/`SECHO`/`SREVERB`/`SFILTER` are rejected at assembly time, mirroring
-#   the Python assembler's own `UNIMPLEMENTED_INSTRUCTIONS` check exactly
-#   (neither CPU implements these).
+#   this assembler rejects them at assembly time instead.
+# - `SMIX`/`SECHO`/`SREVERB`/`SFILTER` assemble normally (`todo.md` P2 #4) --
+#   previously rejected here, mirroring the Python assembler's own
+#   `UNIMPLEMENTED_INSTRUCTIONS` check, back when neither CPU had a handler
+#   for them. `cpu_sound.star` now does; see its header comment for the
+#   real (Star-original, no reference to match) DSP behind them.
 # - `BR`/`BRZ`/`BRNZ` encode their operand as a plain resolved address, the
 #   same as `JMP` -- **not** a PC-relative delta. This matches the Python
 #   assembler's *actual* behavior, not its comment: `CodeGenerator.
@@ -650,12 +651,15 @@ fn build_instructions() -> (Map<str, i32>, Map<str, i32>):
     (op, ar)
 
 fn build_unimplemented() -> Set<str>:
-    let mut s: Set<str> = Set<str>()
-    s.insert("SMIX")
-    s.insert("SECHO")
-    s.insert("SREVERB")
-    s.insert("SFILTER")
-    s
+    # `SMIX`/`SECHO`/`SREVERB`/`SFILTER` used to be rejected here (mirroring
+    # the Python assembler's own `UNIMPLEMENTED_INSTRUCTIONS` check) because
+    # neither CPU had a handler for them. `cpu.star` now does -- see
+    # `cpu_sound.star`'s header comment for the real, Star-original DSP
+    # design behind them (`todo.md` P2 #4; there's no upstream reference
+    # implementation to match, since `opcodes.py` leaves these four
+    # unimplemented too) -- so this set is empty and these mnemonics assemble
+    # like any other real instruction.
+    Set<str>()
 
 fn get_i32_or(m: Map<str, i32>, key: str, default: i32) -> i32:
     match m.get(key):
@@ -876,6 +880,15 @@ struct AsmLine:
     has_instruction: bool = false
     instruction: str = ""
     operands: List<str> = List<str>()
+    # 1-indexed line number in the original `.asm` source (`todo.md` P2 #4,
+    # "source-line breakpoints"). Threaded through `parse_line`/
+    # `finish_directive_line`/`finish_instruction_line` from `main`'s own
+    # `raw_lines` loop index rather than tracked separately, so it can never
+    # drift out of sync with which raw line actually produced this `AsmLine`.
+    # Only `has_instruction` lines end up in the `.lines` sidecar (see
+    # `second_pass`/`write_lines` below) -- that's what a debugger breakpoint
+    # conceptually targets, not a bare label or data directive line.
+    source_line: i32 = 0
 
 fn is_directive_name(s: str) -> bool:
     s == "ORG" or s == "EQU" or s == "DB" or s == "DW" or s == "DEFSTR" or s == "DS"
@@ -921,43 +934,43 @@ fn split_args_string_aware(s: str) -> List<str>:
         result.push(piece)
     result
 
-fn parse_line(raw: str) -> AsmLine:
+fn parse_line(raw: str, source_line: i32) -> AsmLine:
     let line = str_trim(str_split(raw, ";")[0])
     if len(line) == 0:
-        return AsmLine(blank = true)
+        return AsmLine(blank = true, source_line = source_line)
 
     let (first_token, remainder) = split_first_token(line)
     if len(first_token) == 0:
-        return AsmLine(blank = true)
+        return AsmLine(blank = true, source_line = source_line)
 
     let first_upper = str_upper(first_token)
 
     if is_directive_name(first_upper):
-        return finish_directive_line("", false, first_upper, remainder)
+        return finish_directive_line("", false, first_upper, remainder, source_line)
     if is_instruction_name(first_upper):
-        return finish_instruction_line("", false, first_upper, remainder)
+        return finish_instruction_line("", false, first_upper, remainder, source_line)
 
     let label = if str_ends_with(first_token, ":"): substr(first_token, 0, len(first_token) - 1) else: first_token
     let (tok2, rem2) = split_first_token(remainder)
     if len(tok2) == 0:
-        return AsmLine(has_label = true, label = label)
+        return AsmLine(has_label = true, label = label, source_line = source_line)
 
     let tok2_upper = str_upper(tok2)
     if is_directive_name(tok2_upper):
-        return finish_directive_line(label, true, tok2_upper, rem2)
-    finish_instruction_line(label, true, tok2_upper, rem2)
+        return finish_directive_line(label, true, tok2_upper, rem2, source_line)
+    finish_instruction_line(label, true, tok2_upper, rem2, source_line)
 
-fn finish_directive_line(label: str, has_label: bool, directive: str, arg_str: str) -> AsmLine:
+fn finish_directive_line(label: str, has_label: bool, directive: str, arg_str: str, source_line: i32) -> AsmLine:
     let mut args: List<str> = List<str>()
     if len(str_trim(arg_str)) > 0:
         if directive == "DB" or directive == "DW" or directive == "DEFSTR" or directive == "DS":
             args = split_args_string_aware(arg_str)
         else:
             args.push(str_trim(arg_str))
-    AsmLine(has_label = has_label, label = label, has_directive = true, directive = directive, directive_args = args)
+    AsmLine(has_label = has_label, label = label, has_directive = true, directive = directive, directive_args = args, source_line = source_line)
 
-fn finish_instruction_line(label: str, has_label: bool, instruction: str, operand_str: str) -> AsmLine:
-    AsmLine(has_label = has_label, label = label, has_instruction = true, instruction = instruction, operands = split_operands(operand_str))
+fn finish_instruction_line(label: str, has_label: bool, instruction: str, operand_str: str, source_line: i32) -> AsmLine:
+    AsmLine(has_label = has_label, label = label, has_instruction = true, instruction = instruction, operands = split_operands(operand_str), source_line = source_line)
 
 fn is_instruction_name(s: str) -> bool:
     let (op, _ar) = build_instructions()
@@ -1135,18 +1148,29 @@ fn emit_directive_bytes(line: AsmLine, symbols: Map<str, i32>, mut code: Bytes) 
             k += 1
     code
 
-# Returns (code, seg_starts, seg_lens, seg_offs) -- three parallel lists
-# (one entry per contiguous `ORG` segment) rather than a `List<(i32,i32,i32)>`
-# of packed tuples, since this compiler's `List<T>` support for a tuple
-# element type is untested territory this file has no reason to be the
-# first to rely on. Mirrors `nova_assembler.py::Assembler.second_pass`'s
-# segment tracking, which `loader.star`'s own `.org` sidecar format directly
-# consumes.
-fn second_pass(lines: List<AsmLine>, registers: Map<str, i32>, opcodes: Map<str, i32>, arity: Map<str, i32>, unimplemented: Set<str>, symbols: Map<str, i32>) -> (Bytes, List<i32>, List<i32>, List<i32>):
+# Returns (code, seg_starts, seg_lens, seg_offs, line_nums, line_addrs) --
+# parallel lists (one entry per contiguous `ORG` segment for the first three,
+# one entry per `has_instruction` source line for the last two) rather than
+# a `List<(i32,i32,i32)>` of packed tuples, since this compiler's `List<T>`
+# support for a tuple element type is untested territory this file has no
+# reason to be the first to rely on. `seg_starts`/`seg_lens`/`seg_offs` mirror
+# `nova_assembler.py::Assembler.second_pass`'s segment tracking, which
+# `loader.star`'s own `.org` sidecar format directly consumes. `line_nums`/
+# `line_addrs` are new (`todo.md` P2 #4, "source-line breakpoints"): for
+# every `has_instruction` line, the source line number and the load address
+# its first opcode byte ends up at (`seg_start + (code.len() - seg_bin_off)`,
+# computed *before* that line's own bytes are emitted) -- exactly what
+# `write_lines`/`debugger.star`'s new `.lines` sidecar needs to turn a
+# `break :N` command into a real address. Data-only lines (`DB`/`DW`/etc.)
+# and blank/label-only lines aren't recorded -- there's no instruction there
+# to break *at*.
+fn second_pass(lines: List<AsmLine>, registers: Map<str, i32>, opcodes: Map<str, i32>, arity: Map<str, i32>, unimplemented: Set<str>, symbols: Map<str, i32>) -> (Bytes, List<i32>, List<i32>, List<i32>, List<i32>, List<i32>):
     let mut code: Bytes = Bytes()
     let mut seg_starts: List<i32> = List<i32>()
     let mut seg_lens: List<i32> = List<i32>()
     let mut seg_offs: List<i32> = List<i32>()
+    let mut line_nums: List<i32> = List<i32>()
+    let mut line_addrs: List<i32> = List<i32>()
     let mut seg_start = 0
     let mut seg_bin_off = 0
     let mut i = 0
@@ -1167,19 +1191,23 @@ fn second_pass(lines: List<AsmLine>, registers: Map<str, i32>, opcodes: Map<str,
             else:
                 code = emit_directive_bytes(line, symbols, code)
         elif line.has_instruction:
+            line_nums.push(line.source_line)
+            line_addrs.push(seg_start + (code.len() - seg_bin_off))
             code = emit_instruction(line, registers, opcodes, arity, unimplemented, symbols, code)
         i += 1
     if code.len() > seg_bin_off:
         seg_starts.push(seg_start)
         seg_lens.push(code.len() - seg_bin_off)
         seg_offs.push(seg_bin_off)
-    (code, seg_starts, seg_lens, seg_offs)
+    (code, seg_starts, seg_lens, seg_offs, line_nums, line_addrs)
 
 # ---------------------------------------------------------------------------
 # Output writers -- `.bin` (raw code, binary-safe via `file_write_bytes`),
 # `.org` (segment table, same 3-field-per-line format `loader.star`/
 # `disasm.star` already parse), `.sym` (symbol table, human-inspection only
-# -- nothing in this project reads it back).
+# -- nothing in this project reads it back), `.lines` (source line ->
+# address table, `todo.md` P2 #4 -- `debugger.star`'s new `break :N`
+# source-line breakpoint syntax reads this back, unlike `.sym`).
 # ---------------------------------------------------------------------------
 
 fn write_bin(path: str, code: Bytes) -> bool:
@@ -1218,6 +1246,26 @@ fn write_sym(path: str, symbols: Map<str, i32>, order: List<str>) -> bool:
                 let line: List<str> = [name, " 0x", hex_word_str(v), "\n"]
                 file_write(h, str_join(line, ""))
             Option::None -> 0
+        i += 1
+    file_close(h)
+    true
+
+# `.lines` sidecar (`todo.md` P2 #4, "source-line breakpoints") -- one row
+# per `has_instruction` source line, same plain-text/human-inspectable shape
+# as `.org`/`.sym` above: `<source_line> 0x<address>`. `debugger.star`'s new
+# `load_line_table` reads this back into a line->address map (`break :N`)
+# and its reverse (labeling a hit/listed breakpoint with its source line),
+# exactly mirroring how `load_symbol_table` already reads `.sym`.
+fn write_lines(path: str, line_nums: List<i32>, line_addrs: List<i32>) -> bool:
+    let h = file_open(path, "w")
+    if is_null(h):
+        return false
+    file_write(h, "# Source line -> address table\n")
+    file_write(h, "# Format: <source_line> <address>\n")
+    let mut i = 0
+    while i < line_nums.len():
+        let line: List<str> = [dec_str(line_nums[i]), " 0x", hex_word_str(line_addrs[i]), "\n"]
+        file_write(h, str_join(line, ""))
         i += 1
     file_close(h)
     true
@@ -1318,7 +1366,7 @@ fn main() -> i32:
     let mut label_order: List<str> = List<str>()
     let mut i = 0
     while i < raw_lines.len():
-        let parsed = parse_line(raw_lines[i])
+        let parsed = parse_line(raw_lines[i], i + 1)
         if !parsed.blank:
             lines.push(parsed)
             if parsed.has_label:
@@ -1335,12 +1383,13 @@ fn main() -> i32:
             k += 1
         return 1
 
-    let (code, seg_starts, seg_lens, seg_offs) = second_pass(lines, registers, opcodes, arity, unimplemented, symbols)
+    let (code, seg_starts, seg_lens, seg_offs, line_nums, line_addrs) = second_pass(lines, registers, opcodes, arity, unimplemented, symbols)
 
     let base = str_replace(asm_path, ".asm", "")
     let bin_path = concat(base, ".bin")
     let org_path = concat(base, ".org")
     let sym_path = concat(base, ".sym")
+    let lines_path = concat(base, ".lines")
 
     if !write_bin(bin_path, code):
         fatal(concat("could not write ", bin_path))
@@ -1348,6 +1397,7 @@ fn main() -> i32:
     if seg_starts.len() > 0:
         write_org(org_path, seg_starts, seg_lens, seg_offs)
     write_sym(sym_path, symbols, label_order)
+    write_lines(lines_path, line_nums, line_addrs)
 
     let summary: List<str> = ["assembled ", dec_str(code.len()), " bytes -> ", bin_path]
     println(str_join(summary, ""))
