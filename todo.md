@@ -51,12 +51,18 @@ re-run this cycle, exit code 0. No false "Done." markers found.
    can do that, same as raw mode's own host bridge and `mouse_pending_irq`
    — see `mouse_interrupt_test.star`). Feeds one good frame and one
    checksum-mismatched frame; all 10 checks pass. Bug found along the way,
-   not fixed (out of scope for this item): `mouse_interrupt_test.star`'s
-   own inline `Cpu` construction is stale against the current `Cpu` struct
+   not fixed at the time (out of scope for this item): `mouse_interrupt_test.star`'s
+   own inline `Cpu` construction was stale against the current `Cpu` struct
    (missing `sound_channel_last_wav`/etc. added by a later round) and no
-   longer rebuilds from source — its checked-in `.exe` still runs (compiled
-   before the drift), so the regression is silent until someone touches
-   that file next.
+   longer rebuilt from source — its checked-in `.exe` still ran (compiled
+   before the drift), so the regression was silent until someone touched
+   that file next. Fixed in a follow-up direct ask: added the three missing
+   fields (`next_strig_channel`/`sound_channel_handles`/
+   `sound_channel_last_wav`), plus the `cpu_*.star` op-table imports and
+   `-L sdl/lib/x64 -l SDL2` build flags the file was also missing (same
+   requirement `uart_framed_test.star` documents) — it wasn't just the
+   struct literal that had drifted, the file couldn't rebuild at all before
+   this fix. Rebuilt `.exe` checked in; all 5 checks pass.
 4. **Done.** The permanent structural caveats (Windows-only fonts, "special guest"
    types unified in docs not mechanism, non-dynamic monomorphized-only
    traits, warning-only stack-budget check) — not gaps to close, a

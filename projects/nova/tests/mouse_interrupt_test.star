@@ -9,9 +9,25 @@
 # directly (not `step()`/a hand-encoded handler) since the thing being
 # tested is purely the interrupt-dispatch gating logic, not opcode fetch.
 #
+# Build: star build projects/nova/tests/mouse_interrupt_test.star
+#   -L sdl/lib/x64 -l SDL2 -o projects/nova/tests/mouse_interrupt_test.exe
+#   (all cpu_*.star modules below are required just to satisfy `cpu.star`'s
+#   own `self.op_*()` dispatch table -- SDL2 is transitively pulled in via
+#   `cpu_sound.star`, same as `run_bin.star`/`uart_framed_test.star`).
 # Usage: mouse_interrupt_test.exe -- prints PASS/FAIL lines, no arguments.
 
 import "../cpu.star" as cpu
+import "../cpu_data.star" as cpu_data
+import "../cpu_arith.star" as cpu_arith
+import "../cpu_math.star" as cpu_math
+import "../cpu_bitwise.star" as cpu_bitwise
+import "../cpu_stack.star" as cpu_stack
+import "../cpu_control.star" as cpu_control
+import "../cpu_mem.star" as cpu_mem
+import "../cpu_graphics.star" as cpu_graphics
+import "../cpu_io.star" as cpu_io
+import "../cpu_sound.star" as cpu_sound
+import "../cpu_string.star" as cpu_string
 import "../memory.star" as mem
 import "../screen.star" as screen
 import "../keyboard.star" as keyboard
@@ -43,6 +59,9 @@ fn new_cpu() -> cpu::Cpu:
         sf = Wrapping<u8>(0 as u8),
         sv = Wrapping<u8>(0 as u8),
         sw = Wrapping<u8>(0 as u8),
+        next_strig_channel = 8,
+        sound_channel_handles = [null_ptr(); 16],
+        sound_channel_last_wav = cpu::new_channel_wav_cache(),
         mx = Wrapping<u8>(0 as u8),
         my = Wrapping<u8>(0 as u8),
         mb = Wrapping<u8>(0 as u8),
