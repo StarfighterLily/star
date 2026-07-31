@@ -1254,6 +1254,13 @@ was checked against; not repeated here. What's checked in:
   `mouse_pending_irq` — only the host mouse does, see "Mouse plumbing"
   below) — same spirit as the BCD/string rounds' own "standalone headless
   harness", just checked in this time.
+- `tests/asm/uart_framed_test.asm` (+ assembled `.bin`/`.org`/`.sym`) and
+  `tests/uart_framed_test.star` — added for UART framed-mode parsing
+  (todo.md P2 #3, new opcode `SERFSTAT`/`0xB4`): a real assembled program
+  run through actual `Cpu::step()` calls, with `host_push_rx` called
+  directly only for the frame bytes themselves (the one piece no opcode can
+  drive, same as raw mode's own host bridge). See "UART" above for the full
+  design and all 10 checks.
 - `tests/run_debugger_test.ps1` (+ `tests/debugger_test_commands.txt` /
   `tests/debugger_test_expected.txt`) — a checked-in, rerunnable
   regression test for `debugger.star`'s own REPL command surface (todo.md
@@ -2704,7 +2711,7 @@ live Python reference exactly (`PUSH R0`: `SP` 0x9000→0x8FFF; `PUSH P0`:
 default; `POP R0`: `SP` 0x8FFF→0x9000, value 0xAB; `POP P0`: `SP`
 0x8FFD→0x8FFF, value 0x1234).
 
-## UART (0xA2-0xA5)
+## UART (0xA2-0xA5, 0xB4)
 
 Added in this round: `SERIN SEROUT SERSTAT SERCTRL`, ported from
 `nova_uart.py::NovaUART`'s raw-mode data path. Lives in its own file,
@@ -2724,14 +2731,47 @@ whatever `SEROUT` last wrote. **The host bridge itself is now implemented**
 `projects/nova/uart_bridge.star` is a headless stdin/stdout driver that
 calls it, blocking on `read_line()` between bursts of CPU execution the
 same way a real interactive terminal blocks for the next line of input.
-TCP transport and framed-mode parsing are still out of scope — see
-`uart_bridge.star`'s own header comment for why TCP specifically was
-rejected (`net.rs`'s `tcp_recv` has no non-blocking/timeout mode, so it
-would freeze the bridge loop waiting on an idle peer) and no opcode drives
-framing either way. Same reasoning as `MOUSECTRL`'s register model being
-fully in place and testable long before real host mouse events existed
-(see "Mouse plumbing" below) applied here too, for exactly as long as it
-took to actually build the bridge.
+TCP transport is still out of scope — see `uart_bridge.star`'s own header
+comment for why (`net.rs`'s `tcp_recv` has no non-blocking/timeout mode, so
+it would freeze the bridge loop waiting on an idle peer); unrelated to
+framing, so it staying out of scope doesn't block anything below.
+
+**Framed-mode parsing is now implemented** (todo.md P2 #3), closing the
+other half of "no opcode drives framing": `SERCTRL`'s control bit 2
+(`0x04`, matching `docs/UART_SYSTEM.md`'s already-documented-but-previously
+-inert "Framed mode enable" bit) now actually gates `write_control` into
+`framed_mode`, and a new opcode, `SERFSTAT` (`0xB4` -- picked because
+`0xA6`-`0xAB` turned out to already be taken by `SETBP`/`CLRBP`/`ENABRK`/
+`DISBRK`/`ENATRAP`/`DISATRAP`, unimplemented-in-`cpu.star`'s-`execute`
+debugger/trap pseudo-opcodes reserved by the assembler but never dispatched
+-- confirmed by grepping every one of `assembler.star`/`disasm.star`/
+`debugger.star`'s opcode tables before picking a number, not just eyeballing
+`cpu.star`'s own dispatch switch, which was misleadingly silent about them),
+reads back `framed_mode`/a latched checksum-error bit that `SERSTAT`'s own
+two low bits (by design, see "Verification" below) never expose. `uart.star`
+gained a byte-at-a-time frame parser (`parse_frame_byte`, driven from
+`host_push_rx` while `framed_mode` is on) implementing the doc's START
+(`0x7E`)/LENGTH/PAYLOAD/CHECKSUM (`sum(payload) & 0xFF`) format exactly, and
+a real RX FIFO (`rx_queue`) for `SERIN` to drain payload bytes from one at a
+time -- genuinely a FIFO this time, unlike raw mode's single-register model
+(left completely unchanged; framed mode is additive, gated entirely behind
+`framed_mode`). A checksum mismatch latches `frame_checksum_error` (read-
+and-clear via `SERFSTAT`, matching this port's existing "read consumes"
+idiom -- `SERIN`/`KEYIN` both already work this way) and fires the pending
+interrupt if enabled, matching the doc's stated behavior. One judgment call
+the doc doesn't specify: a byte that arrives while idle and isn't `0x7E` is
+silently dropped rather than buffered/erroring, resyncing to the next start
+byte -- a Star-port decision, not a transcribed reference behavior (there is
+no live Python reference for this specific byte-at-a-time parser to check
+against, unlike most of this port's other pieces).
+
+Checksum-sum arithmetic is computed in `i32` and cast down to `u8` with a
+truncating cast (`(sum as u8)`) rather than accumulated in `u8` directly --
+plain `u8` arithmetic traps on overflow under Star's numeric-overflow
+philosophy (`docs/design.md`), unlike a real UART's silent wraparound, and
+`cpu.star::mask_to_width`'s own `(value as u8) as i32` is this same
+"compute wide, cast down" idiom already used throughout this port's opcode
+handlers.
 
 ### Verification
 
@@ -2754,6 +2794,35 @@ direct-field-poke headless harness (not checked in, same convention as the
 mouse-interrupt harness below) alongside a live `op_splay`/`op_strig`
 trigger for the new sound synthesis — see todo.md P0 #1's write-up for the
 full list of what that harness covered.
+
+**Framed-mode parsing** (todo.md P2 #3) is checked in, unlike the raw-mode
+harness above, since it's exercising genuinely new opcode surface
+(`SERFSTAT`) rather than a state transition already covered by the
+integration test above:
+
+- `tests/asm/uart_framed_test.asm`/`.bin`/`.org`/`.sym` — a real assembled
+  program (this port's own `assembler.star`, not hand-encoded) exercising
+  every opcode-reachable piece: `SERCTRL 0x04` to enable framed mode,
+  `SERFSTAT` to confirm the enable bit and check/clear the latched
+  checksum-error bit, and `SERIN`/`SERSTAT` polling loops draining the RX
+  FIFO. Disassembled back with `disasm.exe` to confirm `0xB4` round-trips
+  as `SERFSTAT` cleanly (see its own header comment for the full expected-
+  register checklist).
+- `tests/uart_framed_test.star` — a headless harness in the same
+  `run_bin.star`/`uart_bridge.star` mold: loads the `.bin` above and runs it
+  through real `Cpu::step()` calls (not hand-poked opcode methods), only
+  reaching for `host_push_rx` directly to inject the frame *bytes*
+  themselves between bursts — the one piece with no opcode-reachable way to
+  drive it end to end, same as raw mode's own host bridge and
+  `mouse_pending_irq` (see "Mouse plumbing" below). Feeds one good frame
+  (`0x7E 0x02 0x11 0x22 0x33`) and one checksum-mismatched frame (`0x7E
+  0x01 0x99 0x01`), then checks 10 things: the good frame's two payload
+  bytes come back out through `SERIN` in order, `SERFSTAT` shows no
+  checksum error after the good frame, `SERFSTAT` latches the checksum
+  error after the bad frame, the bad frame's payload byte never reaches
+  `SERSTAT`'s rx-available bit (proving a failed frame doesn't leak into the
+  FIFO), a second `SERFSTAT` read clears the latched error, and the
+  program's own `P0` pass/fail marker. All 10 checks pass.
 
 ## Mouse plumbing (MOUSECTRL, MX/MY/MB, interrupt vector 3)
 

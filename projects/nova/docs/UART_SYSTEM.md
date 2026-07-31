@@ -221,3 +221,4 @@ Coverage includes:
 - `cpu.serial` is preserved for compatibility and forwards to the UART implementation.
 - `SERSTAT` reports low status bits only (`0x01`, `0x02`), so assembly checks should generally mask bits when asserting expected status.
 - Framed mode is intentionally simple and intended as a base for structured UART payload protocols (including file transfer framing).
+- The Star language port (`projects/nova/uart.star`) implements this same framed-mode format (START/LENGTH/PAYLOAD/CHECKSUM, checksum-error status bit) but exposes the framed-mode-enabled/checksum-error bits through a dedicated new opcode, `SERFSTAT` (`0xB4`), rather than this document's `SERSTAT`-plus-separate-compat-register model -- see `projects/nova/docs/nova16_instruction_reference.md` and `uart.star`'s own header comment for the port-specific detail. TCP transport remains unported (see `projects/nova/uart_bridge.star`'s header comment for why).

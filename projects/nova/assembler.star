@@ -384,6 +384,8 @@ fn build_instructions() -> (Map<str, i32>, Map<str, i32>):
     ar.insert("LCOPY", 1)
     op.insert("MOUSECTRL", 0xB3)
     ar.insert("MOUSECTRL", 1)
+    op.insert("SERFSTAT", 0xB4)
+    ar.insert("SERFSTAT", 1)
     op.insert("AND", 0x10)
     ar.insert("AND", 2)
     op.insert("OR", 0x11)

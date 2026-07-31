@@ -1,0 +1,7 @@
+# Symbol table
+# Format: <symbol> <value>
+START 0x1000
+WAIT_GOOD_1 0x1026
+WAIT_GOOD_2 0x1040
+WAIT_BAD 0x1069
+FAIL 0x109C

@@ -1255,5 +1255,7 @@ impl Cpu:
                 self.op_lcopy()
             0xB3 ->
                 self.op_mousectrl()
+            0xB4 ->
+                self.op_serfstat()
             _ ->
                 self.unimplemented_opcode(opcode)

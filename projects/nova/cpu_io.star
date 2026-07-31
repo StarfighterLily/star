@@ -76,6 +76,13 @@ impl cpu::Cpu:
         let v = self.operand_read(op1, 8)
         self.uart.write_control(v as u8)
 
+    # SERFSTAT (0xB4, todo.md P2 #3): extended UART status -- framed-mode
+    # enabled + latched checksum-error bits that SERSTAT's own two low bits
+    # never expose (see uart.star::read_extended_status).
+    fn op_serfstat(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        self.operand_write(op1, 8, (self.uart.read_extended_status()) as i32)
+
     # MOUSECTRL: enable/disable host mouse input+interrupts. Stubbed -- this
     # port doesn't generate mouse events/interrupts yet (MX/MY/MB are still
     # plain readable/writable registers via MOV, just never updated by a

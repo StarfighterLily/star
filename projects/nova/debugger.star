@@ -319,6 +319,7 @@ fn opcode_info(op: u8) -> (str, i32, bool):
         0xB1 -> ("LMOVE", 1, true)
         0xB2 -> ("LCOPY", 1, true)
         0xB3 -> ("MOUSECTRL", 1, true)
+        0xB4 -> ("SERFSTAT", 1, true)
         0x10 -> ("AND", 2, true)
         0x11 -> ("OR", 2, true)
         0x12 -> ("XOR", 2, true)

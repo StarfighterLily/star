@@ -127,7 +127,14 @@ This document provides a compact reference for the Nova-16 instruction set. Inst
   - Side Effects: Sets dest to serial status
 - **SERCTRL** (0xA5): 1 operand - Serial control
   - Operands: value
-  - Side Effects: Sets serial control flags
+  - Side Effects: Sets serial control flags (bit 0: IRQ enable, bit 2:
+    framed-mode enable)
+- **SERFSTAT** (0xB4): 1 operand - Check extended serial status
+  - Operands: dest
+  - Side Effects: Sets dest to extended status (bit 2: framed mode enabled,
+    bit 4: checksum error, cleared on read) -- see `docs/UART_SYSTEM.md`'s
+    "Framed Mode"/status-bits sections and `uart.star`'s header comment for
+    the full frame format and design.
 
 ## Hardware Debugging Operations
 - **SETBP** (0xA6): 2 operands - Set hardware breakpoint

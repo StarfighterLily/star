@@ -28,12 +28,35 @@ re-run this cycle, exit code 0. No false "Done." markers found.
    but intentionally imprecise to avoid having to update another spot continuously.
 
 **P2: Real, standing items — none urgent, none blocking.**
-3. UART framed-mode protocol parsing (start byte + length + payload +
-   checksum) — still deliberately out of scope, same shape `SMIX`/
-   `SECHO`/`SREVERB`/`SFILTER` had before a prior cycle closed them: no
-   opcode currently drives it, so there's nothing to observably test
-   without first deciding to invent that opcode surface. Carried forward
-   for visibility, not as an active ask.
+3. **Done.** Framed-mode UART protocol parsing (start byte + length +
+   payload + checksum), implemented in `uart.star`: `SERCTRL`'s control
+   bit 2 (`0x04`, already documented in `docs/UART_SYSTEM.md` but
+   previously inert in this port) now gates a byte-at-a-time frame parser
+   (`parse_frame_byte`, driven from `host_push_rx`), and a genuinely new
+   opcode, `SERFSTAT` (`0xB4` — `0xA6`-`0xAB` turned out to already be
+   taken by unimplemented `SETBP`/`CLRBP`/`ENABRK`/`DISBRK`/`ENATRAP`/
+   `DISATRAP` debugger pseudo-opcodes, found by grepping the assembler/
+   disasm/debugger opcode tables before picking a number rather than
+   trusting `cpu.star`'s dispatch switch, which was misleadingly silent
+   about them), exposes framed-mode-enabled and a latched checksum-error
+   bit that `SERSTAT`'s own two low bits never did. Good frames queue their
+   payload into a real RX FIFO for `SERIN` to drain (raw mode's own
+   single-register model is untouched — framed mode is additive); bad
+   frames latch a read-and-clear checksum-error bit and fire the pending
+   interrupt if enabled. New test: `tests/asm/uart_framed_test.asm` (a
+   real assembled program exercising `SERCTRL`/`SERFSTAT`/`SERIN`/`SERSTAT`
+   as actual opcodes) run through `tests/uart_framed_test.star`, a
+   headless harness that steps the CPU for real and only reaches for
+   `host_push_rx` directly to inject the frame bytes themselves (no opcode
+   can do that, same as raw mode's own host bridge and `mouse_pending_irq`
+   — see `mouse_interrupt_test.star`). Feeds one good frame and one
+   checksum-mismatched frame; all 10 checks pass. Bug found along the way,
+   not fixed (out of scope for this item): `mouse_interrupt_test.star`'s
+   own inline `Cpu` construction is stale against the current `Cpu` struct
+   (missing `sound_channel_last_wav`/etc. added by a later round) and no
+   longer rebuilds from source — its checked-in `.exe` still runs (compiled
+   before the drift), so the regression is silent until someone touches
+   that file next.
 4. **Done.** The permanent structural caveats (Windows-only fonts, "special guest"
    types unified in docs not mechanism, non-dynamic monomorphized-only
    traits, warning-only stack-budget check) — not gaps to close, a
@@ -62,6 +85,16 @@ document for cross-platform reference without the "Windows only" statements prec
 
 P1: The uncommitted changes called out were committed alongside this round's
 reassessment.
+
+P2: Item 3 (UART framed-mode parsing) implemented after a direct user ask to
+work it despite its own "not an active ask" framing — the ask included
+deciding the previously-missing opcode surface, so `SERCTRL` bit 2 now gates
+a real frame parser and a new opcode, `SERFSTAT` (`0xB4`), exposes the
+framed-mode/checksum-error state `SERSTAT` never did. New checked-in test:
+`tests/asm/uart_framed_test.asm` + `tests/uart_framed_test.star`, all 10
+checks passing. See item 3's own summary above for the full design and the
+stale-`mouse_interrupt_test.star` bug noticed but left unfixed as out of
+scope.
 
 See `changelog/070_2026-07-30_4082b7b_todo.md` and
 `changelog/070_2026-07-30_4082b7b_current_status.md` for the full history
