@@ -321,6 +321,49 @@ fn codegen_texture_update_aborts_on_null_texture_handle() {
     assert!(fn_ir.contains("unreachable"), "{}", fn_ir);
 }
 
+/// `draw_pixels` on a `pixels` buffer smaller than `width * height * 4`
+/// bytes aborts before ever calling `SDL_UpdateTexture` -- found via manual
+/// bug-hunt repro: before `abort_if_pixel_buffer_too_small` existed, a real
+/// too-small buffer against a large `width`/`height` request segfaulted
+/// (`SDL_UpdateTexture`'s internal `memcpy` reading past the buffer's own
+/// heap allocation) instead of erroring.
+#[test]
+fn codegen_draw_pixels_aborts_on_undersized_pixel_buffer() {
+    let src = "fn t():\n    \
+               let w = window_create(\"t\", 16, 16)\n    \
+               let mut pixels = Bytes()\n    \
+               pixels.push(1 as u8)\n    \
+               draw_pixels(w, pixels, 512, 512, 0, 0, 16, 16)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("smaller than width * height * 4 bytes"), "{}", ir);
+    let fn_ir = extract_fn_body(&ir, "define void @t(");
+    assert!(fn_ir.contains("icmp ult i64 "), "should compare the buffer length against the needed size: {}", fn_ir);
+    assert!(fn_ir.contains("call void @exit(i32 1)"), "should abort on an undersized buffer: {}", fn_ir);
+    assert!(fn_ir.contains("unreachable"), "{}", fn_ir);
+}
+
+/// `texture_update` gets the identical undersized-buffer check as
+/// `draw_pixels` (shared `abort_if_pixel_buffer_too_small` helper).
+#[test]
+fn codegen_texture_update_aborts_on_undersized_pixel_buffer() {
+    let src = "fn t():\n    \
+               let w = window_create(\"t\", 16, 16)\n    \
+               let tex = texture_create(w, 512, 512)\n    \
+               let mut pixels = Bytes()\n    \
+               pixels.push(1 as u8)\n    \
+               texture_update(tex, pixels, 512, 512)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    assert!(ir.contains("smaller than width * height * 4 bytes"), "{}", ir);
+    let fn_ir = extract_fn_body(&ir, "define void @t(");
+    assert!(fn_ir.contains("icmp ult i64 "), "should compare the buffer length against the needed size: {}", fn_ir);
+    assert!(fn_ir.contains("call void @exit(i32 1)"), "should abort on an undersized buffer: {}", fn_ir);
+    assert!(fn_ir.contains("unreachable"), "{}", fn_ir);
+}
+
 // ===== runtime: real SDL_VIDEODRIVER=dummy round trips =====================
 //
 // All of these draw against a real (headless) `SDL_Renderer` and read the
@@ -541,6 +584,51 @@ fn runtime_texture_update_after_destroy_aborts_end_to_end() {
     assert!(!stdout.contains("should not reach here"), "must abort before the null handle is ever used: {}", stdout);
     assert!(stdout.contains("null/destroyed texture handle"), "{}", stdout);
     assert_eq!(output.status.code(), Some(1), "{:?}", output.status);
+}
+
+/// `draw_pixels` given a real but undersized `pixels` buffer (4 bytes, a
+/// single RGBA pixel) against a `512x512` request aborts loudly instead of
+/// segfaulting -- the exact shape of the bug-hunt repro that motivated
+/// `abort_if_pixel_buffer_too_small`. Before the fix, this test's own
+/// process crashed (`output.status.success()` false with no captured
+/// message, a bare segfault) rather than exiting 1 with a diagnostic.
+#[test]
+fn runtime_draw_pixels_undersized_buffer_aborts_end_to_end() {
+    let src = "fn main():\n    \
+               let w = window_create(\"t\", 16, 16)\n    \
+               println(\"before\")\n    \
+               let mut pixels = Bytes()\n    \
+               pixels.push(200 as u8)\n    \
+               pixels.push(100 as u8)\n    \
+               pixels.push(50 as u8)\n    \
+               pixels.push(255 as u8)\n    \
+               draw_pixels(w, pixels, 512, 512, 0, 0, 16, 16)\n    \
+               println(\"should not reach here\")\n";
+    let output = compile_and_run_sdl("draw_pixels_undersized_buffer", src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("before"), "{}", stdout);
+    assert!(!stdout.contains("should not reach here"), "must abort before the undersized buffer is ever read: {}", stdout);
+    assert!(stdout.contains("smaller than width * height * 4 bytes"), "{}", stdout);
+    assert_eq!(output.status.code(), Some(1), "should exit cleanly, not segfault: {:?}", output.status);
+}
+
+/// `texture_update`'s identical undersized-buffer check, runtime-verified.
+#[test]
+fn runtime_texture_update_undersized_buffer_aborts_end_to_end() {
+    let src = "fn main():\n    \
+               let w = window_create(\"t\", 16, 16)\n    \
+               let tex = texture_create(w, 512, 512)\n    \
+               println(\"before\")\n    \
+               let mut pixels = Bytes()\n    \
+               pixels.push(1 as u8)\n    \
+               texture_update(tex, pixels, 512, 512)\n    \
+               println(\"should not reach here\")\n";
+    let output = compile_and_run_sdl("texture_update_undersized_buffer", src);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("before"), "{}", stdout);
+    assert!(!stdout.contains("should not reach here"), "must abort before the undersized buffer is ever read: {}", stdout);
+    assert!(stdout.contains("smaller than width * height * 4 bytes"), "{}", stdout);
+    assert_eq!(output.status.code(), Some(1), "should exit cleanly, not segfault: {:?}", output.status);
 }
 
 /// `texture_destroy` called twice on the same bare-variable handle: the

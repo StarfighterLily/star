@@ -486,6 +486,56 @@ impl Codegen {
         self.line(&format!("  call i32 @SDL_UpdateTexture(i8* {}, i8* null, i8* {}, i32 {})", tex, data, pitch));
     }
 
+    /// Abort if `len` (an `i64` `Bytes` length, from `list_fields`) is
+    /// smaller than `width * height * 4` -- the row-major RGBA byte count
+    /// `texture_update`/`draw_pixels` unconditionally hand `SDL_UpdateTexture`
+    /// as its source buffer. Neither builtin validated this before: a
+    /// too-small `pixels` argument (or a `width`/`height` that overstates the
+    /// buffer's real size) made `SDL_UpdateTexture`'s internal `memcpy` read
+    /// straight past the end of the buffer's heap allocation -- confirmed
+    /// with a real repro (a 4-byte `Bytes` buffer against a `draw_pixels(..,
+    /// 512, 512, ..)` call): a hard segfault, not a Star-level error, on a
+    /// call that involves no `unsafe` construct at all. Widened to `i64`
+    /// before multiplying so a large `width`/`height` product can't itself
+    /// wrap a 32-bit computation into a small, falsely-passing needed-size
+    /// (`width`/`height` are already `i32`-range by the time they reach
+    /// here, so the worst case, `i32::MAX * i32::MAX * 4`, still fits
+    /// comfortably in `i64` without overflowing). A negative `width`/
+    /// `height` also trips this (its `i64` product is negative, which as the
+    /// unsigned `icmp ult` below treats as enormous), so it's rejected here
+    /// rather than reaching `SDL_CreateTexture` with a nonsensical size.
+    fn abort_if_pixel_buffer_too_small(&mut self, len: &str, width: &str, height: &str, builtin_name: &str) {
+        let w64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", w64, width));
+        let h64 = self.tmp_name();
+        self.line(&format!("  {} = sext i32 {} to i64", h64, height));
+        let wh = self.tmp_name();
+        self.line(&format!("  {} = mul i64 {}, {}", wh, w64, h64));
+        let needed = self.tmp_name();
+        self.line(&format!("  {} = mul i64 {}, 4", needed, wh));
+        let too_small = self.tmp_name();
+        self.line(&format!("  {} = icmp ult i64 {}, {}", too_small, len, needed));
+        let fail_label = self.block_label("sdl_pixel_buffer_too_small");
+        let ok_label = self.block_label("sdl_pixel_buffer_ok");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", too_small, fail_label, ok_label));
+
+        self.open_block(&fail_label);
+        let msg = format!(
+            "star runtime error: {}(..) called with a `pixels` buffer smaller than width * height * 4 bytes\n",
+            builtin_name
+        );
+        let g = self.global_name();
+        let escaped = msg.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
+        self.global_defs.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", g, msg.len() + 1, escaped));
+        let msg_ptr = self.tmp_name();
+        self.line(&format!("  {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0", msg_ptr, msg.len() + 1, msg.len() + 1, g));
+        self.line(&format!("  call i32 @puts(i8* {})", msg_ptr));
+        self.line("  call void @exit(i32 1)");
+        self.line("  unreachable");
+
+        self.open_block(&ok_label);
+    }
+
     /// `texture_create(handle: ptr, width: int, height: int) -> ptr`:
     /// creates a `width x height` streaming-format texture (`SDL_
     /// PIXELFORMAT_RGBA32`) for a caller that wants to upload into and draw
@@ -525,9 +575,12 @@ impl Codegen {
         let tval = self.emit_expr(&args[0]);
         let tex = self.untag(&tval, &Ty::Ptr);
         self.abort_if_null_texture(&tex, "texture_update");
-        let (data, _len) = self.list_fields(&args[1], &Ty::U8);
+        let (data, len) = self.list_fields(&args[1], &Ty::U8);
         let wv = self.emit_expr(&args[2]);
         let width = self.untag(&wv, &Ty::Int);
+        let hv = self.emit_expr(&args[3]);
+        let height = self.untag(&hv, &Ty::Int);
+        self.abort_if_pixel_buffer_too_small(&len, &width, &height, "texture_update");
         let pitch = self.tmp_name();
         self.line(&format!("  {} = mul i32 {}, 4", pitch, width));
         self.emit_texture_update_raw(&tex, &data, &pitch);
@@ -628,12 +681,13 @@ impl Codegen {
         // exactly like `file_io.rs::emit_file_write_bytes` does for its own
         // `Bytes` argument -- no by-value copy of a potentially-256KB+
         // buffer.
-        let (data, _len) = self.list_fields(&args[1], &Ty::U8);
+        let (data, len) = self.list_fields(&args[1], &Ty::U8);
 
         let wv = self.emit_expr(&args[2]);
         let width = self.untag(&wv, &Ty::Int);
         let hv = self.emit_expr(&args[3]);
         let height = self.untag(&hv, &Ty::Int);
+        self.abort_if_pixel_buffer_too_small(&len, &width, &height, "draw_pixels");
         let dxv = self.emit_expr(&args[4]);
         let dst_x = self.untag(&dxv, &Ty::Int);
         let dyv = self.emit_expr(&args[5]);

@@ -2175,8 +2175,16 @@ impl Checker {
             // case), so `params[args.len()..]` never panics.
             if params[args.len()..].iter().all(|p| p.default.is_some()) {
                 let mut out = args.to_vec();
-                out.extend(params[args.len()..].iter().map(|p| p.default.clone().unwrap()));
-                return Some(out);
+                let mut ok = true;
+                for p in &params[args.len()..] {
+                    let default = p.default.clone().unwrap();
+                    if !self.check_default_is_scope_independent(&default, &p.name, desc) {
+                        ok = false;
+                        continue;
+                    }
+                    out.push(default);
+                }
+                return if ok { Some(out) } else { None };
             }
             self.error(
                 format!("{} is missing argument `{}`, which has no default", desc, param_names[args.len()]),
@@ -2222,18 +2230,70 @@ impl Checker {
         }
         let mut out = Vec::with_capacity(slots.len());
         for (i, slot) in slots.into_iter().enumerate() {
-            match slot.or_else(|| params[i].default.clone()) {
+            match slot {
                 Some(e) => out.push(e),
-                None => {
-                    self.error(
-                        format!("{} is missing a value for parameter `{}`, which has no default", desc, param_names[i]),
-                        span,
-                    );
-                    reported = true;
-                }
+                None => match params[i].default.clone() {
+                    Some(default) => {
+                        if self.check_default_is_scope_independent(&default, param_names[i], desc) {
+                            out.push(default);
+                        } else {
+                            reported = true;
+                        }
+                    }
+                    None => {
+                        self.error(
+                            format!("{} is missing a value for parameter `{}`, which has no default", desc, param_names[i]),
+                            span,
+                        );
+                        reported = true;
+                    }
+                },
             }
         }
         if reported { None } else { Some(out) }
+    }
+
+    /// Type-checks `default` in complete isolation -- an empty `vars`, no
+    /// parameter/`self`/local scope of any kind -- exactly the check a bare
+    /// module-level expression would get. Guards against a real hygiene bug
+    /// this feature shipped with: a default value expression is a raw
+    /// `Expr` cloned straight into the caller's own resolved argument list
+    /// (`resolve_call_arg_exprs`/`resolve_ctor_arg_exprs`), so without this
+    /// check it was later re-inferred against the *caller's* ambient
+    /// `vars`, not the callee's own declaration scope -- `Expr::Ident`'s
+    /// lookup (just above in this file) checks `vars` before anything else,
+    /// so `fn compute(base: i32, bonus: i32 = base): base + bonus` silently
+    /// captured whatever local happened to be named `base` at each call
+    /// site instead of referring to `compute`'s own `base` parameter:
+    /// `compute(1)` called from a scope with an unrelated `let base = 999`
+    /// returned `1000`, not the `2` a hygienic default would give (and a
+    /// scope with no such local got a confusing "undefined name `base`"
+    /// pointing at what reads like a perfectly valid parameter reference).
+    /// No mainstream language with default arguments (C++, Swift, Kotlin)
+    /// lets one default reference a sibling parameter either, so the fix
+    /// here is to reject it outright, cleanly, at first use, rather than
+    /// silently or confusingly miscompile it -- diagnostics `infer_expr`
+    /// produces against the empty scope are swapped for one clear,
+    /// correctly-attributed error; a default that only ever references
+    /// globals/consts/functions (every existing test fixture, e.g. `x: i32
+    /// = 1 + 2` or `x: i32 = base()` calling a free function) type-checks
+    /// here exactly as before and is spliced in unchanged.
+    fn check_default_is_scope_independent(&mut self, default: &Expr, param_name: &str, desc: &str) -> bool {
+        let errors_before = self.errors.len();
+        let mut empty_vars = HashMap::new();
+        let _ = self.infer_expr(default, &mut empty_vars);
+        if self.errors.len() > errors_before {
+            self.errors.truncate(errors_before);
+            self.error(
+                format!(
+                    "{}'s default value for `{}` cannot reference other parameters, `self`, or local variables -- only globals, constants, and function calls are allowed",
+                    desc, param_name
+                ),
+                default.span(),
+            );
+            return false;
+        }
+        true
     }
 
     /// The `(field names, field defaults)` a `StructLit` naming `name`

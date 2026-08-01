@@ -85,6 +85,78 @@ re-run this cycle, exit code 0 (confirmed by a full-output grep for
 
 # Previous work
 
+**Since this reseed** (not from the seeded board above — a direct ask,
+"bug hunt 2": throw adversarial input at the whole pipeline, especially the
+surfaces that came online since Snake/Nova, the same way `8af1493` "Bug
+hunt 1" did for the `f"""..."""` lexer gap). Two real, independently
+reproduced bugs found and fixed, both in code from *this* cycle's own
+"Since this reseed" entries below, not anything older:
+
+1. **A genuine memory-safety bug in `draw_pixels`/`texture_update`
+   (`src/codegen/sdl.rs`): neither validated its `pixels: Bytes` argument's
+   length against `width * height * 4` before handing it to
+   `SDL_UpdateTexture`.** Reproduced directly before fixing anything: a
+   real 4-byte `Bytes` buffer against `draw_pixels(w, pixels, 512, 512, ...)`
+   segfaulted (`SIGSEGV`, exit code 139) under `SDL_VIDEODRIVER=dummy` —
+   `SDL_UpdateTexture`'s internal `memcpy` reading straight past the
+   buffer's own heap allocation, reachable from pure Star user code with no
+   `unsafe` construct anywhere in the program. Fixed with a new shared
+   `Codegen::abort_if_pixel_buffer_too_small` (mirrors `abort_if_null_
+   texture`'s existing abort-cleanly convention: `icmp`/`puts`/`exit(1)`/
+   `unreachable`, not a crash) called from both builtins; `texture_update`
+   didn't even read its own documented `height` parameter before this, so
+   it gained that read as part of the fix. Re-ran the exact repro
+   post-fix: clean `star runtime error: ...` message, exit code 1, no
+   segfault. Four new tests in `tests/frontend_sdl_bulk_pixel_blit.rs`
+   (structural codegen checks for both builtins, plus two real
+   `SDL_VIDEODRIVER=dummy` runtime aborts) — 33/33 in that file passing.
+2. **A hygiene/capture bug in default parameter values
+   (`Checker::resolve_call_arg_exprs`, `src/types/expr.rs`): a default
+   expression referencing another parameter of the same function silently
+   resolved against whatever local happened to share that name at the
+   *call site*, not the function's own parameter.** Reproduced directly:
+   `fn compute(base: i32, bonus: i32 = base) -> i32: base + bonus` called
+   as `compute(1)` from a scope with an unrelated `let base = 999` returned
+   `1000` (`1 + 999`, the caller's `base` silently captured) instead of the
+   hygienic `2` (`1 + 1`) — and from a scope with no such local, produced a
+   confusing "undefined name `base`" pointing at what reads like a
+   perfectly valid parameter reference. Root cause: a default is a raw
+   `Expr` cloned straight into the resolved call-site argument list, then
+   later re-inferred against the *caller's* `vars`, which `Expr::Ident`
+   resolution checks before consts/functions — exactly the shape that let
+   it capture. No mainstream language with default arguments (C++, Swift,
+   Kotlin) allows a sibling-parameter reference either, so the fix is a new
+   `Checker::check_default_is_scope_independent`: type-checks each default
+   in complete isolation (empty `vars`) at first use, swapping any
+   diagnostic that isolation check produces for one clear, correctly-
+   attributed error instead of letting it fall through to the ambient
+   call-site scope. Struct/enum constructor field defaults
+   (`resolve_ctor_arg_exprs`) were checked too and are *not* affected —
+   confirmed by direct repro that they already reject a same-shaped
+   sibling-field default unconditionally, independent of call site (pre-
+   existing code, validated at struct registration rather than per-call).
+   Three new tests in `tests/frontend_default_params.rs` (the exact capture
+   repro, the no-caller-local variant, and a `self`-referencing method
+   default) — 32/32 in that file passing.
+
+Both fixes verified in isolation and against the full suite: full `cargo
++stable-x86_64-pc-windows-gnu test --no-fail-fast` (all binaries) exit code
+0, no failures. Also rebuilt `projects/nova/main.star` (`-L sdl/lib/x64 -l
+SDL2 -l comdlg32`) and `projects/snake/main.star` against the patched
+compiler to confirm neither regressed: both still build and type-check
+clean, and Nova's `texture_update` call site (`main.star`, real
+`SCREEN_SIZE * SCREEN_SIZE * 4`-byte `pixel_buf`) ran past the new bounds
+check under `SDL_VIDEODRIVER=dummy` without aborting. Neither project uses
+default parameter values yet, so finding 2 couldn't regress them either
+way. No other bugs survived a broader pass over the same new-since-Snake/
+Nova surfaces (lexer niceties composed together -- nested block comments,
+`_` digit separators in both decimal and hex, a triple-quoted string with
+a real embedded newline, all in one program -- and a descending `step`
+paired with a mismatched ascending range, zero iterations, no hang/crash;
+non-blocking `tcp_recv`'s would-block/closed/error paths re-read against
+`src/codegen/net.rs` line by line): all checked out correct by direct
+repro, not just by reasoning about the code.
+
 **Since this reseed** (not from the seeded board above — a direct feature
 request, not a planned P-item, and the pick-up of P2 #5's own "natural
 first pick" pointer): implemented all six of `docs/requests.md`'s scoped

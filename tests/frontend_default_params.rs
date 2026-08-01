@@ -121,6 +121,55 @@ fn rejects_named_arg_type_mismatch() {
     assert!(Driver::check(&Driver::parse(src).expect("should parse")).is_err());
 }
 
+/// A default value expression referencing another parameter of the same
+/// function is rejected with a clear, correctly-attributed error, not
+/// silently resolved against whatever local happens to share that name at
+/// the *call site*. Found via manual bug-hunt repro: before `Checker::
+/// check_default_is_scope_independent` existed, `compute(1)` called from a
+/// scope with an unrelated `let base = 999` silently returned `1000` (`1 +
+/// 999`, `base`'s default capturing the caller's local) instead of `2` (`1
+/// + 1`, what a hygienic default referring to `compute`'s own `base`
+/// parameter would give) -- and from a scope with no such local, produced a
+/// confusing "undefined name `base`" pointing at what reads like a
+/// perfectly valid parameter reference.
+#[test]
+fn rejects_default_value_referencing_sibling_parameter() {
+    let src = "fn compute(base: i32, bonus: i32 = base) -> i32:\n    base + bonus\n\nfn main():\n    let base = 999\n    println(f\"{compute(1)}\")\n";
+    let Err(diags) = Driver::check(&Driver::parse(src).expect("should parse")) else {
+        panic!("a default referencing a sibling parameter must be rejected, not silently capture the caller's `base`")
+    };
+    assert!(
+        diags.iter().any(|d| d.message.contains("cannot reference other parameters") && d.message.contains("`bonus`")),
+        "{:?}",
+        diags
+    );
+}
+
+/// Same rejection with no matching caller-scope local at all -- confirms
+/// the check is a real declaration-shape rejection, not just something that
+/// happens to fail when a coincidentally-named local is missing.
+#[test]
+fn rejects_default_value_referencing_sibling_parameter_no_caller_local() {
+    let src = "fn compute(base: i32, bonus: i32 = base) -> i32:\n    base + bonus\n\nfn main():\n    println(f\"{compute(1)}\")\n";
+    let Err(diags) = Driver::check(&Driver::parse(src).expect("should parse")) else {
+        panic!("a default referencing a sibling parameter must be rejected")
+    };
+    assert!(diags.iter().any(|d| d.message.contains("cannot reference other parameters")), "{:?}", diags);
+}
+
+/// A default value expression referencing `self` (only meaningful on a
+/// method, but a default's parameter list never includes `self` -- `fn_
+/// param_meta`/`method_param_meta` both filter it out) is rejected the same
+/// way a sibling-parameter reference is.
+#[test]
+fn rejects_default_value_referencing_self() {
+    let src = "struct P:\n    v: i32\n\nimpl P:\n    fn add(self, n: i32 = self.v) -> i32:\n        self.v + n\n\nfn main():\n    let p = P(v = 10)\n    println(f\"{p.add()}\")\n";
+    let Err(diags) = Driver::check(&Driver::parse(src).expect("should parse")) else {
+        panic!("a default referencing `self` must be rejected")
+    };
+    assert!(diags.iter().any(|d| d.message.contains("cannot reference other parameters")), "{:?}", diags);
+}
+
 /// A method call may also omit a defaulted trailing argument.
 #[test]
 fn method_call_may_omit_defaulted_arg() {
