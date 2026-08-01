@@ -200,6 +200,42 @@ fn unterminated_triple_quoted_string_is_an_error() {
     assert!(result.is_err(), "unterminated triple-quoted string should be a lex error");
 }
 
+/// `f"""..."""` -- a triple-quoted literal with an `f` prefix -- isn't a
+/// supported form (interpolation only exists on the plain single-quote
+/// `f"..."` spelling; multi-line only exists on the non-interpolating
+/// `"""..."""` spelling). Before `Lexer::scan_fstring_triple_unsupported`
+/// existed, `scan_token` sent this straight to `scan_fstring`, which
+/// consumes `f"` and then immediately finds the very next byte is already
+/// an unescaped closing `"` -- producing an empty interpolated string, with
+/// the rest of the intended literal re-lexed as one or more unrelated
+/// string tokens. That surfaced several tokens later as a confusing parser
+/// error (`expected ')', found a string literal`) with no hint that the
+/// real problem was the `f"""` spelling itself. This asserts the lexer now
+/// catches it directly, with a diagnostic naming the actual gap.
+#[test]
+fn triple_quoted_fstring_is_a_clear_lexer_error() {
+    let result = Driver::lex("f\"\"\"val={x}\"\"\"\n");
+    let errs = result.expect_err("f\"\"\" should be a lex error, not a silent mis-tokenization");
+    assert_eq!(errs.len(), 1, "should be exactly one diagnostic, not a cascade: {:?}", errs);
+    assert!(
+        errs[0].message.contains("don't support the `f` prefix"),
+        "diagnostic should name the real problem: {:?}",
+        errs[0]
+    );
+}
+
+/// After a bad `f"""..."""` literal, the lexer recovers by skipping to the
+/// matching closing `"""` (mirroring `scan_triple_string`'s own recovery)
+/// instead of leaving the rest of the line to cascade into unrelated
+/// errors -- confirmed here by a second, ordinary token on the same line
+/// lexing cleanly with no additional diagnostics.
+#[test]
+fn triple_quoted_fstring_recovers_without_cascading_errors() {
+    let result = Driver::lex("f\"\"\"nope\"\"\" + 1\n");
+    let errs = result.expect_err("should still be a lex error");
+    assert_eq!(errs.len(), 1, "recovery should skip past the bad literal, not cascade: {:?}", errs);
+}
+
 /// A triple-quoted string parses as an ordinary `str` expression, usable
 /// anywhere a plain string literal is.
 #[test]

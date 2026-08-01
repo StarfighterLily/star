@@ -585,6 +585,9 @@ impl<'src> Lexer<'src> {
             b'"' if self.peek(1) == Some(b'"') && self.peek(2) == Some(b'"') => self.scan_triple_string(start),
             b'"' => self.scan_string(start),
             b'\'' => self.scan_char(start),
+            c if c == b'f' && self.peek(1) == Some(b'"') && self.peek(2) == Some(b'"') && self.peek(3) == Some(b'"') => {
+                self.scan_fstring_triple_unsupported(start)
+            }
             c if c == b'f' && self.peek(1) == Some(b'"') => self.scan_fstring(start),
             c if is_ident_start(c) => self.scan_ident(),
             _ => self.scan_operator(),
@@ -817,6 +820,42 @@ impl<'src> Lexer<'src> {
             "unterminated triple-quoted string literal (missing closing `\"\"\"`)",
             self.span(start, self.pos),
         ));
+    }
+
+    /// `f"""..."""` -- a triple-quoted literal with an `f` prefix -- isn't a
+    /// supported literal form: interpolation only exists on the plain
+    /// single-quote `f"..."` form (`scan_fstring`), and multi-line literals
+    /// only exist on the non-interpolating `"""..."""` form
+    /// (`scan_triple_string`); the two don't compose. Left undetected,
+    /// `scan_token` would dispatch this straight to `scan_fstring`, which
+    /// consumes `f"` and then finds the very next byte is already an
+    /// unescaped closing `"` -- producing an empty interpolated string two
+    /// bytes long, followed by the rest of the intended literal (starting
+    /// `""actual text"""`) getting re-lexed as one or more unrelated,
+    /// unintended string literals. The user-visible result was a confusing
+    /// downstream parser error (e.g. "expected ')', found a string
+    /// literal") with no hint that the real problem was the unsupported
+    /// `f"""` spelling. Caught here instead with a diagnostic naming the
+    /// actual gap, recovering by skipping to the matching closing `"""`
+    /// (mirroring `scan_triple_string`'s own scan loop) so one bad literal
+    /// doesn't cascade into unrelated errors for the rest of the line.
+    fn scan_fstring_triple_unsupported(&mut self, start: usize) {
+        self.errors.push(Diagnostic::error(
+            "triple-quoted string literals don't support the `f` prefix -- interpolation isn't supported in multi-line string literals",
+            self.span(start, start + 4),
+        ));
+        self.pos += 4; // f"""
+        while self.pos < self.bytes.len() {
+            if self.bytes[self.pos] == b'"' && self.peek(1) == Some(b'"') && self.peek(2) == Some(b'"') {
+                self.pos += 3;
+                return;
+            }
+            if self.bytes[self.pos] == b'\\' && self.pos + 1 < self.bytes.len() {
+                self.pos += 2;
+                continue;
+            }
+            self.pos += self.current_char_len();
+        }
     }
 
     /// Scan a `'c'` char literal: exactly one (possibly escaped) codepoint

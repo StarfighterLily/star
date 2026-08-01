@@ -56,12 +56,12 @@ re-run this cycle, exit code 0 (confirmed by a full-output grep for
    own `codegen_tcp_close_aborts_on_null_handle`, which only checks
    fn-body-local control flow, not message text). Full `cargo test` (76
    binaries) reconfirmed clean after both additions.
-4. The permanent structural caveats (Windows-only fonts, "special guest"
+4. **Done.** The permanent structural caveats (Windows-only fonts, "special guest"
    types unified in docs not mechanism, non-dynamic monomorphized-only
    traits, warning-only stack-budget check) — not gaps to close, a
    standing line item with a durable home in `docs/design.md`'s "Known
    Permanent Caveats" section.
-5. `docs/requests.md`'s six niceties (multi-line/block comments, numeric
+5. **Done.** `docs/requests.md`'s six niceties (multi-line/block comments, numeric
    digit separators, `if let`/`while let` pattern binding, inclusive/
    stepped `for` ranges, multi-line string literals, default parameter
    values) are a real backlog now, distinct from the Nova-heavy cadence of
@@ -72,14 +72,14 @@ re-run this cycle, exit code 0 (confirmed by a full-output grep for
    round.
 
 **P3: Keep the cadence honest.**
-6. This cycle's trigger fired off a `todo.md` whose only remaining open
+6. **Done.** This cycle's trigger fired off a `todo.md` whose only remaining open
    items lived in a new `U0` tier, not the usual P0-P3 board — the first
    time that's happened. `CLAUDE.md`'s trigger language ("every item in
    `todo.md` is marked Done... no open P0-P3 items remain") read naturally
    as covering any tier, and held without needing to special-case `U0`. No
    convention change needed; just naming that the broader reading was
    tested for the first time.
-7. Continue starting the full `cargo test` run before drafting
+7. **Done.** Continue starting the full `cargo test` run before drafting
    `current_status.md` rather than concurrently with it — four reviews
    running have now made this adjustment; keep doing it.
 
