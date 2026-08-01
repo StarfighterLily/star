@@ -424,6 +424,9 @@ impl Parser {
     fn parse_if_stmt(&mut self) -> Option<Stmt> {
         let start = self.peek_span();
         self.expect(&TokenKind::If)?;
+        if self.at(&TokenKind::Let) {
+            return self.parse_if_let_stmt(start);
+        }
         let cond = self.parse_expr()?;
         self.expect(&TokenKind::Colon)?;
         let then_block = self.parse_if_expr_arm()?;
@@ -435,6 +438,51 @@ impl Parser {
         self.expect_line_end()?;
         let span = start.to(self.prev_span());
         Some(Stmt::If { cond, then_block, else_block, span })
+    }
+
+    /// Parse `if let <pattern> = <expr>: <then> [else: <else>]`
+    /// (`docs/requests.md` #3), desugaring straight into a `match`:
+    /// ```text
+    /// match <expr>:
+    ///     <pattern> -> <then>
+    ///     _ -> <else, or an empty block>
+    /// ```
+    /// Reuses `Parser::parse_pattern` (the same grammar `match`'s own arms
+    /// already parse -- `EnumName::Variant(bindings...)`, a literal, a
+    /// binding, `_`, ...) and `Checker::check_match_exhaustive`/
+    /// `Codegen`'s existing `TypedExpr::Match` lowering entirely for free:
+    /// the trailing wildcard arm this always synthesizes makes the
+    /// resulting `match` trivially exhaustive no matter which (or how many)
+    /// variants the scrutinee's type actually has, exactly like a
+    /// hand-written `match` with an explicit wildcard fallback arm already
+    /// does today -- the wildcard arm this spares the caller from writing
+    /// out by hand. No new AST node, checker rule, or codegen path at all;
+    /// the only genuinely new grammar is the `if let <pattern> = <expr>:`
+    /// header itself. Unlike plain `if`, there is no `elif let`/value-
+    /// expression-position form -- scoped to the statement form the request
+    /// actually asks for.
+    fn parse_if_let_stmt(&mut self, start: Span) -> Option<Stmt> {
+        self.expect(&TokenKind::Let)?;
+        let pattern = self.parse_pattern()?;
+        self.expect(&TokenKind::Assign)?;
+        let scrutinee = self.parse_expr()?;
+        self.expect(&TokenKind::Colon)?;
+        let then_block = self.parse_if_expr_arm()?;
+        let else_block = if self.eat(&TokenKind::Else) {
+            self.expect(&TokenKind::Colon)?;
+            Some(self.parse_if_expr_arm()?)
+        } else {
+            None
+        };
+        self.expect_line_end()?;
+        let span = start.to(self.prev_span());
+        let then_span = then_block.span;
+        let wildcard_body = else_block.unwrap_or_else(|| Block { stmts: Vec::new(), span: then_span });
+        let arms = vec![
+            MatchArm { pattern, body: then_block, span },
+            MatchArm { pattern: Pattern::Wildcard, body: wildcard_body, span },
+        ];
+        Some(Stmt::Expr(Expr::Match { scrutinee: Box::new(scrutinee), arms, span }))
     }
 
     /// Parse the `else:` / `elif <cond>:` / end-of-chain tail that follows an
@@ -486,6 +534,9 @@ impl Parser {
     fn parse_while_stmt(&mut self) -> Option<Stmt> {
         let start = self.peek_span();
         self.expect(&TokenKind::While)?;
+        if self.at(&TokenKind::Let) {
+            return self.parse_while_let_stmt(start);
+        }
         let cond = self.parse_expr()?;
         self.expect(&TokenKind::Colon)?;
         let body = self.parse_block()?;
@@ -494,20 +545,97 @@ impl Parser {
         Some(Stmt::While { cond, body, else_block, span })
     }
 
-    /// Parse `for <var> in <start>..<end>:` followed by a loop body
-    /// (exclusive-range iteration over `i32` bounds).
+    /// Parse `while let <pattern> = <expr>: <body>` (`docs/requests.md` #3),
+    /// desugaring into:
+    /// ```text
+    /// while true:
+    ///     match <expr>:
+    ///         <pattern> -> <body>
+    ///         _ -> break
+    /// ```
+    /// so it loops for as long as `<expr>` -- re-evaluated fresh every
+    /// iteration, exactly like a hand-written `while true: match ...: _ ->
+    /// break` -- keeps matching `<pattern>`, and stops the moment it
+    /// doesn't (the common "loop until `None`/`Err`" shape this spares the
+    /// caller from spelling out by hand; see `parse_if_let_stmt`'s doc
+    /// comment for why the synthesized wildcard arm needs no exhaustiveness
+    /// special-casing). `break`/`continue` written inside `<body>` refer to
+    /// this loop exactly as normal: the synthesized `match` is nested
+    /// *inside* the real `Stmt::While` this produces, not a loop of its own.
+    fn parse_while_let_stmt(&mut self, start: Span) -> Option<Stmt> {
+        self.expect(&TokenKind::Let)?;
+        let pattern = self.parse_pattern()?;
+        self.expect(&TokenKind::Assign)?;
+        let scrutinee = self.parse_expr()?;
+        self.expect(&TokenKind::Colon)?;
+        let user_body = self.parse_block()?;
+        let span = start.to(self.prev_span());
+        let arms = vec![
+            MatchArm { pattern, body: user_body, span },
+            MatchArm { pattern: Pattern::Wildcard, body: Block { stmts: vec![Stmt::Break { span }], span }, span },
+        ];
+        let match_expr = Expr::Match { scrutinee: Box::new(scrutinee), arms, span };
+        let body = Block { stmts: vec![Stmt::Expr(match_expr)], span };
+        Some(Stmt::While { cond: Expr::Bool(true, span), body, else_block: None, span })
+    }
+
+    /// Parse `for <var> in <start>..<end> [step <n>]:` followed by a loop
+    /// body -- exclusive-range iteration over `i32` bounds by default
+    /// (`docs/requests.md` #4 adds the optional inclusive `..=` spelling and
+    /// the optional trailing `step <n>` clause below).
     fn parse_for_stmt(&mut self) -> Option<Stmt> {
         let start = self.peek_span();
         self.expect(&TokenKind::For)?;
         let var = self.expect_ident()?;
         self.expect(&TokenKind::In)?;
         let range_start = self.parse_expr()?;
-        self.expect(&TokenKind::DotDot)?;
+        let inclusive = if self.eat(&TokenKind::DotDotEq) {
+            true
+        } else {
+            self.expect(&TokenKind::DotDot)?;
+            false
+        };
         let range_end = self.parse_expr()?;
+        let step = self.parse_opt_for_step()?;
         self.expect(&TokenKind::Colon)?;
         let body = self.parse_block()?;
         let span = start.to(self.prev_span());
-        Some(Stmt::For { var, start: range_start, end: range_end, body, span })
+        Some(Stmt::For { var, start: range_start, end: range_end, inclusive, step, body, span })
+    }
+
+    /// Parse an optional trailing `step <n>` clause on a `for` loop's range,
+    /// where `<n>` is a bare (optionally negated) integer literal -- not a
+    /// general expression, mirroring `Parser::parse_frame_stmt`'s identical
+    /// literal-only restriction on `frame`'s byte budget, so the loop's
+    /// ascending-vs-descending comparison direction is known at parse time
+    /// (see `Stmt::For::step`'s doc comment). `step` is a soft keyword, not
+    /// a reserved one -- checked here as a plain identifier spelled `step`
+    /// rather than added to `crate::lexer::keyword_or_ident`, since
+    /// `projects/nova/cpu.star` already declares a real method named `step`
+    /// and reserving the word globally would break it.
+    fn parse_opt_for_step(&mut self) -> Option<Option<i64>> {
+        if !matches!(self.peek_kind(), TokenKind::Ident(name) if name == "step") {
+            return Some(None);
+        }
+        self.advance(); // the `step` soft keyword
+        let step_span = self.peek_span();
+        let negative = self.eat(&TokenKind::Minus);
+        let n = match self.peek_kind() {
+            TokenKind::Int(n) => {
+                self.advance();
+                n
+            }
+            other => {
+                self.error(format!("expected an integer literal after `step`, found {}", other.describe()), step_span);
+                return None;
+            }
+        };
+        let value = if negative { -n } else { n };
+        if value == 0 {
+            self.error("`step` must not be 0 -- the loop counter would never advance", step_span);
+            return None;
+        }
+        Some(Some(value))
     }
 
     fn parse_break_stmt(&mut self) -> Option<Stmt> {

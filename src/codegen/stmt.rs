@@ -889,8 +889,8 @@ impl Codegen {
                 }
                 self.open_block(&end_label);
             }
-            TypedStmt::For { var, start, end, body, .. } => {
-                self.emit_for_stmt(var, start, end, body);
+            TypedStmt::For { var, start, end, inclusive, step, body, .. } => {
+                self.emit_for_stmt(var, start, end, *inclusive, *step, body);
             }
             TypedStmt::Break { .. } => {
                 let target = self.loop_stack.last().cloned();
@@ -943,14 +943,28 @@ impl Codegen {
         }
     }
 
-    /// Emit `for var in start..end: <body>`: an `i32` counter alloca,
-    /// incremented in a dedicated step block so `continue` can jump straight
-    /// to the increment without re-running the loop body.
-    fn emit_for_stmt(&mut self, var: &str, start: &TypedExpr, end: &TypedExpr, body: &TypedBlock) {
+    /// Emit `for var in start..end: <body>` (or `start..=end`/`step <n>` --
+    /// `docs/requests.md` #4): an `i32` counter alloca, incremented (by
+    /// `step`, or by 1 when `None`) in a dedicated step block so `continue`
+    /// can jump straight to the increment without re-running the loop body.
+    /// `step`'s sign is resolved to a comparison predicate once here, at
+    /// codegen time, rather than every iteration at runtime -- it's always a
+    /// parse-time literal (see `Stmt::For::step`'s doc comment), never a
+    /// general expression, precisely so this can be a plain `icmp` instead
+    /// of a per-iteration runtime sign check.
+    fn emit_for_stmt(&mut self, var: &str, start: &TypedExpr, end: &TypedExpr, inclusive: bool, step: Option<i64>, body: &TypedBlock) {
         let start_val = self.emit_expr(start);
         let start_bare = self.untag(&start_val, &Ty::Int);
         let end_val = self.emit_expr(end);
         let end_bare = self.untag(&end_val, &Ty::Int);
+        let step_amount = step.unwrap_or(1);
+        let ascending = step_amount > 0;
+        let cmp_pred = match (ascending, inclusive) {
+            (true, false) => "slt",
+            (true, true) => "sle",
+            (false, false) => "sgt",
+            (false, true) => "sge",
+        };
 
         let i_ptr = self.tmp_name();
         self.line(&format!("  {} = alloca i32", i_ptr));
@@ -978,7 +992,7 @@ impl Codegen {
         let i_reg = self.tmp_name();
         self.line(&format!("  {} = load i32, i32* {}", i_reg, i_ptr));
         let cmp = self.tmp_name();
-        self.line(&format!("  {} = icmp slt i32 {}, {}", cmp, i_reg, end_bare));
+        self.line(&format!("  {} = icmp {} i32 {}, {}", cmp, cmp_pred, i_reg, end_bare));
         self.line(&format!("  br i1 {}, label %{}, label %{}", cmp, body_label, end_label));
 
         self.open_block(&body_label);
@@ -1010,7 +1024,7 @@ impl Codegen {
         let i_reg2 = self.tmp_name();
         self.line(&format!("  {} = load i32, i32* {}", i_reg2, i_ptr));
         let i_next = self.tmp_name();
-        self.line(&format!("  {} = add i32 {}, 1", i_next, i_reg2));
+        self.line(&format!("  {} = add i32 {}, {}", i_next, i_reg2, step_amount));
         self.line(&format!("  store i32 {}, i32* {}", i_next, i_ptr));
         self.line(&format!("  br label %{}", cond_label));
 

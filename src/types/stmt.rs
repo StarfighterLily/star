@@ -227,7 +227,7 @@ impl Checker {
                 let else_typed = else_block.as_ref().map(|b| self.check_block_inner(b, &mut vars.clone()));
                 TypedStmt::While { cond: cond_typed, then_block: then_typed, else_block: else_typed, span: *span }
             }
-            Stmt::For { var, start, end, body, span } => {
+            Stmt::For { var, start, end, inclusive, step, body, span } => {
                 let start_typed = self.infer_expr(start, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
                 let end_typed = self.infer_expr(end, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
                 if !matches!(start_typed.clone().into_ty(), Ty::Int) {
@@ -241,7 +241,7 @@ impl Checker {
                 self.loop_depth += 1;
                 let body_typed = self.check_block_inner(body, &mut inner_vars);
                 self.loop_depth -= 1;
-                TypedStmt::For { var: var.clone(), start: start_typed, end: end_typed, body: body_typed, span: *span }
+                TypedStmt::For { var: var.clone(), start: start_typed, end: end_typed, inclusive: *inclusive, step: *step, body: body_typed, span: *span }
             }
             Stmt::Break { span } => {
                 if self.loop_depth == 0 {

@@ -102,6 +102,12 @@ pub enum TokenKind {
     Semi,
     Dot,
     DotDot,     // ..
+    /// `..=` -- inclusive range bound in a `for` loop (`docs/requests.md`
+    /// #4), e.g. `for i in 0..=10:`. Only ever produced right after a
+    /// `DotDot` would otherwise be, never a separate `=` token following
+    /// `DotDot` -- `scan_operator`'s three-char check requires all three
+    /// bytes contiguous.
+    DotDotEq,   // ..=
     Arrow,      // ->
     FatArrow,   // =>
     LParen,
@@ -215,6 +221,7 @@ impl TokenKind {
             TokenKind::Semi => "';'".into(),
             TokenKind::Dot => "'.'".into(),
             TokenKind::DotDot => "'..'".into(),
+            TokenKind::DotDotEq => "'..='".into(),
             TokenKind::Arrow => "'->'".into(),
             TokenKind::FatArrow => "'=>'".into(),
             TokenKind::LParen => "'('".into(),
@@ -421,7 +428,7 @@ impl<'src> Lexer<'src> {
             // (since its measured width is 0) pops every open indent level,
             // corrupting the token stream for the rest of the block with no
             // diagnostic at all.
-            if self.bytes[i] == b'\n' || self.bytes[i] == b'\r' || self.bytes[i] == b'#' {
+            if self.bytes[i] == b'\n' || self.bytes[i] == b'\r' {
                 self.pos = i;
                 self.skip_to_line_end();
                 if self.pos < self.bytes.len() && self.bytes[self.pos] == b'\n' {
@@ -429,25 +436,79 @@ impl<'src> Lexer<'src> {
                 }
                 continue;
             }
+            if self.bytes[i] == b'#' && self.bytes.get(i + 1) != Some(&b'*') {
+                self.pos = i;
+                self.skip_to_line_end();
+                if self.pos < self.bytes.len() && self.bytes[self.pos] == b'\n' {
+                    self.pos += 1;
+                }
+                continue;
+            }
+            if self.bytes[i] == b'#' {
+                // `#* ... *#` block comment (`Lexer::skip_block_comment`),
+                // which may itself span multiple physical lines. Whether
+                // *this* logical line counts as comment-only depends on
+                // what's left after the comment closes -- resolved below,
+                // rather than assumed the way the plain `#` line-comment
+                // case above can (a line comment always eats to EOL).
+                self.pos = i;
+                self.skip_block_comment();
+                while self.pos < self.bytes.len() && matches!(self.bytes[self.pos], b' ' | b'\t') {
+                    self.pos += 1;
+                }
+                if self.pos >= self.bytes.len() || matches!(self.bytes[self.pos], b'\n' | b'\r' | b'#') {
+                    // Comment-only through the rest of the line (or
+                    // immediately followed by another comment) -- treat
+                    // exactly like a blank line: no structural tokens, and
+                    // loop again so a multi-line comment followed by fresh
+                    // indentation on a later physical line gets measured on
+                    // THAT line's own leading whitespace, not the comment's
+                    // starting column.
+                    self.skip_to_line_end();
+                    if self.pos < self.bytes.len() && self.bytes[self.pos] == b'\n' {
+                        self.pos += 1;
+                    }
+                    continue;
+                }
+                // Real code follows the comment on this same physical line
+                // (`#* ... *# code`) -- the indentation measured before the
+                // comment (`width`/`line_start`) is this line's real
+                // indentation; `self.pos` already sits on the code's first
+                // byte, having skipped the comment and any trailing
+                // horizontal whitespace above.
+                self.apply_indent_width(line_start, width);
+                return;
+            }
 
             self.pos = i;
-            let current = *self.indents.last().unwrap();
-            if width > current {
-                self.indents.push(width);
-                self.push(TokenKind::Indent, line_start, self.pos);
-            } else if width < current {
-                while *self.indents.last().unwrap() > width {
-                    self.indents.pop();
-                    self.push(TokenKind::Dedent, line_start, self.pos);
-                }
-                if *self.indents.last().unwrap() != width {
-                    self.errors.push(Diagnostic::error(
-                        "inconsistent indentation",
-                        self.span(line_start, self.pos),
-                    ));
-                }
-            }
+            self.apply_indent_width(line_start, width);
             return;
+        }
+    }
+
+    /// Push `Indent`/`Dedent` tokens (or an "inconsistent indentation"
+    /// error) for a logical line whose indentation column is `width`,
+    /// comparing against the current top of `self.indents`. Factored out of
+    /// `handle_line_start` so the ordinary content-line path and the
+    /// `#* ... *# code`-on-the-same-line path (which measures `width` before
+    /// the comment but resolves it after skipping the comment) share
+    /// identical push/pop logic instead of drifting apart.
+    fn apply_indent_width(&mut self, line_start: usize, width: usize) {
+        let current = *self.indents.last().unwrap();
+        if width > current {
+            self.indents.push(width);
+            self.push(TokenKind::Indent, line_start, self.pos);
+        } else if width < current {
+            while *self.indents.last().unwrap() > width {
+                self.indents.pop();
+                self.push(TokenKind::Dedent, line_start, self.pos);
+            }
+            if *self.indents.last().unwrap() != width {
+                self.errors.push(Diagnostic::error(
+                    "inconsistent indentation",
+                    self.span(line_start, self.pos),
+                ));
+            }
         }
     }
 
@@ -465,6 +526,7 @@ impl<'src> Lexer<'src> {
                     self.pos += 1;
                 }
                 b' ' | b'\t' | b'\r' => self.pos += 1,
+                b'#' if self.peek(1) == Some(b'*') => self.skip_block_comment(),
                 b'#' => self.skip_to_line_end(),
                 _ => self.scan_token(),
             }
@@ -478,12 +540,49 @@ impl<'src> Lexer<'src> {
         }
     }
 
+    /// Skip a `#* ... *#` block comment (`docs/requests.md` #1), starting
+    /// at `self.pos` (which must sit on the `#`). Balances/nests: an inner
+    /// `#*` bumps a depth counter, and only the matching outer `*#` closes
+    /// the comment -- so commented-out code that itself contains a
+    /// `#* ... *#` block round-trips instead of closing early at its first
+    /// `*#`. May consume embedded newlines (a comment spanning several
+    /// physical lines) without emitting any `Newline` token for them --
+    /// exactly like a `#` line comment emits none, the whole span vanishes
+    /// from the token stream as if it were whitespace. Callers mid-line
+    /// (`scan_line_content`) just let the surrounding scan loop continue
+    /// past it; `handle_line_start` (a block comment opening a logical
+    /// line) has its own follow-up logic to decide whether the line that
+    /// contained it counts as blank or has real content trailing the close.
+    fn skip_block_comment(&mut self) {
+        let comment_start = self.pos;
+        self.pos += 2; // `#*`
+        let mut depth = 1u32;
+        while self.pos < self.bytes.len() && depth > 0 {
+            if self.bytes[self.pos] == b'#' && self.peek(1) == Some(b'*') {
+                depth += 1;
+                self.pos += 2;
+            } else if self.bytes[self.pos] == b'*' && self.peek(1) == Some(b'#') {
+                depth -= 1;
+                self.pos += 2;
+            } else {
+                self.pos += self.current_char_len().max(1);
+            }
+        }
+        if depth > 0 {
+            self.errors.push(Diagnostic::error(
+                "unterminated block comment (`#*` with no matching `*#`)",
+                self.span(comment_start, self.pos),
+            ));
+        }
+    }
+
     /// Scan a single non-whitespace token.
     fn scan_token(&mut self) {
         let start = self.pos;
         let c = self.bytes[self.pos];
         match c {
             b'0'..=b'9' => self.scan_number(),
+            b'"' if self.peek(1) == Some(b'"') && self.peek(2) == Some(b'"') => self.scan_triple_string(start),
             b'"' => self.scan_string(start),
             b'\'' => self.scan_char(start),
             c if c == b'f' && self.peek(1) == Some(b'"') => self.scan_fstring(start),
@@ -506,10 +605,13 @@ impl<'src> Lexer<'src> {
         if self.bytes[self.pos] == b'0' && matches!(self.peek(1), Some(b'x') | Some(b'X')) {
             self.pos += 2;
             let digits_start = self.pos;
-            while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_hexdigit() {
+            while self.pos < self.bytes.len() && (self.bytes[self.pos].is_ascii_hexdigit() || self.bytes[self.pos] == b'_') {
                 self.pos += 1;
             }
-            let digits = &self.src[digits_start..self.pos];
+            // Digit separators (`0x1_F4`, see `Lexer::strip_digit_separators`)
+            // are stripped before parsing -- `u64::from_str_radix` has no
+            // notion of them.
+            let digits = self.strip_digit_separators(digits_start, self.pos);
             let kind = if digits.is_empty() {
                 self.errors.push(Diagnostic::error(
                     "hex literal must have at least one digit after '0x'",
@@ -517,7 +619,7 @@ impl<'src> Lexer<'src> {
                 ));
                 TokenKind::Int(0)
             } else {
-                match u64::from_str_radix(digits, 16) {
+                match u64::from_str_radix(&digits, 16) {
                     Ok(v) => TokenKind::Int(v as i64),
                     Err(_) => {
                         self.errors.push(Diagnostic::error(
@@ -531,9 +633,7 @@ impl<'src> Lexer<'src> {
             self.push(kind, start, self.pos);
             return;
         }
-        while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
-            self.pos += 1;
-        }
+        self.scan_digit_run();
         let mut is_float = false;
         // A number that immediately follows a member-access `.` is a tuple
         // index, never a float: without this, the chained tuple index
@@ -552,9 +652,7 @@ impl<'src> Lexer<'src> {
         {
             is_float = true;
             self.pos += 1;
-            while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
-                self.pos += 1;
-            }
+            self.scan_digit_run();
         }
         // Scientific-notation exponent suffix (`1e10`, `3.0e38`, `1E-5`):
         // `[eE][+-]?[0-9]+`, mirroring Rust's own float-literal grammar. Only
@@ -566,21 +664,31 @@ impl<'src> Lexer<'src> {
         // fraction check above is: `t.0e3` is a tuple index (`0`) followed by
         // an identifier (`e3`), never a float, since Star has no float
         // literal that can start right after a `Dot` token.
-        if !follows_member_dot && self.pos < self.bytes.len() && matches!(self.bytes[self.pos], b'e' | b'E') {
+        if !follows_member_dot
+            && self.pos < self.bytes.len()
+            && matches!(self.bytes[self.pos], b'e' | b'E')
+        {
             let mut exp_end = self.pos + 1;
             if exp_end < self.bytes.len() && matches!(self.bytes[exp_end], b'+' | b'-') {
                 exp_end += 1;
             }
-            let digits_start = exp_end;
-            while exp_end < self.bytes.len() && self.bytes[exp_end].is_ascii_digit() {
-                exp_end += 1;
-            }
-            if exp_end > digits_start {
+            // Require a real digit right after the sign (an underscore alone
+            // doesn't count, mirroring `scan_digit_run`'s doc comment on
+            // where separators are and aren't allowed) before committing to
+            // consuming the rest of the run -- otherwise `1e`/`1eXYZ` must
+            // leave `pos` untouched so `e`/`E` is scanned as its own token.
+            if exp_end < self.bytes.len() && self.bytes[exp_end].is_ascii_digit() {
                 is_float = true;
                 self.pos = exp_end;
+                self.scan_digit_run();
             }
         }
-        let text = &self.src[start..self.pos];
+        // Digit separators (`1_000_000`, `1_000.5`, `1e1_0`) are stripped
+        // before parsing -- Rust's `str::parse` has no notion of them, and
+        // the lexer accepts them purely as a readability nicety with no
+        // effect on the parsed value (`docs/requests.md` #2).
+        let text = self.strip_digit_separators(start, self.pos);
+        let text = text.as_str();
         let kind = if is_float {
             TokenKind::Float(text.parse().unwrap_or(0.0))
         } else {
@@ -608,6 +716,29 @@ impl<'src> Lexer<'src> {
             }
         };
         self.push(kind, start, self.pos);
+    }
+
+    /// Consume a run of ASCII digits and/or `_` digit separators
+    /// (`1_000_000`, `docs/requests.md` #2) starting at `self.pos`. Never
+    /// called on the very first character of a literal (that's always a
+    /// real digit, guaranteed by `scan_token`'s dispatch on `'0'..='9'`, or
+    /// checked immediately before the call sites that follow a `.`/exponent
+    /// sign), so an all-underscore or leading-underscore run can't occur
+    /// through this helper alone.
+    fn scan_digit_run(&mut self) {
+        while self.pos < self.bytes.len() && (self.bytes[self.pos].is_ascii_digit() || self.bytes[self.pos] == b'_') {
+            self.pos += 1;
+        }
+    }
+
+    /// Strip `_` digit separators out of `self.src[start..end]`, so the
+    /// result is safe to hand to `str::parse`/`u64::from_str_radix` (neither
+    /// understands them). Plain byte slicing is fine here despite the
+    /// lexer's general multi-byte-codepoint care elsewhere: every caller
+    /// only ever passes a range that scanned as ASCII digits/`_`/a decimal
+    /// point/`x`/`X`/`e`/`E`/`+`/`-`, never a UTF-8 continuation byte.
+    fn strip_digit_separators(&self, start: usize, end: usize) -> String {
+        self.src[start..end].chars().filter(|&c| c != '_').collect()
     }
 
     fn scan_ident(&mut self) {
@@ -647,6 +778,43 @@ impl<'src> Lexer<'src> {
         }
         self.errors.push(Diagnostic::error(
             "unterminated string literal",
+            self.span(start, self.pos),
+        ));
+    }
+
+    /// Scan a `"""..."""` multi-line string literal (`docs/requests.md`
+    /// #5): unlike `scan_string`, an embedded raw `\n` is ordinary content
+    /// (a real line break in the resulting value) instead of an
+    /// "unterminated string literal" error -- shader source, help text, and
+    /// dialogue can be written as one literal instead of needing external
+    /// concatenation. Produces the same `TokenKind::Str` the plain form
+    /// does (there's no separate "triple string" token kind), so nothing
+    /// downstream of the lexer -- parser, checker, codegen -- needs to know
+    /// which spelling produced a given `Str` token. Shares `scan_escape`
+    /// with `scan_string`/`scan_fstring`, so `\n`/`\t`/`\"`/etc. still work
+    /// the same inside a triple-quoted literal as outside one; only the
+    /// bare-newline-is-an-error rule is lifted.
+    fn scan_triple_string(&mut self, start: usize) {
+        self.pos += 3; // opening """
+        let mut value = String::new();
+        while self.pos < self.bytes.len() {
+            if self.bytes[self.pos] == b'"' && self.peek(1) == Some(b'"') && self.peek(2) == Some(b'"') {
+                self.pos += 3;
+                self.push(TokenKind::Str(value), start, self.pos);
+                return;
+            }
+            if self.bytes[self.pos] == b'\\' {
+                self.pos += 1;
+                if let Some(esc) = self.scan_escape() {
+                    value.push(esc);
+                }
+                continue;
+            }
+            value.push(self.current_char());
+            self.pos += self.current_char_len();
+        }
+        self.errors.push(Diagnostic::error(
+            "unterminated triple-quoted string literal (missing closing `\"\"\"`)",
             self.span(start, self.pos),
         ));
     }
@@ -871,6 +1039,7 @@ impl<'src> Lexer<'src> {
         match (c, two, self.peek(2)) {
             (b'<', Some(b'<'), Some(b'=')) => three_char!(TokenKind::ShlEq),
             (b'>', Some(b'>'), Some(b'=')) => three_char!(TokenKind::ShrEq),
+            (b'.', Some(b'.'), Some(b'=')) => three_char!(TokenKind::DotDotEq),
             _ => {}
         }
         match (c, two) {

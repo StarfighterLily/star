@@ -188,6 +188,8 @@ pub enum TypedStmt {
         var: String,
         start: TypedExpr,
         end: TypedExpr,
+        inclusive: bool,
+        step: Option<i64>,
         body: TypedBlock,
         span: Span,
     },

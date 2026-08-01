@@ -225,20 +225,21 @@ fn rejects_positional_ctor_undersupply_with_original_arity_error() {
     assert!(errs.iter().any(|d| d.message.contains("expects 2 argument(s), found 1")), "{:?}", errs);
 }
 
-/// Ordinary function/method calls have no named-parameter machinery --
-/// `name = expr` there is rejected instead of silently dropping the name
-/// (which previously made `f(b = 1, a = 2)` *look* reordered while
-/// matching purely positionally).
+/// Ordinary function calls *do* now support named arguments, reordered
+/// freely (`docs/requests.md` #6, `Checker::resolve_call_arg_exprs`) --
+/// previously `name = expr` here was rejected outright (silently dropping
+/// the name would have let `f(b = 1, a = 2)` *look* reordered while
+/// matching purely positionally instead). See `tests/
+/// frontend_default_params.rs` for the fuller test suite covering this
+/// (defaults, unknown/duplicate names, positional-after-named, method
+/// calls, ...); this one just pins down that this exact call -- the very
+/// shape this test used to assert was rejected -- now type-checks and
+/// actually reorders.
 #[test]
-fn rejects_named_arguments_on_ordinary_call() {
+fn accepts_named_arguments_on_ordinary_call() {
     let src = "fn add(a: i32, b: i32) -> i32:\n    a + b\nfn main():\n    let x = add(b = 1, a = 2)\n";
     let module = Driver::parse(src).expect("should parse");
-    let Err(errs) = Driver::check(&module) else { panic!("named args on a fn call should be rejected") };
-    assert!(
-        errs.iter().any(|d| d.message.contains("named arguments are only supported when constructing a struct or enum variant")),
-        "{:?}",
-        errs
-    );
+    Driver::check(&module).expect("named args on an ordinary fn call should now type-check");
 }
 
 /// Builtin constructors (`Vec3`, `List`, ...) have no user-declared field

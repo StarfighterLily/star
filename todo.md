@@ -86,6 +86,63 @@ re-run this cycle, exit code 0 (confirmed by a full-output grep for
 # Previous work
 
 **Since this reseed** (not from the seeded board above — a direct feature
+request, not a planned P-item, and the pick-up of P2 #5's own "natural
+first pick" pointer): implemented all six of `docs/requests.md`'s scoped
+language niceties in one pass, each with its own new test file. Three are
+pure `src/lexer.rs` changes reusing the existing `TokenKind::Str` (no
+parser/checker/codegen involvement at all): `#* ... *#` balanced/nesting
+block comments (`Lexer::skip_block_comment`, called from both
+`scan_line_content` and `handle_line_start`), `_` digit separators in
+decimal/hex/float/exponent literals (`Lexer::scan_digit_run`/
+`strip_digit_separators`), and `"""..."""` multi-line string literals
+(`Lexer::scan_triple_string`, an embedded raw newline is ordinary content
+instead of the plain form's "unterminated string literal" error). Two
+desugar entirely at parse time into existing AST shapes: `if let`/`while
+let` (`Parser::parse_if_let_stmt`/`parse_while_let_stmt`, straight into
+`Expr::Match`/`Stmt::While`, reusing `Parser::parse_pattern` — widened from
+private to `pub(super)` — and `Checker::check_match_exhaustive` for free,
+no new AST node or checker rule), and inclusive/stepped `for` ranges (a new
+`DotDotEq` token for `..=`, plus a `step <n>` soft keyword — checked as a
+plain identifier spelled `step`, deliberately *not* added to
+`crate::lexer::keyword_or_ident`, since `projects/nova/cpu.star` already
+declares a real `fn step(mut self):` method that would otherwise break;
+`n` is a parse-time literal so `Codegen::emit_for_stmt` can pick its
+`icmp` predicate once at codegen time from the step's known sign rather
+than a runtime check every iteration — `Stmt::For`/`TypedStmt::For` gained
+`inclusive`/`step` fields threaded through every call site that names all
+of a `For`'s fields explicitly, not just `..`-tolerant ones). The sixth,
+default parameter values, is the one with real checker-level machinery:
+`Param` gained a `default: Option<Expr>` (parser-enforced to trail every
+non-defaulted parameter), and two new `Checker` tables
+(`fn_param_meta`/`method_param_meta`) let a new `resolve_call_arg_exprs` —
+the call-site counterpart of the pre-existing `resolve_ctor_arg_exprs`
+struct/enum-construction resolver — match named arguments by name and
+splice in a still-missing trailing default *before* any arity/type check
+runs, for a plain free-function call or a `recv.method(..)` call with a
+simple (identifier/`self`) receiver; a compound receiver, a closure call,
+and a generic-function call all keep their previous positional-only
+behavior (documented, not silently degraded) since none has declared-name
+metadata available without either double-evaluating a sub-expression or
+not existing at all. Four new test files (`tests/frontend_lexer_niceties.rs`
+23 tests, `tests/frontend_for_loop_ranges.rs` 19, `tests/
+frontend_if_let_while_let.rs` 16, `tests/frontend_default_params.rs` 29 —
+87 new tests total). Found one real regression along the way: `tests/
+frontend_inline_if_tuple_index_named_ctor_args.rs`'s own
+`rejects_named_arguments_on_ordinary_call` pinned down the *old*
+restriction this feature deliberately lifts (`add(b = 1, a = 2)` used to
+be a checker error; it's exactly the shape #6 asks to support) -- flipped
+to `accepts_named_arguments_on_ordinary_call`, asserting it now
+type-checks instead. A full-repo grep for the old rejection message
+confirmed no other test depended on it. Full `cargo test --no-fail-fast`
+(the `--no-fail-fast` flag mattering this time: a first full run stopped
+after 42 of the suite's ~80-odd binaries at exactly this one failure,
+so the "no other regressions" claim needed a real complete run, not an
+assumption from a fail-fast-truncated one) reconfirmed clean afterward.
+`docs/language_reference.md` and `docs/requests.md` updated to match
+(every entry in the latter marked "Done." with its mechanism and test
+file).
+
+**Since this reseed** (not from the seeded board above — a direct feature
 request, not a planned P-item): added non-blocking TCP mode to the
 compiler and wired it into `projects/nova`'s UART host bridge.
 `src/codegen/net.rs` gained `tcp_set_nonblocking(handle: ptr, enabled: bool)

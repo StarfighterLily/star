@@ -420,6 +420,7 @@ impl Parser {
             }
         }
         self.expect(&TokenKind::RParen)?;
+        self.check_defaults_trail(&params);
         let ret = if self.eat(&TokenKind::Arrow) {
             Some(self.parse_type()?)
         } else {
@@ -436,13 +437,36 @@ impl Parser {
         if self.at(&TokenKind::SelfKw) {
             self.advance();
             let span = start.to(self.prev_span());
-            return Some(Param { is_self: true, is_mut, name: "self".into(), ty: None, span });
+            return Some(Param { is_self: true, is_mut, name: "self".into(), ty: None, default: None, span });
         }
         let name = self.expect_ident()?;
         self.expect(&TokenKind::Colon)?;
         let ty = self.parse_type()?;
+        // `= <expr>` -- a default value (`docs/requests.md` #6), same
+        // grammar as `parse_field`'s identical `FieldDef::default`.
+        let default = if self.eat(&TokenKind::Assign) { Some(self.parse_expr()?) } else { None };
         let span = start.to(self.prev_span());
-        Some(Param { is_self: false, is_mut, name, ty: Some(ty), span })
+        Some(Param { is_self: false, is_mut, name, ty: Some(ty), default, span })
+    }
+
+    /// Once a parameter in `params` has a default, every parameter after it
+    /// must too (`docs/requests.md` #6) -- otherwise a purely positional
+    /// call could never tell which trailing argument(s) were meant to be
+    /// omitted. Called once per signature right after its full parameter
+    /// list is parsed (`Parser::parse_fn_sig`, shared by `fn`/`extern "C"
+    /// fn`/trait method signatures).
+    fn check_defaults_trail(&mut self, params: &[Param]) {
+        let mut seen_default = false;
+        for p in params {
+            if p.default.is_some() {
+                seen_default = true;
+            } else if seen_default && !p.is_self {
+                self.error(
+                    format!("parameter `{}` has no default, but an earlier parameter does -- parameters with defaults must come last", p.name),
+                    p.span,
+                );
+            }
+        }
     }
 
     /// A function/method body is either a full indented block, or -- mirroring

@@ -1205,7 +1205,7 @@ impl Parser {
         Some(MatchArm { pattern, body, span })
     }
 
-    fn parse_pattern(&mut self) -> Option<Pattern> {
+    pub(super) fn parse_pattern(&mut self) -> Option<Pattern> {
         match self.peek_kind() {
             TokenKind::Underscore => {
                 self.advance();

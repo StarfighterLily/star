@@ -1514,6 +1514,15 @@ pub struct Checker {
     enums: HashMap<String, EnumDef>,
     /// Function signatures: maps function name -> (param_tys, ret_ty)
     functions: HashMap<String, (Vec<Ty>, Option<Ty>)>,
+    /// Declared parameter name + optional default-value expression for every
+    /// entry also in `functions`, `self` already excluded -- kept separate
+    /// from `functions`' `(Vec<Ty>, ...)` payload since a parameter's name/
+    /// default is the same raw syntax across every instantiation of a
+    /// generic function, unlike its substituted type (`docs/requests.md`
+    /// #6). Used only by `resolve_call_arg_exprs`, for named-argument
+    /// matching and default-value filling at an ordinary call site --
+    /// `functions` alone is still what every arity/type check reads.
+    fn_param_meta: HashMap<String, Vec<Param>>,
     /// Top-level `const` name -> its fully-folded compile-time value,
     /// populated up front by `resolve_const` (called from `check`, before any
     /// function body is checked). `infer_expr`'s `Expr::Ident` arm consults
@@ -1542,6 +1551,10 @@ pub struct Checker {
     /// assume the call's syntactic shape alone tells them whether to skip a
     /// `self` argument (see `check_call_args`'s call sites).
     methods: HashMap<String, (Vec<Ty>, Option<Ty>, bool)>,
+    /// `method_param_meta`'s method-table counterpart to `fn_param_meta`,
+    /// keyed identically to `methods` -- `self`/the receiver excluded, same
+    /// caveats apply.
+    method_param_meta: HashMap<String, Vec<Param>>,
     /// Which traits a given struct implements, for trait-bound checking
     /// (`fn f<T: Speaker>(x: T)` -- see `check_type_bounds`). Keyed by a
     /// *non-generic* struct's own name (`"Dog"`) for an ordinary `impl
@@ -1713,8 +1726,10 @@ impl Checker {
             arenas: HashMap::new(),
             enums: HashMap::new(),
             functions: HashMap::new(),
+            fn_param_meta: HashMap::new(),
             consts: HashMap::new(),
             methods: HashMap::new(),
+            method_param_meta: HashMap::new(),
             trait_impls: HashMap::new(),
             generic_structs: HashMap::new(),
             generic_impls: HashMap::new(),
@@ -1962,6 +1977,7 @@ impl Checker {
                     }).collect();
                     let ret_ty = f.sig.ret.as_ref().and_then(|t| self.resolve_type(t));
                     self.functions.insert(f.sig.name.clone(), (param_tys, ret_ty));
+                    self.fn_param_meta.insert(f.sig.name.clone(), f.sig.params.iter().filter(|p| !p.is_self).cloned().collect());
                 }
                 Item::Fn(_) => {}
                 Item::ExternFn(e) => {
@@ -1981,6 +1997,7 @@ impl Checker {
                     }).collect();
                     let ret_ty = e.sig.ret.as_ref().and_then(|t| self.resolve_type(t));
                     self.functions.insert(e.sig.name.clone(), (param_tys, ret_ty));
+                    self.fn_param_meta.insert(e.sig.name.clone(), e.sig.params.iter().filter(|p| !p.is_self).cloned().collect());
                 }
                 // `impl Box<T>:` (or `impl Trait for Box<T>:`): the impl
                 // itself has no concrete signature until some later use
@@ -2058,6 +2075,7 @@ impl Checker {
                         let ret_ty = m.sig.ret.as_ref().and_then(|t| self.resolve_type(t));
                         let has_self = m.sig.params.first().map(|p| p.is_self).unwrap_or(false);
                         let key = format!("{}#{}", blk.type_name, m.sig.name);
+                        self.method_param_meta.insert(key.clone(), m.sig.params.iter().filter(|p| !p.is_self).cloned().collect());
                         self.methods.insert(key, (param_tys, ret_ty, has_self));
                     }
                     if let Some(trait_name) = &blk.trait_name {
@@ -3490,6 +3508,13 @@ impl Checker {
                         is_mut: p.is_mut,
                         name: p.name.clone(),
                         ty: p.ty.as_ref().map(|t| subst_type(t, &subst)),
+                        // A default's raw `Expr` is caller-evaluated syntax
+                        // (see `Checker::resolve_call_arg_exprs`), never
+                        // itself containing this `impl` block's own type
+                        // parameters as *types* to substitute -- passed
+                        // through unchanged, same as `instantiate_fn_inner`'s
+                        // identical `Param` rebuild does for a generic `fn`.
+                        default: p.default.clone(),
                         span: p.span,
                     }).collect(),
                     ret: m.sig.ret.as_ref().map(|t| subst_type(t, &subst)),
@@ -3508,7 +3533,9 @@ impl Checker {
                 }).collect();
                 let ret_ty = m.sig.ret.as_ref().and_then(|t| self.resolve_type(t));
                 let has_self = m.sig.params.first().map(|p| p.is_self).unwrap_or(false);
-                self.methods.insert(format!("{}#{}", mangled, m.sig.name), (param_tys, ret_ty, has_self));
+                let key = format!("{}#{}", mangled, m.sig.name);
+                self.method_param_meta.insert(key.clone(), m.sig.params.iter().filter(|p| !p.is_self).cloned().collect());
+                self.methods.insert(key, (param_tys, ret_ty, has_self));
             }
             let methods: Vec<TypedFnDef> = concrete_methods.iter().filter_map(|m| self.check_fn_with_self_ty(m, &self_ty)).collect();
             self.mono_items.push(TypedItem::Impl(TypedImplBlock {
@@ -3613,6 +3640,7 @@ impl Checker {
                 is_mut: p.is_mut,
                 name: p.name.clone(),
                 ty: p.ty.as_ref().map(|t| subst_type(t, &subst)),
+                default: p.default.clone(),
                 span: p.span,
             }).collect(),
             ret: template.sig.ret.as_ref().map(|t| subst_type(t, &subst)),
@@ -3625,6 +3653,7 @@ impl Checker {
         }).collect();
         let ret_ty = concrete.sig.ret.as_ref().and_then(|t| self.resolve_type(t));
         self.functions.insert(mangled.clone(), (param_tys, ret_ty));
+        self.fn_param_meta.insert(mangled.clone(), concrete.sig.params.iter().filter(|p| !p.is_self).cloned().collect());
         self.mono_fn_of.insert(mangled.clone(), template_name.to_string());
         let Some(typed) = self.check_fn(&concrete) else { return mangled; };
         self.mono_items.push(TypedItem::Fn(typed));
@@ -4301,10 +4330,12 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
             else_block: else_block.as_ref().map(|b| subst_block(b, subst)),
             span: *span,
         },
-        Stmt::For { var, start, end, body, span } => Stmt::For {
+        Stmt::For { var, start, end, inclusive, step, body, span } => Stmt::For {
             var: var.clone(),
             start: subst_expr(start, subst),
             end: subst_expr(end, subst),
+            inclusive: *inclusive,
+            step: *step,
             body: subst_block(body, subst),
             span: *span,
         },
@@ -4403,6 +4434,7 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
                 is_mut: p.is_mut,
                 name: p.name.clone(),
                 ty: p.ty.as_ref().map(|t| subst_type(t, subst)),
+                default: p.default.as_ref().map(|d| subst_expr(d, subst)),
                 span: p.span,
             }).collect(),
             ret: ret.as_ref().map(|t| subst_type(t, subst)),

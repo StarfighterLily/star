@@ -38,6 +38,17 @@ Comments begin with `#` and continue to the end of the line:
 x = 5  # Inline comments are also supported
 ```
 
+A `#* ... *#` block comment spans multiple lines and balances/nests, so it
+can wrap commented-out code that itself contains `#` line comments (or even
+a nested `#* ... *#` block) without closing early:
+```star
+#* This whole block, including the code below
+   (and its own line comment), is commented out.
+   x = 5  # never runs
+   #* a nested block comment *#
+*#
+```
+
 ---
 
 ## Data Types
@@ -50,6 +61,10 @@ x = 5  # Inline comments are also supported
 | `f32` | 32-bit floating point number |
 | `bool` | Boolean (`true` or `false`) |
 | `str` | String type |
+
+A numeric literal may contain `_` digit separators for readability -- purely
+a lexer-level nicety, stripped before parsing, with no effect on the parsed
+value: `1_000_000`, `0x1_F4`, `1_000.5_5`, `1e1_0`.
 
 ### Vector Types
 
@@ -134,6 +149,19 @@ If can be used as an expression:
 let result = if x > 0: "pos" else: "neg"
 ```
 
+`if let <pattern> = <expr>:` matches one enum-variant (or other `match`)
+pattern, with an optional `else:` for everything else -- covers the common
+"only one variant is interesting" case without a full `match` and its
+explicit wildcard arm:
+```star
+if let Option::Some(v) = maybe_value:
+    print(f"got {v}")
+else:
+    print("nothing")
+```
+It desugars directly into `match <expr>: <pattern> -> <then> _ -> <else>`,
+so it accepts exactly the same pattern grammar `match` does.
+
 ### While Loops
 
 ```star
@@ -151,6 +179,16 @@ else:
     # executes when loop exits normally (not via break)
 ```
 
+`while let <pattern> = <expr>:` loops for as long as `<expr>` (re-evaluated
+fresh every iteration) keeps matching `<pattern>`, stopping the moment it
+doesn't -- the common "loop until `None`/`Err`" shape:
+```star
+while let Option::Some(v) = queue.pop():
+    print(f"got {v}")
+```
+Desugars to `while true: match <expr>: <pattern> -> <body> _ -> break`;
+`break`/`continue` inside `<body>` refer to this loop as normal.
+
 ### For Loops
 
 ```star
@@ -158,7 +196,19 @@ for i in 0..10:
     print(f"i = {i}")
 ```
 
-Range is exclusive on the upper bound.
+Range is exclusive on the upper bound by default. `..=` makes it inclusive,
+and an optional trailing `step <n>` (a literal, `n` may be negative for a
+descending range) sets the stride instead of the implicit 1:
+```star
+for i in 0..=10:
+    print(f"i = {i}")       # 0, 1, ..., 10 -- endpoint included
+
+for i in 0..10 step 2:
+    print(f"i = {i}")       # 0, 2, 4, 6, 8
+
+for i in 10..0 step -1:
+    print(f"i = {i}")       # 10, 9, ..., 1 -- descending
+```
 
 ### Break and Continue
 
@@ -203,6 +253,20 @@ fn greet(name: str):
 ```
 
 Functions with no return value implicitly return `()`. The `main` function must return `i32` and implicitly returns 0.
+
+A parameter may declare a default value, which must come after every
+parameter without one:
+```star
+fn heal(mut target: Player, amount: i32 = 10):
+    target.health += amount
+```
+A call may omit a trailing defaulted argument, and may name any argument
+(`param = expr`) to supply it out of order:
+```star
+heal(target = p)              # amount defaults to 10
+heal(p, 25)                   # positional override
+heal(amount = 25, target = p) # named, any order
+```
 
 ### Return Values
 
@@ -553,6 +617,23 @@ isn't: `remove` marks a slot as removed in place rather than preserving
 insertion order.
 
 ---
+
+## Strings
+
+A plain string literal is `"..."`; escapes (`\n`, `\t`, `\"`, `\\`, ...) work
+as usual and a bare newline inside one is an error. A `"""..."""`
+triple-quoted literal instead spans multiple physical lines, embedding a
+real newline for each one -- useful for shader source, help text, or
+dialogue without external concatenation:
+
+```star
+let help = """Usage: tool [options]
+  -h    show this help
+  -v    verbose output"""
+```
+
+It's the same `str` type as a plain literal (no separate "multi-line
+string" type), and still supports the same escapes.
 
 ## F-Strings
 

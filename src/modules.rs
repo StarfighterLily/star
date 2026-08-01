@@ -697,7 +697,14 @@ fn rename_type(ty: &Type, names: &HashMap<String, String>) -> Type {
 }
 
 fn rename_param(p: &Param, names: &HashMap<String, String>) -> Param {
-    Param { is_self: p.is_self, is_mut: p.is_mut, name: p.name.clone(), ty: p.ty.as_ref().map(|t| rename_type(t, names)), span: p.span }
+    Param {
+        is_self: p.is_self,
+        is_mut: p.is_mut,
+        name: p.name.clone(),
+        ty: p.ty.as_ref().map(|t| rename_type(t, names)),
+        default: p.default.as_ref().map(|d| rename_expr(d, names, &Default::default())),
+        span: p.span,
+    }
 }
 
 fn rename_fn_sig(sig: &FnSig, names: &HashMap<String, String>) -> FnSig {
@@ -779,13 +786,15 @@ fn rename_stmt(stmt: &Stmt, names: &HashMap<String, String>, shadowed: &mut Hash
             else_block: else_block.as_ref().map(|b| rename_block(b, names, shadowed)),
             span: *span,
         },
-        Stmt::For { var, start, end, body, span } => {
+        Stmt::For { var, start, end, inclusive, step, body, span } => {
             let mut body_shadow = shadowed.clone();
             body_shadow.insert(var.clone());
             Stmt::For {
                 var: var.clone(),
                 start: rename_expr(start, names, shadowed),
                 end: rename_expr(end, names, shadowed),
+                inclusive: *inclusive,
+                step: *step,
                 body: rename_block(body, names, &body_shadow),
                 span: *span,
             }

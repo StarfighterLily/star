@@ -220,7 +220,7 @@ fn desugar_sequence(seq: &SequenceDef) -> Result<(StructDef, ImplBlock), Vec<Dia
         sig: FnSig {
             name: "resume".into(),
             type_params: Vec::new(),
-            params: vec![Param { is_self: true, is_mut: true, name: "self".into(), ty: None, span: seq.span }],
+            params: vec![Param { is_self: true, is_mut: true, name: "self".into(), ty: None, default: None, span: seq.span }],
             ret: Some(Type::Named("bool".into())),
             span: seq.span,
         },
@@ -499,7 +499,7 @@ fn rewrite_stmt(stmt: &Stmt, hoist: &HashSet<String>) -> Stmt {
             else_block: else_block.as_ref().map(|b| rewrite_block(b, hoist)),
             span: *span,
         },
-        Stmt::For { var, start, end, body, span } => {
+        Stmt::For { var, start, end, inclusive, step, body, span } => {
             // `var` shadows any hoisted field of the same name for the
             // duration of the loop body -- without this, a use of `var`
             // inside `body` would be wrongly rewritten to `self.var`
@@ -510,6 +510,8 @@ fn rewrite_stmt(stmt: &Stmt, hoist: &HashSet<String>) -> Stmt {
                 var: var.clone(),
                 start: rewrite_expr(start, hoist),
                 end: rewrite_expr(end, hoist),
+                inclusive: *inclusive,
+                step: *step,
                 body: rewrite_block(body, &inner_hoist),
                 span: *span,
             }

@@ -266,6 +266,16 @@ pub struct Param {
     pub name: String,
     /// Declared type; `None` for `self` receivers.
     pub ty: Option<Type>,
+    /// Optional default-value expression (`fn f(x: i32 = 0):`, `docs/
+    /// requests.md` #6); `None` for a required parameter. Mirrors
+    /// `FieldDef::default`'s identical `= <expr>` grammar/semantics, never
+    /// present on a `self`/`mut self` receiver. Once one parameter in a
+    /// signature has a default, every parameter after it must too
+    /// (`Parser::parse_fn_sig` enforces this) -- same "defaults must
+    /// trail" rule most languages with this feature use, so a purely
+    /// positional call can still tell unambiguously which trailing
+    /// arguments were omitted (`Checker::resolve_call_arg_exprs`).
+    pub default: Option<Expr>,
     pub span: Span,
 }
 
@@ -382,12 +392,26 @@ pub enum Stmt {
         else_block: Option<Block>,
         span: Span,
     },
-    /// `for var in start..end: <block>` - exclusive-range iteration over
-    /// `i32` bounds.
+    /// `for var in start..end: <block>` (or `start..=end` -- see
+    /// `inclusive`, and an optional trailing `step <n>` -- see `step`)
+    /// iteration over `i32` bounds.
     For {
         var: String,
         start: Expr,
         end: Expr,
+        /// `true` for an inclusive `..=` range (`docs/requests.md` #4);
+        /// `false` for the original exclusive `..`.
+        inclusive: bool,
+        /// Optional `step <n>` clause's literal value (`n` may be negative,
+        /// for a descending range like `10..0 step -1`); `None` means the
+        /// implicit ascending step of 1. A bare (optionally negated)
+        /// integer literal rather than a general expression -- mirrors
+        /// `Stmt::Frame::budget`'s own literal-only restriction -- so the
+        /// loop's comparison direction (ascending vs. descending) is known
+        /// at parse time instead of needing a runtime sign check every
+        /// iteration. Never `Some(0)`: rejected at parse time as a
+        /// step that can never advance the loop counter.
+        step: Option<i64>,
         body: Block,
         span: Span,
     },

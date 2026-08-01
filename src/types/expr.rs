@@ -225,14 +225,41 @@ impl Checker {
                 Ok(TypedExpr::Field { base: Box::new(base_expr), field: field.clone(), ty: field_ty, span: *span })
             }
             Expr::Call { callee, args, arg_names, span } => {
+                // Named-argument/default-value resolution (`docs/
+                // requests.md` #6): if `callee` is a plain free function or
+                // a `recv.method(..)` call with a simple receiver, and
+                // resolution is actually needed (a named argument is
+                // present, or the positional count undersupplies the
+                // declared parameters), `args`/`arg_names` are shadowed
+                // here with a fully positional, fully filled list (every
+                // `arg_names` entry `None`) -- so the blanket rejection
+                // just below never fires for a call this resolved, and
+                // every branch further down (generic-fn calls, list/map/
+                // set/etc. builtin methods, closures, standard-library
+                // builtins, free-function/method calls) sees an ordinary
+                // positional argument list exactly as it always has.
+                // Anything this doesn't resolve (an exact-arity positional
+                // call, an unrecognized callee shape) shadows to the exact
+                // same `args`/`arg_names` it already had -- completely
+                // unaffected by this feature.
+                let (args, arg_names) = match self.try_resolve_call_defaults(callee, args, arg_names, vars, *span) {
+                    Some(resolved) => {
+                        let len = resolved.len();
+                        (resolved, vec![None; len])
+                    }
+                    None => (args.clone(), arg_names.clone()),
+                };
+                let args = &args;
+                let arg_names = &arg_names;
                 // Ordinary call arguments are matched to parameters purely
                 // positionally -- there is no named-parameter machinery for
-                // functions/methods, so silently accepting (and previously
-                // dropping) `name = expr` here would let `f(b = 1, a = 2)`
-                // reorder nothing while looking like it did.
+                // functions/methods beyond what's resolved just above, so
+                // silently accepting (and previously dropping) `name =
+                // expr` here would let `f(b = 1, a = 2)` reorder nothing
+                // while looking like it did.
                 if arg_names.iter().any(|n| n.is_some()) {
                     self.error(
-                        "named arguments are only supported when constructing a struct or enum variant -- call arguments are matched positionally",
+                        "named arguments are only supported when constructing a struct or enum variant, or calling a plain free function/method with declared parameter names -- this callee's arguments are matched positionally",
                         *span,
                     );
                 }
@@ -2057,6 +2084,156 @@ impl Checker {
             }
         }
         if reported { Err(true) } else { Ok(out) }
+    }
+
+    /// Entry point for `Expr::Call`'s named-argument/default-value handling
+    /// (`docs/requests.md` #6): if `callee` is a shape this can resolve
+    /// parameter metadata for *and* resolution is actually needed (a named
+    /// argument is present, or the positional count undersupplies the
+    /// declared parameters), returns the fully positional, filled argument
+    /// list via `resolve_call_arg_exprs`. Returns `None` otherwise --
+    /// either because nothing needs resolving (an exact-arity, purely
+    /// positional call), or because `callee` isn't a shape this recognizes
+    /// -- in which case `Expr::Call` proceeds exactly as it did before this
+    /// feature existed (including the blanket "named arguments aren't
+    /// supported" error for any callee shape not handled here).
+    ///
+    /// Two callee shapes are recognized: a plain free-function name
+    /// (`fn_param_meta`, an ordinary `HashMap` lookup with no side
+    /// effects), and `recv.method(..)` where `recv` is a bare identifier or
+    /// `self` (`method_param_meta`) -- deliberately *not* a general
+    /// receiver expression like `f().method(..)`, because determining a
+    /// compound receiver's type requires calling `infer_expr` on it, and
+    /// `Expr::Call`'s own handling below calls `infer_expr` on that same
+    /// receiver again regardless of what happens here; doing so a second
+    /// time here too would duplicate any diagnostic the receiver itself
+    /// produces. A bare identifier/`self` receiver's type is instead read
+    /// straight out of `vars`, which has no such risk.
+    fn try_resolve_call_defaults(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        arg_names: &[Option<String>],
+        vars: &HashMap<String, Ty>,
+        span: Span,
+    ) -> Option<Vec<Expr>> {
+        let has_names = arg_names.iter().any(|n| n.is_some());
+        let (desc, params): (String, Vec<Param>) = match callee {
+            Expr::Ident(name, _) if !vars.contains_key(name) => {
+                (format!("`{}(..)`", name), self.fn_param_meta.get(name)?.clone())
+            }
+            Expr::Field { base, field, .. } => {
+                let recv_ty = match base.as_ref() {
+                    Expr::Ident(n, _) => vars.get(n).cloned(),
+                    Expr::SelfExpr(_) => vars.get("self").cloned(),
+                    _ => None,
+                }?;
+                let Ty::Named(struct_name) = recv_ty else { return None };
+                let is_real_field = self.structs.get(&struct_name).map(|s| s.fields.iter().any(|f| f.name == *field)).unwrap_or(false);
+                if is_real_field {
+                    return None;
+                }
+                let method_key = format!("{}#{}", struct_name, field);
+                (format!("`{}(..)`", field), self.method_param_meta.get(&method_key)?.clone())
+            }
+            _ => return None,
+        };
+        if !has_names && args.len() >= params.len() {
+            // Exact arity or too many positional arguments, no names --
+            // nothing for this to do; let the existing arity check fire
+            // with its usual wording.
+            return None;
+        }
+        self.resolve_call_arg_exprs(&desc, &params, args, arg_names, span)
+    }
+
+    /// Resolve an ordinary call's (possibly named, possibly under-supplied)
+    /// argument list against `params`' declared names/defaults into a fully
+    /// positional `Vec<Expr>` -- the function/method-call counterpart of
+    /// `resolve_ctor_arg_exprs` just above (see its doc comment for the
+    /// shared positional-fill/named-match/default-fill algorithm this
+    /// mirrors), with call-appropriate wording ("parameter"/"argument"
+    /// rather than "field") and no `self`/receiver entry in `params` (every
+    /// caller already excludes it, matching `fn_param_meta`/
+    /// `method_param_meta`'s own stored shape). `docs/requests.md` #6.
+    ///
+    /// Only ever called once the caller has already established resolution
+    /// is actually needed -- a named argument is present, or the positional
+    /// count undersupplies `params` -- so an exact-arity, purely positional
+    /// call never reaches this at all; its behavior (including error
+    /// wording on a genuine arity mismatch) is completely unchanged from
+    /// before this feature existed. Returns `None` (after reporting a
+    /// specific error) on an unknown/duplicate named argument, a positional
+    /// argument after a named one, or a still-missing argument with no
+    /// default.
+    fn resolve_call_arg_exprs(&mut self, desc: &str, params: &[Param], args: &[Expr], arg_names: &[Option<String>], span: Span) -> Option<Vec<Expr>> {
+        let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+        let has_names = arg_names.iter().any(|n| n.is_some());
+        if !has_names {
+            // Reached only when `args.len() < params.len()` (the caller's
+            // own precondition for calling this at all in the no-names
+            // case), so `params[args.len()..]` never panics.
+            if params[args.len()..].iter().all(|p| p.default.is_some()) {
+                let mut out = args.to_vec();
+                out.extend(params[args.len()..].iter().map(|p| p.default.clone().unwrap()));
+                return Some(out);
+            }
+            self.error(
+                format!("{} is missing argument `{}`, which has no default", desc, param_names[args.len()]),
+                span,
+            );
+            return None;
+        }
+        let mut slots: Vec<Option<Expr>> = vec![None; params.len()];
+        let mut reported = false;
+        let mut seen_named = false;
+        let mut pos = 0usize;
+        for (arg, name) in args.iter().zip(arg_names.iter()) {
+            match name {
+                None => {
+                    if seen_named {
+                        self.error(format!("positional argument after a named argument in {}", desc), span);
+                        reported = true;
+                        continue;
+                    }
+                    if pos >= slots.len() {
+                        self.error(format!("{} expects {} argument(s), found {}", desc, params.len(), args.len()), span);
+                        reported = true;
+                        break;
+                    }
+                    slots[pos] = Some(arg.clone());
+                    pos += 1;
+                }
+                Some(n) => {
+                    seen_named = true;
+                    match param_names.iter().position(|p| p == n) {
+                        None => {
+                            self.error(format!("{} has no parameter named `{}`", desc, n), span);
+                            reported = true;
+                        }
+                        Some(idx) if slots[idx].is_some() => {
+                            self.error(format!("parameter `{}` is given more than once in {}", n, desc), span);
+                            reported = true;
+                        }
+                        Some(idx) => slots[idx] = Some(arg.clone()),
+                    }
+                }
+            }
+        }
+        let mut out = Vec::with_capacity(slots.len());
+        for (i, slot) in slots.into_iter().enumerate() {
+            match slot.or_else(|| params[i].default.clone()) {
+                Some(e) => out.push(e),
+                None => {
+                    self.error(
+                        format!("{} is missing a value for parameter `{}`, which has no default", desc, param_names[i]),
+                        span,
+                    );
+                    reported = true;
+                }
+            }
+        }
+        if reported { None } else { Some(out) }
     }
 
     /// The `(field names, field defaults)` a `StructLit` naming `name`
