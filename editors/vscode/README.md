@@ -1,11 +1,13 @@
 # Star language support for VS Code
 
 Editor tooling for `.star` files: syntax highlighting (via a TextMate
-grammar), basic bracket/comment/indentation configuration, and
-`star check`-driven diagnostics via a minimal Language Server Protocol
-client (todo.md P2 #5) -- no completions, no hover, no go-to-definition
-yet, just squiggles where `star check` would already have found a
-problem, in-editor instead of in a terminal.
+grammar), basic bracket/comment/indentation configuration, and a minimal
+Language Server Protocol client (todo.md P2 #5) giving `star check`-driven
+diagnostics plus go-to-definition -- no completions, no hover yet, just
+squiggles where `star check` would already have found a problem (in-editor
+instead of in a terminal) and jumping to where a function/struct/trait/
+enum/const/arena/sequence/system name is declared, including across
+`import`s.
 
 ## What's here
 
@@ -91,6 +93,19 @@ the origin file named in the message text, since the server doesn't yet
 track imported files' canonical paths -- a natural follow-up once this
 minimal version proves out.
 
-Not attempted: completions, hover, go-to-definition, or any
-real-time-as-you-type analysis. Each is an additive extension of
-`src/lsp.rs`'s `handle_message` dispatch, not a redesign.
+Go-to-definition (`textDocument/definition`) resolves a bare identifier
+reference -- a function call, a struct/enum-variant literal's leading type
+name, or a `parallel:` block's system name -- to that declaration's own
+name token, including through a qualified `alias::name` cross-file
+reference (jumping into the imported file itself, not just naming it in a
+diagnostic). Two things it deliberately doesn't attempt, both documented in
+`src/lsp.rs`'s `ident_ref_at`: it doesn't track local-variable shadowing
+(a parameter/`let` that happens to share a name with a top-level
+declaration resolves to the top-level one, even when the reference actually
+means the local), and it doesn't resolve field access/method calls
+(`obj.field`/`obj.method()`) or type annotations, both of which would need
+resolved-type information this minimal server doesn't have access to.
+
+Not attempted: completions, hover, or any real-time-as-you-type analysis.
+Each is an additive extension of `src/lsp.rs`'s `handle_message` dispatch,
+not a redesign.

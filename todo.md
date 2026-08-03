@@ -86,6 +86,97 @@ re-run this cycle, exit code 0 (confirmed by a full-output grep for
 # Previous work
 
 **Since this reseed** (not from the seeded board above — a direct ask,
+"analyze, fix, and expand on the Star LSP"): one real crash-level bug fixed
+and go-to-definition added, both in `src/lsp.rs`/its supporting compiler
+plumbing, none of it foreseen by the seeded board above.
+
+1. **`star lsp` crashed on every real editor launch.** `vscode-languageclient`
+   (and `rust-analyzer`/`clangd`/`pyright`, matching a broad LSP-client
+   convention) unconditionally appends `--stdio` to the launch command
+   whenever it's configured for stdio transport — but `Command::Lsp` took no
+   arguments at all, so `clap` rejected it outright ("unexpected argument
+   '--stdio' found") before the server ever read a byte, crash-looping the
+   client 5 times in 3 minutes until VS Code gave up restarting it (the
+   literal user report that started this). Reproduced directly (`star lsp
+   --stdio` under an empty stdin) before fixing anything. Fixed with a
+   `#[arg(long)] stdio: bool` accepted-and-ignored flag (stdio is the only
+   transport this server implements, so there's no mode for it to select
+   between) — two new `src/main.rs` tests (`cli_parses_bare_lsp_subcommand`,
+   `cli_parses_lsp_subcommand_with_stdio_flag`) pin both call shapes via
+   `Cli::try_parse_from`.
+2. **Added `textDocument/definition`** (`src/lsp.rs`): resolves a bare
+   identifier reference — a function call, a struct/enum-variant literal's
+   leading type name, or a `parallel:` block's system name — to its
+   declaration's own name token, including through a qualified
+   `alias::name` cross-file reference (jumping into the *imported* file,
+   not just naming it). Implementation notes:
+   - A hand-written recursive walker (`ident_ref_at`/`ident_in_*`) finds the
+     identifier-like reference at a clicked byte offset; deliberately does
+     **not** track local-variable shadowing the way
+     `crate::modules::rename_module`'s own `shadowed` set does (a
+     parameter/`let` sharing a top-level name resolves to the top-level
+     declaration even when the click means the local) — a real, if narrow,
+     documented gap pinned by its own test
+     (`definition_known_limitation_ignores_local_shadowing_of_a_top_level_name`)
+     so a future shadow-tracking fix has a clear "this changed" signal.
+     Field access/method calls and type annotations are out of scope too
+     (`Expr::Field`'s `field` carries no span; `crate::ast::Type` carries no
+     span at all) — both would need resolved-type information this minimal
+     server doesn't have.
+   - A declaration's whole-item `Span` (covering `fn foo(...): <body>` in
+     its entirety) is narrowed to just the `foo` name token by re-lexing
+     the declaring file and taking the first `TokenKind::Ident` at or after
+     the item's span start (`declaration_name_span`) — not a substring
+     search for `name`, since an imported item's `name` is already
+     `alias__`-mangled while its own source text still says the plain
+     name.
+   - Cross-file jumps needed a real fix upstream: `crate::modules::
+     resolve_inner` computed each imported file's canonicalized path
+     already (for cycle detection) but discarded it -- `imported_files`
+     (`crate::driver::Compilation`) now retains it as a third tuple
+     element, the first thing to actually need it (diagnostics still only
+     ever anchor at the top of the importing file — same limitation as
+     before, just no longer for lack of an available canonical path for a
+     future fix to build on).
+   - Found a real, separate parser bug while wiring up the cross-file test:
+     a qualified call's callee (`alias::name(...)`) reused the qualified
+     path's very first captured span (the lone `alias` segment, from
+     *before* `::name` was even parsed) instead of the whole `alias::name`
+     range the sibling non-call qualified-reference case already used
+     correctly — so clicking (or an "undefined function" diagnostic caret)
+     on the semantically meaningful `name` half silently landed nowhere.
+     Fixed in `src/parser/expr.rs` (capture the callee's span *before*
+     `parse_call_args` consumes the argument list, not reuse the pre-`::`
+     span); pinned by a new parser-level test
+     (`parses_qualified_fn_call_callee_span_covers_the_whole_alias_path`,
+     `tests/frontend_modules_imports.rs`) independent of the LSP feature
+     that surfaced it.
+   - A second small bug surfaced by the same cross-file test: `Path::
+     canonicalize()` on Windows prefixes results with the extended-length
+     `\\?\` marker, which `path_to_file_uri` was passing straight through
+     into a `file://` URI (`file:////?/C:/...`) no editor would recognize.
+     Stripped at the LSP protocol boundary (`path_to_file_uri`), not at
+     `crate::modules::resolve_inner` where the canonical path is computed
+     (which should stay the precise, `canonicalize`-standard form for every
+     other use).
+   - `initialize` now advertises `"definitionProvider": true` — without it
+     `vscode-languageclient` never sends the request at all, silently
+     making "go to definition" a no-op regardless of server-side
+     correctness (own test: `initialize_advertises_definition_provider`).
+   - 12 new tests in `src/lsp.rs` (same-file/cross-file jumps, struct
+     literal jumps, null-result cases, the documented shadowing gap,
+     `position_to_offset` round-trips/UTF-16/clamping) plus the two
+     `src/main.rs` CLI tests and one `frontend_modules_imports.rs` parser
+     test above — 15 new tests total. Full
+     `cargo +stable-x86_64-pc-windows-gnu test` (all binaries) exit code 0,
+     both right after the `--stdio` fix and again after the parser span
+     fix. `editors/vscode/README.md` updated to match (go-to-definition's
+     "Coverage" section, its two documented scope limits, and the
+     top-of-file summary); `extension.js`/`package.json` needed no changes
+     — `vscode-languageclient` wires "Go to Definition" automatically once
+     the server advertises the capability.
+
+**Since this reseed** (not from the seeded board above — a direct ask,
 "bug hunt 2": throw adversarial input at the whole pipeline, especially the
 surfaces that came online since Snake/Nova, the same way `8af1493` "Bug
 hunt 1" did for the `f"""..."""` lexer gap). Two real, independently

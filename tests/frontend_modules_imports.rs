@@ -49,6 +49,30 @@ fn parses_qualified_fn_call_as_mangled_name() {
     assert!(matches!(callee.as_ref(), Expr::Ident(name, _) if name == "geo__dot"));
 }
 
+/// A qualified free-function call `alias::name(...)`'s callee carries a span
+/// covering the *whole* `alias::name` text, not just the `alias` segment --
+/// previously it reused the qualified path's very first captured span (the
+/// lone `alias` identifier token, from before `::name` was even parsed), so
+/// an "undefined function" diagnostic on a genuinely undefined qualified
+/// call -- or, for `star lsp`'s `textDocument/definition`, a click on the
+/// meaningful `name` half of `alias::name` -- pointed at/covered only the
+/// (perfectly valid) `alias` segment instead. The non-call qualified-path
+/// case (a bare `geo::dot` with no trailing `(...)`, see
+/// `parses_qualified_fn_call_as_mangled_name` just above) already got this
+/// right; the call case just hadn't kept up.
+#[test]
+fn parses_qualified_fn_call_callee_span_covers_the_whole_alias_path() {
+    let src = "import \"lib.star\" as geo\nfn main():\n    let d = geo::dot(1, 2)\n";
+    let module = Driver::parse(src).expect("should parse");
+    let Item::Fn(f) = &module.items[1] else { panic!("expected fn") };
+    let Stmt::Let { value, .. } = &f.body.stmts[0] else { panic!("expected let") };
+    let Expr::Call { callee, .. } = value else { panic!("expected call, got {:?}", value) };
+    let want = "geo::dot";
+    let start = src.find(want).unwrap();
+    assert_eq!(callee.span().start, start);
+    assert_eq!(callee.span().end, start + want.len());
+}
+
 /// A 3-segment qualified path `alias::Enum::Variant(...)` parses to an
 /// `EnumVariant` whose enum name is mangled but whose variant name is left
 /// alone (variants aren't top-level declarations of their own).

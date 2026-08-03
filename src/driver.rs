@@ -20,14 +20,18 @@ pub struct Compilation {
     pub file: String,
     pub source: String,
     /// Every file pulled in transitively via `import`, in first-encountered
-    /// order -- index `i` here holds the file `crate::diagnostics::Span`s
-    /// with `file_id == i as u32 + 1` were produced from (`file_id == 0`
-    /// always means `file`/`source` above, the root file being compiled).
-    /// Populated by `crate::modules::resolve`. See `Span::file_id`'s doc
-    /// comment for why this exists: without it, every diagnostic whose span
-    /// originated in an imported file rendered against the *root* file's
-    /// source text instead, landing on a wrong/garbled location.
-    pub imported_files: Vec<(String, String)>,
+    /// order -- index `i` here holds the `(label, source text, canonical
+    /// path)` of the file `crate::diagnostics::Span`s with `file_id == i as
+    /// u32 + 1` were produced from (`file_id == 0` always means
+    /// `file`/`source` above, the root file being compiled). Populated by
+    /// `crate::modules::resolve`. See `Span::file_id`'s doc comment for why
+    /// this exists: without it, every diagnostic whose span originated in an
+    /// imported file rendered against the *root* file's source text instead,
+    /// landing on a wrong/garbled location. The canonical path is what lets
+    /// `crate::lsp`'s `textDocument/definition` turn a jump target that
+    /// lands in an imported file into a real `file://` URI for a different
+    /// document than the one currently open.
+    pub imported_files: Vec<(String, String, PathBuf)>,
     pub module: Option<Module>,
     pub typed: Option<TypedModule>,
     pub diagnostics: Vec<Diagnostic>,
@@ -89,7 +93,7 @@ impl Compilation {
             return (&self.file, &self.source);
         }
         match self.imported_files.get(file_id as usize - 1) {
-            Some((file, source)) => (file.as_str(), source.as_str()),
+            Some((file, source, _canonical)) => (file.as_str(), source.as_str()),
             None => (&self.file, &self.source),
         }
     }

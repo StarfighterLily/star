@@ -936,12 +936,27 @@ impl Parser {
                         }
                         let mangled = crate::modules::mangle_name(&mangled_prefix, &seg);
                         if self.at(&TokenKind::LParen) {
+                            // Captured *before* `parse_call_args` consumes the
+                            // `(...)` argument list, while `prev_span()` still
+                            // means "`seg`'s own span" -- so this covers just
+                            // `alias::name`, mirroring the non-call qualified-
+                            // reference case a few lines below (`let full = ...;
+                            // Expr::Ident(mangled, full)`). Previously this used
+                            // the outer `span` (the lone first segment's token,
+                            // captured before any `::` was even seen) for the
+                            // callee itself, so an "undefined function"
+                            // diagnostic -- or `star lsp`'s `textDocument/
+                            // definition` -- on `alias::name(...)` pointed at/
+                            // covered only the (perfectly valid) `alias`
+                            // segment instead of `name`, the part that's
+                            // actually meaningful to underline or click.
+                            let callee_span = span.to(self.prev_span());
                             let (args, arg_names) = self.parse_call_args()?;
                             let full = span.to(self.prev_span());
                             if starts_uppercase(&seg) {
                                 return Some(Expr::StructLit { name: mangled, type_args: seg_type_args, args, arg_names, span: full });
                             }
-                            return Some(Expr::Call { callee: Box::new(Expr::Ident(mangled, span)), args, arg_names, span: full });
+                            return Some(Expr::Call { callee: Box::new(Expr::Ident(mangled, callee_span)), args, arg_names, span: full });
                         }
                         let full = span.to(self.prev_span());
                         return Some(Expr::Ident(mangled, full));

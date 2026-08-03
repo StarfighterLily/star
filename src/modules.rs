@@ -128,16 +128,16 @@ type CallId = u64;
 /// Resolve every `import` in `module` (whose own source lives at
 /// `root_path`), recursively inlining each imported file's items under a
 /// mangled name. Returns the flattened module (no `Item::Import` entries
-/// left) plus a file table: index `i` holds the `(label, source text)` of
-/// the file `crate::diagnostics::Span::file_id == i as u32 + 1` refers to,
-/// in first-encountered order. `crate::driver::Compilation` stores this
-/// (as `imported_files`) so a diagnostic whose span originated inside an
-/// imported file's inlined AST renders against *that* file's real source
-/// text instead of unconditionally against the root file's -- previously
-/// every span an imported file's declarations carried was preserved
-/// verbatim (correct *byte offsets*, but only meaningful against that
-/// file's own buffer) with nothing tracking which buffer it belonged to,
-/// so any checker/codegen diagnostic raised against successfully-inlined
+/// left) plus a file table: index `i` holds the `(label, source text,
+/// canonical path)` of the file `crate::diagnostics::Span::file_id == i as
+/// u32 + 1` refers to, in first-encountered order. `crate::driver::Compilation`
+/// stores this (as `imported_files`) so a diagnostic whose span originated
+/// inside an imported file's inlined AST renders against *that* file's real
+/// source text instead of unconditionally against the root file's --
+/// previously every span an imported file's declarations carried was
+/// preserved verbatim (correct *byte offsets*, but only meaningful against
+/// that file's own buffer) with nothing tracking which buffer it belonged
+/// to, so any checker/codegen diagnostic raised against successfully-inlined
 /// imported code rendered at a wrong/garbled line, column, and caret span
 /// in the *importing* file instead (confirmed via a real `star check` on a
 /// type error inside an imported file rendering mid-way through the
@@ -149,7 +149,15 @@ type CallId = u64;
 /// so the same file reached via more than one alias chain (a diamond
 /// dependency) collapses to one set of top-level declarations instead of
 /// producing mutually-incompatible duplicates.
-pub fn resolve(module: Module, root_path: &Path) -> Result<(Module, Vec<(String, String)>), Vec<Diagnostic>> {
+///
+/// The canonical path (previously computed here just for cycle detection and
+/// then discarded) is retained so a caller can turn an imported file's
+/// `Span` into a real `file://` URI -- `src::lsp`'s `textDocument/definition`
+/// is the first caller that needs this, to jump into a *different* file than
+/// the one currently open, rather than only ever anchoring at the top of the
+/// importing file the way `diagnostic_to_lsp`'s cross-file diagnostics still
+/// do (no canonical path was available for that case either, until now).
+pub fn resolve(module: Module, root_path: &Path) -> Result<(Module, Vec<(String, String, PathBuf)>), Vec<Diagnostic>> {
     resolve_with_search_paths(module, root_path, &[])
 }
 
@@ -163,7 +171,7 @@ pub fn resolve_with_search_paths(
     module: Module,
     root_path: &Path,
     search_paths: &[PathBuf],
-) -> Result<(Module, Vec<(String, String)>), Vec<Diagnostic>> {
+) -> Result<(Module, Vec<(String, String, PathBuf)>), Vec<Diagnostic>> {
     let mut loading = HashSet::new();
     // Best-effort: if the root file exists on disk, seed the cycle guard
     // with its own canonical path so an import chain that loops back to the
@@ -221,7 +229,7 @@ fn resolve_inner(
     base_dir: &Path,
     own_path: Option<&Path>,
     loading: &mut HashSet<PathBuf>,
-    files: &mut Vec<(String, String)>,
+    files: &mut Vec<(String, String, PathBuf)>,
     depth: u32,
     call_counter: &mut CallId,
     search_paths: &[PathBuf],
@@ -277,7 +285,7 @@ fn resolve_inner(
                 // `files.len() as u32 + 1` since `file_id == 0` is reserved
                 // for the root file (never itself entered into `files`).
                 let file_id = files.len() as u32 + 1;
-                files.push((decl.path.clone(), source.clone()));
+                files.push((decl.path.clone(), source.clone(), canonical.clone()));
                 let imported = match Parser::parse_source_with_file(&source, file_id) {
                     Ok(m) => m,
                     Err(diags) => {
@@ -375,7 +383,11 @@ fn resolve_inner(
 /// The name a top-level [`Item`] declares (if any) -- mirrors
 /// [`collect_names`]'s match arms; kept as a standalone helper since both
 /// `collect_names` and the provenance/dedup machinery need exactly this set.
-fn item_top_level_name(item: &Item) -> Option<&str> {
+/// `pub(crate)` (not private) so `crate::lsp`'s `textDocument/definition`
+/// support can reuse the exact same "which `Item` variants declare a
+/// jump-to-definition-able name, and under which field" logic rather than
+/// maintaining a second, driftable copy of this match.
+pub(crate) fn item_top_level_name(item: &Item) -> Option<&str> {
     match item {
         Item::Struct(s) => Some(&s.name),
         Item::Trait(t) => Some(&t.name),

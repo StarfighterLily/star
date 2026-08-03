@@ -121,7 +121,21 @@ enum Command {
     /// diagnostics on `textDocument/didOpen`/`didSave`; not meant to be run
     /// by hand -- an editor's LSP client launches this and speaks the
     /// protocol over its stdin/stdout.
-    Lsp,
+    Lsp {
+        /// Accepted for compatibility and otherwise ignored: stdio is the
+        /// only transport this server implements, so there's no other mode
+        /// for this flag to select between. Exists because
+        /// `vscode-languageclient` (and most other LSP clients) append
+        /// `--stdio` to the launch command whenever they're configured for
+        /// stdio transport -- the same convention real servers like
+        /// `rust-analyzer`/`clangd`/`pyright` accept for exactly this
+        /// reason. Without it, `clap` rejected the flag outright
+        /// ("unexpected argument '--stdio' found"), which broke every
+        /// editor launch of `star lsp` even though `star lsp` run by hand
+        /// (no client, no `--stdio`) worked fine.
+        #[arg(long)]
+        stdio: bool,
+    },
 }
 
 /// `--target`'s CLI spelling of `star::codegen::Target` -- kept as its own
@@ -208,7 +222,7 @@ fn run(cli: Cli) -> ExitCode {
             cmd_build(&file, &search, output.as_deref(), opt_level, release, &libs, &lib_paths, skip_ir_verify, target.to_target())
         }
         Command::Emit { what, file, search, target } => cmd_emit(what, &file, &search, target.to_target()),
-        Command::Lsp => star::lsp::run(),
+        Command::Lsp { .. } => star::lsp::run(),
     }
 }
 
@@ -509,7 +523,11 @@ fn find_clang_on(
 
 #[cfg(test)]
 mod tests {
-    use super::{clang_target_flag, collect_search_paths_from, emit_llvm_ir_verified, find_clang_on, link_args, opt_flag, stack_size_flag, DEFAULT_STACK_SIZE_BYTES};
+    use super::{
+        clang_target_flag, collect_search_paths_from, emit_llvm_ir_verified, find_clang_on, link_args, opt_flag,
+        stack_size_flag, Cli, Command, DEFAULT_STACK_SIZE_BYTES,
+    };
+    use clap::Parser;
 
     /// `star emit llvm` on a file with an `import` must resolve it exactly
     /// like `star check`/`star build` do (both go through `Driver::compile`,
@@ -725,6 +743,29 @@ mod tests {
         assert_eq!(find_clang_on(None, None), std::path::PathBuf::from(exe_name));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `star lsp` (no flags) parses -- the form a human running it by hand,
+    /// or a hypothetical client that doesn't append any transport flag,
+    /// would use.
+    #[test]
+    fn cli_parses_bare_lsp_subcommand() {
+        let cli = Cli::try_parse_from(["star", "lsp"]).expect("`star lsp` should parse");
+        assert!(matches!(cli.command, Command::Lsp { stdio: false }));
+    }
+
+    /// `star lsp --stdio` must also parse. `vscode-languageclient` (and most
+    /// other LSP clients, matching `rust-analyzer`/`clangd`/`pyright`)
+    /// unconditionally appends `--stdio` to the launch command whenever it's
+    /// configured for stdio transport -- previously this subcommand took no
+    /// arguments at all, so `clap` rejected the flag outright ("unexpected
+    /// argument '--stdio' found") and every editor-launched `star lsp`
+    /// failed before the server ever read a byte, even though `star lsp` run
+    /// by hand (no client, no `--stdio`) worked fine.
+    #[test]
+    fn cli_parses_lsp_subcommand_with_stdio_flag() {
+        let cli = Cli::try_parse_from(["star", "lsp", "--stdio"]).expect("`star lsp --stdio` should parse");
+        assert!(matches!(cli.command, Command::Lsp { stdio: true }));
     }
 }
 
