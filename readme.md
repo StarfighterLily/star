@@ -2,16 +2,6 @@
 
 A game programming language with Pythonic-Rust syntax and unique memory management modes, targeting native executables via LLVM IR.
 
-## Versioning:
-`0.2.0` as of the `82be6e2` reassessment (2026-07-30). The gate that held the version at `0.1.0` —
-the Nova project complete (full system implementation, GUI+controls, and tooling to match Python
-reference, NoBASIC optional) and a minimum of 4 bug-hunt rounds — is satisfied; see
-`changelog/069_2026-07-30_82be6e2_current_status.md` for the condition-by-condition check. The
-language is usable and a semblance of stability can be expected, but this is not yet a `1.0.0`-style
-public-API stability commitment — that's reserved for after real usage beyond this repo's own
-`projects/nova` exercises the surface. From here, industry-standard SemVer practices are observed to
-provide a reliable measure at a glance.
-
 ## Design
 
 - **Syntax**: Python-style indentation, Rust-style type inference, pattern matching, and immutability-by-default.
@@ -28,37 +18,13 @@ See [docs/design.md](docs/design.md) and [docs/features.md](docs/features.md) fo
 Windows is `star build`'s default and only vendored-toolchain target, but
 as of 2026-07-30 most of the language's builtin surface has a real,
 devbox-link-verified second implementation for `--target linux`
-(`x86_64-unknown-linux-gnu`) too — not just plausible-looking IR. One
-surface remains genuinely Windows-only by construction:
-
-- `font_load_system`/`font_load_ttf`/`draw_text_ttf`
-  (`crate::codegen::system_font`) bind Windows GDI directly, with no
-  portable equivalent bound at all — see that module's own doc comment for
-  why GDI text rendering isn't a cheap retrofit (there's no POSIX syscall
-  that rasterizes a TrueType glyph). `crate::codegen::font`'s hand-rolled
-  5x7 bitmap font is the already-portable fallback for a program that needs
-  *some* text under both targets today.
+(`x86_64-unknown-linux-gnu`) too — not just plausible-looking IR.
+`font_load_system`/`font_load_ttf`/`draw_text_ttf` (`crate::codegen::system_font`)
+remains genuinely Windows-only by construction.
 
 Everything else now has a real `Target::LinuxGnu` arm, each link/run-tested
 against a Debian devbox (real `clang`/`ld`/glibc, not cross-linked from this
-Windows-hosted toolchain):
-
-- **Threading** (`par`/`swarm`, `Symbol`, `rand` — `crate::codegen::platform`):
-  real `pthread_create`/`sem_init`/`sysconf` instead of Win32 primitives.
-- **Networking** (`tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close` —
-  `crate::codegen::net`): real POSIX sockets instead of Winsock2.
-- **Environment variables** (`env_set` — `crate::codegen::os`): real
-  `setenv` instead of `_putenv_s`, a Microsoft CRT extension.
-- **Graphics/audio/input** (`window_create`/audio/gamepad —
-  `crate::codegen::sdl`/`audio`/`gamepad`): SDL2's own C ABI is already
-  cross-platform; only linking needed sorting out. Under `--target linux`,
-  link with a bare `-l SDL2` against a system-package `libsdl2-dev` install
-  (`apt install libsdl2-dev`) — no `-L` flag needed at all, unlike Windows'
-  vendored `-L sdl/lib/x64 -l SDL2`. This repo vendors no Linux SDL2 build.
-
-See [docs/cross_platform_scope.md](docs/cross_platform_scope.md) for the
-per-surface implementation notes and what was actually run to verify each
-one (not just IR inspected by eye).
+Windows-hosted toolchain).
 
 **What `--target linux` still isn't**: a supported one-command cross-compile.
 Nothing in this repo vendors, detects, or verifies a Linux sysroot/libc for
@@ -137,10 +103,6 @@ A `star.toml` in a directory marks it as a project root and lets `import`
 resolve against a configured search path instead of only hand-written
 relative paths -- see [docs/language_reference.md](docs/language_reference.md)'s
 "Project manifests" section for the full format.
-
-## Project Status
-
-The compiler front-end (lexer, parser, type checker, LLVM IR emitter) is functional. The canonical `Player`/`Damageable` example from the design doc parses, type-checks, produces LLVM IR, and compiles to executable. See [todo.md](todo.md) for the remaining milestones.
 
 ## Development
 
