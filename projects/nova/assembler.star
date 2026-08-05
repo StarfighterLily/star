@@ -775,11 +775,10 @@ fn resolve_imm(token: str, symbols: Map<str, i32>) -> i32:
         return strtol(token, null_ptr(), 0)
     if is_decimal_token(token):
         return atoi(token)
-    match symbols.get(token):
-        Option::Some(v) -> v
-        Option::None ->
-            fatal(concat("undefined symbol: ", token))
-            0
+    if let Option::Some(v) = symbols.get(token):
+        return v
+    fatal(concat("undefined symbol: ", token))
+    0
 
 fn parse_offset_byte(sign_and_num: str) -> i32:
     parse_numeric(sign_and_num) & 0xFF
@@ -1240,15 +1239,11 @@ fn write_sym(path: str, symbols: Map<str, i32>, order: List<str>) -> bool:
         return false
     file_write(h, "# Symbol table\n")
     file_write(h, "# Format: <symbol> <value>\n")
-    let mut i = 0
-    while i < order.len():
+    for i in 0..order.len():
         let name = order[i]
-        match symbols.get(name):
-            Option::Some(v) ->
-                let line: List<str> = [name, " 0x", hex_word_str(v), "\n"]
-                file_write(h, str_join(line, ""))
-            Option::None -> 0
-        i += 1
+        if let Option::Some(v) = symbols.get(name):
+            let line: List<str> = [name, " 0x", hex_word_str(v), "\n"]
+            file_write(h, str_join(line, ""))
     file_close(h)
     true
 

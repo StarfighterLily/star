@@ -40,38 +40,6 @@ other target:
    in the original ask) and append to the **Previous work** section at
    the bottom — see existing entries for the expected level of detail.
 
-## Reassessment trigger — do not skip this
-
-**When every item in `todo.md` is marked Done (no open `P0`–`P3` items
-remain), stop feature work and run a full reassessment before starting
-anything new.** This has already surfaced real issues twice
-(`changelog/060`, `changelog/062`) that day-to-day feature work missed,
-and `todo.md`'s own P3 #7 asks for exactly this to become an automatic
-trigger rather than something someone has to remember to request.
-
-When the trigger fires:
-
-1. **Archive first, before overwriting anything.** Copy the current
-   `todo.md` and `current_status.md` into `changelog/` as:
-   ```
-   changelog/<NNN>_<YYYY-MM-DD>_<short-commit-hash>_todo.md
-   changelog/<NNN>_<YYYY-MM-DD>_<short-commit-hash>_current_status.md
-   ```
-   `<NNN>` continues the existing sequential series (check the highest
-   existing number in `changelog/` first). Use hyphenated ISO dates and
-   include the short commit hash (`git rev-parse --short HEAD`) — this
-   is the convention 59 of 65 existing entries follow; don't repeat the
-   underscore-date/no-hash drift seen in entries `060`–`065`.
-2. **Write a fresh `current_status.md`**, overwriting the old one: scope
-   statement (what was reviewed, at which commit), a staged-history
-   narrative, an honest goals-vs-reality section, and a "Next steps,
-   prioritized" section using the same `P0`–`P3` scheme.
-3. **Seed a fresh `todo.md`** from that "Next steps" section.
-4. Only then resume normal `todo.md` work.
-
-Do not silently skip this because it feels like a detour — it's a
-required step of the loop, equally weighted with implementation work.
-
 ## Documentation style
 
 Every source file's `//!` module doc comment should explain *why* (the

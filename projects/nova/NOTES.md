@@ -3199,6 +3199,164 @@ the same `R0`-before-reload ordering is generic to how
 while-loop-updated variable, not specific to this one `.asm`. Left
 unfixed here since it's NoBASIC's compiler, a separate project.
 
+## Star language-feature modernization pass
+
+Every file in `projects/nova/` predates the six language niceties
+`5769806` "Requested features implemented" added to Star (`#* ... *#` block
+comments, `_` digit separators, `if let`/`while let`, inclusive/stepped
+`for` ranges, `"""..."""` multi-line strings, default parameter values —
+see `docs/requests.md`/`docs/language_reference.md`) — confirmed directly
+(`git log --since=2026-08-01 -- projects/nova` returns nothing) before
+starting, not assumed. This round went through the whole project looking
+for real, appropriate uses of each, applied what held up under an actual
+rebuild-and-rerun (not just a compile check), and reverted two changes a
+real test run showed were wrong — recorded below alongside what stuck,
+since the negative results are as load-bearing as the positive ones for
+anyone tempted to try the same thing again.
+
+**Applied:**
+- **Inclusive/stepped `for` ranges**, the highest-value find: `bits.star`'s
+  descending bit-index loops (`shl8`/`shl16`/`clz8`/`clz16`, MSB-to-LSB)
+  used a hand-rolled `let mut i = <n>; while i >= 0: ...; i -= 1` that
+  `for i in <n>..=0 step -1:` replaces directly — same for
+  `cpu_mem.star::op_memmove`'s overlapping-range descending copy,
+  `cpu_stack.star::op_pusha`'s two register-array descending pushes, and
+  `main.star::hex4`'s nibble-by-4 descending shift. Every other
+  `while i < N: ...; i += 1` loop touched in the same pass (all of
+  `bits.star`, the rest of `cpu_mem.star`/`cpu_stack.star`,
+  `screen.star`'s single-index layer ops, `main.star::reinit`,
+  `debugger.star`'s breakpoint scan, part of `assembler.star`) became a
+  plain `for i in 0..N:` too — not itself a new capability, but directly
+  motivated by the same header comment in `bits.star` that already flagged
+  this file as the "update when new language features land" case (see its
+  own comment, expanded further this round).
+- **`if let`**, for the "one variant is interesting, the other is a
+  fallthrough/empty-string default" shape: `assembler.star::resolve_imm`
+  (symbol lookup falls through to `fatal()` on a miss, no `Option::None`
+  arm needed at all now) and its `write_symbols` loop (`Option::None`
+  silently did nothing before; now just isn't written), plus
+  `debugger.star`'s `symbol_suffix`/`line_suffix` (`None` -> `""` is
+  exactly the "everything else, empty" case). Two similar-looking spots
+  were deliberately **not** converted: `assembler.star::get_i32_or` and
+  `debugger.star::parse_break_location` both have two *equally meaningful*
+  arms (not a fallback), the shape `docs/language_reference.md`'s own
+  `unwrap_or` example uses a plain `match` for, not `if let` — converting
+  them would've added an `else:` back and gained nothing.
+- **Digit separators**: every 5+-digit decimal/hex-adjacent literal that's
+  real code (not prose in a comment) — `65536`/`245760`/`32768`/`65535`
+  (the 64KB address space and bank-window constants, throughout
+  `memory.star`/`screen.star`/`cpu.star`/`debugger.star`/`main.star`/
+  `cpu_mem.star`/`cpu_arith.star`/`bits.star`/`flags.star`/`sound.star`),
+  `44100`/`32000` (`sound.star`'s sample rate and amplitude scale),
+  `64000000` (`main.star::VIRTUAL_CLOCK_HZ`), and `1000000`/`100000`
+  (`debugger.star`/`tests/run_bin.star`'s step caps). Purely cosmetic and
+  lexer-only (strips to the identical value), so this was the lowest-risk
+  change in the pass — still verified via a full rebuild + rerun, not just
+  "it compiles."
+- **Default parameter values**, one real fit: `sound.star::
+  play_pcm_wav_on_channel`'s `looped: bool` is `false` at every call site
+  except the two inside `play_tone`/`play_memory_sample`'s own loop
+  branch — `looped: bool = false` plus dropping the trailing `false` at
+  the other 11 call sites (`cpu_sound.star`'s four `SECHO`/`SREVERB`/
+  `SFILTER`/`SMIX` re-triggers, `sound.star`'s own `STRIG` effect table)
+  is a real, exercised simplification.
+
+**Tried and reverted (real findings, not just "didn't bother"):**
+1. **Default parameters on `flags.star::apply_arith`'s trailing
+   `is_subtraction`/`is_cmp` bools** (`false` at ~32 of its ~37 call
+   sites) looked like an even better fit than `play_pcm_wav_on_channel` --
+   until `star build` on `debugger.star` came back with 42 "expects 6
+   argument(s), found 4/5" errors. Every real call site in this project is
+   `self.flags.apply_arith(...)` -- a *compound* receiver (`self.flags`,
+   a field access), which `docs/requests.md`'s own scope note says default
+   resolution deliberately doesn't cover ("a compound receiver like
+   `f().method(..)` keeps its previous positional-only behavior"). A
+   free-function call (`play_pcm_wav_on_channel(...)`) or a qualified one
+   (`snd::play_pcm_wav_on_channel(...)`) both resolve defaults fine --
+   confirmed by `cpu_sound.star`'s calls building clean in the same
+   `debugger.star` compile that rejected `apply_arith`'s. Fully reverted
+   (signature and all ~37 call sites back to explicit `false, false`/
+   `true, false`/`true, true`) rather than left as a half-usable default
+   nothing in this codebase's call pattern can actually reach.
+2. **A `"""..."""` multi-line string for `debugger.star::print_help`**
+   (one `println` with an embedded triple-quoted literal, replacing 14
+   separate `println` calls) built clean and looked like a textbook fit --
+   the language reference's own motivating example is literally "help
+   text." It broke at runtime, though: in the *full* `debugger.exe`
+   binary, every embedded newline in the ~670-byte string constant printed
+   as `\r\r\n` (doubled CR) instead of `\r\n`, confirmed with a raw byte
+   dump of captured stdout and independent of invocation method
+   (PowerShell `Start-Process` file redirection and a plain Bash pipe both
+   show it identically) -- this is what `tests/run_debugger_test.ps1`'s
+   regression test actually caught. The generated LLVM IR's own string
+   constant is correct (a single `\0A` per line, confirmed by grepping
+   `debugger.ll` directly); the corruption happens at runtime, right after
+   `printf`, where the compiler emits a `star_rc_release` call on the
+   passed-straight-through format-string pointer (`src/codegen/
+   builtins.rs::emit_print_like`'s non-f-string path). Three separate
+   isolated repros of the *exact same string content* (a standalone
+   one-function program, the same program with a `read_line()`/`print()`
+   call first, and the same again with the real LF-only multi-line stdin
+   fixture format) all printed correctly -- so this looks like a real,
+   size-and-program-scale-dependent memory-lifetime bug in that codegen
+   path, not something reproducible in isolation or something this file
+   can work around. Reverted to the 14 plain `println` calls (each
+   reliably one `\r\n`-terminated line); `tests/run_debugger_test.ps1`
+   passes byte-for-byte against the checked-in fixture again. Worth a
+   dedicated compiler-side investigation of `emit_print_like` before
+   trying a triple-quoted literal through `println` again anywhere in this
+   project.
+
+**Not applicable, checked rather than assumed:**
+- **`while let`**: no candidate exists. It needs an `Option`/`Result`- (or
+  other enum-) typed loop condition, and this project's only
+  `Option`-returning calls are the same handful of `Map::get` sites the
+  `if let` conversions above already cover (none of them loop). Its own
+  "pop tokens off a queue" shapes (`keyboard.star::pop_key`,
+  `uart.star::drain_tx_byte`, `loader.star::load_program`, and friends)
+  all return a plain tuple (`(value, bool)`), not an `Option` -- and
+  `Pattern` (`src/ast.rs`) has no tuple-pattern variant at all (checked
+  directly: `Wildcard`/`Int`/`Bool`/`Compare`/`EnumVariant`/`Struct`/
+  `Binding`, nothing tuple-shaped), so a tuple-returning "poll" function
+  couldn't feed `if let`/`while let` even if one of these call sites were
+  restructured into a loop.
+- **`#* ... *#` block comments**: no commented-out code exists anywhere in
+  the project to wrap (checked: no run of `#`-prefixed lines shaped like
+  disabled code, only ordinary prose documentation comments, which this
+  project already writes as consecutive `#` line comments by long-standing
+  convention -- `CLAUDE.md`'s own "don't explain what" doc-comment
+  guidance and the sheer volume of existing multi-paragraph `#`-comment
+  headers throughout every file here). Block comments' own motivating use
+  case (`docs/requests.md` #1: "comment out a multi-line block of code
+  containing its own `#` line comments") doesn't arise in a project with
+  no dead code left lying around commented out -- forcing the feature onto
+  ordinary prose docs would be a regression against this project's own
+  established style, not a modernization.
+
+**Verification**, real execution throughout, not just a clean compile:
+rebuilt every build target (`assembler.exe`/`disasm.exe`/`debugger.exe`/
+`nova16.exe`/`uart_bridge.exe`/`uart_tcp_bridge.exe`/
+`tests/run_bin.exe`/`tests/mouse_interrupt_test.exe`/
+`tests/uart_framed_test.exe`). `tests/mouse_interrupt_test.exe` (5/5),
+`tests/uart_framed_test.exe` (10/10), and `tests/run_debugger_test.ps1`
+(byte-for-byte REPL output match) all still pass unchanged. Reassembled
+all 13 checked-in `tests/asm/*.asm` files with the modified
+`assembler.exe` and byte-compared every `.bin`/`.sym`/`.org`/`.lines`
+output against the checked-in version -- bit-for-bit identical, directly
+confirming `resolve_imm`/`write_symbols`'s `if let` conversion changed
+nothing observable. `layers_test.asm` (6/6 documented register values,
+exercising `screen.star::layer_swap`/`layer_move`/`layer_copy`'s `for`
+conversions) and `sprites_test.asm` (5/5, exercising `cpu_graphics.star`'s
+digit-separator change) both reran clean against their own documented
+expected values. A new hand-written smoke test (assembled and run, not
+checked in -- covers `SHL`/`SHR`/`SAR`/`ROL`/`ROR`/`CLZ`/`CTZ`/`POPCNT`
+plus `MEMCPY`/both-direction `MEMMOVE`/`MEMSWAP` plus a full `PUSHA`/
+`POPA` round-trip) matched all 18 hand-computed expected values exactly,
+directly exercising every `bits.star`/`cpu_mem.star`/`cpu_stack.star` loop
+this round rewrote. Full `cargo +stable-x86_64-pc-windows-gnu test`
+(compiler-side suite; no `src/` files touched this round) reconfirmed
+clean throughout.
+
 ## Ideas for future work
 
 - ~~Sound synthesis~~ and ~~a UART host bridge~~ — both done, see

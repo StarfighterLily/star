@@ -90,7 +90,7 @@ const STATUS_H: i32 = 22
 # both derive from it so they can't drift apart from each other the way a
 # second hardcoded `delay(16)` literal would risk.
 const TARGET_FPS: i32 = 120
-const VIRTUAL_CLOCK_HZ: i32 = 64000000
+const VIRTUAL_CLOCK_HZ: i32 = 64_000_000
 const STEPS_PER_FRAME: i32 = VIRTUAL_CLOCK_HZ / TARGET_FPS
 const FRAME_DELAY_MS: i32 = 1000 / TARGET_FPS
 
@@ -98,7 +98,7 @@ const FRAME_DELAY_MS: i32 = 1000 / TARGET_FPS
 # -- `STEPS_PER_FRAME` counts *opcodes*, not real work, and Nova-16's bulk
 # graphics opcodes (`SFILL`/`SBLIT`/`VBLIT`/`SROL`/`SROT`/`SSHFT`/`SFLIP`/
 # `SINV`/`LSWAP`/`LMOVE`/`LCOPY`/`SPBLITALL`, `screen.star`) each do a real
-# 65536-element loop internally but count as exactly 1 step, same as a
+# 65_536-element loop internally but count as exactly 1 step, same as a
 # `MOV`. `asm/screenflash.asm` (`SETUP: SFILL 0x0F; SFILL 0x00; JMP SETUP`,
 # looping forever) fits ~88888 passes into one frame's 266666-step budget --
 # ~11.65 billion real memory writes attempted before that frame's stepping
@@ -239,18 +239,13 @@ impl cpu::Cpu:
     # `load_program_or_wait`, called right after this at both of `Reset`'s
     # call sites in the main loop below).
     fn reinit(mut self):
-        let mut i = 0
-        while i < 65536:
+        for i in 0..65_536:
             self.mem.ram[i] = 0 as u8
-            i += 1
-        i = 0
-        while i < 245760:
+        for i in 0..245_760:
             self.mem.bank_ram[i] = 0 as u8
-            i += 1
         self.mem.bank = 0 as u8
 
-        i = 0
-        while i < 65536:
+        for i in 0..65_536:
             self.screen.screen[i] = 0 as u8
             self.screen.bg1[i] = 0 as u8
             self.screen.bg2[i] = 0 as u8
@@ -261,12 +256,9 @@ impl cpu::Cpu:
             self.screen.sp3[i] = 0 as u8
             self.screen.sp4[i] = 0 as u8
             self.screen.vram[i] = 0 as u8
-            i += 1
 
-        i = 0
-        while i < 64:
+        for i in 0..64:
             self.kbd.buffer[i] = 0 as u8
-            i += 1
         self.kbd.head = 0
         self.kbd.tail = 0
         self.kbd.count = 0
@@ -276,14 +268,10 @@ impl cpu::Cpu:
         self.flags.bits = BitField<16>(0)
         self.uart = uart::new_uart()
 
-        i = 0
-        while i < 10:
+        for i in 0..10:
             self.r[i] = Wrapping<u8>(0 as u8)
-            i += 1
-        i = 0
-        while i < 8:
+        for i in 0..8:
             self.p[i] = Wrapping<u16>(0 as u16)
-            i += 1
         self.p[8] = Wrapping<u16>(0xFFFF as u16)
         self.p[9] = Wrapping<u16>(0xFFFF as u16)
 
@@ -336,10 +324,8 @@ fn hex_digit(n: i32) -> str:
 fn hex4(v: i32) -> str:
     let w = v & 0xFFFF
     let mut s = ""
-    let mut shift = 12
-    while shift >= 0:
+    for shift in 12..=0 step -4:
         s = concat(s, hex_digit((w >> shift) & 0xF))
-        shift -= 4
     s
 
 # Host SDL scancode -> Nova-16 key code (docs/Keyboard Implementation.md's
@@ -482,7 +468,7 @@ fn main():
     # RGBA scratch buffer for the emulator-screen render loop below, built
     # once here (not per-frame) and reused every frame via index assignment
     # -- `texture_update`/`texture_draw` (`crate::codegen::sdl`) replace what
-    # used to be a per-pixel `composite_pixel`+`draw_rect` loop (up to 65536
+    # used to be a per-pixel `composite_pixel`+`draw_rect` loop (up to 65_536
     # real `SDL_SetRenderDrawColor`+`SDL_RenderFillRect` pairs every single
     # frame -- profiling found this, not CPU-interpretation speed, was the
     # real cost behind a "pixel-by-pixel screen fill" wall-clock time barely
@@ -649,7 +635,7 @@ fn main():
         # one `composite_pixel`/`palette_color` lookup per pixel, same as
         # before) then `texture_update`+`texture_draw` scale it 2x into the
         # screen area against the persistent `screen_tex` created once above
-        # -- replacing what used to be up to 65536 individual `draw_rect`
+        # -- replacing what used to be up to 65_536 individual `draw_rect`
         # calls (a real `SDL_SetRenderDrawColor`+`SDL_RenderFillRect` pair
         # each) with one `SDL_UpdateTexture` + `SDL_RenderCopy` pair per
         # frame, with no per-frame `SDL_CreateTexture`/`SDL_DestroyTexture`

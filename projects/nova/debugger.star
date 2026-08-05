@@ -554,9 +554,9 @@ fn load_symbol_table(sym_path: str) -> Map<i32, str>:
     reverse
 
 fn symbol_suffix(addr: i32, reverse_syms: Map<i32, str>) -> str:
-    match reverse_syms.get(addr):
-        Option::Some(name) -> f" ({name})"
-        Option::None -> ""
+    if let Option::Some(name) = reverse_syms.get(addr):
+        return f" ({name})"
+    ""
 
 # ---------------------------------------------------------------------------
 # Line table (.lines sidecar, written by `assembler.star`'s `write_lines`,
@@ -590,15 +590,15 @@ fn load_line_table(lines_path: str) -> (Map<i32, i32>, Map<i32, i32>):
     (line_to_addr, addr_to_line)
 
 fn line_suffix(addr: i32, addr_to_line: Map<i32, i32>) -> str:
-    match addr_to_line.get(addr):
-        Option::Some(n) -> f" [line {n}]"
-        Option::None -> ""
+    if let Option::Some(n) = addr_to_line.get(addr):
+        return f" [line {n}]"
+    ""
 
 # Resolves a `break`/`clear` command's location argument: `:N` looks up
 # source line `N` in `line_to_addr` (`ok=false` if that line never emitted
 # an instruction -- e.g. a label-only or data-directive line, or a line
 # number outside the source entirely); anything else is a plain address,
-# parsed and wrapped into `[0, 65536)` exactly like this command's own
+# parsed and wrapped into `[0, 65_536)` exactly like this command's own
 # address-only parsing always has.
 fn parse_break_location(rest: str, line_to_addr: Map<i32, i32>) -> (i32, bool):
     if str_starts_with(rest, ":"):
@@ -607,7 +607,7 @@ fn parse_break_location(rest: str, line_to_addr: Map<i32, i32>) -> (i32, bool):
             Option::Some(addr) -> (addr, true)
             Option::None -> (0, false)
     else:
-        let addr = ((strtol(rest, null_ptr(), 0) % 65536) + 65536) % 65536
+        let addr = ((strtol(rest, null_ptr(), 0) % 65_536) + 65_536) % 65_536
         (addr, true)
 
 # ---------------------------------------------------------------------------
@@ -629,7 +629,7 @@ impl cpu::Cpu:
     # fixed window per instruction shown) rather than `self.mem`'s full
     # width -- the difference matters directly for "step N": snapshotting
     # 64KB per single-instruction print would make an N-instruction step
-    # O(N * 65536) instead of O(N * window).
+    # O(N * 65_536) instead of O(N * window).
     fn mem_window(self, start: i32, length: i32) -> Bytes:
         let mut b: Bytes = Bytes()
         let mut i = 0
@@ -733,6 +733,25 @@ impl cpu::Cpu:
             println(f"  0x{hex_word(addr + i)}: {hex_line} {ascii_line}")
             i += 8
 
+# NOTE: a single `println` call with an embedded `"""..."""` triple-quoted
+# literal (new in Star after this file was written) was tried here in place
+# of the 14 separate calls below, and reverted. It reproduced a real bug:
+# in the *full* debugger.exe binary (not in an isolated one-function repro
+# of the exact same string), each embedded newline in the ~670-byte string
+# constant came out as `\r\r\n` (doubled CR) instead of `\r\n` when printed
+# -- confirmed via a raw byte dump of captured stdout, and independent of
+# how the binary is invoked (PowerShell `Start-Process` file redirection
+# and a plain Bash pipe both show it). The generated LLVM IR's own string
+# constant is correct (single `\0A` per line); the corruption happens at
+# runtime, after `printf`, right where the compiler emits a
+# `star_rc_release` call on the (statically-tagged, refcount-header `-1`)
+# format-string pointer passed straight to `printf` for a non-f-string
+# `println` argument -- consistent with a use-after-free/lifetime bug
+# specific to large triple-quoted string constants in that code path, not
+# something this file can work around. Left as 14 plain calls, each
+# reliably one `\r\n`-terminated line; worth a dedicated compiler-side
+# investigation (`src/codegen/builtins.rs::emit_print_like`) before trying
+# a triple-quoted literal here again.
 fn print_help():
     println("Commands:")
     println("  step, s           Step one instruction")
@@ -755,7 +774,7 @@ fn main():
     let mut reverse_symbols: Map<i32, str> = Map<i32, str>()
     let mut line_to_addr: Map<i32, i32> = Map<i32, i32>()
     let mut addr_to_line: Map<i32, i32> = Map<i32, i32>()
-    let mut breakpoints: [bool; 65536] = [false; 65536]
+    let mut breakpoints: [bool; 65_536] = [false; 65_536]
 
     if cli.len() > 1:
         let bin_path = cli[1]
@@ -835,18 +854,14 @@ fn main():
                         println(f"No code at line {rest}")
             elif cmd == "breakpoints" or cmd == "bp":
                 let mut any_bp = false
-                let mut scan = 0
-                while scan < 65536:
+                for scan in 0..65_536:
                     if breakpoints[scan]:
                         any_bp = true
-                    scan += 1
                 if any_bp:
                     println("Breakpoints:")
-                    let mut addr = 0
-                    while addr < 65536:
+                    for addr in 0..65_536:
                         if breakpoints[addr]:
                             println(f"  0x{hex_word(addr)}{symbol_suffix(addr, reverse_symbols)}{line_suffix(addr, addr_to_line)}")
-                        addr += 1
                 else:
                     println("No breakpoints set")
             elif cmd == "clear" or cmd == "c":
@@ -874,7 +889,7 @@ fn main():
                 # for this filed as an upstream issue.
                 println("Running until breakpoint...")
                 let mut steps = 0
-                let max_steps = 1000000
+                let max_steps = 1_000_000
                 let mut going = true
                 while going:
                     c.step()

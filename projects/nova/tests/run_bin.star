@@ -86,7 +86,7 @@ fn main():
         println("usage: run_bin <path.bin> [max_cycles]")
         return
 
-    let mut max_cycles = 100000
+    let mut max_cycles = 100_000
     if cli.len() > 2:
         max_cycles = atoi(cli[2])
 

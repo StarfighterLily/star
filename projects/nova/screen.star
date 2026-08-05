@@ -7,8 +7,8 @@
 # docs/SPRITE_SYSTEM.md/TODO.md, which describe an earlier/aspirational
 # design that doesn't match what the running reference actually does).
 #
-# Layer storage: 9 separate `[u8; 65536]` fields (`screen`, `bg1`-`bg4`,
-# `sp1`-`sp4`), not a `[[u8; 65536]; 9]` nested array. A nested fixed array
+# Layer storage: 9 separate `[u8; 65_536]` fields (`screen`, `bg1`-`bg4`,
+# `sp1`-`sp4`), not a `[[u8; 65_536]; 9]` nested array. A nested fixed array
 # was deliberately avoided -- this project's own "Four Star compiler bugs
 # found and fixed" history (NOTES.md) is a long list of exactly this shape
 # (a large fixed aggregate constructed/returned/passed as one value) hitting
@@ -59,16 +59,16 @@ const HEIGHT: i32 = 256
 const LAYER_COUNT: i32 = 9
 
 struct Screen:
-    mut screen: [u8; 65536]   # layer 0 (base)
-    mut bg1: [u8; 65536]      # layer 1
-    mut bg2: [u8; 65536]      # layer 2
-    mut bg3: [u8; 65536]      # layer 3
-    mut bg4: [u8; 65536]      # layer 4
-    mut sp1: [u8; 65536]      # layer 5
-    mut sp2: [u8; 65536]      # layer 6
-    mut sp3: [u8; 65536]      # layer 7
-    mut sp4: [u8; 65536]      # layer 8
-    mut vram: [u8; 65536]
+    mut screen: [u8; 65_536]   # layer 0 (base)
+    mut bg1: [u8; 65_536]      # layer 1
+    mut bg2: [u8; 65_536]      # layer 2
+    mut bg3: [u8; 65_536]      # layer 3
+    mut bg4: [u8; 65_536]      # layer 4
+    mut sp1: [u8; 65_536]      # layer 5
+    mut sp2: [u8; 65_536]      # layer 6
+    mut sp3: [u8; 65_536]      # layer 7
+    mut sp4: [u8; 65_536]      # layer 8
+    mut vram: [u8; 65_536]
     mut font: fontdata::FontData
 
 # `new_screen()` returns `Screen` (10 x 64KB arrays plus the font) by value
@@ -76,16 +76,16 @@ struct Screen:
 # NOTES.md.
 fn new_screen() -> Screen:
     Screen(
-        screen = [0 as u8; 65536],
-        bg1 = [0 as u8; 65536],
-        bg2 = [0 as u8; 65536],
-        bg3 = [0 as u8; 65536],
-        bg4 = [0 as u8; 65536],
-        sp1 = [0 as u8; 65536],
-        sp2 = [0 as u8; 65536],
-        sp3 = [0 as u8; 65536],
-        sp4 = [0 as u8; 65536],
-        vram = [0 as u8; 65536],
+        screen = [0 as u8; 65_536],
+        bg1 = [0 as u8; 65_536],
+        bg2 = [0 as u8; 65_536],
+        bg3 = [0 as u8; 65_536],
+        bg4 = [0 as u8; 65_536],
+        sp1 = [0 as u8; 65_536],
+        sp2 = [0 as u8; 65_536],
+        sp3 = [0 as u8; 65_536],
+        sp4 = [0 as u8; 65_536],
+        vram = [0 as u8; 65_536],
         font = fontdata::new_font_data(),
     )
 
@@ -199,40 +199,30 @@ impl Screen:
 
     # SBLIT: VRAM -> layer `vl`, then clear VRAM (`Blitter.blit`).
     fn sblit(mut self, vl: i32):
-        let mut i = 0
-        while i < 65536:
+        for i in 0..65_536:
             self.layer_set_idx(vl, i, self.vram[i])
-            i += 1
-        i = 0
-        while i < 65536:
+        for i in 0..65_536:
             self.vram[i] = 0 as u8
-            i += 1
 
     # VBLIT: the composited screen -> VRAM (`Blitter.blit_vram`). Does not
     # clear anything afterward -- see the file header; the reference's own
     # "clear then immediately mark all dirty" has no observable effect once
     # there's no cache to go stale.
     fn vblit(mut self):
-        let mut i = 0
-        while i < 65536:
+        for i in 0..65_536:
             self.vram[i] = self.composite_pixel_idx(i)
-            i += 1
 
     # SFILL: bulk raw fill of layer `vl` (`GFX.fill_layer` -- `target.fill
     # (value)`, no blending -- see file header).
     fn sfill(mut self, vl: i32, color: u8):
-        let mut i = 0
-        while i < 65536:
+        for i in 0..65_536:
             self.layer_set_idx(vl, i, color)
-            i += 1
 
     # SINV: bulk raw invert of layer `vl` (`GFX.invert_colors` -- `255 -
     # target`).
     fn sinv(mut self, vl: i32):
-        let mut i = 0
-        while i < 65536:
+        for i in 0..65_536:
             self.layer_set_idx(vl, i, ~self.layer_get_idx(vl, i))
-            i += 1
 
     # LSWAP/LMOVE/LCOPY (`Compositor`/`GFX` layer-to-layer ops). An
     # out-of-range layer index is a silent no-op, matching this project's
@@ -242,28 +232,22 @@ impl Screen:
     # with here anyway.
     fn layer_swap(mut self, a: i32, b: i32):
         if valid_layer(a) and valid_layer(b) and a != b:
-            let mut i = 0
-            while i < 65536:
+            for i in 0..65_536:
                 let va = self.layer_get_idx(a, i)
                 let vb = self.layer_get_idx(b, i)
                 self.layer_set_idx(a, i, vb)
                 self.layer_set_idx(b, i, va)
-                i += 1
 
     fn layer_move(mut self, current: i32, target: i32):
         if valid_layer(current) and valid_layer(target) and current != target:
-            let mut i = 0
-            while i < 65536:
+            for i in 0..65_536:
                 self.layer_set_idx(target, i, self.layer_get_idx(current, i))
                 self.layer_set_idx(current, i, 0 as u8)
-                i += 1
 
     fn layer_copy(mut self, current: i32, target: i32):
         if valid_layer(current) and valid_layer(target) and current != target:
-            let mut i = 0
-            while i < 65536:
+            for i in 0..65_536:
                 self.layer_set_idx(target, i, self.layer_get_idx(current, i))
-                i += 1
 
     fn sline(mut self, vl: i32, x0: i32, y0: i32, x1: i32, y1: i32, color: u8):
         let dx = abs_i32(x1 - x0)
@@ -357,15 +341,11 @@ impl Screen:
     # (bit 7 = column 0).
     fn draw_char(mut self, vl: i32, code: u8, x: i32, y: i32, color: u8):
         let base = (code as i32) * 8
-        let mut row = 0
-        while row < 8:
+        for row in 0..8:
             let rowbyte = self.font.glyphs[base + row]
-            let mut col = 0
-            while col < 8:
+            for col in 0..8:
                 if bit_get(rowbyte, 7 - col):
                     self.layer_set(vl, x + col, y + row, color)
-                col += 1
-            row += 1
 
     # TEXT (the actual string-reading loop lives on `Cpu` instead, as
     # `Cpu::draw_text` -- see cpu.star. It needs to read bytes from `Memory`
@@ -386,7 +366,7 @@ impl Screen:
     # copy) then writes the transformed result back via `layer_set_idx`.
     # Whole-array-as-one-value shapes -- a plain assignment between two
     # existing arrays, or a fixed-size array as a function parameter/return
-    # type -- all force the same "materialize a [65536 x u8] as one SSA
+    # type -- all force the same "materialize a [65_536 x u8] as one SSA
     # value" codegen path that crashes/hangs `clang` for a struct-literal
     # field init (see `emit_array_repeat_into`'s doc comment / NOTES.md);
     # only the literal-initializer case was fixed at the compiler level, so
@@ -394,11 +374,9 @@ impl Screen:
     # the per-element indexing every other read/write in this file already
     # uses.
     fn roll_x(mut self, vl: i32, amount: i32):
-        let mut temp: [u8; 65536] = [0 as u8; 65536]
-        let mut k = 0
-        while k < 65536:
+        let mut temp: [u8; 65_536] = [0 as u8; 65_536]
+        for k in 0..65_536:
             temp[k] = self.layer_get_idx(vl, k)
-            k += 1
         let m = ((amount % WIDTH) + WIDTH) % WIDTH
         let mut y = 0
         while y < HEIGHT:
@@ -409,11 +387,9 @@ impl Screen:
             y += 1
 
     fn roll_y(mut self, vl: i32, amount: i32):
-        let mut temp: [u8; 65536] = [0 as u8; 65536]
-        let mut k = 0
-        while k < 65536:
+        let mut temp: [u8; 65_536] = [0 as u8; 65_536]
+        for k in 0..65_536:
             temp[k] = self.layer_get_idx(vl, k)
-            k += 1
         let m = ((amount % HEIGHT) + HEIGHT) % HEIGHT
         let mut y = 0
         while y < HEIGHT:
@@ -424,11 +400,9 @@ impl Screen:
             y += 1
 
     fn shift_x(mut self, vl: i32, amount: i32):
-        let mut temp: [u8; 65536] = [0 as u8; 65536]
-        let mut k = 0
-        while k < 65536:
+        let mut temp: [u8; 65_536] = [0 as u8; 65_536]
+        for k in 0..65_536:
             temp[k] = self.layer_get_idx(vl, k)
-            k += 1
         self.sfill(vl, 0 as u8)
         let mut y = 0
         while y < HEIGHT:
@@ -441,11 +415,9 @@ impl Screen:
             y += 1
 
     fn shift_y(mut self, vl: i32, amount: i32):
-        let mut temp: [u8; 65536] = [0 as u8; 65536]
-        let mut k = 0
-        while k < 65536:
+        let mut temp: [u8; 65_536] = [0 as u8; 65_536]
+        for k in 0..65_536:
             temp[k] = self.layer_get_idx(vl, k)
-            k += 1
         self.sfill(vl, 0 as u8)
         let mut y = 0
         while y < HEIGHT:
@@ -458,11 +430,9 @@ impl Screen:
             y += 1
 
     fn flip_x(mut self, vl: i32):
-        let mut temp: [u8; 65536] = [0 as u8; 65536]
-        let mut k = 0
-        while k < 65536:
+        let mut temp: [u8; 65_536] = [0 as u8; 65_536]
+        for k in 0..65_536:
             temp[k] = self.layer_get_idx(vl, k)
-            k += 1
         let mut y = 0
         while y < HEIGHT:
             let mut x = 0
@@ -472,11 +442,9 @@ impl Screen:
             y += 1
 
     fn flip_y(mut self, vl: i32):
-        let mut temp: [u8; 65536] = [0 as u8; 65536]
-        let mut k = 0
-        while k < 65536:
+        let mut temp: [u8; 65_536] = [0 as u8; 65_536]
+        for k in 0..65_536:
             temp[k] = self.layer_get_idx(vl, k)
-            k += 1
         let mut y = 0
         while y < HEIGHT:
             let mut x = 0
@@ -491,11 +459,9 @@ impl Screen:
     fn rotate_right(mut self, vl: i32, times: i32):
         let mut n = ((times % 4) + 4) % 4
         while n > 0:
-            let mut temp: [u8; 65536] = [0 as u8; 65536]
-            let mut k = 0
-            while k < 65536:
+            let mut temp: [u8; 65_536] = [0 as u8; 65_536]
+            for k in 0..65_536:
                 temp[k] = self.layer_get_idx(vl, k)
-                k += 1
             let mut y = 0
             while y < HEIGHT:
                 let mut x = 0
@@ -508,11 +474,9 @@ impl Screen:
     fn rotate_left(mut self, vl: i32, times: i32):
         let mut n = ((times % 4) + 4) % 4
         while n > 0:
-            let mut temp: [u8; 65536] = [0 as u8; 65536]
-            let mut k = 0
-            while k < 65536:
+            let mut temp: [u8; 65_536] = [0 as u8; 65_536]
+            for k in 0..65_536:
                 temp[k] = self.layer_get_idx(vl, k)
-                k += 1
             let mut y = 0
             while y < HEIGHT:
                 let mut x = 0

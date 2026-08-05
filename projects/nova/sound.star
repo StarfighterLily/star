@@ -9,7 +9,7 @@
 # `sound_play`/`music_play`/`music_stop`/`sound_stop_all`) landed, since that
 # gives this port a real host-audio backend to drive.
 #
-# Approach: `sound_load` only accepts a canonical 44-byte-header, 44100Hz/
+# Approach: `sound_load` only accepts a canonical 44-byte-header, 44_100Hz/
 # stereo/16-bit PCM *file* (see `audio.rs`'s own doc comment) -- there is no
 # builtin to hand it raw in-memory samples directly. So every synthesis
 # function here builds a complete WAV byte buffer (header + PCM) with plain
@@ -142,12 +142,12 @@
 # reintroducing the freed-while-playing race the original leak-it
 # decision was avoiding.
 
-const SAMPLE_RATE: i32 = 44100
+const SAMPLE_RATE: i32 = 44_100
 const PI: f32 = 3.14159265
 
 # ── WAV file construction ────────────────────────────────────────────────
 
-# Canonical 44-byte PCM WAV header for `data_len` bytes of 44100Hz/stereo/
+# Canonical 44-byte PCM WAV header for `data_len` bytes of 44_100Hz/stereo/
 # 16-bit PCM payload -- the exact shape `crate::codegen::audio::
 # emit_sound_load` validates (see its own doc comment for the byte-offset
 # table this mirrors).
@@ -279,7 +279,7 @@ fn waveform_sample(waveform: u8, phase01: f32, pink_state: f32) -> (f32, f32):
 fn synth_tone(waveform: u8, freq: f32, volume: u8, seconds: f32) -> Bytes:
     let total_samples = (seconds * (SAMPLE_RATE as f32)) as i32
     let mut buf = wav_header(total_samples * 4)
-    let amp = ((volume as f32) / 255.0) * 32000.0
+    let amp = ((volume as f32) / 255.0) * 32_000.0
     let phase_step = freq / (SAMPLE_RATE as f32)
     let mut phase = 0.0
     let mut pink_state = 0.0
@@ -304,7 +304,7 @@ fn synth_loop_tone(waveform: u8, freq: f32, volume: u8) -> Bytes:
         periods = 1
     let total_samples = (period_samples * (periods as f32)) as i32
     let mut buf = wav_header(total_samples * 4)
-    let amp = ((volume as f32) / 255.0) * 32000.0
+    let amp = ((volume as f32) / 255.0) * 32_000.0
     let phase_step = freq / (SAMPLE_RATE as f32)
     let mut phase = 0.0
     let mut pink_state = 0.0
@@ -325,7 +325,7 @@ fn synth_loop_tone(waveform: u8, freq: f32, volume: u8) -> Bytes:
 fn synth_memory_sample(samples: Bytes, volume: u8) -> Bytes:
     let n = samples.len()
     let mut buf = wav_header(n * 4)
-    let amp = ((volume as f32) / 255.0) * 32000.0
+    let amp = ((volume as f32) / 255.0) * 32_000.0
     let mut i = 0
     while i < n:
         let centered = ((samples[i] as f32) - 128.0) / 128.0
@@ -338,7 +338,7 @@ fn synth_memory_sample(samples: Bytes, volume: u8) -> Bytes:
 fn synth_sweep(waveform: u8, freq_start: f32, freq_end: f32, volume: u8, seconds: f32) -> Bytes:
     let total_samples = (seconds * (SAMPLE_RATE as f32)) as i32
     let mut buf = wav_header(total_samples * 4)
-    let amp = ((volume as f32) / 255.0) * 32000.0
+    let amp = ((volume as f32) / 255.0) * 32_000.0
     let mut phase = 0.0
     let mut i = 0
     while i < total_samples:
@@ -357,7 +357,7 @@ fn synth_sweep(waveform: u8, freq_start: f32, freq_end: f32, volume: u8, seconds
 fn synth_noise_decay(volume: u8, seconds: f32) -> Bytes:
     let total_samples = (seconds * (SAMPLE_RATE as f32)) as i32
     let mut buf = wav_header(total_samples * 4)
-    let amp = ((volume as f32) / 255.0) * 32000.0
+    let amp = ((volume as f32) / 255.0) * 32_000.0
     let mut i = 0
     while i < total_samples:
         let t = (i as f32) / (total_samples as f32)
@@ -372,7 +372,7 @@ fn synth_jump(volume: u8) -> Bytes:
     let seconds = 0.25
     let total_samples = (seconds * (SAMPLE_RATE as f32)) as i32
     let mut buf = wav_header(total_samples * 4)
-    let amp = ((volume as f32) / 255.0) * 32000.0
+    let amp = ((volume as f32) / 255.0) * 32_000.0
     let mut phase = 0.0
     let mut i = 0
     while i < total_samples:
@@ -394,7 +394,7 @@ fn synth_two_tone(freq1: f32, freq2: f32, volume: u8, seconds_each: f32) -> Byte
     let total_each = (seconds_each * (SAMPLE_RATE as f32)) as i32
     let total_samples = total_each * 2
     let mut buf = wav_header(total_samples * 4)
-    let amp = ((volume as f32) / 255.0) * 32000.0
+    let amp = ((volume as f32) / 255.0) * 32_000.0
     let mut phase = 0.0
     let mut i = 0
     while i < total_samples:
@@ -413,7 +413,7 @@ fn synth_arpeggio(volume: u8) -> Bytes:
     let total_each = (seconds_each * (SAMPLE_RATE as f32)) as i32
     let total_samples = total_each * 4
     let mut buf = wav_header(total_samples * 4)
-    let amp = ((volume as f32) / 255.0) * 32000.0
+    let amp = ((volume as f32) / 255.0) * 32_000.0
     let mut phase = 0.0
     let mut i = 0
     while i < total_samples:
@@ -470,7 +470,10 @@ fn fx_temp_path() -> str:
 # whatever handle previously occupied that channel once this one
 # successfully replaces it (see this file's header comment, "todo.md P2
 # #3").
-fn play_pcm_wav_on_channel(path: str, wav: Bytes, channel: u8, looped: bool) -> ptr:
+# `looped` defaults to `false` (new in Star after this file was written) --
+# every `STRIG`/one-shot-effect call site below plays a non-looping buffer;
+# only `play_tone`/`play_memory_sample`'s own loop branch needs `true`.
+fn play_pcm_wav_on_channel(path: str, wav: Bytes, channel: u8, looped: bool = false) -> ptr:
     let fh = file_open(path, "wb")
     if is_null(fh):
         return null_ptr()
@@ -500,7 +503,7 @@ fn play_tone(waveform: u8, freq: f32, volume: u8, looped: bool, channel: u8) -> 
         (play_pcm_wav_on_channel(loop_temp_path(), wav, channel, true), wav)
     else:
         let wav = synth_tone(waveform, freq, volume, 0.35)
-        (play_pcm_wav_on_channel(effect_temp_path(), wav, channel, false), wav)
+        (play_pcm_wav_on_channel(effect_temp_path(), wav, channel), wav)
 
 # `cpu.star::op_splay`'s entry point for waveform 7 (memory sample). Same
 # "new handle or `null_ptr()`, plus the raw wav" return as `play_tone`.
@@ -509,7 +512,7 @@ fn play_memory_sample(samples: Bytes, volume: u8, looped: bool, channel: u8) -> 
     if looped:
         (play_pcm_wav_on_channel(loop_temp_path(), wav, channel, true), wav)
     else:
-        (play_pcm_wav_on_channel(effect_temp_path(), wav, channel, false), wav)
+        (play_pcm_wav_on_channel(effect_temp_path(), wav, channel), wav)
 
 # `cpu.star::op_strig`'s entry point -- `effect` is STRIG's operand value
 # clamped/wrapped to the documented 0-7 range by the caller, `channel` is
@@ -517,21 +520,21 @@ fn play_memory_sample(samples: Bytes, volume: u8, looped: bool, channel: u8) -> 
 # "new handle or `null_ptr()`" return as `play_tone`.
 fn trigger_effect(effect: u8, volume: u8, channel: u8) -> ptr:
     if effect == (0 as u8): # Simple Beep
-        play_pcm_wav_on_channel(effect_temp_path(), synth_tone(2 as u8, 800.0, volume, 0.15), channel, false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_tone(2 as u8, 800.0, volume, 0.15), channel)
     elif effect == (1 as u8): # Rising Tone
-        play_pcm_wav_on_channel(effect_temp_path(), synth_sweep(2 as u8, 300.0, 1200.0, volume, 0.3), channel, false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_sweep(2 as u8, 300.0, 1200.0, volume, 0.3), channel)
     elif effect == (2 as u8): # Falling Tone
-        play_pcm_wav_on_channel(effect_temp_path(), synth_sweep(2 as u8, 1200.0, 300.0, volume, 0.3), channel, false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_sweep(2 as u8, 1200.0, 300.0, volume, 0.3), channel)
     elif effect == (3 as u8): # Explosion
-        play_pcm_wav_on_channel(effect_temp_path(), synth_noise_decay(volume, 0.6), channel, false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_noise_decay(volume, 0.6), channel)
     elif effect == (4 as u8): # Laser Shot
-        play_pcm_wav_on_channel(effect_temp_path(), synth_sweep(1 as u8, 1500.0, 200.0, volume, 0.25), channel, false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_sweep(1 as u8, 1500.0, 200.0, volume, 0.25), channel)
     elif effect == (5 as u8): # Jump
-        play_pcm_wav_on_channel(effect_temp_path(), synth_jump(volume), channel, false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_jump(volume), channel)
     elif effect == (6 as u8): # Coin Pickup (E5, A5)
-        play_pcm_wav_on_channel(effect_temp_path(), synth_two_tone(659.26, 880.0, volume, 0.09), channel, false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_two_tone(659.26, 880.0, volume, 0.09), channel)
     else: # Power-up (effect == 7, and any out-of-range value clamps here)
-        play_pcm_wav_on_channel(effect_temp_path(), synth_arpeggio(volume), channel, false)
+        play_pcm_wav_on_channel(effect_temp_path(), synth_arpeggio(volume), channel)
 
 # `SSTOP` -- see this file's header comment for why "stop everything" is the
 # only meaning this port's no-operand `SSTOP` has. Still `sound_stop_all()`
@@ -603,7 +606,7 @@ fn wav_sample_count(wav: Bytes) -> i32:
     (wav.len() - 44) / 4
 
 # Inverse of `push_frame`'s own encoding: the signed 16-bit amplitude
-# (roughly `[-32000, 32000]`, already volume-scaled -- *not* renormalized
+# (roughly `[-32_000, 32_000]`, already volume-scaled -- *not* renormalized
 # back to `[-1, 1]`) of sample frame `i`, or `0.0` (silence) if `i` falls
 # outside `[0, wav_sample_count(wav))`. Only the left channel is read back
 # since `push_frame` always writes identical left/right samples.
@@ -616,8 +619,8 @@ fn wav_sample_at(wav: Bytes, i: i32) -> f32:
     let hi = wav[off + 1] as i32
     let mut s16 = (hi << 8) | lo
     s16 = s16 & 0xFFFF
-    if s16 >= 32768:
-        s16 = s16 - 65536
+    if s16 >= 32_768:
+        s16 = s16 - 65_536
     s16 as f32
 
 # Appends one stereo 16-bit little-endian frame from an already-amplitude-
@@ -628,7 +631,7 @@ fn wav_sample_at(wav: Bytes, i: i32) -> f32:
 # comment) -- every call site below must reassign.
 fn push_frame_amp(buf: Bytes, amplitude: f32) -> Bytes:
     let mut b = buf
-    let clamped = clamp(amplitude, -32000.0, 32000.0)
+    let clamped = clamp(amplitude, -32_000.0, 32_000.0)
     let s16 = clamped as i32
     let lo = (s16 & 255) as u8
     let hi = ((s16 >> 8) & 255) as u8

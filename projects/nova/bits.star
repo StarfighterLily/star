@@ -24,6 +24,13 @@
 # `bit_get`/`bit_set` sidesteps that and stays correct regardless of
 # signedness, at the cost of being O(width) instead of O(1) -- fine for an
 # 8/16-bit machine.
+#
+# Every hand-rolled `while i = <n>; while i </>= <bound>: ...; i +/-= 1` bit
+# index loop in this file was later switched to a real `for` loop -- the
+# descending ones (`shl8`/`shl16`/`clz8`/`clz16`, walking MSB-to-LSB) use the
+# inclusive/stepped range form (`for i in 7..=0 step -1:`) Star gained after
+# this file was written, since a plain `for i in 0..8:` can't count downward
+# on its own. Purely a loop-header rewrite -- no bit-index math changed.
 
 fn shl8(x: u8, n: i32) -> u8:
     let mut amt = n
@@ -33,13 +40,11 @@ fn shl8(x: u8, n: i32) -> u8:
         0 as u8
     else:
         let mut result: u8 = 0 as u8
-        let mut i = 7
-        while i >= 0:
+        for i in 7..=0 step -1:
             let src = i - amt
             if src >= 0:
                 if bit_get(x, src):
                     result = bit_set(result, i)
-            i -= 1
         result
 
 fn shr8(x: u8, n: i32) -> u8:
@@ -50,13 +55,11 @@ fn shr8(x: u8, n: i32) -> u8:
         0 as u8
     else:
         let mut result: u8 = 0 as u8
-        let mut i = 0
-        while i < 8:
+        for i in 0..8:
             let src = i + amt
             if src < 8:
                 if bit_get(x, src):
                     result = bit_set(result, i)
-            i += 1
         result
 
 # Arithmetic shift right: vacated high bits copy the sign bit (bit 7)
@@ -73,8 +76,7 @@ fn sar8(x: u8, n: i32) -> u8:
             0 as u8
     else:
         let mut result: u8 = 0 as u8
-        let mut i = 0
-        while i < 8:
+        for i in 0..8:
             let src = i + amt
             if src < 8:
                 if bit_get(x, src):
@@ -82,7 +84,6 @@ fn sar8(x: u8, n: i32) -> u8:
             else:
                 if sign:
                     result = bit_set(result, i)
-            i += 1
         result
 
 fn rol8(x: u8, n: i32) -> u8:
@@ -90,12 +91,10 @@ fn rol8(x: u8, n: i32) -> u8:
     if amt < 0:
         amt += 8
     let mut result: u8 = 0 as u8
-    let mut i = 0
-    while i < 8:
+    for i in 0..8:
         let src = (i - amt + 8) % 8
         if bit_get(x, src):
             result = bit_set(result, i)
-        i += 1
     result
 
 fn ror8(x: u8, n: i32) -> u8:
@@ -112,13 +111,11 @@ fn shl16(x: u16, n: i32) -> u16:
         0 as u16
     else:
         let mut result: u16 = 0 as u16
-        let mut i = 15
-        while i >= 0:
+        for i in 15..=0 step -1:
             let src = i - amt
             if src >= 0:
                 if bit_get(x, src):
                     result = bit_set(result, i)
-            i -= 1
         result
 
 fn shr16(x: u16, n: i32) -> u16:
@@ -129,13 +126,11 @@ fn shr16(x: u16, n: i32) -> u16:
         0 as u16
     else:
         let mut result: u16 = 0 as u16
-        let mut i = 0
-        while i < 16:
+        for i in 0..16:
             let src = i + amt
             if src < 16:
                 if bit_get(x, src):
                     result = bit_set(result, i)
-            i += 1
         result
 
 fn sar16(x: u16, n: i32) -> u16:
@@ -145,13 +140,12 @@ fn sar16(x: u16, n: i32) -> u16:
     let sign = bit_get(x, 15)
     if amt >= 16:
         if sign:
-            65535 as u16
+            65_535 as u16
         else:
             0 as u16
     else:
         let mut result: u16 = 0 as u16
-        let mut i = 0
-        while i < 16:
+        for i in 0..16:
             let src = i + amt
             if src < 16:
                 if bit_get(x, src):
@@ -159,7 +153,6 @@ fn sar16(x: u16, n: i32) -> u16:
             else:
                 if sign:
                     result = bit_set(result, i)
-            i += 1
         result
 
 fn rol16(x: u16, n: i32) -> u16:
@@ -167,12 +160,10 @@ fn rol16(x: u16, n: i32) -> u16:
     if amt < 0:
         amt += 16
     let mut result: u16 = 0 as u16
-    let mut i = 0
-    while i < 16:
+    for i in 0..16:
         let src = (i - amt + 16) % 16
         if bit_get(x, src):
             result = bit_set(result, i)
-        i += 1
     result
 
 fn ror16(x: u16, n: i32) -> u16:
@@ -189,14 +180,12 @@ fn rcl8(x: u8, carry_in: bool, n: i32) -> (u8, bool):
     let mut amt = n % 9
     if amt < 0:
         amt += 9
-    let mut i = 0
-    while i < amt:
+    for i in 0..amt:
         let msb = bit_get(val, 7)
         val = shl8(val, 1)
         if carry:
             val = bit_set(val, 0)
         carry = msb
-        i += 1
     (val, carry)
 
 fn rcr8(x: u8, carry_in: bool, n: i32) -> (u8, bool):
@@ -205,14 +194,12 @@ fn rcr8(x: u8, carry_in: bool, n: i32) -> (u8, bool):
     let mut amt = n % 9
     if amt < 0:
         amt += 9
-    let mut i = 0
-    while i < amt:
+    for i in 0..amt:
         let lsb = bit_get(val, 0)
         val = shr8(val, 1)
         if carry:
             val = bit_set(val, 7)
         carry = lsb
-        i += 1
     (val, carry)
 
 fn rcl16(x: u16, carry_in: bool, n: i32) -> (u16, bool):
@@ -221,14 +208,12 @@ fn rcl16(x: u16, carry_in: bool, n: i32) -> (u16, bool):
     let mut amt = n % 17
     if amt < 0:
         amt += 17
-    let mut i = 0
-    while i < amt:
+    for i in 0..amt:
         let msb = bit_get(val, 15)
         val = shl16(val, 1)
         if carry:
             val = bit_set(val, 0)
         carry = msb
-        i += 1
     (val, carry)
 
 fn rcr16(x: u16, carry_in: bool, n: i32) -> (u16, bool):
@@ -237,32 +222,26 @@ fn rcr16(x: u16, carry_in: bool, n: i32) -> (u16, bool):
     let mut amt = n % 17
     if amt < 0:
         amt += 17
-    let mut i = 0
-    while i < amt:
+    for i in 0..amt:
         let lsb = bit_get(val, 0)
         val = shr16(val, 1)
         if carry:
             val = bit_set(val, 15)
         carry = lsb
-        i += 1
     (val, carry)
 
 fn popcount8(x: u8) -> i32:
     let mut count = 0
-    let mut i = 0
-    while i < 8:
+    for i in 0..8:
         if bit_get(x, i):
             count += 1
-        i += 1
     count
 
 fn popcount16(x: u16) -> i32:
     let mut count = 0
-    let mut i = 0
-    while i < 16:
+    for i in 0..16:
         if bit_get(x, i):
             count += 1
-        i += 1
     count
 
 # Even parity of the low byte of a result, per the CPU spec's P flag.
@@ -270,55 +249,47 @@ fn parity8(x: u8) -> bool:
     popcount8(x) % 2 == 0
 
 fn clz8(x: u8) -> i32:
-    let mut i = 7
     let mut count = 0
     let mut done = false
-    while i >= 0:
+    for i in 7..=0 step -1:
         if !done:
             if bit_get(x, i):
                 done = true
             else:
                 count += 1
-        i -= 1
     count
 
 fn clz16(x: u16) -> i32:
-    let mut i = 15
     let mut count = 0
     let mut done = false
-    while i >= 0:
+    for i in 15..=0 step -1:
         if !done:
             if bit_get(x, i):
                 done = true
             else:
                 count += 1
-        i -= 1
     count
 
 fn ctz8(x: u8) -> i32:
-    let mut i = 0
     let mut count = 0
     let mut done = false
-    while i < 8:
+    for i in 0..8:
         if !done:
             if bit_get(x, i):
                 done = true
             else:
                 count += 1
-        i += 1
     count
 
 fn ctz16(x: u16) -> i32:
-    let mut i = 0
     let mut count = 0
     let mut done = false
-    while i < 16:
+    for i in 0..16:
         if !done:
             if bit_get(x, i):
                 done = true
             else:
                 count += 1
-        i += 1
     count
 
 # Sign-extend an 8-bit two's-complement offset byte (used by register- and

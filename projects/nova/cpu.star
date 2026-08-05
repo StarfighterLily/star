@@ -66,7 +66,7 @@ fn zero_operand() -> Operand:
     Operand(kind = 0 as u8, reg_code = 0 as u8, imm = 0 as u16, addr = 0 as u16, imm_width = 16 as u8)
 
 fn wrap_addr(a: i32) -> i32:
-    ((a % 65536) + 65536) % 65536
+    ((a % 65_536) + 65_536) % 65_536
 
 # Floor division (Python `//` semantics: rounds toward -infinity), needed by
 # FDIV/FLOOR/CEIL/ROUND below since Star's own `/` truncates toward zero
@@ -813,8 +813,8 @@ impl Cpu:
             else:
                 val
         else:
-            if val >= 32768:
-                val - 65536
+            if val >= 32_768:
+                val - 65_536
             else:
                 val
 
@@ -823,8 +823,8 @@ impl Cpu:
     # reference's `_br`/`_brz`/`_brnz`: it checks bit 0x8000 unconditionally).
     fn to_signed16(self, val: i32) -> i32:
         let v = wrap_addr(val)
-        if v >= 32768:
-            v - 65536
+        if v >= 32_768:
+            v - 65_536
         else:
             v
 

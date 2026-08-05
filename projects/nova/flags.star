@@ -86,7 +86,7 @@ impl Flags:
     # simpler: a plain borrow check, not "did it leave the width's range").
     fn apply_arith(mut self, result: i32, op1: i32, op2: i32, width: i32, is_subtraction: bool, is_cmp: bool):
         let sign_idx = if width == 8: 7 else: 15
-        let mask = if width == 8: 255 else: 65535
+        let mask = if width == 8: 255 else: 65_535
 
         let signs_differ = bit_get((op1 ^ op2), sign_idx)
         let result_sign_flip = bit_get((op1 ^ result), sign_idx)

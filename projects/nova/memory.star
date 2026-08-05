@@ -16,13 +16,13 @@
 
 import "bits.star" as bits
 
-const BANK_WINDOW_START: i32 = 32768   # 0x8000
-const BANK_WINDOW_END: i32 = 49152     # 0xC000 (exclusive)
-const BANK_SIZE: i32 = 16384           # 0x4000
+const BANK_WINDOW_START: i32 = 32_768   # 0x8000
+const BANK_WINDOW_END: i32 = 49_152     # 0xC000 (exclusive)
+const BANK_SIZE: i32 = 16_384           # 0x4000
 
 struct Memory:
-    mut ram: [u8; 65536]
-    mut bank_ram: [u8; 245760]   # 15 banks * 16384 bytes (banks 1-15; bank 0 has no storage here)
+    mut ram: [u8; 65_536]
+    mut bank_ram: [u8; 245_760]   # 15 banks * 16384 bytes (banks 1-15; bank 0 has no storage here)
     mut bank: u8
 
 # `new_memory()` returns `Memory` (~300KB: two fixed arrays plus the bank
@@ -36,11 +36,11 @@ struct Memory:
 # fresh struct literal -- gets built directly into the caller's storage, zero
 # copies of the whole aggregate). Confirmed with a real `star build`.
 fn new_memory() -> Memory:
-    Memory(ram = [0 as u8; 65536], bank_ram = [0 as u8; 245760], bank = 0 as u8)
+    Memory(ram = [0 as u8; 65_536], bank_ram = [0 as u8; 245_760], bank = 0 as u8)
 
 impl Memory:
     fn read_byte(self, addr: i32) -> u8:
-        let a = ((addr % 65536) + 65536) % 65536
+        let a = ((addr % 65_536) + 65_536) % 65_536
         if self.bank != (0 as u8) and a >= BANK_WINDOW_START and a < BANK_WINDOW_END:
             let bank_num = (self.bank as i32) - 1
             let offset = bank_num * BANK_SIZE + (a - BANK_WINDOW_START)
@@ -49,7 +49,7 @@ impl Memory:
             self.ram[a]
 
     fn write_byte(mut self, addr: i32, v: u8):
-        let a = ((addr % 65536) + 65536) % 65536
+        let a = ((addr % 65_536) + 65_536) % 65_536
         if self.bank != (0 as u8) and a >= BANK_WINDOW_START and a < BANK_WINDOW_END:
             let bank_num = (self.bank as i32) - 1
             let offset = bank_num * BANK_SIZE + (a - BANK_WINDOW_START)

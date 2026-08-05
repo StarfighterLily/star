@@ -149,7 +149,7 @@ impl cpu::Cpu:
         let out_channel = (self.operand_read(op1, 8) as u8) & (7 as u8)
         let mixed = snd::mix_wavs(self.sound_channel_last_wav)
         if snd::wav_sample_count(mixed) > 0:
-            let new_handle = snd::play_pcm_wav_on_channel(snd::fx_temp_path(), mixed, out_channel, false)
+            let new_handle = snd::play_pcm_wav_on_channel(snd::fx_temp_path(), mixed, out_channel)
             self.replace_channel_handle(out_channel, new_handle)
             if !is_null(new_handle):
                 self.sound_channel_last_wav[out_channel as i32] = mixed
@@ -165,7 +165,7 @@ impl cpu::Cpu:
         let src = self.sound_channel_last_wav[channel as i32]
         if snd::wav_sample_count(src) > 0:
             let processed = snd::apply_echo(src, delay)
-            let new_handle = snd::play_pcm_wav_on_channel(snd::fx_temp_path(), processed, channel, false)
+            let new_handle = snd::play_pcm_wav_on_channel(snd::fx_temp_path(), processed, channel)
             self.replace_channel_handle(channel, new_handle)
             if !is_null(new_handle):
                 self.sound_channel_last_wav[channel as i32] = processed
@@ -179,7 +179,7 @@ impl cpu::Cpu:
         let src = self.sound_channel_last_wav[channel as i32]
         if snd::wav_sample_count(src) > 0:
             let processed = snd::apply_reverb(src, amount)
-            let new_handle = snd::play_pcm_wav_on_channel(snd::fx_temp_path(), processed, channel, false)
+            let new_handle = snd::play_pcm_wav_on_channel(snd::fx_temp_path(), processed, channel)
             self.replace_channel_handle(channel, new_handle)
             if !is_null(new_handle):
                 self.sound_channel_last_wav[channel as i32] = processed
@@ -193,7 +193,7 @@ impl cpu::Cpu:
         let src = self.sound_channel_last_wav[channel as i32]
         if snd::wav_sample_count(src) > 0:
             let processed = snd::apply_filter(src, filter_type)
-            let new_handle = snd::play_pcm_wav_on_channel(snd::fx_temp_path(), processed, channel, false)
+            let new_handle = snd::play_pcm_wav_on_channel(snd::fx_temp_path(), processed, channel)
             self.replace_channel_handle(channel, new_handle)
             if !is_null(new_handle):
                 self.sound_channel_last_wav[channel as i32] = processed

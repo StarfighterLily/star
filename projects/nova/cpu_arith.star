@@ -86,7 +86,7 @@ impl cpu::Cpu:
         if width == 8:
             hi = product / (256 as i64)
         else:
-            hi = product / (65536 as i64)
+            hi = product / (65_536 as i64)
         let ww = self.write_width_for(op1, op2)
         self.operand_write(op1, ww, self.mask_to_width(hi as i32, ww))
 
@@ -117,7 +117,7 @@ impl cpu::Cpu:
             if width == 8:
                 shifted = ai * (256 as i64)
             else:
-                shifted = ai * (65536 as i64)
+                shifted = ai * (65_536 as i64)
             let q = shifted / bi
             let ww = self.write_width_for(op1, op2)
             self.operand_write(op1, ww, self.mask_to_width(q as i32, ww))

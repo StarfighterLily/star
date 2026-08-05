@@ -14,21 +14,17 @@ impl cpu::Cpu:
         let dest = self.operand_read(op1, 16)
         let src = self.operand_read(op2, 16)
         let len = self.operand_read(op3, 16)
-        let mut i = 0
-        while i < len:
+        for i in 0..len:
             let b = self.mem.read_byte(cpu::wrap_addr(src + i))
             self.mem.write_byte(cpu::wrap_addr(dest + i), b)
-            i += 1
 
     fn op_memset(mut self):
         let (op1, op2, op3) = self.decode_operands(3)
         let dest = self.operand_read(op1, 16)
         let value = self.operand_read(op2, 16)
         let len = self.operand_read(op3, 16)
-        let mut i = 0
-        while i < len:
+        for i in 0..len:
             self.mem.write_byte(cpu::wrap_addr(dest + i), value as u8)
-            i += 1
 
     fn op_memmove(mut self):
         let (op1, op2, op3) = self.decode_operands(3)
@@ -36,42 +32,38 @@ impl cpu::Cpu:
         let src = self.operand_read(op2, 16)
         let len = self.operand_read(op3, 16)
         if dest <= src:
-            let mut i = 0
-            while i < len:
+            for i in 0..len:
                 let b = self.mem.read_byte(cpu::wrap_addr(src + i))
                 self.mem.write_byte(cpu::wrap_addr(dest + i), b)
-                i += 1
         else:
-            let mut i = len - 1
-            while i >= 0:
+            # Descending copy -- overlapping ranges with dest > src need the
+            # highest byte moved first so a byte isn't overwritten before it's
+            # read. `..=0 step -1` (new in Star after this file was written)
+            # replaces the old hand-rolled `i = len - 1; while i >= 0: ...; i -= 1`.
+            for i in (len - 1)..=0 step -1:
                 let b = self.mem.read_byte(cpu::wrap_addr(src + i))
                 self.mem.write_byte(cpu::wrap_addr(dest + i), b)
-                i -= 1
 
     fn op_memswap(mut self):
         let (op1, op2, op3) = self.decode_operands(3)
         let a1 = self.operand_read(op1, 16)
         let a2 = self.operand_read(op2, 16)
         let len = self.operand_read(op3, 16)
-        let mut i = 0
-        while i < len:
+        for i in 0..len:
             let tmp = self.mem.read_byte(cpu::wrap_addr(a1 + i))
             let v2 = self.mem.read_byte(cpu::wrap_addr(a2 + i))
             self.mem.write_byte(cpu::wrap_addr(a1 + i), v2)
             self.mem.write_byte(cpu::wrap_addr(a2 + i), tmp)
-            i += 1
 
     fn op_memtest(mut self):
         let (op1, op2, op3) = self.decode_operands(3)
         let a1 = self.operand_read(op1, 16)
         let a2 = self.operand_read(op2, 16)
         let len = self.operand_read(op3, 16)
-        let mut i = 0
         let mut equal = true
-        while i < len:
+        for i in 0..len:
             if self.mem.read_byte(cpu::wrap_addr(a1 + i)) != self.mem.read_byte(cpu::wrap_addr(a2 + i)):
                 equal = false
-            i += 1
         self.flags.set_z(equal)
 
     # ── Random ───────────────────────────────────────────────────────────
@@ -81,7 +73,7 @@ impl cpu::Cpu:
         let width = self.operand_width(op1)
         let mut maxval = 256.0
         if width != 8:
-            maxval = 65536.0
+            maxval = 65_536.0
         let r = (rand() * maxval) as i32
         self.operand_write(op1, width, self.mask_to_width(r, width))
 

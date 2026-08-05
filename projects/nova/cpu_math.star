@@ -59,7 +59,7 @@ impl cpu::Cpu:
         # is no way to reproduce Python's exact low-16-bits-of-a-bignum
         # behavior through float math; flagged rather than silently wrong.
         let mut result: i32 = 0
-        if p == p and p < 9000000000000000.0 and p > (0.0 - 9000000000000000.0):
+        if p == p and p < 9_000_000_000_000_000.0 and p > (0.0 - 9_000_000_000_000_000.0):
             result = (p as i64) as i32
         let masked = self.mask_to_width(result, 16)
         self.flags.apply_arith(masked, a, b, 16, false, false)

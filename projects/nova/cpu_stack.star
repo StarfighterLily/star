@@ -42,26 +42,18 @@ impl cpu::Cpu:
         self.push16(((self.vc as u8) as i32))
         self.push16(((self.vy as u8) as i32))
         self.push16(((self.vx as u8) as i32))
-        let mut i = 9
-        while i >= 0:
+        for i in 9..=0 step -1:
             self.push16(((self.p[i] as u16) as i32))
-            i -= 1
-        i = 9
-        while i >= 0:
+        for i in 9..=0 step -1:
             self.push16(((self.r[i] as u8) as i32))
-            i -= 1
 
     fn op_popa(mut self):
-        let mut i = 0
-        while i < 10:
+        for i in 0..10:
             let v = self.pop16()
             self.r[i] = Wrapping<u8>(v as u8)
-            i += 1
-        i = 0
-        while i < 10:
+        for i in 0..10:
             let v = self.pop16()
             self.p[i] = Wrapping<u16>(v as u16)
-            i += 1
         let vxv = self.pop16()
         self.vx = Wrapping<u8>(vxv as u8)
         let vyv = self.pop16()

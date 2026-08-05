@@ -237,7 +237,7 @@ impl cpu::Cpu:
         if !active or width == 0 or height == 0:
             return
         let sprite_size = width * height
-        if data_addr + sprite_size > 65536:
+        if data_addr + sprite_size > 65_536:
             return
         if x >= 256 or y >= 256 or x + width <= 0 or y + height <= 0:
             return
