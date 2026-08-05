@@ -12,8 +12,8 @@ SETUP:
     MOV P1, FINISH   ; P1 = end address (0xFFFF)
     MOV R0, 0        ; R0 = color counter
     MOV TT, 0        ; Set timer to 0
-    MOV TM, 128      ; Trigger at 128
-    MOV TS, 80       ; Set speed
+    MOV TM, 255      ; Trigger at 128
+    MOV TS, 255       ; Set speed
     MOV TC, 3        ; Enable timer and interrupt
 
 LOOP:

@@ -259,3 +259,52 @@ fn runtime_triple_quoted_string_end_to_end() {
     let stdout = String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n");
     assert_eq!(stdout.trim(), "line one\nline two");
 }
+
+/// A triple-quoted literal's embedded newline must lex to a single logical
+/// `\n`, even when the *source file itself* uses CRLF line endings (the
+/// Windows/git-autocrlf default for this repo) -- `Lexer::scan_triple_string`
+/// used to push every byte between the quotes through verbatim, including a
+/// literal `\r` immediately before each `\n`, baking a two-byte `\r\n` into
+/// the token's `Str` content instead of the one-byte `\n` a same-content
+/// LF-only source file produces (see `runtime_println_of_crlf_triple_string_
+/// does_not_double_carriage_returns_end_to_end` below for the full bug this
+/// caused at `printf` time).
+#[test]
+fn triple_quoted_string_normalizes_crlf_source_newlines() {
+    let src = "\"\"\"line one\r\nline two\"\"\"\n";
+    let tokens = Driver::lex(src).expect("should lex");
+    assert_eq!(tokens[0].kind, TokenKind::Str("line one\nline two".to_string()));
+}
+
+/// Same normalization for a bare `\r` (old Mac Classic-style) line ending
+/// inside a triple-quoted literal, not just a `\r\n` pair.
+#[test]
+fn triple_quoted_string_normalizes_bare_cr_source_newlines() {
+    let src = "\"\"\"line one\rline two\"\"\"\n";
+    let tokens = Driver::lex(src).expect("should lex");
+    assert_eq!(tokens[0].kind, TokenKind::Str("line one\nline two".to_string()));
+}
+
+/// End-to-end regression for the `\r\r\n` bug documented in
+/// `projects/nova/NOTES.md`: a triple-quoted string literal written in a
+/// CRLF source file used to compile its embedded newline as a literal
+/// `\r\n` inside the LLVM string constant. `printf`'s own Windows text-mode
+/// stdout translation then turned each `\n` byte in that constant into
+/// `\r\n` on the way out -- doubling the `\r` (`\r` + `\r\n` = `\r\r\n`) for
+/// every embedded line of a triple-quoted literal, but leaving an ordinary
+/// single-line string untouched (its `println` newline is only ever the
+/// bare `\n` global `emit_print_like` appends itself, never part of the
+/// literal's own content). This asserts the raw captured stdout bytes are
+/// clean `\r\n` per line, not `\r\r\n`.
+#[test]
+fn runtime_println_of_crlf_triple_string_does_not_double_carriage_returns_end_to_end() {
+    let src = "fn main():\n    println(\"\"\"line one\r\nline two\r\nline three\"\"\")\n";
+    let output = compile_and_run("triple_quoted_crlf_source_runtime", src);
+    assert!(
+        !output.stdout.windows(3).any(|w| w == b"\r\r\n"),
+        "embedded newlines from a CRLF-sourced triple-quoted literal must not print as doubled \\r: {:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n");
+    assert_eq!(stdout.trim(), "line one\nline two\nline three");
+}

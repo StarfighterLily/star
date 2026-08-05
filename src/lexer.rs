@@ -813,6 +813,35 @@ impl<'src> Lexer<'src> {
                 }
                 continue;
             }
+            // A source-file `\r` (whether part of a `\r\n` pair or bare, e.g.
+            // an old Mac Classic line ending) is a line-ending byte, not
+            // content -- every other newline-sensitive spot in this lexer
+            // already treats it that way (see `b'\r'` in the blank/comment-
+            // line skip above and the general whitespace-skip arm below).
+            // This scanner used to be the one exception, pushing it through
+            // via `current_char()` like any other character: on a file
+            // checked out with CRLF endings (the Windows default for this
+            // repo), a multi-line literal's embedded newlines became a
+            // literal `\r\n` two-byte sequence baked into the compiled
+            // string constant. `printf`'s Windows text-mode stdio then
+            // translates the `\n` half of that pair to `\r\n` on the way
+            // out, turning every embedded line break into `\r\r\n` at
+            // runtime -- confirmed by dumping captured stdout bytes; the
+            // emitted LLVM IR's string constant already contained the
+            // doubled bytes (a raw `\r` immediately before the `\0A`
+            // escape), so this was a lexer-level bug, not a codegen or
+            // libc one. Normalizing to a single logical `\n` here, exactly
+            // like the rest of the lexer already does at line boundaries,
+            // makes a triple-quoted literal's content identical regardless
+            // of the source file's own line-ending style.
+            if self.bytes[self.pos] == b'\r' {
+                value.push('\n');
+                self.pos += 1;
+                if self.bytes.get(self.pos) == Some(&b'\n') {
+                    self.pos += 1;
+                }
+                continue;
+            }
             value.push(self.current_char());
             self.pos += self.current_char_len();
         }

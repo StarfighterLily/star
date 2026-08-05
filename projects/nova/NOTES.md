@@ -3307,6 +3307,36 @@ anyone tempted to try the same thing again.
    trying a triple-quoted literal through `println` again anywhere in this
    project.
 
+   **Follow-up, root-caused and fixed:** the `\r\r\n` doubling was a real
+   lexer bug, not the `emit_print_like`/memory-lifetime theory above --
+   and the "LLVM IR's own string constant is correct" claim was itself
+   wrong, just invisible: grepping `debugger.ll` for `\0A` found the `\n`
+   escapes fine, but a raw (unescaped) `\r` byte sitting right before each
+   one doesn't print as text in a terminal, it moves the cursor to column
+   0 -- so the grep output *looked* clean while the byte was actually
+   there (confirmed with `xxd`/`cat -A` instead of a plain terminal
+   display). `Lexer::scan_triple_string` (`src/lexer.rs`) pushed every
+   source byte between the `"""` delimiters through verbatim, including a
+   literal `\r`; on a CRLF-checked-out source file (this repo's Windows
+   default) that meant each embedded newline compiled into the string
+   constant as a literal two-byte `\r\n`, not a plain `\n`. `printf`'s own
+   Windows text-mode stdout then translates every `\n` byte it writes into
+   `\r\n` -- so the constant's already-embedded `\r\n` came out as
+   `\r` + (`\n` → `\r\n`) = `\r\r\n`. Fixed by normalizing `\r\n` and bare
+   `\r` to a single logical `\n` inside `scan_triple_string`, matching how
+   every other newline-sensitive spot in the lexer already treats `\r`
+   (blank/comment-line skipping, general whitespace skip). Covered by new
+   tests in `tests/frontend_lexer_niceties.rs`
+   (`triple_quoted_string_normalizes_crlf_source_newlines`,
+   `triple_quoted_string_normalizes_bare_cr_source_newlines`,
+   `runtime_println_of_crlf_triple_string_does_not_double_carriage_returns_end_to_end`),
+   the last of which fails against the pre-fix compiler with the exact
+   `\r\r\n` bytes this section describes. A triple-quoted `println` is
+   safe to use again in this project now; the size/scale-dependence
+   originally suspected was actually just this file's own isolated repros
+   happening to be saved with LF-only line endings while `debugger.star`
+   itself has CRLF.
+
 **Not applicable, checked rather than assumed:**
 - **`while let`**: no candidate exists. It needs an `Option`/`Result`- (or
   other enum-) typed loop condition, and this project's only
