@@ -1,0 +1,94 @@
+// Synthetic lexer regression fixture (todo.md P0 #1) -- not meant to be
+// semantically valid NoBASIC, only lexically thorough: every keyword
+// family, every operator/delimiter, every number-literal form, string
+// escapes, a built-in-function name used as a plain identifier (see
+// tokens.star's header comment on the KEYWORDS drift), and an Asm block.
+ClrDraw
+PxlOn(1, 2, 3)
+PxlOff(1, 2)
+Line(0, 0, 10, 10, 5)
+Circle(5, 5, 3, 2)
+Text(0, 0, "hi", 1)
+SetLayer(2)
+ScrRoll(0, 1)
+ScrRotate(90)
+ScrShift(1, 1)
+ScrFlip(0)
+SpriteOn(0)
+SpriteOff(0)
+PlayTone(440, 100)
+PlayWave(1)
+StopSound()
+SetChannel(0)
+GetKey()
+Input X
+Disp X
+Pause 10
+SerOut(1)
+SerIn()
+SerStat()
+SerCtrl(1)
+
+If X > 0 Then
+    Let Y = X + 1
+Else
+    Let Y = X - 1
+End
+
+For I = 0 To 10 Step 2
+Next
+
+While X < 10
+    Let X = X + 1
+While
+
+Repeat
+    Let X = X - 1
+Until X = 0
+
+Goto Start
+Dim Arr[10]
+Global G
+Local L
+Struct Point
+
+Function Add(A, B)
+    Return A + B
+End
+
+// Built-in-function-shaped identifiers -- NOT keywords per the reference
+// lexer's own KEYWORDS table (they lex as IDENTIFIER, see tokens.star).
+Let R1 = Sin
+Let R2 = Sqrt
+Let R3 = Concat
+
+// Numbers: plain decimal, exact-binary-fraction float, hex, binary.
+Let N1 = 42
+Let N2 = 3.25
+Let N3 = 0x1F
+Let N4 = 0b101
+
+// String literal with every documented escape.
+Let S1 = "Hi\n\t\"there\"\\end"
+
+// Every operator and delimiter.
+Let Z = A + B - C * D / E ^ F
+Let W = (A = B) AND (A <> B) OR NOT (A < B)
+Let V = A <= B
+Let U = A >= B
+Let T = A & B
+Let Q = A | B
+Let P2 = A << 2
+Let P3 = A >> 2
+P4++
+P5--
+Dim M[A, B]
+Call(A, B, C)
+Point.X
+At(A@B)
+Colon: Value
+
+Asm
+  MOV R0, 5
+  ADD R0, R1
+End

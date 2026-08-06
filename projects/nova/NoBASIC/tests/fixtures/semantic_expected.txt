@@ -1,0 +1,24 @@
+fixtures/semantic_valid.nobasic: OK
+fixtures/semantic_errors/arithmetic_on_strings.nobasic: Error in fixtures/semantic_errors/arithmetic_on_strings.nobasic at line 1, column 5: Cannot perform arithmetic on strings
+fixtures/semantic_errors/assign_to_non_list.nobasic: Error in fixtures/semantic_errors/assign_to_non_list.nobasic at line 2, column 1: 'Foo' is not a list
+fixtures/semantic_errors/assign_to_non_matrix.nobasic: Error in fixtures/semantic_errors/assign_to_non_matrix.nobasic at line 2, column 1: 'Bar' is not a matrix
+fixtures/semantic_errors/duplicate_function.nobasic: Error in fixtures/semantic_errors/duplicate_function.nobasic at line 5, column 1: Function 'foo' already defined
+fixtures/semantic_errors/duplicate_label.nobasic: Error in fixtures/semantic_errors/duplicate_label.nobasic at line 2, column 1: Label already defined
+fixtures/semantic_errors/global_redeclared.nobasic: Error in fixtures/semantic_errors/global_redeclared.nobasic at line 2, column 1: Variable 'X' already declared as global
+fixtures/semantic_errors/increment_non_assignable.nobasic: Error in fixtures/semantic_errors/increment_non_assignable.nobasic at line 1, column 5: Increment/decrement requires an assignable target
+fixtures/semantic_errors/list_index_not_numeric.nobasic: Error in fixtures/semantic_errors/list_index_not_numeric.nobasic at line 1, column 5: List index must be numeric
+fixtures/semantic_errors/local_in_global_scope.nobasic: Error in fixtures/semantic_errors/local_in_global_scope.nobasic at line 1, column 1: Cannot declare LOCAL variable 'X' in global scope
+fixtures/semantic_errors/local_redeclared_in_scope.nobasic: Error in fixtures/semantic_errors/local_redeclared_in_scope.nobasic at line 3, column 5: Variable 'X' already declared in this scope
+fixtures/semantic_errors/matrix_index_not_numeric.nobasic: Error in fixtures/semantic_errors/matrix_index_not_numeric.nobasic at line 1, column 5: Matrix indices must be numeric
+fixtures/semantic_errors/member_access_non_struct.nobasic: Error in fixtures/semantic_errors/member_access_non_struct.nobasic at line 1, column 5: Cannot access member of non-struct expression
+fixtures/semantic_errors/return_outside_function.nobasic: Error in fixtures/semantic_errors/return_outside_function.nobasic at line 1, column 1: Return outside of function
+fixtures/semantic_errors/struct_duplicate_field.nobasic: Error in fixtures/semantic_errors/struct_duplicate_field.nobasic at line 1, column 1: Duplicate field 'X' in struct 'Point'
+fixtures/semantic_errors/struct_redefined.nobasic: Error in fixtures/semantic_errors/struct_redefined.nobasic at line 5, column 1: Struct 'Point' is already defined
+fixtures/semantic_errors/undefined_function_call.nobasic: Error in fixtures/semantic_errors/undefined_function_call.nobasic at line 1, column 5: Undefined function 'NotAFunc'
+fixtures/semantic_errors/undefined_label_goto.nobasic: Error in fixtures/semantic_errors/undefined_label_goto.nobasic at line 1, column 1: Undefined label 'Nowhere'
+fixtures/semantic_errors/undefined_list_via_bracket.nobasic: Error in fixtures/semantic_errors/undefined_list_via_bracket.nobasic at line 1, column 5: Undefined list: Foo
+fixtures/semantic_errors/undefined_matrix.nobasic: Error in fixtures/semantic_errors/undefined_matrix.nobasic at line 1, column 5: Undefined matrix: MatD
+fixtures/semantic_errors/wrong_arg_count_builtin_fixed.nobasic: Error in fixtures/semantic_errors/wrong_arg_count_builtin_fixed.nobasic at line 1, column 5: Wrong number of arguments for function 'SIN': expected 1, got 2
+fixtures/semantic_errors/wrong_arg_count_builtin_tuple.nobasic: Error in fixtures/semantic_errors/wrong_arg_count_builtin_tuple.nobasic at line 1, column 5: Wrong number of arguments for function 'SEQ': expected [4, 5], got 3
+fixtures/semantic_errors/wrong_arg_count_user_function.nobasic: Error in fixtures/semantic_errors/wrong_arg_count_user_function.nobasic at line 5, column 5: Wrong number of arguments for function 'Foo': expected 2-2, got 1
+fixtures/semantic_errors/wrong_arg_type_builtin.nobasic: Error in fixtures/semantic_errors/wrong_arg_type_builtin.nobasic at line 1, column 5: Invalid argument type for function 'SIN': argument 1 expected number, got string

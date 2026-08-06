@@ -1,0 +1,120 @@
+// Semantic analyzer valid-program fixture (todo.md P0 #3) -- every
+// statement here is confirmed to pass the live reference SemanticAnalyzer
+// cleanly (no SemanticError raised) before being frozen.
+
+Global GX, GY
+
+Struct Point
+    X
+    Y
+End
+
+GX = 1 + 2 * 3 - 4 / 2
+GY = (1 + 2) * 3
+LX = 2 ^ 3 ^ 2
+GX = A << 2 >> 1
+GY = A & B | C
+GX = NOT A AND B OR C
+GY = A = B
+GX = A <> B
+GY = A < B
+GX = A <= B
+GY = A > B
+GX = A >= B
+GX = -A
+GY = A
+P4++
+P5--
+GX = ++P6
+GY = --P7
+
+If GX > 0 Then
+    GY = 1
+Else
+    GY = 2
+End
+
+If GX > 0 Then
+    GY = 1
+Else If GX < 0 Then
+    GY = -1
+Else
+    GY = 0
+End
+
+For I = 0 To 10 Step 2
+    GX = I
+Next
+
+While GX < 10
+    GX = GX + 1
+End
+
+Repeat
+    GX = GX - 1
+Until GX = 0
+
+Goto SkipPart
+SkipPart:
+
+ClrDraw
+PxlOn(1, 2, 3)
+PxlOff(1, 2)
+Line(0, 0, 10, 10, 5)
+Circle(5, 5, 3, 2)
+Circle(5, 5, 3, 2, 1)
+Text(0, 0, "hi", 1)
+SetLayer(2)
+ScrRoll(0, 1)
+ScrRotate(90, 1)
+ScrShift(1, 1)
+ScrFlip(0)
+SpriteOn(0, 1, 2)
+SpriteOff(0)
+PlayTone(440, 100, 15)
+PlayWave(1, 440, 15)
+StopSound
+SetChannel(0)
+GetKey
+SerOut(1)
+SerIn(SV)
+SerStat(SS)
+SerCtrl(1)
+Input "Enter X", XV
+Input YV
+Disp "Hello"
+Pause
+
+L1(1) = 5
+GX = L1(1)
+L7(1) = 9
+MatA(1, 2) = 7
+GY = MatA(1, 2)
+
+P.X = 5
+GY = P.X
+
+N1 = SIN(1)
+N2 = MIN(1, 2)
+N3 = SQRT(4)
+N4 = ABS(-1)
+S1 = STRCAT("a", "b")
+N5 = LEN("hello")
+
+Function Greet(Name, Times = 1)
+    Local Counter
+    Counter = 0
+    While Counter < Times
+        Disp Name
+        Counter = Counter + 1
+    End
+    Return Counter
+End
+
+N6 = Greet("Bob")
+N7 = Greet("Sam", 3)
+
+Asm
+  MOV R0, 5
+  ADD R0, R1
+End

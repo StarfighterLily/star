@@ -1,0 +1,5 @@
+Function Foo(A, B)
+    Return A + B
+End
+
+X = Foo(1)

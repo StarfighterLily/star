@@ -1,0 +1,72 @@
+// Codegen core fixture (todo.md P1 #1) -- exercises only the statement/
+// expression subset this round ports: arithmetic/comparison/logical
+// binary ops, unary ops (including pre/post ++/--), If/Else, While,
+// Repeat/Until, For (with and without Step), Goto/Label, user-defined
+// functions with a default argument, a handful of builtin function calls,
+// Disp, Pause, an Asm block, and Global/Local variable declarations.
+// Deliberately avoids lists/matrices/structs/Input/graphics statements/
+// member access -- not yet ported (see codegen.star's header comment).
+
+Global GX, GY
+
+GX = 1 + 2 * 3 - 4 / 2
+GY = (1 + 2) * 3
+GY = 8 & 3 | 1
+GX = 8 ^ 2
+GY = 1 << 2
+GX = 16 >> 2
+GY = NOT 0
+GX = -5
+GY = ABS(-5)
+
+If GX > 0 Then
+    GY = 1
+Else If GX < 0 Then
+    GY = -1
+Else
+    GY = 0
+End
+
+Counter = 0
+While Counter < 5
+    Counter = Counter + 1
+End
+
+Repeat
+    Counter = Counter - 1
+Until Counter = 0
+
+For I = 0 To 10 Step 2
+    GX = GX + I
+Next
+
+Goto SkipPart
+GX = 999
+SkipPart:
+
+P4 = 1
+P4++
+P5 = P4--
+GX = ++P4
+GY = --P5
+
+N1 = SIN(1)
+N2 = MIN(3, 7)
+N3 = MAX(3, 7)
+N4 = SQRT(4)
+N5 = INT(3)
+
+Function Add(a, b = 10)
+    Return a + b
+End
+
+N6 = Add(5)
+N7 = Add(5, 20)
+
+Disp "Hello"
+Disp GX
+Pause
+
+Asm
+  MOV R0, 5
+End

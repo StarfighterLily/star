@@ -1043,6 +1043,22 @@ impl Codegen {
         // a zero value with no real backing allocation, so there's nothing
         // to retain there.
         self.emit_retain_at(&elem_ptr, elem_ty);
+        // Captured *after* the retain, not reused from `ok_label` above --
+        // `emit_retain_at` opens its own conditional block(s) when `elem_ty`
+        // is RC-bearing (an enum payload retain branches on the active
+        // variant's tag), so the block actually falling through to
+        // `end_label` below is whatever `emit_retain_at` left current, which
+        // is a *different* block than `ok_label` whenever that happens. The
+        // phi below listed `ok_label` as this edge's source regardless,
+        // producing a `phi` whose declared predecessor didn't match the
+        // real CFG -- an LLVM IR verifier rejection ("lists incoming blocks
+        // [...] but the actual predecessors are [...]"), confirmed via a
+        // real `List<Struct-with-str-field>` indexed then matched (this
+        // port's own `projects/nova/NoBASIC/parser.star`, todo.md P0 #2, hit
+        // it first: `dump_expr`/`dump_stmt` read `a.exprs[id]`/`a.stmts[id]`
+        // then `match ...kind`). Mirrors the already-correct fix
+        // `MapMethod::Get` uses for this exact hazard (`codegen/map.rs`).
+        let ok_pred = self.current_label.clone();
         self.line(&format!("  br label %{}", end_label));
 
         self.open_block(&oob_label);
@@ -1056,7 +1072,7 @@ impl Codegen {
 
         self.open_block(&end_label);
         let result = self.tmp_name();
-        self.line(&format!("  {} = phi {} [ {}, %{} ], [ {}, %{} ]", result, elem_llvm, elem_val, ok_label, zero, oob_label));
+        self.line(&format!("  {} = phi {} [ {}, %{} ], [ {}, %{} ]", result, elem_llvm, elem_val, ok_pred, zero, oob_label));
         format!("{} {}", elem_llvm, result)
     }
 

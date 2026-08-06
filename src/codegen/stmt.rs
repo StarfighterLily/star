@@ -30,8 +30,17 @@ impl Codegen {
             Some((last, init)) => (init, last),
             None => return None,
         };
-        for stmt in init {
-            self.emit_stmt(stmt);
+        self.emit_stmt_seq(init);
+        // `init` may itself already terminate the block (a mid-sequence
+        // `match`/`if` whose every arm returns -- see `body_terminates`'s
+        // doc comment) even though `last` -- the statement lexically after
+        // it -- is a perfectly ordinary non-terminating one. `last` is then
+        // unreachable dead code; falling through to handle it below would
+        // emit it into the same block `emit_stmt_seq` already closed with
+        // `unreachable`, corrupting the IR exactly like the bug this whole
+        // function's `emit_stmt_seq` call was added to fix.
+        if Self::body_terminates(init) {
+            return None;
         }
         match last {
             TypedStmt::Expr(e) => Some(self.emit_expr(e)),
@@ -239,19 +248,21 @@ impl Codegen {
         val
     }
 
-    /// True if the last statement of `stmts` unconditionally terminates the
-    /// block with an explicit `return`/`break`/`continue` (looking through
-    /// trailing `frame` scopes), so callers know not to append a synthetic
-    /// terminator of their own (LLVM rejects any instruction, including
-    /// another terminator, after a block's first terminator).
-    pub(super) fn body_terminates(stmts: &[TypedStmt]) -> bool {
-        match stmts.last() {
-            Some(TypedStmt::Return { .. } | TypedStmt::Break { .. } | TypedStmt::Continue { .. }) => true,
-            Some(TypedStmt::Frame { body, .. }) => Self::body_terminates(&body.stmts),
+    /// True if `stmt` alone unconditionally terminates the enclosing block
+    /// with an explicit `return`/`break`/`continue` (looking through `frame`
+    /// scopes, both arms of an `if`/`else`, or every arm of a `match`) --
+    /// the single-statement shape `body_terminates` asks of the *last*
+    /// statement in a sequence, factored out separately so `emit_stmt_seq`
+    /// can ask the same question of a statement in the *middle* of one (see
+    /// its own doc comment for why that distinction matters).
+    fn stmt_terminates(stmt: &TypedStmt) -> bool {
+        match stmt {
+            TypedStmt::Return { .. } | TypedStmt::Break { .. } | TypedStmt::Continue { .. } => true,
+            TypedStmt::Frame { body, .. } => Self::body_terminates(&body.stmts),
             // An `if` only terminates the enclosing block if *both* arms do
             // (an `if` with no `else`, or with a non-terminating branch,
             // falls through and still needs the synthetic join point).
-            Some(TypedStmt::If { then_block, else_block: Some(else_block), .. }) => {
+            TypedStmt::If { then_block, else_block: Some(else_block), .. } => {
                 Self::body_terminates(&then_block.stmts) && Self::body_terminates(&else_block.stmts)
             }
             // A `match` terminates the enclosing block if every one of its
@@ -259,10 +270,58 @@ impl Codegen {
             // matching `emit_expr`'s `TypedExpr::Match` codegen, which closes
             // its own join block with `unreachable` in exactly this case
             // instead of leaving it open for a value to flow through.
-            Some(TypedStmt::Expr(TypedExpr::Match { arms, .. })) => {
+            TypedStmt::Expr(TypedExpr::Match { arms, .. }) => {
                 !arms.is_empty() && arms.iter().all(|arm| Self::body_terminates(&arm.body.stmts))
             }
             _ => false,
+        }
+    }
+
+    /// True if `stmts` unconditionally terminates the block before falling
+    /// off the end -- i.e. *some* statement in it terminates (see
+    /// `stmt_terminates`), not just the literal last one. These aren't the
+    /// same question: ordinarily a terminating statement (`return`/`break`/
+    /// `continue`) can only legally be the last one the checker allows in a
+    /// reachable sequence, so checking only `stmts.last()` used to be an
+    /// equivalent shortcut. But a mid-sequence `match`/`if` where every arm
+    /// itself terminates is perfectly legal, reachable source with more
+    /// statements after it (`match result: Ok(v) -> return v  Err(e) ->
+    /// return -1` followed by code only the success path needed) -- so
+    /// `stmts.last()` alone silently missed that the block already
+    /// terminated partway through, telling callers to append a synthetic
+    /// `br`/`ret` after the `unreachable` that terminating match's own
+    /// codegen already closed with. Every statement after the first
+    /// terminating one is unreachable and must never actually be emitted
+    /// (see `emit_stmt_seq`), but *this* function only answers "does the
+    /// block terminate," independent of codegen -- callers combine the two.
+    pub(super) fn body_terminates(stmts: &[TypedStmt]) -> bool {
+        stmts.iter().any(Self::stmt_terminates)
+    }
+
+    /// Emit every statement in `stmts` in order, stopping immediately after
+    /// any statement that `stmt_terminates` -- everything after it is
+    /// unreachable, and LLVM rejects further instructions in a block that
+    /// already ends in a terminator. A plain `return`/`break`/`continue`
+    /// can only ever be the *last* statement the checker allows in a
+    /// sequence, but a mid-sequence `match` (or `if`/`else`) where every arm
+    /// itself terminates is perfectly legal source (`match result: Ok(v) ->
+    /// return v  Err(e) -> return -1` followed by more code that only the
+    /// `Ok`/successful path would reach) and its own codegen already closes
+    /// that arm's join block with `unreachable` -- so a plain `for stmt in
+    /// stmts { self.emit_stmt(stmt) }` loop that keeps going regardless
+    /// appends further instructions after that `unreachable`, producing
+    /// invalid IR. Every raw statement-sequence walk in this module (a
+    /// function body's non-trailing statements, an `if`/`while`/`for` body,
+    /// a `spawn`/`system` body) should go through this instead. Confirmed
+    /// via a real program: `projects/nova/NoBASIC`'s lexer port has a
+    /// `Result`-matching `match` mid-function where both arms `return`,
+    /// followed by further statements -- the first real code to hit this.
+    pub(super) fn emit_stmt_seq(&mut self, stmts: &[TypedStmt]) {
+        for stmt in stmts {
+            self.emit_stmt(stmt);
+            if Self::stmt_terminates(stmt) {
+                break;
+            }
         }
     }
 
@@ -783,9 +842,7 @@ impl Codegen {
                 self.line(&format!("  br i1 {}, label %{}, label %{}", cond_reg, then_label, else_label));
                 self.open_block(&then_label);
                 self.push_scope();
-                for stmt in &then_block.stmts {
-                    self.emit_stmt(stmt);
-                }
+                self.emit_stmt_seq(&then_block.stmts);
                 self.pop_scope(!then_terminates);
                 if !then_terminates {
                     self.line(&format!("  br label %{}", end_label));
@@ -793,9 +850,7 @@ impl Codegen {
                 self.open_block(&else_label);
                 self.push_scope();
                 if let Some(else_b) = else_block {
-                    for stmt in &else_b.stmts {
-                        self.emit_stmt(stmt);
-                    }
+                    self.emit_stmt_seq(&else_b.stmts);
                 }
                 self.pop_scope(!else_terminates);
                 if !else_terminates {
@@ -859,9 +914,7 @@ impl Codegen {
                 let depth_at_entry = self.owned_stack.len();
                 self.push_scope();
                 self.loop_stack.push((cond_label.clone(), end_label.clone(), depth_at_entry, loop_frame_off.clone()));
-                for stmt in &then_block.stmts {
-                    self.emit_stmt(stmt);
-                }
+                self.emit_stmt_seq(&then_block.stmts);
                 self.loop_stack.pop();
                 let body_terminates = Self::body_terminates(&then_block.stmts);
                 self.pop_scope(!body_terminates);
@@ -872,9 +925,7 @@ impl Codegen {
                 self.open_block(&else_label);
                 self.push_scope();
                 if let Some(else_b) = else_block {
-                    for stmt in &else_b.stmts {
-                        self.emit_stmt(stmt);
-                    }
+                    self.emit_stmt_seq(&else_b.stmts);
                 }
                 // Same reasoning as the `if`-statement's `else` branch above
                 // (and the loop body just above it): an else-clause ending in
@@ -1000,9 +1051,7 @@ impl Codegen {
         let depth_at_entry = self.owned_stack.len();
         self.push_scope();
         self.loop_stack.push((step_label.clone(), end_label.clone(), depth_at_entry, loop_frame_off.clone()));
-        for stmt in &body.stmts {
-            self.emit_stmt(stmt);
-        }
+        self.emit_stmt_seq(&body.stmts);
         self.loop_stack.pop();
         self.symbols.pop();
         let body_terminates = Self::body_terminates(&body.stmts);

@@ -213,9 +213,7 @@ impl Codegen {
         // into the caller's own scope bookkeeping -- see `saved_owned_stack`
         // above.
         self.push_scope();
-        for stmt in &body.stmts {
-            self.emit_stmt(stmt);
-        }
+        self.emit_stmt_seq(&body.stmts);
         self.pop_scope(true);
         self.symbols.pop();
         self.line(&format!("  br label %{}", incr_label));
@@ -346,9 +344,7 @@ impl Codegen {
         let depth_at_entry = self.owned_stack.len();
         self.push_scope();
         self.loop_stack.push((step_label.clone(), end_label.clone(), depth_at_entry, loop_frame_off.clone()));
-        for stmt in &body.stmts {
-            self.emit_stmt(stmt);
-        }
+        self.emit_stmt_seq(&body.stmts);
         self.loop_stack.pop();
         if index_var.is_some() {
             self.symbols.pop();
@@ -790,6 +786,13 @@ impl Codegen {
         // out an independent copy while the arena slot keeps its own
         // reference (see `rc.rs`; a no-op unless `elem_ty` is RC-bearing).
         self.emit_retain_at(&elem_ptr, &elem_ty);
+        // Captured *after* the retain -- see `codegen/list.rs`'s
+        // `emit_list_index` doc comment on its identical fix for why
+        // reusing `ok_label` itself here is wrong: `emit_retain_at` opens
+        // its own conditional block(s) when `elem_ty` is RC-bearing, so the
+        // block actually falling through to `end_label` can be a different
+        // one than `ok_label`, which the phi below must reflect.
+        let ok_pred = self.current_label.clone();
         self.line(&format!("  br label %{}", end_label));
 
         // Both failure paths (out-of-bounds, stale generation) funnel
@@ -803,7 +806,7 @@ impl Codegen {
         let result = self.tmp_name();
         self.line(&format!(
             "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
-            result, elem_llvm_ty, elem_val, ok_label, zero, stale_label
+            result, elem_llvm_ty, elem_val, ok_pred, zero, stale_label
         ));
         format!("{} {}", elem_llvm_ty, result)
     }

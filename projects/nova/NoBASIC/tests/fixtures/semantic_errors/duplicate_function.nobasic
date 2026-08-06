@@ -1,0 +1,7 @@
+Function Foo()
+    Return 1
+End
+
+Function Foo()
+    Return 2
+End

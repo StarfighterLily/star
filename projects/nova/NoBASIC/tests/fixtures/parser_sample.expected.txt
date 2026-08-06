@@ -1,0 +1,488 @@
+program[65]:
+  7:1 VarDecl scope=GLOBAL variables=GX,GY
+  8:1 VarDecl scope=LOCAL variables=LX
+  10:1 StructDecl name=Point fields=X,Y
+  15:1 Assignment
+    .variable:
+      15:1 Variable name=GX
+    .expr:
+      15:6 Binary operator=-
+        .left:
+          15:6 Binary operator=+
+            .left:
+              15:6 Literal number=1.00
+            .right:
+              15:10 Binary operator=*
+                .left:
+                  15:10 Literal number=2.00
+                .right:
+                  15:14 Literal number=3.00
+        .right:
+          15:18 Binary operator=/
+            .left:
+              15:18 Literal number=4.00
+            .right:
+              15:22 Literal number=2.00
+  16:1 Assignment
+    .variable:
+      16:1 Variable name=GY
+    .expr:
+      16:6 Binary operator=*
+        .left:
+          16:6 Grouping
+            .expr:
+              16:7 Binary operator=+
+                .left:
+                  16:7 Literal number=1.00
+                .right:
+                  16:11 Literal number=2.00
+        .right:
+          16:16 Literal number=3.00
+  17:1 Assignment
+    .variable:
+      17:1 Variable name=LX
+    .expr:
+      17:6 Binary operator=^
+        .left:
+          17:6 Literal number=2.00
+        .right:
+          17:10 Binary operator=^
+            .left:
+              17:10 Literal number=3.00
+            .right:
+              17:14 Literal number=2.00
+  18:1 Assignment
+    .variable:
+      18:1 Variable name=GX
+    .expr:
+      18:6 Binary operator=>>
+        .left:
+          18:6 Binary operator=<<
+            .left:
+              18:6 Variable name=A
+            .right:
+              18:11 Literal number=2.00
+        .right:
+          18:16 Literal number=1.00
+  19:1 Assignment
+    .variable:
+      19:1 Variable name=GY
+    .expr:
+      19:6 Binary operator=|
+        .left:
+          19:6 Binary operator=&
+            .left:
+              19:6 Variable name=A
+            .right:
+              19:10 Variable name=B
+        .right:
+          19:14 Variable name=C
+  20:1 Assignment
+    .variable:
+      20:1 Variable name=GX
+    .expr:
+      20:6 Binary operator=or
+        .left:
+          20:6 Binary operator=and
+            .left:
+              20:6 Unary operator=NOT is_post=0
+                .expr:
+                  20:10 Variable name=A
+            .right:
+              20:16 Variable name=B
+        .right:
+          20:21 Variable name=C
+  21:1 Assignment
+    .variable:
+      21:1 Variable name=GY
+    .expr:
+      21:6 Binary operator==
+        .left:
+          21:6 Variable name=A
+        .right:
+          21:10 Variable name=B
+  22:1 Assignment
+    .variable:
+      22:1 Variable name=GX
+    .expr:
+      22:6 Binary operator=<>
+        .left:
+          22:6 Variable name=A
+        .right:
+          22:11 Variable name=B
+  23:1 Assignment
+    .variable:
+      23:1 Variable name=GY
+    .expr:
+      23:6 Binary operator=<
+        .left:
+          23:6 Variable name=A
+        .right:
+          23:10 Variable name=B
+  24:1 Assignment
+    .variable:
+      24:1 Variable name=GX
+    .expr:
+      24:6 Binary operator=<=
+        .left:
+          24:6 Variable name=A
+        .right:
+          24:11 Variable name=B
+  25:1 Assignment
+    .variable:
+      25:1 Variable name=GY
+    .expr:
+      25:6 Binary operator=>
+        .left:
+          25:6 Variable name=A
+        .right:
+          25:10 Variable name=B
+  26:1 Assignment
+    .variable:
+      26:1 Variable name=GX
+    .expr:
+      26:6 Binary operator=>=
+        .left:
+          26:6 Variable name=A
+        .right:
+          26:11 Variable name=B
+  27:1 Assignment
+    .variable:
+      27:1 Variable name=GX
+    .expr:
+      27:6 Unary operator=- is_post=0
+        .expr:
+          27:7 Variable name=A
+  28:1 Assignment
+    .variable:
+      28:1 Variable name=GY
+    .expr:
+      28:6 Variable name=A
+  29:1 ExpressionStmt
+    .expr:
+      29:1 Unary operator=++ is_post=1
+        .expr:
+          29:1 Variable name=P4
+  30:1 ExpressionStmt
+    .expr:
+      30:1 Unary operator=-- is_post=1
+        .expr:
+          30:1 Variable name=P5
+  31:1 Assignment
+    .variable:
+      31:1 Variable name=GX
+    .expr:
+      31:6 Unary operator=++ is_post=0
+        .expr:
+          31:8 Variable name=P6
+  32:1 Assignment
+    .variable:
+      32:1 Variable name=GY
+    .expr:
+      32:6 Unary operator=-- is_post=0
+        .expr:
+          32:8 Variable name=P7
+  34:1 If
+    .condition:
+      34:4 Binary operator=>
+        .left:
+          34:4 Variable name=GX
+        .right:
+          34:9 Literal number=0.00
+    .then[1]:
+      35:5 Assignment
+        .variable:
+          35:5 Variable name=GY
+        .expr:
+          35:10 Literal number=1.00
+    .else[1]:
+      37:5 Assignment
+        .variable:
+          37:5 Variable name=GY
+        .expr:
+          37:10 Literal number=2.00
+  40:1 If
+    .condition:
+      40:4 Binary operator=>
+        .left:
+          40:4 Variable name=GX
+        .right:
+          40:9 Literal number=0.00
+    .then[1]:
+      41:5 Assignment
+        .variable:
+          41:5 Variable name=GY
+        .expr:
+          41:10 Literal number=1.00
+    .else[1]:
+      42:6 If
+        .condition:
+          42:9 Binary operator=<
+            .left:
+              42:9 Variable name=GX
+            .right:
+              42:14 Literal number=0.00
+        .then[1]:
+          43:5 Assignment
+            .variable:
+              43:5 Variable name=GY
+            .expr:
+              43:10 Unary operator=- is_post=0
+                .expr:
+                  43:11 Literal number=1.00
+        .else[1]:
+          45:5 Assignment
+            .variable:
+              45:5 Variable name=GY
+            .expr:
+              45:10 Literal number=0.00
+  48:1 For variable=I
+    .start:
+      48:9 Literal number=0.00
+    .end:
+      48:14 Literal number=10.00
+    .step:
+      48:22 Literal number=2.00
+    .body[1]:
+      49:5 Assignment
+        .variable:
+          49:5 Variable name=GX
+        .expr:
+          49:10 Variable name=I
+  52:1 While
+    .condition:
+      52:7 Binary operator=<
+        .left:
+          52:7 Variable name=GX
+        .right:
+          52:12 Literal number=10.00
+    .body[1]:
+      53:5 Assignment
+        .variable:
+          53:5 Variable name=GX
+        .expr:
+          53:10 Binary operator=+
+            .left:
+              53:10 Variable name=GX
+            .right:
+              53:15 Literal number=1.00
+  56:1 Repeat
+    .body[1]:
+      57:5 Assignment
+        .variable:
+          57:5 Variable name=GX
+        .expr:
+          57:10 Binary operator=-
+            .left:
+              57:10 Variable name=GX
+            .right:
+              57:15 Literal number=1.00
+    .condition:
+      58:7 Binary operator==
+        .left:
+          58:7 Variable name=GX
+        .right:
+          58:12 Literal number=0.00
+  60:1 Goto label=Skip
+  61:1 Label label=Skip
+  63:1 ClrDraw
+  64:1 PxlOn
+    .x:
+      64:7 Literal number=1.00
+    .y:
+      64:10 Literal number=2.00
+    .color:
+      64:13 Literal number=3.00
+  65:1 PxlOff
+    .x:
+      65:8 Literal number=1.00
+    .y:
+      65:11 Literal number=2.00
+  66:1 Line
+    .x1:
+      66:6 Literal number=0.00
+    .y1:
+      66:9 Literal number=0.00
+    .x2:
+      66:12 Literal number=10.00
+    .y2:
+      66:16 Literal number=10.00
+    .color:
+      66:20 Literal number=5.00
+  67:1 Circle
+    .x:
+      67:8 Literal number=5.00
+    .y:
+      67:11 Literal number=5.00
+    .radius:
+      67:14 Literal number=3.00
+    .color:
+      67:17 Literal number=2.00
+    .filled:
+      <none>
+  68:1 Circle
+    .x:
+      68:8 Literal number=5.00
+    .y:
+      68:11 Literal number=5.00
+    .radius:
+      68:14 Literal number=3.00
+    .color:
+      68:17 Literal number=2.00
+    .filled:
+      68:20 Literal number=1.00
+  69:1 Text
+    .x:
+      69:6 Literal number=0.00
+    .y:
+      69:9 Literal number=0.00
+    .text:
+      69:12 Literal string="hi"
+    .color:
+      69:18 Literal number=1.00
+  70:1 SetLayer
+    .layer:
+      70:10 Literal number=2.00
+  71:1 SRol
+    .axis:
+      71:9 Literal number=0.00
+    .amount:
+      71:12 Literal number=1.00
+  72:1 SRot
+    .direction:
+      72:11 Literal number=90.00
+    .amount:
+      72:15 Literal number=1.00
+  73:1 SShft
+    .axis:
+      73:10 Literal number=1.00
+    .amount:
+      73:13 Literal number=1.00
+  74:1 SFlip
+    .axis:
+      74:9 Literal number=0.00
+  75:1 SpriteOn
+    .sprite_id:
+      75:10 Literal number=0.00
+    .x:
+      75:13 Literal number=1.00
+    .y:
+      75:16 Literal number=2.00
+  76:1 SpriteOff
+    .sprite_id:
+      76:11 Literal number=0.00
+  77:1 PlayTone
+    .frequency:
+      77:10 Literal number=440.00
+    .duration:
+      77:15 Literal number=100.00
+    .volume:
+      77:20 Literal number=15.00
+  78:1 PlayWave
+    .waveform:
+      78:10 Literal number=1.00
+    .frequency:
+      78:13 Literal number=440.00
+    .volume:
+      78:18 Literal number=15.00
+  79:1 StopSound
+  80:1 SetChannel
+    .channel:
+      80:12 Literal number=0.00
+  81:1 GetKey
+  82:1 SerOut
+    .value:
+      82:8 Literal number=1.00
+  83:1 SerIn variable=SV
+  84:1 SerStat variable=SS
+  85:1 SerCtrl
+    .value:
+      85:9 Literal number=1.00
+  86:1 Input variable=XV
+    .prompt:
+      86:7 Literal string="Enter X"
+  87:1 Input variable=YV
+    .prompt:
+      <none>
+  88:1 Disp
+    .text:
+      88:6 Literal string="Hello"
+  89:1 Pause
+  91:1 Assignment
+    .variable:
+      91:1 ListAccess list_name=L1
+        .index:
+          91:4 Literal number=1.00
+    .expr:
+      91:9 Literal number=5.00
+  92:1 Assignment
+    .variable:
+      92:1 Variable name=GX
+    .expr:
+      92:6 ListAccess list_name=L1
+        .index:
+          92:9 Literal number=1.00
+  93:1 Assignment
+    .variable:
+      93:1 MatrixAccess matrix_name=MatA
+        .row:
+          93:6 Literal number=1.00
+        .col:
+          93:9 Literal number=2.00
+    .expr:
+      93:14 Literal number=7.00
+  94:1 Assignment
+    .variable:
+      94:1 Variable name=GY
+    .expr:
+      94:6 MatrixAccess matrix_name=MatA
+        .row:
+          94:11 Literal number=1.00
+        .col:
+          94:14 Literal number=2.00
+  95:1 Assignment
+    .variable:
+      95:1 Variable name=GX
+    .expr:
+      95:6 MemberAccess member=X
+        .object:
+          95:6 Variable name=P
+  96:1 Assignment
+    .variable:
+      96:1 Variable name=GY
+    .expr:
+      96:6 MemberAccess member=Y
+        .object:
+          96:6 MemberAccess member=X
+            .object:
+              96:6 Variable name=P
+  98:1 FunctionDef name=add paramc=2
+    .param[0] name=a has_default=0
+    .param[1] name=b has_default=1
+      .default:
+        98:21 Literal number=1.00
+    .body[1]:
+      99:5 Return
+        .value:
+          99:12 Binary operator=+
+            .left:
+              99:12 Variable name=A
+            .right:
+              99:16 Variable name=B
+  102:1 Assignment
+    .variable:
+      102:1 Variable name=GX
+    .expr:
+      102:6 Call name=Add argc=2
+        .arg[0]:
+          102:10 Literal number=1.00
+        .arg[1]:
+          102:13 Literal number=2.00
+  103:1 FunctionCall
+    .call:
+      103:1 Call name=DoThing argc=2
+        .arg[0]:
+          103:9 Literal number=1.00
+        .arg[1]:
+          103:12 Literal number=2.00
+  105:1 AsmBlock code="MOV R0, 5\n  ADD R0, R1"

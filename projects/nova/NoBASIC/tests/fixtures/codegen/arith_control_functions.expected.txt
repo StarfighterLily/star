@@ -1,0 +1,267 @@
+; NoBASIC compiler output
+; Generated for Nova-16
+ORG 0x0200
+MOV P7:, 0xFF
+MOV :P7, 0xFF
+MOV SP, P7
+MOV FP, SP
+; GLOBAL variable: GX @ 0x0120
+; GLOBAL variable: GY @ 0x0122
+MOV P6, 1
+; Preserve left operand in register across right-side evaluation
+MOV R0, P6
+; Constant folded: 2 * 3 = 6
+MOV R1, 6
+MOV P0, R0
+ADD P0, R1
+; Free R1 (last use)
+; Preserve left operand in register across right-side evaluation
+MOV R0, P0
+; Constant folded: 4 / 2 = 2
+MOV R1, 2
+MOV P1, R0
+SUB P1, R1
+; Free R1 (last use)
+MOV P2, P1
+; Constant folded: 1 + 2 = 3
+MOV P0, 3
+; Preserve left operand in register across right-side evaluation
+MOV P6, P0
+MOV R0, 3
+MOV P1, P6
+MUL P1, R0
+; Free R0 (last use)
+MOV P3, P1
+; Constant folded: 8 & 3 = 0
+MOV P0, 0
+; Preserve left operand in register across right-side evaluation
+MOV P6, P0
+MOV R0, 1
+MOV P1, P6
+OR P1, R0
+; Free R0 (last use)
+MOV P3, P1
+; Constant folded: 8 ^ 2 = 10
+MOV P1, 10
+MOV P2, P1
+; Constant folded: 1 << 2 = 4
+MOV P1, 4
+MOV P3, P1
+; Constant folded: 16 >> 2 = 4
+MOV P1, 4
+MOV P2, P1
+; Constant folded: NOT(0) = -1
+MOV P1, -1
+MOV P3, P1
+; Constant folded: -(5) = -5
+MOV P1, -5
+MOV P2, P1
+; Constant folded: -(5) = -5
+MOV P0, -5
+MOV P1, P0
+; Free P0 (last use)
+ABS P1
+MOV P3, P1
+MOV P1, P2
+XOR P0, P0
+CMP P1, P0
+; Free P1 (last use)
+; Free P0 (last use)
+JLE L1
+MOV P1, 1
+MOV P3, P1
+JMP L2
+L1:
+MOV P1, P2
+XOR P0, P0
+CMP P1, P0
+; Free P1 (last use)
+; Free P0 (last use)
+JGE L3
+; Constant folded: -(1) = -1
+MOV P1, -1
+MOV P3, P1
+JMP L4
+L3:
+XOR P1, P1
+MOV P3, P1
+L4:
+L2:
+XOR P1, P1
+MOV P4, P1
+L5:
+MOV P1, P4
+MOV P0, 5
+CMP P1, P0
+; Free P1 (last use)
+; Free P0 (last use)
+JGE L6
+MOV P0, P4
+; Preserve left operand in register across right-side evaluation
+MOV P6, P0
+MOV R0, 1
+MOV P1, P6
+ADD P1, R0
+; Free R0 (last use)
+MOV P4, P1
+JMP L5
+L6:
+L7:
+MOV P0, P4
+; Preserve left operand in register across right-side evaluation
+MOV P6, P0
+MOV R0, 1
+MOV P1, P6
+SUB P1, R0
+; Free R0 (last use)
+MOV P4, P1
+MOV P6, P4
+XOR R0, R0
+CMP P6, R0
+; Free P6 (last use)
+; Free R0 (last use)
+JNZ L7
+XOR P6, P6
+MOV P4, P6
+MOV P6, 10
+MOV P0, P6
+MOV P6, 1
+SHL P6, 1
+MOV P1, P6
+L8:
+CMP P4, P0
+JGT L9
+; Preserve left operand in register across right-side evaluation
+MOV R1, P2
+MOV P6, R1
+ADD P6, P4
+MOV P2, P6
+ADD P4, P1
+JMP L8
+L9:
+JMP SkipPart
+MOV P1, 999
+MOV P2, P1
+SkipPart:
+MOV P1, 1
+MOV P4, P1
+MOV P1, P4
+MOV R0, P1
+ADD P1, 1
+MOV P4, P1
+MOV P1, P4
+SUB P1, 1
+MOV P4, P1
+MOV P5, P1
+MOV P1, P4
+ADD P1, 1
+MOV P4, P1
+MOV P2, P1
+MOV P1, P5
+SUB P1, 1
+MOV P5, P1
+MOV P3, P1
+MOV P0, 1
+MOV P1, P0
+; Free P0 (last use)
+SIN P1
+MOV P3, P1
+MOV R1, 3
+MOV R2, 7
+MIN P1, R1, R2
+; Free R1 (last use)
+; Free R2 (last use)
+MOV P3, P1
+MOV R1, 3
+MOV R2, 7
+MAX P1, R1, R2
+; Free R1 (last use)
+; Free R2 (last use)
+MOV P3, P1
+MOV P0, 1
+SHL P0, 2
+MOV P1, P0
+; Free P0 (last use)
+SQRT P1
+MOV P3, P1
+MOV P0, 3
+MOV P1, P0
+; Free P0 (last use)
+INTGR P1
+MOV P3, P1
+PUSH P2
+PUSH P3
+PUSH P4
+PUSH P5
+MOV P0, 5
+PUSH P0
+; Free P0 (last use)
+MOV P0, 10
+PUSH P0
+; Free P0 (last use)
+CALL _func_add_0
+ADD SP, 4
+POP P5
+POP P4
+POP P3
+POP P2
+MOV P1, R0
+MOV P3, P1
+PUSH P2
+PUSH P3
+PUSH P4
+PUSH P5
+MOV P0, 5
+PUSH P0
+; Free P0 (last use)
+MOV P0, 20
+PUSH P0
+; Free P0 (last use)
+CALL _func_add_0
+ADD SP, 4
+POP P5
+POP P4
+POP P3
+POP P2
+MOV P1, R0
+MOV P3, P1
+MOV VX, 0
+MOV VC, 15
+TEXT STR9
+ADD VY, 8
+MOV P0, P2
+ITOS P1, P0
+MOV VX, 0
+MOV VC, 15
+TEXT P1
+ADD VY, 8
+; Free P0 (last use)
+L11:
+KEYSTAT R0
+CMP R0, 0
+JZ L11
+; --- Inline Assembly Block ---
+MOV R0, 5
+; --- End Inline Assembly ---
+HLT
+
+_func_add_0:
+; Function: add
+; Parameters: a, b
+; Locals:  (0 bytes)
+ENTER 0
+MOV P0, FP
+ADD P0, 6
+MOV P0, [P0]
+; Preserve left operand in register across right-side evaluation
+MOV P1, P0
+MOV P0, FP
+ADD P0, 4
+MOV P2, [P0]
+MOV R0, P1
+ADD R0, P2
+; Free P2 (last use)
+MOV SP, FP
+POP FP
+RETN R0
+STR9: DEFSTR "Hello"

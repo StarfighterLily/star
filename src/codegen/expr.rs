@@ -1041,7 +1041,7 @@ impl Codegen {
                             self.pop_scope(!arm_terminates);
                             if !arm_terminates {
                                 if produces_value {
-                                    let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
+                                    let reg = self.arm_phi_reg(val);
                                     arm_values.push((reg, self.current_label.clone()));
                                 }
                                 self.line(&format!("  br label %{}", end_label));
@@ -1061,7 +1061,7 @@ impl Codegen {
                             self.pop_scope(!arm_terminates);
                             if !arm_terminates {
                                 if produces_value {
-                                    let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
+                                    let reg = self.arm_phi_reg(val);
                                     arm_values.push((reg, self.current_label.clone()));
                                 }
                                 self.line(&format!("  br label %{}", end_label));
@@ -1110,7 +1110,7 @@ impl Codegen {
                             self.pop_scope(!arm_terminates);
                             if !arm_terminates {
                                 if produces_value {
-                                    let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
+                                    let reg = self.arm_phi_reg(val);
                                     // Not necessarily `then_label` anymore --
                                     // evaluating the arm's trailing value may
                                     // have opened further blocks of its own
@@ -1171,7 +1171,7 @@ impl Codegen {
                             self.pop_scope(!arm_terminates);
                             if !arm_terminates {
                                 if produces_value {
-                                    let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
+                                    let reg = self.arm_phi_reg(val);
                                     arm_values.push((reg, self.current_label.clone()));
                                 }
                                 self.line(&format!("  br label %{}", end_label));
@@ -1208,7 +1208,7 @@ impl Codegen {
                             self.pop_scope(!arm_terminates);
                             if !arm_terminates {
                                 if produces_value {
-                                    let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
+                                    let reg = self.arm_phi_reg(val);
                                     // `self.current_label`, not the local
                                     // `current_label` (which only tracks
                                     // transitions *between* arms) -- this
@@ -1243,7 +1243,7 @@ impl Codegen {
                             self.pop_scope(!arm_terminates);
                             if !arm_terminates {
                                 if produces_value {
-                                    let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
+                                    let reg = self.arm_phi_reg(val);
                                     arm_values.push((reg, self.current_label.clone()));
                                 }
                                 self.line(&format!("  br label %{}", end_label));
@@ -1289,7 +1289,7 @@ impl Codegen {
                             self.pop_scope(!arm_terminates);
                             if !arm_terminates {
                                 if produces_value {
-                                    let reg = val.map(|v| self.reg_of(&v)).unwrap_or_else(|| "undef".to_string());
+                                    let reg = self.arm_phi_reg(val);
                                     arm_values.push((reg, self.current_label.clone()));
                                 }
                                 self.line(&format!("  br label %{}", end_label));

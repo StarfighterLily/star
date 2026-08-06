@@ -1997,6 +1997,33 @@ impl Codegen {
         s.split_whitespace().next_back().unwrap_or(s).to_string()
     }
 
+    /// Turn a match arm's `emit_stmts_value` result into the operand a `phi`
+    /// merging that arm's contribution should actually use, treating the
+    /// void-call sentinel `"%undef"` (see `emit_call_expr`'s doc comment --
+    /// a call with no declared return type emits exactly this bare string,
+    /// with no LLVM type tag) the same as a genuine "no value" (`None`).
+    /// Without this, an arm whose own trailing statement is itself a void
+    /// call (`print(y)` and friends, mixed with sibling arms that *do*
+    /// produce a real value -- the type checker already unifies the match's
+    /// overall type from just the value-producing arms, same as
+    /// `Checker::trailing_value_ty`'s `is_unknown` exclusion) sails the
+    /// sentinel straight through `reg_of` unchanged and into the `phi` as
+    /// `[ %undef, %block ]` -- a reference to a register literally *named*
+    /// `undef`, not the LLVM literal `undef` keyword this method emits
+    /// instead. That register is never defined anywhere, so the IR verifier
+    /// rejects it: "use of undefined value `%undef`". A real value can never
+    /// collide with this check -- every non-void `emit_expr` result carries
+    /// a type tag and a space (`"i32 %t5"`), so the sentinel's exact
+    /// no-tag-no-space shape is unambiguous. See
+    /// `match_void_arm_mixed_with_value_arm_phi_end_to_end` for the
+    /// regression.
+    fn arm_phi_reg(&self, val: Option<String>) -> String {
+        match val {
+            Some(v) if v != "%undef" => self.reg_of(&v),
+            _ => "undef".to_string(),
+        }
+    }
+
     fn expr_ty(&self, e: &TypedExpr) -> Ty {
         match e {
             TypedExpr::Int(_, ty, _) | TypedExpr::Float(_, ty, _)
