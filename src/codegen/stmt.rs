@@ -1135,6 +1135,24 @@ impl Codegen {
                 let val = self.emit_table_index(base, index, ty);
                 self.reg_of(&val)
             }
+            // `self` as a whole-struct read (a compound-assign target such as
+            // `self <op>= x`, which the checker accepts when `self` is declared
+            // `mut self` -- see `Checker::assign_root_name`'s
+            // `SelfExpr => Some("self")`). `emit_place` resolves the real
+            // caller-owned struct address by loading the struct pointer out of
+            // the `self` symbol's `**`-depth alloca (see `emit_place`'s own
+            // `SelfExpr` arm), so this is a plain load off that pointer --
+            // exactly the `Ident` arm's shape one indirection level deeper.
+            // Previously the `_ =>` catch-all errored with "cannot load from
+            // this expression"; see `store_target`'s matching arm for the
+            // concrete Heresy repro that exposed the pair.
+            TypedExpr::SelfExpr(ty, _) => {
+                let ptr = self.emit_place(target);
+                let reg = self.tmp_name();
+                let ts = self.llvm_ty(ty);
+                self.line(&format!("  {} = load {}, {}* {}", reg, ts, ts, ptr));
+                reg
+            }
             _ => { self.err("cannot load from this expression", Span::dummy()); "%undef".into() }
         }
     }
@@ -1220,6 +1238,33 @@ impl Codegen {
             }
             TypedExpr::GenRefIndex { base, ty, span, .. } => {
                 self.store_genref_whole(base, ty, val, *span);
+            }
+            // `self = <value>` (whole-struct replacement, only legal for a
+            // `mut self` method -- the checker accepts it via
+            // `assign_root_name`'s `SelfExpr => Some("self")`, see
+            // `Checker::check_stmt`'s `Stmt::Assign` arm): `self` is passed
+            // by pointer (the `self` symbol alloca holds a struct `**`, see
+            // `emit_fn`'s `is_self` special case), so resolve the real
+            // caller-owned struct address through `emit_place` (which loads
+            // the struct pointer off that alloca) exactly like the `Ident`
+            // arm resolves a local's alloca; release the caller's old struct
+            // contents, then store the replacement value into the caller's
+            // storage. Previously this fell into the generic `_ =>` catch-all
+            // and errored with "cannot store to this expression" on perfectly
+            // valid, checker-accepted `self = self.update_*()` methods
+            // (confirmed: `projects/heresy/main.star` lines 567-570, four
+            // `SelfExpr(Named("Game"), ...)` targets). `self` is *not*
+            // tracked in `owned_stack` (see `emit_fn`'s same comment), so no
+            // scope/release bookkeeping beyond `emit_release_at` is needed;
+            // the retain-before-release ordering is the same as the `Ident`
+            // arm's, keeping `self = self.foo()` (where `foo` returns `self`)
+            // safe exactly like `x = x` is.
+            TypedExpr::SelfExpr(ty, _) => {
+                let ptr = self.emit_place(target);
+                let ts = self.llvm_ty(ty);
+                let clean_val = val.strip_prefix(&format!("{} ", ts)).unwrap_or(val);
+                self.emit_release_at(&ptr, ty);
+                self.line(&format!("  store {} {}, {}* {}", ts, clean_val, ts, ptr));
             }
             _ => { self.err("cannot store to this expression", Span::dummy()); }
         }

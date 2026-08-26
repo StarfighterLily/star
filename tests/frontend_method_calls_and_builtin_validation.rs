@@ -626,3 +626,46 @@ fn runtime_fstring_value_all_hole_types_end_to_end() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim_end(), "b=true f=3.500000 name=star", "{}", stdout);
 }
+
+/// Whole-`self` reassignment in a `mut self` method (`self = self.foo()`,
+/// the state-machine composition pattern) -- `Checker::assign_root_name`
+/// accepts it (`SelfExpr => Some("self")`), but `Codegen::store_target`/
+/// `load_target` used to have no `SelfExpr` arm and fell into the generic
+/// `_ =>` catch-all, erroring with "cannot store to this expression". The
+/// store must write the replacement struct into the caller's owned storage
+/// (resolved via `emit_place`, which loads the struct pointer out of the
+/// `self` symbol's `**`-depth alloca), releasing the old contents first --
+/// confirmed first broken by `projects/heresy/main.star`'s
+/// `Game::update` chaining four `self = self.update_*()` calls.
+#[test]
+fn runtime_self_reassignment_in_mut_self_method_end_to_end() {
+    let src = concat!(
+        "struct Game:\n",
+        "    mut score: i32\n",
+        "    mut label: str\n",
+        "impl Game:\n",
+        "    fn add_score(mut self, n: i32) -> Game:\n",
+        "        self.score += n\n",
+        "        return self\n",
+        "    fn relabel(mut self, s: str) -> Game:\n",
+        "        self.label = s\n",
+        "        return self\n",
+        "    fn update(mut self) -> Game:\n",
+        "        self = self.add_score(10)\n",
+        "        self = self.relabel(\"level2\")\n",
+        "        return self\n",
+        "fn main():\n",
+        "    let mut g = Game(score = 5, label = \"level1\")\n",
+        "    g = g.update()\n",
+        "    println(f\"{g.score} {g.label}\")\n",
+    );
+    let output = compile_and_run("self_reassignment_in_mut_self", src);
+    assert!(output.status.success(), "{:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim_end(),
+        "15 level2",
+        "self = self.add_score(10); self = self.relabel(...) must compose: {}",
+        stdout
+    );
+}
