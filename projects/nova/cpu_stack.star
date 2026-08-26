@@ -48,18 +48,42 @@ impl cpu::Cpu:
             self.push16(((self.r[i] as u8) as i32))
 
     fn op_popa(mut self):
+        # SP is walked explicitly rather than through pop16(): once the stack
+        # is exhausted (sp >= 0xFFFE), remaining slots restore zero and SP
+        # stops advancing instead of reading whatever garbage sits at the
+        # exhausted addresses -- mirroring core/exec.py `_popa`'s
+        # defense-in-depth change (`25033bb`), which replaced its own earlier
+        # RuntimeError with the zero-pad so a standalone POPA can't crash (or,
+        # here, silently restore junk into every register).
+        let mut sp = ((self.p[8] as u16) as i32)
         for i in 0..10:
-            let v = self.pop16()
+            let mut v = 0
+            if sp < 0xFFFE:
+                v = (self.mem.read_word(sp)) as i32
+                sp = cpu::wrap_addr(sp + 2)
             self.r[i] = Wrapping<u8>(v as u8)
         for i in 0..10:
-            let v = self.pop16()
+            let mut v = 0
+            if sp < 0xFFFE:
+                v = (self.mem.read_word(sp)) as i32
+                sp = cpu::wrap_addr(sp + 2)
             self.p[i] = Wrapping<u16>(v as u16)
-        let vxv = self.pop16()
+        let mut vxv = 0
+        if sp < 0xFFFE:
+            vxv = (self.mem.read_word(sp)) as i32
+            sp = cpu::wrap_addr(sp + 2)
         self.vx = Wrapping<u8>(vxv as u8)
-        let vyv = self.pop16()
+        let mut vyv = 0
+        if sp < 0xFFFE:
+            vyv = (self.mem.read_word(sp)) as i32
+            sp = cpu::wrap_addr(sp + 2)
         self.vy = Wrapping<u8>(vyv as u8)
-        let vcv = self.pop16()
+        let mut vcv = 0
+        if sp < 0xFFFE:
+            vcv = (self.mem.read_word(sp)) as i32
+            sp = cpu::wrap_addr(sp + 2)
         self.vc = Wrapping<u8>(vcv as u8)
+        self.p[8] = Wrapping<u16>(sp as u16)
 
     fn op_enter(mut self):
         let (op1, _op2, _op3) = self.decode_operands(1)

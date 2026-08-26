@@ -1,0 +1,9 @@
+# Symbol table
+# Format: <symbol> <value>
+ENTRY 0x0000
+MARKER 0x0004
+FWD 0x0008
+LOOP_TOP 0x000C
+DONE 0x001B
+QUIT_ADDR 0x0100
+POST 0x001C

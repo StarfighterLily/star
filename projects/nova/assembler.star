@@ -54,18 +54,20 @@
 #   `UNIMPLEMENTED_INSTRUCTIONS` check, back when neither CPU had a handler
 #   for them. `cpu_sound.star` now does; see its header comment for the
 #   real (Star-original, no reference to match) DSP behind them.
-# - `BR`/`BRZ`/`BRNZ` encode their operand as a plain resolved address, the
-#   same as `JMP` -- **not** a PC-relative delta. This matches the Python
-#   assembler's *actual* behavior, not its comment: `CodeGenerator.
-#   _parse_immediate_value`'s "for branch instructions, calculate relative
-#   offset" branch is dead code (`val = val - 0  # Would need location_
-#   counter passed in`), so the Python reference has never actually computed
-#   a relative offset for these despite the mnemonics' names -- confirmed by
-#   reading `nova_assembler.py` directly, not assumed. Matching that exactly
-#   (rather than "fixing" it) is what byte-for-byte parity with the Python
-#   assembler's real output requires; see NOTES.md for this finding filed
-#   under "What to carry back to the Python emulator" as a naming/behavior
-#   mismatch worth flagging upstream.
+# - `BR`/`BRZ`/`BRNZ` symbol operands encode a signed 16-bit PC-relative
+#   offset -- target minus the address *after* the instruction (opcode +
+#   mode byte + imm16 = 4 bytes) -- not an absolute address; hex/decimal/
+#   char-literal operands still encode their raw value. This now matches
+#   the fixed Python assembler exactly: `nova_assembler.py` upstream
+#   finished its previously-dead `_parse_immediate_value` relative-offset
+#   branch (`ebbbcaa`/`955452b`, Aug 2026 -- it used to be `val = val - 0
+#   # Would need location_counter passed in`, a no-op this port had already
+#   matched deliberately and filed under NOTES.md's "What to carry back"),
+#   threading `location_counter`/mnemonic through `encode_operand` and
+#   converting *only* symbol-resolved operands inside that branch. Byte
+#   parity requires mirroring that shape here, asymmetry included: `BR`
+#   over a label gets a real delta, `BR 0x0040` keeps encoding `0x0040`,
+#   exactly as Python does today.
 # - `[0xADDR + off]` (direct-indexed addressing, the fourth combination of
 #   the direct/indexed mode bits) is supported here even though the Python
 #   assembler cannot produce it at all (its own `direct`/`indexed` regexes
@@ -768,7 +770,11 @@ fn operand_size(kind: i32) -> i32:
 # value: a char literal, a hex/decimal literal, or (falling through, matching
 # `nova_assembler.py`'s own "default to a symbol" behavior for anything that
 # isn't a recognized literal shape) a label/`EQU` name looked up in `symbols`.
-fn resolve_imm(token: str, symbols: Map<str, i32>) -> i32:
+# Only the *symbol* path ever converts to a branch-relative delta
+# (`is_branch`, `branch_loc` are ignored for every literal shape), because
+# `nova_assembler.py::_parse_immediate_value` reaches its conversion via the
+# same fall-through ordering -- literals short-circuit first.
+fn resolve_imm(token: str, symbols: Map<str, i32>, is_branch: bool, branch_loc: i32) -> i32:
     if is_char_literal(token):
         return char_literal_value(token)
     if str_starts_with(token, "0x") or str_starts_with(token, "0X"):
@@ -776,6 +782,15 @@ fn resolve_imm(token: str, symbols: Map<str, i32>) -> i32:
     if is_decimal_token(token):
         return atoi(token)
     if let Option::Some(v) = symbols.get(token):
+        # Same arithmetic `nova_assembler.py` uses since its fix: target
+        # minus the address after the instruction (opcode + mode byte +
+        # imm16 = 4 bytes); negatives wrap to two's-complement, positives
+        # pass through unmasked so the caller's own shifts slice them.
+        if is_branch:
+            let offset = v - (branch_loc + 4)
+            if offset < 0:
+                return offset & 0xFFFF
+            return offset
         return v
     fatal(concat("undefined symbol: ", token))
     0
@@ -786,15 +801,17 @@ fn parse_offset_byte(sign_and_num: str) -> i32:
 # Encodes one already-classified operand to its byte sequence. `symbols` is
 # only consulted for a bare label/`EQU` reference (`OP_IMM8`/`OP_IMM16` whose
 # token isn't itself a literal) -- every other kind is fully determined by
-# the token text alone.
-fn encode_operand_bytes(token: str, kind: i32, registers: Map<str, i32>, symbols: Map<str, i32>) -> List<i32>:
+# the token text alone. `is_branch`/`branch_loc` thread the current
+# instruction's identity/location down to that symbol lookup (see
+# `resolve_imm`); directives never need them.
+fn encode_operand_bytes(token: str, kind: i32, registers: Map<str, i32>, symbols: Map<str, i32>, is_branch: bool, branch_loc: i32) -> List<i32>:
     let mut out: List<i32> = List<i32>()
     if kind == OP_REG:
         out.push(get_i32_or(registers, str_upper(token), -1))
     elif kind == OP_IMM8:
-        out.push(resolve_imm(token, symbols) & 0xFF)
+        out.push(resolve_imm(token, symbols, is_branch, branch_loc) & 0xFF)
     elif kind == OP_IMM16:
-        let v = resolve_imm(token, symbols)
+        let v = resolve_imm(token, symbols, is_branch, branch_loc)
         out.push((v >> 8) & 0xFF)
         out.push(v & 0xFF)
     elif kind == OP_INDIRECT:
@@ -1076,7 +1093,7 @@ fn first_pass(lines: List<AsmLine>, registers: Map<str, i32>, arity: Map<str, i3
                     loc = strtol(line.directive_args[0], null_ptr(), 16)
             elif line.directive == "EQU":
                 if line.has_label and line.directive_args.len() > 0:
-                    symbols.insert(line.label, resolve_imm(str_trim(line.directive_args[0]), symbols))
+                    symbols.insert(line.label, resolve_imm(str_trim(line.directive_args[0]), symbols, false, 0))
             else:
                 loc += directive_size(line)
         elif line.has_instruction:
@@ -1085,7 +1102,7 @@ fn first_pass(lines: List<AsmLine>, registers: Map<str, i32>, arity: Map<str, i3
         i += 1
     symbols
 
-fn emit_instruction(line: AsmLine, registers: Map<str, i32>, opcodes: Map<str, i32>, arity: Map<str, i32>, unimplemented: Set<str>, symbols: Map<str, i32>, mut code: Bytes) -> Bytes:
+fn emit_instruction(line: AsmLine, registers: Map<str, i32>, opcodes: Map<str, i32>, arity: Map<str, i32>, unimplemented: Set<str>, symbols: Map<str, i32>, location_counter: i32, mut code: Bytes) -> Bytes:
     if unimplemented.contains(line.instruction):
         fatal(concat(line.instruction, " is not implemented on this CPU"))
     if !opcodes.contains(line.instruction):
@@ -1094,6 +1111,18 @@ fn emit_instruction(line: AsmLine, registers: Map<str, i32>, opcodes: Map<str, i
     let ar = get_i32_or(arity, line.instruction, 0)
     if ar == 0:
         return code
+
+    # Branch-relative context for this instruction's operand encoding:
+    # mnemonic identity decides *whether* symbol operands convert, the
+    # absolute address of the opcode byte decides the delta base (see
+    # `resolve_imm`). This mirrors `nova_assembler.py::generate_instruction`,
+    # which threads `location_counter`/mnemonic through every `encode_operand`
+    # call. The caller supplies the same address it records in `line_addrs`
+    # so labels and PC-relative deltas agree across any number of `.org`
+    # segments -- `code.len()` alone would be wrong past the first one.
+    let up = str_upper(line.instruction)
+    let is_branch = up == "BR" or up == "BRZ" or up == "BRNZ"
+    let branch_loc = location_counter
 
     let mut kinds: List<i32> = List<i32>()
     let mut i = 0
@@ -1104,7 +1133,7 @@ fn emit_instruction(line: AsmLine, registers: Map<str, i32>, opcodes: Map<str, i
 
     i = 0
     while i < line.operands.len():
-        let bytes = encode_operand_bytes(line.operands[i], kinds[i], registers, symbols)
+        let bytes = encode_operand_bytes(line.operands[i], kinds[i], registers, symbols, is_branch, branch_loc)
         let mut j = 0
         while j < bytes.len():
             code.push(bytes[j] as u8)
@@ -1124,12 +1153,12 @@ fn emit_directive_bytes(line: AsmLine, symbols: Map<str, i32>, mut code: Bytes) 
                     code.push(vals[j] as u8)
                     j += 1
             else:
-                code.push(resolve_imm(a, symbols) as u8)
+                code.push(resolve_imm(a, symbols, false, 0) as u8)
             i += 1
     elif line.directive == "DW":
         let mut i = 0
         while i < line.directive_args.len():
-            let v = resolve_imm(line.directive_args[i], symbols)
+            let v = resolve_imm(line.directive_args[i], symbols, false, 0)
             code.push(((v >> 8) & 0xFF) as u8)
             code.push((v & 0xFF) as u8)
             i += 1
@@ -1194,7 +1223,7 @@ fn second_pass(lines: List<AsmLine>, registers: Map<str, i32>, opcodes: Map<str,
         elif line.has_instruction:
             line_nums.push(line.source_line)
             line_addrs.push(seg_start + (code.len() - seg_bin_off))
-            code = emit_instruction(line, registers, opcodes, arity, unimplemented, symbols, code)
+            code = emit_instruction(line, registers, opcodes, arity, unimplemented, symbols, seg_start + (code.len() - seg_bin_off), code)
         i += 1
     if code.len() > seg_bin_off:
         seg_starts.push(seg_start)

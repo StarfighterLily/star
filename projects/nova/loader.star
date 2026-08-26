@@ -9,6 +9,16 @@
 # (`HLT` alone is opcode 0), so the old NUL-terminated `file_read` could
 # never have loaded one correctly. This module is the actual wiring.
 #
+# Binary-mode caveat (Windows): the `.bin` itself is opened with `"rb"`, not
+# `"r"`. On Windows, C text-mode `fread` stops at the first `0x1A` (Ctrl-Z)
+# byte and reports EOF there, so a `.bin` opened in text mode silently
+# truncates the moment its code/data crosses that offset -- the exact
+# mechanism that used to make `astrid/game.bin` (a multi-KB Astrid-compiled
+# program containing 18 `0x1A` bytes) halt immediately on this loader. See
+# the `load_program` body's own comment and NOTES.md's "Binary program
+# loading" section for the full write-up. The `.org` sidecar, by contrast, is
+# a genuinely textual file and is correctly opened with `"rb"`'s `"r"` twin.
+#
 # Segment format: mirrors `nova/memory/memory.py::load_program_with_org_
 # detection`/`load_with_org_info` exactly, since that's what actually
 # produces the files this loads. `nova_assembler.py` always writes a `.org`
@@ -67,7 +77,16 @@ impl cpu::Cpu:
     # error -- see the module header's "legacy" fallback). Does not touch
     # `self.pc` -- the caller decides whether/when to jump to `entry_point`.
     fn load_program(mut self, bin_path: str) -> (i32, bool):
-        let bh = file_open(bin_path, "r")
+        # `"rb"` (binary), not `"r"` (text): on Windows a text-mode `fread`
+        # stops at the first `0x1A` (Ctrl-Z/SUB) byte and treats it as EOF, so
+        # any program whose code/data extends past its first `0x1A` silently
+        # truncates mid-load -- exactly how `astrid/game.bin` (from the sibling
+        # Python `Nova` repo's `astrid/` dir) used to halt immediately, all of
+        # `func_main` and the `0x8000` globals never making it into memory.
+        # The reference loader (`nova/memory/memory.py`) opens the `.bin` with
+        # `open(..., 'rb')` for the same reason; this must match it if this
+        # port is to load real upstream binaries byte-for-byte.
+        let bh = file_open(bin_path, "rb")
         if is_null(bh):
             return (0, false)
         let data = file_read_bytes(bh)

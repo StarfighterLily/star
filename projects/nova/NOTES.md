@@ -1843,6 +1843,40 @@ still-unimplemented UART opcodes at the time (see "UART" below) — the CPU
 halted cleanly with `unimplemented opcode 165 (0xA5, SERCTRL) at pc=4102`,
 exactly the diagnostic "Known simplifications" promises, rather than
 crashing or desyncing.
+### Binary-mode `.bin` reads on Windows (a second gotcha-9 sibling)
+
+The first sentence of this section's opening — "this loader is the thing
+gotcha #9 unblocked" — quietly stopped being the whole story once a real
+multi-KB program came along. Gotcha #9 was `file_read`'s *NUL* truncation
+(`0x00`, fixed by `file_read_bytes`); the loader's first real world-class
+program, `astrid/game.bin` from the sibling Python `Nova` repo, exposed the
+*other* half of the same class of bug: **Windows text-mode `fread` truncation
+at `0x1A`**.
+
+`astrid/game.bin` is a 7KB Astrid-compiled program containing **18 `0x1A`
+bytes** (ASCII Ctrl-Z/SUB), the first at file offset `0x9A4`. It loaded with
+the `.bin` opened as `file_open(bin_path, "r")` — C `fopen` *text* mode —
+and on Windows a text-mode `fread` reports EOF at the first `0x1A`. So this
+loader read only `0x9A4` (2,468) of the file's 7,106 bytes: everything from
+`func_main` (at file offset `0x1878` == its link address `0x2878` minus the
+`ORG 0x1000`) through the `0x8000` globals never got into memory at all.
+Because `func_main`'s first byte landed as a `0x00` (`HLT`), the game's very
+first `CALL func_main` immediately halted — `run_bin.exe game.bin` reported
+`halted=true cycles_run=4 pc=10361`, and every byte past `0x9A3` read as
+zero. The upstream Python loader (`nova/memory/memory.py`, lines 393/419)
+opens the same file with `open(..., 'rb')` (binary mode) and runs `game.bin`
+unproblematically — the whole difference was the open mode.
+
+Fix: `load_program` now opens the `.bin` with `"rb"` (matching the Python
+reference exactly), not `"r"`. Text-mode truncation only ever bites the
+binary payload, not the `.org` sidecar (which genuinely is text and still
+uses `"r"`). Rebuilt `run_bin.exe`/`nova16.exe`/`debugger.exe` and verified
+with a new checked-in regression fixture, `tests/asm/text_mode_truncation_
+test.bin`/`.org`: hand bytes whose fifth value is `0x1A` followed by a
+`MOV P1, 0x5678` that only executes if the load actually read past that
+byte — `P0 == 0x1234 and P1 == 0x5678` after running, and (the real target)
+`astrid/game.bin` now runs to a live game loop (`halted=false` at 60k
+cycles) instead of halting on the truncated `func_main`.
 
 ## Disassembler
 
@@ -2078,16 +2112,19 @@ here:
   an already-documented capability gap in this port's CPU, not something
   newly discovered here; encoding them anyway would silently produce a
   `.bin` this port's own `cpu.star` cannot run.
-- `BR`/`BRZ`/`BRNZ` encode an absolute resolved address, exactly like `JMP`
-  -- **not** a PC-relative delta, despite the mnemonics' names. This matches
-  the Python assembler's *actual* behavior, not its own comment:
-  `CodeGenerator._parse_immediate_value`'s "for branch instructions,
-  calculate relative offset" branch is genuinely dead code (`val = val - 0
-  # Would need location_counter passed in`), confirmed by reading
-  `nova_assembler.py` directly -- the Python reference has never actually
-  computed a relative offset here. Filed below under "What to carry back to
-  the Python emulator" as a naming/behavior mismatch worth flagging
-  upstream, alongside the PUSH/POP and BCD findings from earlier rounds.
+- `BR`/`BRZ`/`BRNZ` symbol operands now encode a signed 16-bit PC-relative
+  delta -- target minus (instruction address + 4) -- **not** an absolute
+  address; literal operands still encode their raw value. This used to be a
+  deliberate deviation recording this port matching the Python assembler's
+  *actual* behavior over its own comment (`_parse_immediate_value`'s
+  relative-offset branch was dead code, `val = val - 0`): upstream took that
+  filing and finished the feature properly (`ebbbcaa` + `955452b`, Aug 2026),
+  threading `location_counter`/mnemonic through `encode_operand` and updating
+  `docs/nova16_instruction_reference.md`'s branch entries to match. This
+  port's CPU side always treated the operand as PC-relative (it was only ever
+  the *assembler* encoding that lagged), so once the upstream fix landed the
+  old "absolute, like JMP" encoding here became pure divergence and was
+  replaced; see "Parity sweep round" below for the verification record.
 - `[0xADDR + off]` / `[0xADDR - off]` (direct-indexed addressing) is
   supported here even though the Python assembler cannot produce it at all
   -- confirmed empirically, `[0x2000+4]` raises `"Unknown base register:
@@ -3387,6 +3424,47 @@ this round rewrote. Full `cargo +stable-x86_64-pc-windows-gnu test`
 (compiler-side suite; no `src/` files touched this round) reconfirmed
 clean throughout.
 
+## A genuine rendering-parity bug: composite index 0 rendered as chrome gray
+
+`main.star`'s bulk-blit loop (introduced in the render-loop performance
+round) special-cased composite index `0` to the window-clear color
+(20, 20, 20) instead of looking it up in the palette -- so any pixel where
+every layer is zero (an idle screen, or `asm/starfield.bin`'s whole space
+background) rendered as a dark gray rather than black, and sat *brighter*
+than that program's own dimmest stars (palette index 1 = gray 17), visibly
+flattening the scene against the Python reference.
+
+The reference has no such override anywhere: `nova_gui.py` installs the
+generated palette wholesale onto an 8-bit `pygame.Surface`
+(`surface.set_palette(...)`) and `surfarray.blit_array`s raw composite
+indices into it, so index 0 renders as palette entry 0 --
+`nova/graphics/gfx.py::set_color_palette`'s grayscale ramp base case,
+`int(0 * 255 / 15)` = pure (0, 0, 0). The override looks like it came from
+conflating "the emulated screen area shows nothing yet" with "the window's
+non-screen chrome (`clear_screen`) is gray" -- but the texture overwrites
+the entire screen area every frame either way, so there was never a hole to
+fill with chrome color.
+
+Confirmed verified-accurate while auditing: `palette.star`'s ramp table
+byte-for-byte matches `set_color_palette` for all 256 entries (the float
+formulas are exact even in f32 -- `offset * 255 / 15` always divides
+evenly since 255 = 15 · 17, and the `*0.5`/`*0.6`/`*0.3` multiplier ramps'
+truncations agree with Python's `int()` on every reachable value), and
+`screen.star::composite_pixel_idx` matches `Compositor._composite_opaque_
+layer`'s back-to-front overwrite-where-nonzero rule exactly. The bug was
+presentation-only.
+
+### Verification
+
+Rebuilt `nova16.exe`. Cross-checked expected behavior against the live
+reference emulator by loading `asm/starfield.bin` and running it to its
+idle loop (PC parked at `LOOP4`, 0x10CA): the composited background pixel
+reads index 0 across empty coordinates and the frame contains 1,459
+non-black pixels (stars + text) over true black -- which is what the fixed
+`main.star` loop now reproduces one-for-one (`palette_color(0)` returns
+(0, 0, 0)).
+
+
 ## Ideas for future work
 
 - ~~Sound synthesis~~ and ~~a UART host bridge~~ — both done, see
@@ -3556,3 +3634,64 @@ whoever maintains it next:
    behavior where re-hitting instantly is preferable. See `debugger.star`'s
    own `run`/`continue` handler for where this is recorded on this port's
    side.
+
+### Carry-back status (Aug 2026 parity-sweep round)
+
+All four actionable findings above have since been **carried back
+upstream** in the Python repo itself -- items 1 and 2 plus the step-once
+debugger behavior (item 5) in `ebbbcaa`, and item 4 *finished as a real
+fix*, not just de-cluttered, across `ebbbcaa`/`955452b`:
+`_parse_immediate_value` now computes true `target - (location_counter +
+4)` deltas for BR/BRZ/BRNZ symbol operands (literals stay raw), with
+`encode_operand` threading `location_counter`/mnemonic down and
+`docs/nova16_instruction_reference.md`'s BR/BRZ/BRNZ entries rewritten to
+describe actual relative semantics. Nothing remains open to file from this
+list; item 3 stands (still nothing to carry back for the write-width /
+BCD-read-width pair).
+
+The same sweep found two further Python-side changes made *after* this
+port froze, checked against `c:\Code\projects\Nova` git history since
+this port's last Nova commit (star repo `1a57a3e`, Aug 5):
+
+- **POPA stack-underflow zero-pad (ported here)**: `25033bb` replaced
+  core/exec.py and instructions.py's RuntimeError on an exhausted stack
+  during POPA's 23-word walk with restoring zeros and stopping the SP walk
+  (sp >= 0xFFFE slots are padded, not read). Before this round this port's
+  `op_popa` kept walking via `pop16()`, silently restoring whatever garbage
+  sat at the exhausted addresses (including wrapping past 0xFFFF back onto
+  the program bytes). `cpu_stack.star::op_popa` now mirrors the zero-pad;
+  verified by the checked-in `tests/asm/popa_underflow_test.asm` (+ `.bin`,
+  run through `tests/run_bin.exe`: R0=0x11/R1=0x22/R2=0x33 from real pops,
+  everything else 0 including pre-junked R5/P3/VX/VY/VC, final P8=0xFFFE,
+  and neither the 0xBEEF sentinel at 0xFFFE nor the program's own bytes at
+  0x0000 anywhere they shouldn't be).
+- **MCP-hosted runtime wiring fixes (not portable, noted for context)**:
+  the same commit also wired the MCP server's emulator instance up like
+  `nova_main.initialize_system` (standalone Timer peripheral so TT/TM/TC/TS
+  writes fire vector 0, a UART device for ser_out/ser_in builtins,
+  `intr_ctrl.check` subscribed to `cpu.post_step` so keyboard/timer/user
+  interrupts actually dispatch, sprite-dirty on SCB writes) and added an
+  `astrid_compile` tool family. None of that mirrors into anything here --
+  this port has no MCP host and its interrupt/timer/UART plumbing was
+  always wired -- it just means fresh live-MCP probes finally behave like
+  a standalone nova_main launch does.
+
+Verification for the branch-encoding half (round summary):
+
+- `tests/asm/branch_relative_test.asm` (+ Star-assembled `.bin`/`.org`/
+  `.sym`/`.lines`): forward skip over a MOV marker, backward loop edge,
+  conditional exit via BRZ, an EQU-symbol target, and a dead literal-BR
+  preserving the symbols-only delta asymmetry. Assembled by BOTH
+  `assembler.exe` and the live `python nova_assembler.py`: **byte-for-byte
+  identical** `.bin`s (35 bytes), and `tests/run_bin.exe` shows R0=2, R9=0
+  (marker skipped), halted just past the HLT at pc=0x001C.
+- Regression re-assembly: every other checked-in `tests/asm/*.asm` was
+  assembled by both assemblers again post-change; all match their
+  checked-in `.bin`s except the two long-documented exceptions --
+  `assembler_direct_indexed_test` (Python cannot produce direct-indexed
+  mode at all) and `uart_framed_test` (exercises this port's own SERFSTAT/
+  0xB4 surface, deliberately assembled by `assembler.star` per its own
+  section above). A pristine pre-change `assembler.star` build reproduces
+  the checked-in uart_framed bin exactly, confirming the delta is
+  Python-side and predates this round.
+

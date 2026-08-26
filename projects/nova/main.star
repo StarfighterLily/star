@@ -90,7 +90,7 @@ const STATUS_H: i32 = 22
 # both derive from it so they can't drift apart from each other the way a
 # second hardcoded `delay(16)` literal would risk.
 const TARGET_FPS: i32 = 120
-const VIRTUAL_CLOCK_HZ: i32 = 64_000_000
+const VIRTUAL_CLOCK_HZ: i32 = 8_000_000
 const STEPS_PER_FRAME: i32 = VIRTUAL_CLOCK_HZ / TARGET_FPS
 const FRAME_DELAY_MS: i32 = 1000 / TARGET_FPS
 
@@ -640,25 +640,29 @@ fn main():
         # each) with one `SDL_UpdateTexture` + `SDL_RenderCopy` pair per
         # frame, with no per-frame `SDL_CreateTexture`/`SDL_DestroyTexture`
         # churn (unlike the one-shot `draw_pixels` builtin this replaced).
-        # Background-colored pixels (`idx == 0`) are written explicitly here
-        # (matching `clear_screen`'s own (20, 20, 20) above) since the
-        # texture overwrites the whole screen area rather than leaving zero
-        # pixels untouched the way the old conditional `draw_rect` did.
+        #
+        # Every composite index -- including 0 -- goes through
+        # `palette_color`. The reference blits raw indices into an 8-bit
+        # `pygame.Surface` whose palette was installed wholesale from
+        # `gfx.get_palette()` (`nova_gui.py`: `surface.set_palette(...)` +
+        # `surfarray.blit_array`), so index 0 renders as palette entry 0,
+        # which `set_color_palette` defines as (0, 0, 0) true black --
+        # what makes e.g. `starfield.bin`'s space background read as black
+        # against its dimmest stars (index 1, gray 17). An earlier revision
+        # special-cased idx == 0 to the window-clear color (20, 20, 20),
+        # making idle/empty screens dark gray *and* rendering them brighter
+        # than that program's own dimmest stars -- a visible divergence from
+        # the reference with no behavioral justification, so it's gone.
         let mut y = 0
         while y < SCREEN_SIZE:
             let mut x = 0
             while x < SCREEN_SIZE:
                 let idx = c.screen.composite_pixel(x, y)
                 let off = (y * SCREEN_SIZE + x) * 4
-                if idx != (0 as u8):
-                    let rgb = pal::palette_color(idx)
-                    pixel_buf[off] = rgb.0
-                    pixel_buf[off + 1] = rgb.1
-                    pixel_buf[off + 2] = rgb.2
-                else:
-                    pixel_buf[off] = 20 as u8
-                    pixel_buf[off + 1] = 20 as u8
-                    pixel_buf[off + 2] = 20 as u8
+                let rgb = pal::palette_color(idx)
+                pixel_buf[off] = rgb.0
+                pixel_buf[off + 1] = rgb.1
+                pixel_buf[off + 2] = rgb.2
                 pixel_buf[off + 3] = 255 as u8
                 x += 1
             y += 1
