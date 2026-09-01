@@ -502,7 +502,7 @@ fn play_tone(waveform: u8, freq: f32, volume: u8, looped: bool, channel: u8) -> 
         let wav = synth_loop_tone(waveform, freq, volume)
         (play_pcm_wav_on_channel(loop_temp_path(), wav, channel, true), wav)
     else:
-        let wav = synth_tone(waveform, freq, volume, 0.35)
+        let wav = synth_tone(waveform, freq, volume, 0.005)
         (play_pcm_wav_on_channel(effect_temp_path(), wav, channel), wav)
 
 # `cpu.star::op_splay`'s entry point for waveform 7 (memory sample). Same

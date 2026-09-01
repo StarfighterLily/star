@@ -90,7 +90,7 @@ const STATUS_H: i32 = 22
 # both derive from it so they can't drift apart from each other the way a
 # second hardcoded `delay(16)` literal would risk.
 const TARGET_FPS: i32 = 120
-const VIRTUAL_CLOCK_HZ: i32 = 8_000_000
+const VIRTUAL_CLOCK_HZ: i32 = 16_000_000
 const STEPS_PER_FRAME: i32 = VIRTUAL_CLOCK_HZ / TARGET_FPS
 const FRAME_DELAY_MS: i32 = 1000 / TARGET_FPS
 
@@ -157,7 +157,7 @@ fn new_cpu() -> cpu::Cpu:
     let mut c = cpu::Cpu(
         mem = mem::new_memory(),
         screen = screen::new_screen(),
-        kbd = keyboard::Keyboard(buffer = [0 as u8; 64], head = 0, tail = 0, count = 0, status = 0 as u8, control = 0 as u8),
+        kbd = keyboard::Keyboard(buffer = [0 as u8; 64], head = 0, tail = 0, count = 0, status = 0 as u8, control = 0 as u8, debounce_ms = keyboard::DEFAULT_DEBOUNCE_MS, last_press = [-1; 256]),
         flags = flg::Flags(bits = BitField<16>(0)),
         uart = uart::new_uart(),
         r = [Wrapping<u8>(0 as u8); 10],
@@ -448,9 +448,14 @@ fn main():
     # 4-82 (letters, digits, punctuation, Enter/Backspace/Tab/Space,
     # F1-F4/F10-F12, arrows, and the Insert/Delete/Home/End/PageUp/PageDown
     # block) -- Escape (41) and F5-F9 (62-66) are excluded on purpose, see
-    # `host_key_to_code`'s own comment. `prev_down[sc - 4]` debounces each
-    # scancode in that range the same edge-triggered way the F5-F9/mouse
-    # state below does.
+    # `host_key_to_code`'s own comment. Two debounce layers, matching the
+    # reference's own shape: `prev_down[sc - 4]` is the edge trigger (the
+    # reference gets that for free from pygame's discrete KEYDOWN events;
+    # this port polls SDL_GetKeyboardState's level per frame instead, so it
+    # synthesizes the edge itself), and `kbd.press_key` below adds the
+    # reference's `nova_keyboard.py` 35ms time-window debounce on top --
+    # `prev_down` alone would still pass a physical bounce's down-up-down
+    # glitch inside one frame pair as two separate presses.
     let mut prev_down: [bool; 79] = [false; 79]
     # Edge-triggered (not held-triggered) toolbar/hotkey state -- every one
     # of these needs a "just pressed this frame" transition, not a
@@ -554,7 +559,11 @@ fn main():
             if down and !prev_down[idx]:
                 let code = host_key_to_code(sc, key_shift)
                 if code != (0 as u8):
-                    c.kbd.push_key(code)
+                    # Debounced host path (`keyboard.star::press_key`, the
+                    # `press_key(..., apply_debounce=True)` counterpart) --
+                    # NOT `push_key`, which is the reference's raw
+                    # `add_key` injection path.
+                    c.kbd.press_key(code)
             prev_down[idx] = down
             sc += 1
 

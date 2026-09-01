@@ -246,7 +246,8 @@ step.
 - `tests/` — checked-in headless regression tests: `run_bin.star` (a
   generic `.bin` runner/register-dumper, built as its own small executable,
   no SDL needed), a handful of direct-field-poke Star harnesses for things
-  no opcode can drive on its own (`mouse_interrupt_test.star`), and
+  no opcode can drive on its own (`mouse_interrupt_test.star`,
+  `keyboard_debounce_test.star`), and
   `asm/` (the actual `.asm` sources plus their `nova_assembler.py`-produced
   `.bin`/`.org`/`.sym` output). See "Testing" below.
 
@@ -3235,6 +3236,64 @@ the same `R0`-before-reload ordering is generic to how
 `compiler/codegen/generator.py` emits `ITOS` for a `Disp` of a
 while-loop-updated variable, not specific to this one `.asm`. Left
 unfixed here since it's NoBASIC's compiler, a separate project.
+
+## Keyboard debounce: the reference's 35ms time window
+
+`nova_keyboard.py`'s `NovaKeyboard` carries a time-based debounce that its
+GUI applies to every *physical* KEYDOWN (`press_key(...,
+apply_debounce=True)` with the 35ms constructor default): a press of a key
+whose previous *accepted* press is still inside the window is dropped as
+contact bounce. This port's host path had only the edge trigger
+(`prev_down`, inherited from the F5-F9 hotkey shape) — which passes a
+physical bounce's down-up-down glitch spanning a frame boundary straight
+through as two presses. Ported as `keyboard.star`'s
+`should_debounce_key`/`press_key`, with `main.star`'s poll loop now going
+through the debounced `press_key` (`push_key` stays the raw injection
+path — the reference's `add_key`, whose `type_string`/`KeyboardSimulator`
+callers bypass debounce deliberately).
+
+Semantics pinned to the reference exactly: per-key timestamps (the
+reference keys its dict by key name; key code is this port's equivalent
+per-key identity, so 'A'/'a' — distinct codes — debounce independently);
+a *dropped* press does not refresh its timestamp (`should_debounce_key`
+records `now` only on the accept path), so the window always measures
+from the last accepted press and sustained bounce can't pin a key shut;
+and `set_debounce_ms` mirrors `set_debounce_window_ms` including its
+`max(0, ...)` clamp. The timing source is `ticks()` (SDL_GetTicks
+milliseconds); the plain `now - last` i32 subtraction is wrap-safe for
+any real gap under 2^31 ms, and the -1 "never pressed" sentinel rides a
+`last >= 0` guard that — past ticks()'s ~24.8-day i32-wrap horizon (where
+ticks() is already broken for any i32 consumer, see `crate::codegen::sdl`'s
+wrap note) — simply reads as "debounce off" rather than misbehaving.
+
+`keyclear` deliberately does not disarm it: the reference's
+`clear_buffer` leaves `_last_key_press_time` alone (a cleared buffer is
+not a fresh keyboard).
+
+### Verification
+
+`tests/keyboard_debounce_test.star` (new, same direct-field-poke spirit
+as `mouse_interrupt_test.star` — no opcode can reach the host
+physical-press path): 15 checks covering first-press acceptance, in-window
+drop, per-key independence, poked-expiry acceptance, the
+no-refresh-on-drop semantic (verified by reading `last_press` straight
+back after a dropped press), real-clock `delay(40)`-vs-35ms-window
+acceptance on two fresh keyboards, `set_debounce_ms(0)` disabling
+debounce entirely, negative-window clamping, raw `push_key` bypass, and
+`keyclear` leaving the state armed. All PASS. All seven
+`Keyboard`-constructing build targets were rebuilt (`nova16`/`debugger`/
+`uart_bridge`/`uart_tcp_bridge`/`run_bin`/`mouse_interrupt_test`/
+`uart_framed_test` — the struct gained two fields, and a stale binary
+against the new layout is not something to leave checked in);
+`mouse_interrupt_test` re-ran 5/5 PASS, `uart_framed_test` re-ran all-PASS,
+and a `run_bin` spot check (`branch_relative_test.bin`) still halts clean.
+
+A test-writing trap worth recording: near process start `ticks()` is
+single-digit, so a synthetic poke like `last_press[code] = ticks() - 30`
+goes *negative*, collides with the -1 sentinel, and gets accepted
+unconditionally — the harness's first draft reported a false PASS this
+way (its "expiry" check passed through the sentinel path, not the window
+comparison). The harness now `delay(100)`s before any poking.
 
 ## Star language-feature modernization pass
 
