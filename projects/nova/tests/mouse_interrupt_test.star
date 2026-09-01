@@ -38,7 +38,7 @@ fn new_cpu() -> cpu::Cpu:
     cpu::Cpu(
         mem = mem::new_memory(),
         screen = screen::new_screen(),
-        kbd = keyboard::Keyboard(buffer = [0 as u8; 64], head = 0, tail = 0, count = 0, status = 0 as u8, control = 0 as u8, debounce_ms = keyboard::DEFAULT_DEBOUNCE_MS, last_press = [-1; 256]),
+        kbd = keyboard::Keyboard(buffer = [0 as u8; 64], head = 0, tail = 0, count = 0, status = 0 as u8, control = 0 as u8, debounce_ms = keyboard::DEFAULT_DEBOUNCE_MS, last_press = [-1; 256], repeat_armed = [false; 256], repeat_down_time = [0; 256], repeat_last = [0; 256]),
         flags = flg::Flags(bits = BitField<16>(0)),
         uart = uart::new_uart(),
         r = [Wrapping<u8>(0 as u8); 10],

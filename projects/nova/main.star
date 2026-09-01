@@ -157,7 +157,7 @@ fn new_cpu() -> cpu::Cpu:
     let mut c = cpu::Cpu(
         mem = mem::new_memory(),
         screen = screen::new_screen(),
-        kbd = keyboard::Keyboard(buffer = [0 as u8; 64], head = 0, tail = 0, count = 0, status = 0 as u8, control = 0 as u8, debounce_ms = keyboard::DEFAULT_DEBOUNCE_MS, last_press = [-1; 256]),
+        kbd = keyboard::Keyboard(buffer = [0 as u8; 64], head = 0, tail = 0, count = 0, status = 0 as u8, control = 0 as u8, debounce_ms = keyboard::DEFAULT_DEBOUNCE_MS, last_press = [-1; 256], repeat_armed = [false; 256], repeat_down_time = [0; 256], repeat_last = [0; 256]),
         flags = flg::Flags(bits = BitField<16>(0)),
         uart = uart::new_uart(),
         r = [Wrapping<u8>(0 as u8); 10],
@@ -456,7 +456,18 @@ fn main():
     # reference's `nova_keyboard.py` 35ms time-window debounce on top --
     # `prev_down` alone would still pass a physical bounce's down-up-down
     # glitch inside one frame pair as two separate presses.
+    #
+    # Held keys additionally repeat (the reference's held_nova_keys
+    # synthesizer, nova_gui.py:482-490 -- this port, polling key levels,
+    # sees no OS auto-repeat to inherit): `held_code[idx]` is the Nova-16
+    # code captured at press time (repeats re-send THAT code even if Shift
+    # changes mid-hold, exactly like the reference re-sending its stored
+    # key_name), with the timing state inside `Keyboard` (`key_hold_begin`/
+    # `key_hold_tick`/`key_hold_end`). 0 = not held/not repeatable
+    # (unmapped scancodes never arm, matching the reference only entering
+    # keys that mapped to a key_name).
     let mut prev_down: [bool; 79] = [false; 79]
+    let mut held_code: [u8; 79] = [0 as u8; 79]
     # Edge-triggered (not held-triggered) toolbar/hotkey state -- every one
     # of these needs a "just pressed this frame" transition, not a
     # continuous "is it down right now" level, or holding a key/mouse button
@@ -524,6 +535,10 @@ fn main():
             c.reinit()
             c.load_program_or_wait(bin_path, use_file)
             running = true
+            # held_nova_keys.clear() (nova_gui.py:417): a key still
+            # physically held after a reset must not resume repeating
+            # into the fresh CPU -- re-arming needs a new press edge.
+            c.kbd.key_holds_clear()
         prev_f7 = f7_down
 
         let f8_down = key_down(65)
@@ -549,6 +564,10 @@ fn main():
                 c.reinit()
                 c.load_program_or_wait(bin_path, use_file)
                 running = true
+                # held_nova_keys.clear() (nova_gui.py:357, inside its own
+                # `if file_path:`) -- cancel-canceled loads leave holds
+                # alone.
+                c.kbd.key_holds_clear()
         prev_f9 = f9_down
 
         let key_shift = key_down(225) or key_down(229)
@@ -564,6 +583,20 @@ fn main():
                     # NOT `push_key`, which is the reference's raw
                     # `add_key` injection path.
                     c.kbd.press_key(code)
+                    # Arm the repeat synthesizer with the press-time code.
+                    c.kbd.key_hold_begin(code)
+                    held_code[idx] = code
+            elif down and held_code[idx] != (0 as u8):
+                # Still held past the edge: synthesize repeats through the
+                # RAW push path (the reference's `apply_debounce=False`),
+                # at its 280ms initial delay / 50ms interval cadence, not
+                # gated on run state -- nova_gui.py:482-490 exactly.
+                if c.kbd.key_hold_tick(held_code[idx]):
+                    c.kbd.push_key(held_code[idx])
+            if !down:
+                # KEYUP pops the held entry (nova_gui.py:437); a later
+                # press re-arms from scratch.
+                held_code[idx] = 0 as u8
             prev_down[idx] = down
             sc += 1
 
@@ -616,6 +649,9 @@ fn main():
                 c.reinit()
                 c.load_program_or_wait(bin_path, use_file)
                 running = true
+                # held_nova_keys.clear() (nova_gui.py:464) -- see the F7
+                # hotkey's matching clear above.
+                c.kbd.key_holds_clear()
             elif point_in_rect(mpx, mpy, BTN_STEP_X, BTN_Y, BTN_STEP_W, BTN_H):
                 single_step = true
             elif point_in_rect(mpx, mpy, BTN_LOAD_X, BTN_Y, BTN_LOAD_W, BTN_H):
@@ -629,6 +665,8 @@ fn main():
                     c.reinit()
                     c.load_program_or_wait(bin_path, use_file)
                     running = true
+                    # held_nova_keys.clear() (nova_gui.py:357) -- see F9.
+                    c.kbd.key_holds_clear()
 
         if running:
             let mut n = 0

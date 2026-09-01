@@ -247,7 +247,7 @@ step.
   generic `.bin` runner/register-dumper, built as its own small executable,
   no SDL needed), a handful of direct-field-poke Star harnesses for things
   no opcode can drive on its own (`mouse_interrupt_test.star`,
-  `keyboard_debounce_test.star`), and
+  `keyboard_debounce_test.star`, `key_repeat_test.star`), and
   `asm/` (the actual `.asm` sources plus their `nova_assembler.py`-produced
   `.bin`/`.org`/`.sym` output). See "Testing" below.
 
@@ -3294,6 +3294,69 @@ goes *negative*, collides with the -1 sentinel, and gets accepted
 unconditionally — the harness's first draft reported a false PASS this
 way (its "expiry" check passed through the sentinel path, not the window
 comparison). The harness now `delay(100)`s before any poking.
+
+## Held-key repeat: the reference's held_nova_keys synthesizer
+
+Holding a key produced exactly one keystroke in this port: the level-poll
++ edge-trigger host path (`prev_down`) sees a key go down once and fires
+one debounced press, and — unlike the reference — there is no OS
+auto-repeat to inherit, because SDL_GetKeyboardState reports a *level*,
+not discrete repeating KEYDOWN events. The reference's GUI synthesizes
+its own repeats for exactly this reason (`nova_gui.py` 286-289's
+`key_repeat_initial_delay = 0.28` / `key_repeat_interval = 0.05` and the
+482-490 loop over `held_nova_keys`): after the initial delay, a held key
+re-fires every interval through `press_key(..., apply_debounce=False)`
+— the RAW path, so repeats are never debounce-dropped — re-sending the
+key *name captured at press time* (shift state frozen at keydown), with
+modifiers skipped, not gated on run state, and the whole dict cleared on
+Reset/Load so a key still physically held does not resume repeating into
+a freshly reset CPU until a new press edge.
+
+Ported as a `Keyboard` state machine — `key_hold_begin` (arm on the press
+edge), `key_hold_tick` (the per-frame both-gates check; the caller raw-
+pushes on true), `key_hold_end` (KEYUP), `key_holds_clear` (the
+Reset/Load clear, at all four of `main.star`'s F7/F9/toolbar-Reset/
+toolbar-Load sites, inside the picked-file guard for the Load pair like
+the reference's own `if file_path:`). Deliberate placement deviation from
+the reference (which keeps this in its GUI): it lives in `keyboard.star`
+so the gate is headless-testable. Keying is by Nova-16 key code —
+injective with the guest loop's scancodes, and the same identity the
+reference's loop ends up re-sending. `main.star` keeps only the
+per-scancode press-time captured code (`held_code`, the counterpart of
+the reference storing `key_name` in each held entry) and the four call
+sites; all timestamps are real `ticks()` values behind a separate armed
+flag, so there is no sentinel and no first-press hole. Unmapped
+scancodes never arm (the reference only enters keys that mapped to a
+key_name), and modifiers never reach the guest loop at all.
+
+**Language finding (recorded for the compiler project too):** free
+functions take struct parameters BY VALUE in Star — mutations inside the
+callee are lost, only `mut self` methods mutate through. Found when a
+"tick then push" test helper silently did both to a copy (the tell: a
+real-clock fire's `repeat_last` refresh vanished, so the immediate
+re-tick fired again). The test inlines the tick+push contract at every
+fire site instead; any future code that needs a free function to mutate
+an aggregate must return it and rebind.
+
+### Verification
+
+`tests/key_repeat_test.star` (new; 20 checks, all PASS): never-armed
+codes never fire; a just-armed hold stays inside its initial delay;
+both-gate expiry fires (and poking only `down_time` — leaving `last`
+fresh — correctly stays blocked, pinning the both-gates shape); the
+fire's interval refresh holds off an immediate re-tick; interval expiry
+fires again with both repeats landing inside one debounce window (raw
+path bypasses debounce, the `apply_debounce=False` semantic);
+`key_hold_end` disarms with timestamps still expired; re-arm starts a
+fresh delay; `key_holds_clear` kills holds wholesale across keyboards;
+per-code independence; and a real-clock run (300ms > 280ms delay, 60ms >
+50ms interval, zero pokes) confirming the constants themselves. The
+main.star wiring (press-time code capture, the four clear sites) has no
+headless driver — verified by reading against nova_gui.py's event paths
+plus build. All seven `Keyboard`-constructing targets rebuilt (the
+struct gained three fields); `mouse_interrupt_test`, `uart_framed_test`,
+`keyboard_debounce_test` re-ran all-PASS and a `run_bin` spot check
+(`branch_relative_test.bin`) still halts clean.
 
 ## Star language-feature modernization pass
 

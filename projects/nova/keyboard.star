@@ -22,6 +22,16 @@ const BUFFER_SIZE: i32 = 64
 # `should_debounce_key` below for the semantics this buys).
 const DEFAULT_DEBOUNCE_MS: i32 = 35
 
+# Held-key repeat cadence, matching `nova_gui.py`'s
+# `key_repeat_initial_delay = 0.28` / `key_repeat_interval = 0.05` seconds
+# exactly. The reference deliberately synthesizes its own repeats
+# (`held_nova_keys`, nova_gui.py:482-490) instead of using pygame's global
+# repeat; this port does the same via `key_hold_tick` below, since it polls
+# key levels rather than receiving discrete KEYDOWN events and so sees no
+# OS auto-repeat to lean on.
+const KEY_REPEAT_INITIAL_DELAY_MS: i32 = 280
+const KEY_REPEAT_INTERVAL_MS: i32 = 50
+
 struct Keyboard:
     mut buffer: [u8; 64]
     mut head: i32
@@ -34,6 +44,16 @@ struct Keyboard:
     # never pressed. The reference keys its dict by key name; key code is
     # this port's equivalent per-key identity.
     mut last_press: [i32; 256]
+    # Held-key repeat state (the reference's held_nova_keys dict, keyed here
+    # by Nova-16 key code -- injective with the host scancode in main.star's
+    # guest loop, and the same identity the reference's repeat loop ends up
+    # re-sending): `repeat_armed` = physically held with its press accepted,
+    # down_time/last = arm/last-fire ticks(). Cleared wholesale by
+    # `key_holds_clear` on Reset/Load, per the reference's rule that a key
+    # still held after a reset does NOT resume repeating until a fresh press.
+    mut repeat_armed: [bool; 256]
+    mut repeat_down_time: [i32; 256]
+    mut repeat_last: [i32; 256]
 
 impl Keyboard:
     fn irq_enabled(self) -> bool:
@@ -135,6 +155,52 @@ impl Keyboard:
             self.debounce_ms = 0
         else:
             self.debounce_ms = ms
+
+    # Held-key repeat, `nova_gui.py:482-490`'s held_nova_keys loop. Lives in
+    # Keyboard rather than main.star so the gate is headless-testable (the
+    # reference keeps it in its GUI; this is a deliberate port adaptation).
+    # key_hold_begin arms on the host's press edge with the press-time code
+    # -- repeats re-send THAT code even if Shift changes mid-hold, exactly
+    # like the reference re-sending its stored key_name. key_hold_tick is
+    # the per-frame gate: true exactly when the initial delay has elapsed
+    # AND the interval has passed since the last fire; the caller then
+    # raw-pushes via `push_key` -- the reference's `apply_debounce=False`
+    # path, repeats are never debounce-dropped. Modifiers never reach here
+    # (main.star's guest loop never maps them to codes), matching the
+    # reference's skip-list at nova_gui.py:486. Not gated on run state,
+    # like the reference. All timestamps are real ticks() values with a
+    # separate armed flag -- no sentinel, so the wrap-safe subtraction
+    # carries no first-press hole.
+    fn key_hold_begin(mut self, code: u8):
+        let now = ticks()
+        self.repeat_armed[code as i32] = true
+        self.repeat_down_time[code as i32] = now
+        self.repeat_last[code as i32] = now
+
+    fn key_hold_tick(mut self, code: u8) -> bool:
+        let idx = code as i32
+        if !self.repeat_armed[idx]:
+            return false
+        let now = ticks()
+        if (now - self.repeat_down_time[idx]) >= KEY_REPEAT_INITIAL_DELAY_MS and (now - self.repeat_last[idx]) >= KEY_REPEAT_INTERVAL_MS:
+            self.repeat_last[idx] = now
+            return true
+        return false
+
+    # KEYUP pops the held entry (nova_gui.py:437); a later press re-arms
+    # from scratch via key_hold_begin.
+    fn key_hold_end(mut self, code: u8):
+        self.repeat_armed[code as i32] = false
+
+    # held_nova_keys.clear() counterpart (Reset/Load): a key still held
+    # afterwards does NOT resume repeating -- re-arming needs a fresh press
+    # edge -- exactly like the reference's clear-on-reset (nova_gui.py
+    # 357/417/464).
+    fn key_holds_clear(mut self):
+        let mut i = 0
+        while i < 256:
+            self.repeat_armed[i] = false
+            i += 1
 
     fn irq_pending(self) -> bool:
         bit_get(self.status, 7)
