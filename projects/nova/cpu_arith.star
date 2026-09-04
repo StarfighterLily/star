@@ -102,6 +102,15 @@ impl cpu::Cpu:
             self.flags.apply_arith(raw, a, b, width, false, false)
             let ww = self.write_width_for(op1, op2)
             self.operand_write(op1, ww, self.mask_to_width(raw, ww))
+            # DIV also deposits the remainder in P3 (register code 0xF4), exactly
+            # like core/exec_handlers.py::_div's `cpu.regfile.set('P', 3,
+            # remainder & 0xFFFF)`.  The reference writes the destination FIRST
+            # and then P3, so even `DIV P3, src` ends with P3 == remainder; this
+            # ordering is preserved here.  Without this, any program reading P3
+            # after DIV saw stale/zero data -- in particular Astrid's unsigned
+            # ->string conversion (`MOV digit, P3` per loop) rendered 65476 as
+            # "00000" on the compiled emulator while Python showed "65476".
+            self.set_reg_value(0xF4 as u8, a % b)
 
     fn op_divh(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
