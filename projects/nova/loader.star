@@ -19,10 +19,19 @@
 # loading" section for the full write-up. The `.org` sidecar, by contrast, is
 # a genuinely textual file and is correctly opened with `"rb"`'s `"r"` twin.
 #
-# Segment format: mirrors `nova/memory/memory.py::load_program_with_org_
-# detection`/`load_with_org_info` exactly, since that's what actually
-# produces the files this loads. `nova_assembler.py` always writes a `.org`
-# sidecar next to its `.bin` output (same base name, `.org` extension):
+# NOMF support (this round): the upstream Python assembler's default output
+# is now NOMF (`nova/nomf.py`) -- a single-file, versioned, CRC-protected
+# container replacing the loose `.bin` + `.org` + `.sym` sidecar trio. This
+# loader detects NOMF by magic bytes (`NOMF`, first 4 bytes) and delegates
+# to `nomf.star` for parsing; the legacy `.bin` + `.org` path is the
+# fallback for non-NOMF files. See `nomf.star` and NOTES.md's "NOMF format
+# support" section for the full format description.
+#
+# Legacy segment format (non-NOMF path): mirrors `nova/memory/memory.py::
+# load_program_with_org_detection`/`load_with_org_info` exactly, since that's
+# what actually produces the files this loads. `nova_assembler.py` always
+# writes a `.org` sidecar next to its `.bin` output (same base name, `.org`
+# extension):
 #
 #   # comment lines start with '#' and are ignored, as are blank lines
 #   <start_addr_hex> <length_decimal> <bin_offset_decimal>
@@ -51,6 +60,50 @@ import "cpu.star" as cpu
 
 extern "C" fn atoi(s: str) -> i32
 extern "C" fn strtol(s: str, endptr: ptr, base: i32) -> i32
+
+# -- NOMF format detection ------------------------------------------------
+#
+# NOMF (Nova Object Module Format) is the upstream Python assembler's
+# default output format. We detect it by magic bytes and parse just enough
+# to load sections into memory. Full format details are in `nomf.star`;
+# this is the minimal inlined detection needed by the loader.
+#
+# Header: 4 bytes magic "NOMF", 1 byte version, 1 byte kind, 2 bytes flags,
+# 4 bytes CRC32, 4 bytes chunk count. Chunk = 4-byte tag + u32 LE length + payload.
+
+const NOMF_MAGIC_0: u8 = 78 as u8   # 'N'
+const NOMF_MAGIC_1: u8 = 79 as u8   # 'O'
+const NOMF_MAGIC_2: u8 = 77 as u8   # 'M'
+const NOMF_MAGIC_3: u8 = 70 as u8   # 'F'
+
+const NOMF_KIND_EXECUTABLE: i32 = 1
+const NOMF_KIND_OBJECT: i32 = 0
+
+const NOMF_HEADER_SIZE: i32 = 16
+const NOMF_CHUNK_HEADER_SIZE: i32 = 8
+
+# SECT tag bytes: "SECT"
+const NOMF_TAG_SECT_0: u8 = 83 as u8
+const NOMF_TAG_SECT_1: u8 = 69 as u8
+const NOMF_TAG_SECT_2: u8 = 67 as u8
+const NOMF_TAG_SECT_3: u8 = 84 as u8
+
+# ENTR tag bytes: "ENTR"
+const NOMF_TAG_ENTR_0: u8 = 69 as u8
+const NOMF_TAG_ENTR_1: u8 = 78 as u8
+const NOMF_TAG_ENTR_2: u8 = 84 as u8
+const NOMF_TAG_ENTR_3: u8 = 82 as u8
+
+# Returns true if the file at `path` is a NOMF file (magic bytes match).
+fn _is_nomf(path: str) -> bool:
+    let fh = file_open(path, "rb")
+    if is_null(fh):
+        return false
+    let head = file_read_bytes(fh)
+    file_close(fh)
+    if head.len() < 6:
+        return false
+    (head[0] == NOMF_MAGIC_0) and (head[1] == NOMF_MAGIC_1) and (head[2] == NOMF_MAGIC_2) and (head[3] == NOMF_MAGIC_3)
 
 # Parses one `.org` segment line -- see the module header for the format.
 # Returns (start_addr, length, bin_offset, ok); `ok` is false for anything
@@ -92,6 +145,14 @@ impl cpu::Cpu:
         let data = file_read_bytes(bh)
         file_close(bh)
 
+        # NOMF detection: the upstream Python assembler's default output is now
+        # NOMF (magic bytes "NOMF" at offset 0). If detected, parse and load
+        # the sections directly -- mirrors the Python reference's Memory._load_nomf
+        # iterating doc.load_segments().
+        if _is_nomf(bin_path):
+            return self._load_nomf_into_memory(bin_path)
+
+        # Legacy path: .bin + .org sidecar
         let org_path = str_replace(bin_path, ".bin", ".org")
         let oh = file_open(org_path, "r")
         let mut entry_point = 0
@@ -119,4 +180,70 @@ impl cpu::Cpu:
                             self.mem.write_byte(start_addr + k, data[bin_off + k])
                             k += 1
                 li += 1
+        (entry_point, true)
+
+    # NOMF loader: parses a NOMF executable (.nex) and loads its sections
+    # into memory. Mirrors the Python reference's Memory._load_nomf iterating
+    # doc.load_segments() and calling _place_segment for each.
+    fn _load_nomf_into_memory(mut self, path: str) -> (i32, bool):
+        let fh = file_open(path, "rb")
+        if is_null(fh):
+            return (0, false)
+        let raw = file_read_bytes(fh)
+        file_close(fh)
+
+        if raw.len() < NOMF_HEADER_SIZE:
+            return (0, false)
+
+        let kind = raw[5] as i32
+        if kind != NOMF_KIND_EXECUTABLE:
+            return (0, false)
+
+        let chunk_count = (raw[12] as i32) | ((raw[13] as i32) << 8) | ((raw[14] as i32) << 16) | ((raw[15] as i32) << 24)
+
+        let mut pos = NOMF_HEADER_SIZE
+        let mut entry_point = 0
+        let mut has_entry = false
+        let mut first_section_base = -1
+        let raw_len = raw.len()
+
+        let mut seen = 0
+        while pos < raw_len and seen < chunk_count:
+            if pos + NOMF_CHUNK_HEADER_SIZE > raw_len:
+                return (0, false)
+
+            let tag0 = raw[pos]
+            let tag1 = raw[pos + 1]
+            let tag2 = raw[pos + 2]
+            let tag3 = raw[pos + 3]
+            let length = (raw[pos + 4] as i32) | ((raw[pos + 5] as i32) << 8) | ((raw[pos + 6] as i32) << 16) | ((raw[pos + 7] as i32) << 24)
+            pos += NOMF_CHUNK_HEADER_SIZE
+
+            if pos + length > raw_len:
+                return (0, false)
+
+            if (tag0 == NOMF_TAG_SECT_0) and (tag1 == NOMF_TAG_SECT_1) and (tag2 == NOMF_TAG_SECT_2) and (tag3 == NOMF_TAG_SECT_3):
+                # SECT payload: u16 id(0-1), u8 type(2), u8 align(3), u16 org_hint(4-5), u16 flags(6-7), data(8+)
+                if length >= 8:
+                    let org_hint = (raw[pos + 4] as i32) | ((raw[pos + 5] as i32) << 8)
+                    let data_len = length - 8
+                    let mut k = 0
+                    while k < data_len:
+                        self.mem.write_byte(org_hint + k, raw[pos + 8 + k])
+                        k += 1
+                    if first_section_base < 0:
+                        first_section_base = org_hint
+            elif (tag0 == NOMF_TAG_ENTR_0) and (tag1 == NOMF_TAG_ENTR_1) and (tag2 == NOMF_TAG_ENTR_2) and (tag3 == NOMF_TAG_ENTR_3):
+                # ENTR payload: u8 has_symbol, u16 addr
+                if length >= 3:
+                    let addr = (raw[pos + 1] as i32) | ((raw[pos + 2] as i32) << 8)
+                    entry_point = addr
+                    has_entry = true
+
+            pos += length
+            seen += 1
+
+        if not has_entry and first_section_base >= 0:
+            entry_point = first_section_base
+
         (entry_point, true)

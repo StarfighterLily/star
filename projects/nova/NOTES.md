@@ -1879,6 +1879,39 @@ byte — `P0 == 0x1234 and P1 == 0x5678` after running, and (the real target)
 `astrid/game.bin` now runs to a live game loop (`halted=false` at 60k
 cycles) instead of halting on the truncated `func_main`.
 
+## NOMF format support
+
+Added in this round: the loader now detects and loads NOMF executables
+(`.nex` files) in addition to the legacy `.bin` + `.org` pair. NOMF
+(Nova Object Module Format, see the sibling Python repo's `nova/nomf.py`)
+is the upstream Python assembler's default output format -- a single-file,
+versioned, CRC-protected container that replaces the loose `.bin` + `.org`
++ `.sym` sidecar trio with one self-describing artifact.
+
+Detection is by magic bytes: `load_program` probes the first 4 bytes of
+the file for `NOMF`; if they match, the inlined `_load_nomf_into_memory`
+method parses the header and chunks and places each `SECT` chunk's bytes
+at its declared `org_hint` address, using the `ENTR` chunk's address as
+the entry point (falling back to the first section's base if `ENTR` is
+absent). Non-NOMF files fall through to the legacy `.bin` + `.org` path
+unchanged. This mirrors the Python reference's own `Memory.load` dispatch:
+`nomf.file_kind()` check first, then `_load_nomf()` for NOMF files, then
+the legacy `.bin` + `.org` fallback.
+
+The NOMF parsing is inlined in `loader.star` (rather than imported from a
+separate `nomf.star` module) because this project's `star build` does not
+resolve cross-module imports from `loader.star` correctly -- a standalone
+`nomf.star` with the full format library (round-trip, CRC32, section/symbol
+decode) exists alongside the inlined loader path and type-checks cleanly
+on its own (`star check projects/nova/nomf.star` passes), but its types
+are not visible to `loader.star` through the current compiler's import
+mechanism. The inlined path implements only what the loader needs: header
+validation, SECT chunk extraction, and ENTR entry-point recovery.
+
+Relocatable NOMF objects (`.nobj`, kind 0) are rejected with a clear error
+rather than being misloaded -- they must be linked into a `.nex` first,
+matching the Python reference's own `Memory._load_nomf` behavior.
+
 ## Disassembler
 
 Added in this round: `disasm.star`, a real disassembler — decodes a
