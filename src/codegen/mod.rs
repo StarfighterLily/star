@@ -598,7 +598,14 @@ impl Codegen {
         self.line("declare i64 @fwrite(i8*, i64, i64, i8*)");
         self.line("declare i32 @fseek(i8*, i32, i32)");
         self.line("declare i32 @ftell(i8*)");
-        self.line("declare i32 @fgetc(i8*)");
+        // RTC support: `now_seconds()` builtin calls C's `time()` to get Unix
+        // timestamp, used to implement Nova-16 RTC registers C0/C1 (seconds
+        // since 2018-07-17 00:00:00 UTC, matching the Python reference's
+        // RTC_EPOCH_UNIX).  C's `time()` takes a nullable `time_t*` arg and
+        // returns `time_t` (i64 on 64-bit Windows, i32 on 32-bit — Star's
+        // `int` is i64 on both after 2026-08-06's widening, so we lower the
+        // call to `call i64 @time(i64* null)` and truncate to Star `int`).
+        self.line("declare i64 @time(i64*)");
         // `env_get`/`env_set` builtins -- see `crate::codegen::os`, declared
         // for whichever `Target` this `Codegen` was built for by
         // `crate::codegen::os::declare_os_externs`.

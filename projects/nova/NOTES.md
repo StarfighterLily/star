@@ -979,6 +979,15 @@ updated in place. Summary, file by file:
     fixed; notes the opcode-group file split is now *possible* but not done.
   - `MATH_OVERFLOW_GUARD`'s 39-zero decimal expansion replaced with `3.0e38`
     directly (gotcha #11).
+  - **RTC registers C0/C1 fixed** — previously read from dead `Wrapping<u16>`
+    fields initialized to 0 and never updated, so `get_rtc(1)` always
+    returned 0 and `(string)get_rtc(1)` rendered as "0". Now computed
+    on-the-fly from wall-clock time via a new `now_seconds()` builtin
+    (calls C's `time(NULL)`, subtracts `RTC_EPOCH_UNIX` = 1531785600 =
+    2018-07-17T00:00:00Z, clamps to >= 0), matching the Python reference's
+    `rtc_seconds` property. C0 = low 16 bits, C1 = high 16 bits.
+    `set_reg_value` for C0/C1 is now a no-op (matching the Python
+    reference's read-only setters).
 - **`main.star`** — `demo_program()`'s hand-encoded opcode/register/mode
   bytes converted decimal → hex (gotcha #2; the byte-offset address
   comments alongside them stay decimal, since those count bytes rather than

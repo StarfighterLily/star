@@ -1,0 +1,7 @@
+# Source line -> address table
+# Format: <source_line> <address>
+6 0x1000
+9 0x1004
+12 0x1008
+13 0x100D
+16 0x1012

@@ -3036,7 +3036,7 @@ impl Checker {
                     self.error(format!("`{}` expects an `int` argument, found `{:?}`", name, arg_tys[0]), span);
                 }
             }
-            "mouse_x" | "mouse_y" | "ticks" => {
+            "mouse_x" | "mouse_y" | "ticks" | "now_seconds" => {
                 arity_ok(0, self);
             }
             // Text-rendering/font-loading builtins -- see

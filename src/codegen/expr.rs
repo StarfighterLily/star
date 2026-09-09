@@ -830,6 +830,7 @@ impl Codegen {
                     Some("mouse_button_down") => self.emit_mouse_button_down(args),
                     Some("delay") => { self.emit_delay(args); "%undef".into() }
                     Some("ticks") => self.emit_ticks(),
+                    Some("now_seconds") => self.emit_now_seconds(),
                     // Text-rendering/font-loading builtins -- see
                     // `crate::codegen::font`.
                     Some("font_load") => self.emit_font_load(args),

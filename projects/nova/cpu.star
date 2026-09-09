@@ -196,9 +196,15 @@ impl Cpu:
             0xC2 ->
                 self.mem.bank as i32
             0xC3 ->
-                (self.c0 as u16) as i32
+                # C0: RTC seconds low word — computed live from wall clock
+                # (matching nova_cpu.py's c0 @property, NOT the dead
+                # self.c0 field which stays 0 forever)
+                (now_seconds() & 0xFFFF) as i32
             0xC4 ->
-                (self.c1 as u16) as i32
+                # C1: RTC seconds high word — computed live from wall clock
+                # (matching nova_cpu.py's c1 @property, NOT the dead
+                # self.c1 field which stays 0 forever)
+                ((now_seconds() >> 16) & 0xFFFF) as i32
             0xC5 ->
                 (self.mx as u8) as i32
             0xC6 ->
@@ -343,6 +349,10 @@ impl Cpu:
             0xC2 ->
                 self.mem.bank = val as u8
             0xC3 ->
+                # C0/C1 are read-only RTC registers: nova_cpu.py's c0/c1
+                # setters are no-ops.  These field writes are dead (the
+                # fields are never read -- get_reg_value computes C0/C1
+                # from now_seconds()), but they keep the match arm valid.
                 self.c0 = Wrapping<u16>(val as u16)
             0xC4 ->
                 self.c1 = Wrapping<u16>(val as u16)

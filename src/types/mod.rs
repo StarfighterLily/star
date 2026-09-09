@@ -1010,7 +1010,7 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "texture_create" => Some(Ty::Ptr),
         "texture_update" | "texture_draw" | "texture_destroy" => Some(Ty::Named("unknown".into())),
         "window_should_close" | "key_down" | "mouse_button_down" => Some(Ty::Bool),
-        "mouse_x" | "mouse_y" | "ticks" => Some(Ty::Int),
+        "mouse_x" | "mouse_y" | "ticks" | "now_seconds" => Some(Ty::Int),
         // Text-rendering/font-loading builtins -- see `crate::codegen::font`
         // (closes `projects/snake/NOTES.md` section 4's "no text/font
         // rendering at all" gap). `font_load`/`default_font` reuse `Ty::Ptr`
@@ -1480,6 +1480,9 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     "SDL_RenderClear", "SDL_RenderDrawPoint", "SDL_RenderFillRect", "SDL_RenderDrawLine",
     "SDL_RenderPresent", "SDL_PollEvent", "SDL_GetKeyboardState", "SDL_GetMouseState",
     "SDL_Delay", "SDL_GetTicks",
+    // `now_seconds` builtin -- see `crate::codegen::sdl` (emits a call to
+    // C's `time()` for Nova-16 RTC register C0/C1 support).
+    "time",
     // `get_pixel` builtin -- see `crate::codegen::font`.
     "SDL_RenderReadPixels",
     // `sound_load`/.../`sound_stop_all` builtins -- see `crate::codegen::audio`.

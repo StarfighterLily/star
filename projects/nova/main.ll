@@ -22,7 +22,7 @@ declare i64 @fread(i8*, i64, i64, i8*)
 declare i64 @fwrite(i8*, i64, i64, i8*)
 declare i32 @fseek(i8*, i32, i32)
 declare i32 @ftell(i8*)
-declare i32 @fgetc(i8*)
+declare i64 @time(i64*)
 declare i8* @getenv(i8*)
 declare i32 @_putenv_s(i8*, i8*)
 declare i32 @WSAStartup(i16, i8*)
@@ -12181,68 +12181,68 @@ define i32 @cpu__Cpu__get_reg_value(%cpu__Cpu* %self, i8 %code) {
 entry:
   %t0 = alloca %cpu__Cpu*
   %t1 = alloca i8
-  %t59 = alloca i16
   %t65 = alloca i16
-  %t76 = alloca i16
+  %t71 = alloca i16
   %t82 = alloca i16
-  %t93 = alloca i16
+  %t88 = alloca i16
   %t99 = alloca i16
-  %t110 = alloca i16
+  %t105 = alloca i16
   %t116 = alloca i16
-  %t127 = alloca i16
+  %t122 = alloca i16
   %t133 = alloca i16
-  %t144 = alloca i16
+  %t139 = alloca i16
   %t150 = alloca i16
-  %t161 = alloca i16
+  %t156 = alloca i16
   %t167 = alloca i16
-  %t178 = alloca i16
+  %t173 = alloca i16
   %t184 = alloca i16
-  %t195 = alloca i16
+  %t190 = alloca i16
   %t201 = alloca i16
-  %t212 = alloca i16
+  %t207 = alloca i16
   %t218 = alloca i16
-  %t229 = alloca i16
+  %t224 = alloca i16
   %t235 = alloca i16
-  %t244 = alloca i16
+  %t241 = alloca i16
   %t250 = alloca i16
-  %t259 = alloca i16
+  %t256 = alloca i16
   %t265 = alloca i16
-  %t274 = alloca i16
+  %t271 = alloca i16
   %t280 = alloca i16
-  %t289 = alloca i16
+  %t286 = alloca i16
   %t295 = alloca i16
-  %t304 = alloca i16
+  %t301 = alloca i16
   %t310 = alloca i16
-  %t319 = alloca i16
+  %t316 = alloca i16
   %t325 = alloca i16
-  %t334 = alloca i16
+  %t331 = alloca i16
   %t340 = alloca i16
-  %t349 = alloca i16
+  %t346 = alloca i16
   %t355 = alloca i16
-  %t364 = alloca i16
+  %t361 = alloca i16
   %t370 = alloca i16
-  %t454 = alloca i8
-  %t466 = alloca i8
-  %t478 = alloca i8
-  %t490 = alloca i8
-  %t502 = alloca i8
-  %t514 = alloca i8
-  %t526 = alloca i8
-  %t538 = alloca i8
-  %t550 = alloca i8
-  %t562 = alloca i8
-  %t574 = alloca i16
-  %t586 = alloca i16
-  %t598 = alloca i16
-  %t610 = alloca i16
-  %t622 = alloca i16
-  %t634 = alloca i16
-  %t646 = alloca i16
-  %t658 = alloca i16
-  %t670 = alloca i16
-  %t682 = alloca i16
-  %t694 = alloca i16
-  %t706 = alloca i16
+  %t376 = alloca i16
+  %t460 = alloca i8
+  %t472 = alloca i8
+  %t484 = alloca i8
+  %t496 = alloca i8
+  %t508 = alloca i8
+  %t520 = alloca i8
+  %t532 = alloca i8
+  %t544 = alloca i8
+  %t556 = alloca i8
+  %t568 = alloca i8
+  %t580 = alloca i16
+  %t592 = alloca i16
+  %t604 = alloca i16
+  %t616 = alloca i16
+  %t628 = alloca i16
+  %t640 = alloca i16
+  %t652 = alloca i16
+  %t664 = alloca i16
+  %t676 = alloca i16
+  %t688 = alloca i16
+  %t700 = alloca i16
+  %t712 = alloca i16
   store %cpu__Cpu* %self, %cpu__Cpu** %t0
   store i8 %code, i8* %t1
   %t2 = load i8, i8* %t1
@@ -12262,1089 +12262,1095 @@ match_next_0_7:
   %t16 = icmp eq i32 %t3, 195
   br i1 %t16, label %match_then_1_14, label %match_next_1_15
 match_then_1_14:
-  %t17 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t18 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t17, i32 0, i32 31
-  %t19 = load i16, i16* %t18
-  %t20 = zext i16 %t19 to i32
+  %t17 = call i64 @time(i64* null)
+  %t18 = trunc i64 %t17 to i32
+  %t19 = sub i32 %t18, 1531785600
+  %t20 = icmp slt i32 %t19, 0
+  %t21 = select i1 %t20, i32 0, i32 %t19
+  %t22 = and i32 %t21, 65535
   br label %match_end_4
 match_next_1_15:
-  %t23 = icmp eq i32 %t3, 196
-  br i1 %t23, label %match_then_2_21, label %match_next_2_22
-match_then_2_21:
-  %t24 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t25 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t24, i32 0, i32 32
-  %t26 = load i16, i16* %t25
-  %t27 = zext i16 %t26 to i32
+  %t25 = icmp eq i32 %t3, 196
+  br i1 %t25, label %match_then_2_23, label %match_next_2_24
+match_then_2_23:
+  %t26 = call i64 @time(i64* null)
+  %t27 = trunc i64 %t26 to i32
+  %t28 = sub i32 %t27, 1531785600
+  %t29 = icmp slt i32 %t28, 0
+  %t30 = select i1 %t29, i32 0, i32 %t28
+  %t31 = and i32 16, 31
+  %t32 = ashr i32 %t30, %t31
+  %t33 = and i32 %t32, 65535
   br label %match_end_4
-match_next_2_22:
-  %t30 = icmp eq i32 %t3, 197
-  br i1 %t30, label %match_then_3_28, label %match_next_3_29
-match_then_3_28:
-  %t31 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t32 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t31, i32 0, i32 26
-  %t33 = load i8, i8* %t32
-  %t34 = zext i8 %t33 to i32
+match_next_2_24:
+  %t36 = icmp eq i32 %t3, 197
+  br i1 %t36, label %match_then_3_34, label %match_next_3_35
+match_then_3_34:
+  %t37 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t38 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t37, i32 0, i32 26
+  %t39 = load i8, i8* %t38
+  %t40 = zext i8 %t39 to i32
   br label %match_end_4
-match_next_3_29:
-  %t37 = icmp eq i32 %t3, 198
-  br i1 %t37, label %match_then_4_35, label %match_next_4_36
-match_then_4_35:
-  %t38 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t39 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t38, i32 0, i32 27
-  %t40 = load i8, i8* %t39
-  %t41 = zext i8 %t40 to i32
+match_next_3_35:
+  %t43 = icmp eq i32 %t3, 198
+  br i1 %t43, label %match_then_4_41, label %match_next_4_42
+match_then_4_41:
+  %t44 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t45 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t44, i32 0, i32 27
+  %t46 = load i8, i8* %t45
+  %t47 = zext i8 %t46 to i32
   br label %match_end_4
-match_next_4_36:
-  %t44 = icmp eq i32 %t3, 199
-  br i1 %t44, label %match_then_5_42, label %match_next_5_43
-match_then_5_42:
-  %t45 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t46 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t45, i32 0, i32 28
-  %t47 = load i8, i8* %t46
-  %t48 = zext i8 %t47 to i32
+match_next_4_42:
+  %t50 = icmp eq i32 %t3, 199
+  br i1 %t50, label %match_then_5_48, label %match_next_5_49
+match_then_5_48:
+  %t51 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t52 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t51, i32 0, i32 28
+  %t53 = load i8, i8* %t52
+  %t54 = zext i8 %t53 to i32
   br label %match_end_4
-match_next_5_43:
-  %t51 = icmp eq i32 %t3, 200
-  br i1 %t51, label %match_then_6_49, label %match_next_6_50
-match_then_6_49:
-  %t52 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t53 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t52, i32 0, i32 10
-  %t54 = load i8, i8* %t53
-  %t55 = zext i8 %t54 to i32
+match_next_5_49:
+  %t57 = icmp eq i32 %t3, 200
+  br i1 %t57, label %match_then_6_55, label %match_next_6_56
+match_then_6_55:
+  %t58 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t59 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t58, i32 0, i32 10
+  %t60 = load i8, i8* %t59
+  %t61 = zext i8 %t60 to i32
   br label %match_end_4
-match_next_6_50:
-  %t58 = icmp eq i32 %t3, 201
-  br i1 %t58, label %match_then_7_56, label %match_next_7_57
-match_then_7_56:
-  %t60 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t61 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t60, i32 0, i32 6
-  %t62 = sext i32 0 to i64
-  %t63 = icmp ult i64 %t62, 10
-  br i1 %t63, label %arr_rplace_ok_1194, label %arr_rplace_oob_1195
+match_next_6_56:
+  %t64 = icmp eq i32 %t3, 201
+  br i1 %t64, label %match_then_7_62, label %match_next_7_63
+match_then_7_62:
+  %t66 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t67 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t66, i32 0, i32 6
+  %t68 = sext i32 0 to i64
+  %t69 = icmp ult i64 %t68, 10
+  br i1 %t69, label %arr_rplace_ok_1194, label %arr_rplace_oob_1195
 arr_rplace_ok_1194:
-  %t64 = getelementptr inbounds [10 x i16], [10 x i16]* %t61, i32 0, i64 %t62
+  %t70 = getelementptr inbounds [10 x i16], [10 x i16]* %t67, i32 0, i64 %t68
   br label %arr_rplace_end_1196
 arr_rplace_oob_1195:
-  store i16 0, i16* %t65
+  store i16 0, i16* %t71
   br label %arr_rplace_end_1196
 arr_rplace_end_1196:
-  %t66 = phi i16* [ %t64, %arr_rplace_ok_1194 ], [ %t65, %arr_rplace_oob_1195 ]
-  %t67 = load i16, i16* %t66
-  store i16 %t67, i16* %t59
-  %t68 = load i16, i16* %t59
-  %t69 = and i32 8, 15
-  %t70 = trunc i32 %t69 to i16
-  %t71 = lshr i16 %t68, %t70
-  %t72 = zext i16 %t71 to i32
+  %t72 = phi i16* [ %t70, %arr_rplace_ok_1194 ], [ %t71, %arr_rplace_oob_1195 ]
+  %t73 = load i16, i16* %t72
+  store i16 %t73, i16* %t65
+  %t74 = load i16, i16* %t65
+  %t75 = and i32 8, 15
+  %t76 = trunc i32 %t75 to i16
+  %t77 = lshr i16 %t74, %t76
+  %t78 = zext i16 %t77 to i32
   br label %match_end_4
-match_next_7_57:
-  %t75 = icmp eq i32 %t3, 202
-  br i1 %t75, label %match_then_8_73, label %match_next_8_74
-match_then_8_73:
-  %t77 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t78 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t77, i32 0, i32 6
-  %t79 = sext i32 1 to i64
-  %t80 = icmp ult i64 %t79, 10
-  br i1 %t80, label %arr_rplace_ok_1197, label %arr_rplace_oob_1198
+match_next_7_63:
+  %t81 = icmp eq i32 %t3, 202
+  br i1 %t81, label %match_then_8_79, label %match_next_8_80
+match_then_8_79:
+  %t83 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t84 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t83, i32 0, i32 6
+  %t85 = sext i32 1 to i64
+  %t86 = icmp ult i64 %t85, 10
+  br i1 %t86, label %arr_rplace_ok_1197, label %arr_rplace_oob_1198
 arr_rplace_ok_1197:
-  %t81 = getelementptr inbounds [10 x i16], [10 x i16]* %t78, i32 0, i64 %t79
+  %t87 = getelementptr inbounds [10 x i16], [10 x i16]* %t84, i32 0, i64 %t85
   br label %arr_rplace_end_1199
 arr_rplace_oob_1198:
-  store i16 0, i16* %t82
+  store i16 0, i16* %t88
   br label %arr_rplace_end_1199
 arr_rplace_end_1199:
-  %t83 = phi i16* [ %t81, %arr_rplace_ok_1197 ], [ %t82, %arr_rplace_oob_1198 ]
-  %t84 = load i16, i16* %t83
-  store i16 %t84, i16* %t76
-  %t85 = load i16, i16* %t76
-  %t86 = and i32 8, 15
-  %t87 = trunc i32 %t86 to i16
-  %t88 = lshr i16 %t85, %t87
-  %t89 = zext i16 %t88 to i32
+  %t89 = phi i16* [ %t87, %arr_rplace_ok_1197 ], [ %t88, %arr_rplace_oob_1198 ]
+  %t90 = load i16, i16* %t89
+  store i16 %t90, i16* %t82
+  %t91 = load i16, i16* %t82
+  %t92 = and i32 8, 15
+  %t93 = trunc i32 %t92 to i16
+  %t94 = lshr i16 %t91, %t93
+  %t95 = zext i16 %t94 to i32
   br label %match_end_4
-match_next_8_74:
-  %t92 = icmp eq i32 %t3, 203
-  br i1 %t92, label %match_then_9_90, label %match_next_9_91
-match_then_9_90:
-  %t94 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t95 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t94, i32 0, i32 6
-  %t96 = sext i32 2 to i64
-  %t97 = icmp ult i64 %t96, 10
-  br i1 %t97, label %arr_rplace_ok_1200, label %arr_rplace_oob_1201
+match_next_8_80:
+  %t98 = icmp eq i32 %t3, 203
+  br i1 %t98, label %match_then_9_96, label %match_next_9_97
+match_then_9_96:
+  %t100 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t101 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t100, i32 0, i32 6
+  %t102 = sext i32 2 to i64
+  %t103 = icmp ult i64 %t102, 10
+  br i1 %t103, label %arr_rplace_ok_1200, label %arr_rplace_oob_1201
 arr_rplace_ok_1200:
-  %t98 = getelementptr inbounds [10 x i16], [10 x i16]* %t95, i32 0, i64 %t96
+  %t104 = getelementptr inbounds [10 x i16], [10 x i16]* %t101, i32 0, i64 %t102
   br label %arr_rplace_end_1202
 arr_rplace_oob_1201:
-  store i16 0, i16* %t99
+  store i16 0, i16* %t105
   br label %arr_rplace_end_1202
 arr_rplace_end_1202:
-  %t100 = phi i16* [ %t98, %arr_rplace_ok_1200 ], [ %t99, %arr_rplace_oob_1201 ]
-  %t101 = load i16, i16* %t100
-  store i16 %t101, i16* %t93
-  %t102 = load i16, i16* %t93
-  %t103 = and i32 8, 15
-  %t104 = trunc i32 %t103 to i16
-  %t105 = lshr i16 %t102, %t104
-  %t106 = zext i16 %t105 to i32
+  %t106 = phi i16* [ %t104, %arr_rplace_ok_1200 ], [ %t105, %arr_rplace_oob_1201 ]
+  %t107 = load i16, i16* %t106
+  store i16 %t107, i16* %t99
+  %t108 = load i16, i16* %t99
+  %t109 = and i32 8, 15
+  %t110 = trunc i32 %t109 to i16
+  %t111 = lshr i16 %t108, %t110
+  %t112 = zext i16 %t111 to i32
   br label %match_end_4
-match_next_9_91:
-  %t109 = icmp eq i32 %t3, 204
-  br i1 %t109, label %match_then_10_107, label %match_next_10_108
-match_then_10_107:
-  %t111 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t112 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t111, i32 0, i32 6
-  %t113 = sext i32 3 to i64
-  %t114 = icmp ult i64 %t113, 10
-  br i1 %t114, label %arr_rplace_ok_1203, label %arr_rplace_oob_1204
+match_next_9_97:
+  %t115 = icmp eq i32 %t3, 204
+  br i1 %t115, label %match_then_10_113, label %match_next_10_114
+match_then_10_113:
+  %t117 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t118 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t117, i32 0, i32 6
+  %t119 = sext i32 3 to i64
+  %t120 = icmp ult i64 %t119, 10
+  br i1 %t120, label %arr_rplace_ok_1203, label %arr_rplace_oob_1204
 arr_rplace_ok_1203:
-  %t115 = getelementptr inbounds [10 x i16], [10 x i16]* %t112, i32 0, i64 %t113
+  %t121 = getelementptr inbounds [10 x i16], [10 x i16]* %t118, i32 0, i64 %t119
   br label %arr_rplace_end_1205
 arr_rplace_oob_1204:
-  store i16 0, i16* %t116
+  store i16 0, i16* %t122
   br label %arr_rplace_end_1205
 arr_rplace_end_1205:
-  %t117 = phi i16* [ %t115, %arr_rplace_ok_1203 ], [ %t116, %arr_rplace_oob_1204 ]
-  %t118 = load i16, i16* %t117
-  store i16 %t118, i16* %t110
-  %t119 = load i16, i16* %t110
-  %t120 = and i32 8, 15
-  %t121 = trunc i32 %t120 to i16
-  %t122 = lshr i16 %t119, %t121
-  %t123 = zext i16 %t122 to i32
+  %t123 = phi i16* [ %t121, %arr_rplace_ok_1203 ], [ %t122, %arr_rplace_oob_1204 ]
+  %t124 = load i16, i16* %t123
+  store i16 %t124, i16* %t116
+  %t125 = load i16, i16* %t116
+  %t126 = and i32 8, 15
+  %t127 = trunc i32 %t126 to i16
+  %t128 = lshr i16 %t125, %t127
+  %t129 = zext i16 %t128 to i32
   br label %match_end_4
-match_next_10_108:
-  %t126 = icmp eq i32 %t3, 205
-  br i1 %t126, label %match_then_11_124, label %match_next_11_125
-match_then_11_124:
-  %t128 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t129 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t128, i32 0, i32 6
-  %t130 = sext i32 4 to i64
-  %t131 = icmp ult i64 %t130, 10
-  br i1 %t131, label %arr_rplace_ok_1206, label %arr_rplace_oob_1207
+match_next_10_114:
+  %t132 = icmp eq i32 %t3, 205
+  br i1 %t132, label %match_then_11_130, label %match_next_11_131
+match_then_11_130:
+  %t134 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t135 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t134, i32 0, i32 6
+  %t136 = sext i32 4 to i64
+  %t137 = icmp ult i64 %t136, 10
+  br i1 %t137, label %arr_rplace_ok_1206, label %arr_rplace_oob_1207
 arr_rplace_ok_1206:
-  %t132 = getelementptr inbounds [10 x i16], [10 x i16]* %t129, i32 0, i64 %t130
+  %t138 = getelementptr inbounds [10 x i16], [10 x i16]* %t135, i32 0, i64 %t136
   br label %arr_rplace_end_1208
 arr_rplace_oob_1207:
-  store i16 0, i16* %t133
+  store i16 0, i16* %t139
   br label %arr_rplace_end_1208
 arr_rplace_end_1208:
-  %t134 = phi i16* [ %t132, %arr_rplace_ok_1206 ], [ %t133, %arr_rplace_oob_1207 ]
-  %t135 = load i16, i16* %t134
-  store i16 %t135, i16* %t127
-  %t136 = load i16, i16* %t127
-  %t137 = and i32 8, 15
-  %t138 = trunc i32 %t137 to i16
-  %t139 = lshr i16 %t136, %t138
-  %t140 = zext i16 %t139 to i32
+  %t140 = phi i16* [ %t138, %arr_rplace_ok_1206 ], [ %t139, %arr_rplace_oob_1207 ]
+  %t141 = load i16, i16* %t140
+  store i16 %t141, i16* %t133
+  %t142 = load i16, i16* %t133
+  %t143 = and i32 8, 15
+  %t144 = trunc i32 %t143 to i16
+  %t145 = lshr i16 %t142, %t144
+  %t146 = zext i16 %t145 to i32
   br label %match_end_4
-match_next_11_125:
-  %t143 = icmp eq i32 %t3, 206
-  br i1 %t143, label %match_then_12_141, label %match_next_12_142
-match_then_12_141:
-  %t145 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t146 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t145, i32 0, i32 6
-  %t147 = sext i32 5 to i64
-  %t148 = icmp ult i64 %t147, 10
-  br i1 %t148, label %arr_rplace_ok_1209, label %arr_rplace_oob_1210
+match_next_11_131:
+  %t149 = icmp eq i32 %t3, 206
+  br i1 %t149, label %match_then_12_147, label %match_next_12_148
+match_then_12_147:
+  %t151 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t152 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t151, i32 0, i32 6
+  %t153 = sext i32 5 to i64
+  %t154 = icmp ult i64 %t153, 10
+  br i1 %t154, label %arr_rplace_ok_1209, label %arr_rplace_oob_1210
 arr_rplace_ok_1209:
-  %t149 = getelementptr inbounds [10 x i16], [10 x i16]* %t146, i32 0, i64 %t147
+  %t155 = getelementptr inbounds [10 x i16], [10 x i16]* %t152, i32 0, i64 %t153
   br label %arr_rplace_end_1211
 arr_rplace_oob_1210:
-  store i16 0, i16* %t150
+  store i16 0, i16* %t156
   br label %arr_rplace_end_1211
 arr_rplace_end_1211:
-  %t151 = phi i16* [ %t149, %arr_rplace_ok_1209 ], [ %t150, %arr_rplace_oob_1210 ]
-  %t152 = load i16, i16* %t151
-  store i16 %t152, i16* %t144
-  %t153 = load i16, i16* %t144
-  %t154 = and i32 8, 15
-  %t155 = trunc i32 %t154 to i16
-  %t156 = lshr i16 %t153, %t155
-  %t157 = zext i16 %t156 to i32
+  %t157 = phi i16* [ %t155, %arr_rplace_ok_1209 ], [ %t156, %arr_rplace_oob_1210 ]
+  %t158 = load i16, i16* %t157
+  store i16 %t158, i16* %t150
+  %t159 = load i16, i16* %t150
+  %t160 = and i32 8, 15
+  %t161 = trunc i32 %t160 to i16
+  %t162 = lshr i16 %t159, %t161
+  %t163 = zext i16 %t162 to i32
   br label %match_end_4
-match_next_12_142:
-  %t160 = icmp eq i32 %t3, 207
-  br i1 %t160, label %match_then_13_158, label %match_next_13_159
-match_then_13_158:
-  %t162 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t163 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t162, i32 0, i32 6
-  %t164 = sext i32 6 to i64
-  %t165 = icmp ult i64 %t164, 10
-  br i1 %t165, label %arr_rplace_ok_1212, label %arr_rplace_oob_1213
+match_next_12_148:
+  %t166 = icmp eq i32 %t3, 207
+  br i1 %t166, label %match_then_13_164, label %match_next_13_165
+match_then_13_164:
+  %t168 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t169 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t168, i32 0, i32 6
+  %t170 = sext i32 6 to i64
+  %t171 = icmp ult i64 %t170, 10
+  br i1 %t171, label %arr_rplace_ok_1212, label %arr_rplace_oob_1213
 arr_rplace_ok_1212:
-  %t166 = getelementptr inbounds [10 x i16], [10 x i16]* %t163, i32 0, i64 %t164
+  %t172 = getelementptr inbounds [10 x i16], [10 x i16]* %t169, i32 0, i64 %t170
   br label %arr_rplace_end_1214
 arr_rplace_oob_1213:
-  store i16 0, i16* %t167
+  store i16 0, i16* %t173
   br label %arr_rplace_end_1214
 arr_rplace_end_1214:
-  %t168 = phi i16* [ %t166, %arr_rplace_ok_1212 ], [ %t167, %arr_rplace_oob_1213 ]
-  %t169 = load i16, i16* %t168
-  store i16 %t169, i16* %t161
-  %t170 = load i16, i16* %t161
-  %t171 = and i32 8, 15
-  %t172 = trunc i32 %t171 to i16
-  %t173 = lshr i16 %t170, %t172
-  %t174 = zext i16 %t173 to i32
+  %t174 = phi i16* [ %t172, %arr_rplace_ok_1212 ], [ %t173, %arr_rplace_oob_1213 ]
+  %t175 = load i16, i16* %t174
+  store i16 %t175, i16* %t167
+  %t176 = load i16, i16* %t167
+  %t177 = and i32 8, 15
+  %t178 = trunc i32 %t177 to i16
+  %t179 = lshr i16 %t176, %t178
+  %t180 = zext i16 %t179 to i32
   br label %match_end_4
-match_next_13_159:
-  %t177 = icmp eq i32 %t3, 208
-  br i1 %t177, label %match_then_14_175, label %match_next_14_176
-match_then_14_175:
-  %t179 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t180 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t179, i32 0, i32 6
-  %t181 = sext i32 7 to i64
-  %t182 = icmp ult i64 %t181, 10
-  br i1 %t182, label %arr_rplace_ok_1215, label %arr_rplace_oob_1216
+match_next_13_165:
+  %t183 = icmp eq i32 %t3, 208
+  br i1 %t183, label %match_then_14_181, label %match_next_14_182
+match_then_14_181:
+  %t185 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t186 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t185, i32 0, i32 6
+  %t187 = sext i32 7 to i64
+  %t188 = icmp ult i64 %t187, 10
+  br i1 %t188, label %arr_rplace_ok_1215, label %arr_rplace_oob_1216
 arr_rplace_ok_1215:
-  %t183 = getelementptr inbounds [10 x i16], [10 x i16]* %t180, i32 0, i64 %t181
+  %t189 = getelementptr inbounds [10 x i16], [10 x i16]* %t186, i32 0, i64 %t187
   br label %arr_rplace_end_1217
 arr_rplace_oob_1216:
-  store i16 0, i16* %t184
+  store i16 0, i16* %t190
   br label %arr_rplace_end_1217
 arr_rplace_end_1217:
-  %t185 = phi i16* [ %t183, %arr_rplace_ok_1215 ], [ %t184, %arr_rplace_oob_1216 ]
-  %t186 = load i16, i16* %t185
-  store i16 %t186, i16* %t178
-  %t187 = load i16, i16* %t178
-  %t188 = and i32 8, 15
-  %t189 = trunc i32 %t188 to i16
-  %t190 = lshr i16 %t187, %t189
-  %t191 = zext i16 %t190 to i32
+  %t191 = phi i16* [ %t189, %arr_rplace_ok_1215 ], [ %t190, %arr_rplace_oob_1216 ]
+  %t192 = load i16, i16* %t191
+  store i16 %t192, i16* %t184
+  %t193 = load i16, i16* %t184
+  %t194 = and i32 8, 15
+  %t195 = trunc i32 %t194 to i16
+  %t196 = lshr i16 %t193, %t195
+  %t197 = zext i16 %t196 to i32
   br label %match_end_4
-match_next_14_176:
-  %t194 = icmp eq i32 %t3, 209
-  br i1 %t194, label %match_then_15_192, label %match_next_15_193
-match_then_15_192:
-  %t196 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t197 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t196, i32 0, i32 6
-  %t198 = sext i32 8 to i64
-  %t199 = icmp ult i64 %t198, 10
-  br i1 %t199, label %arr_rplace_ok_1218, label %arr_rplace_oob_1219
+match_next_14_182:
+  %t200 = icmp eq i32 %t3, 209
+  br i1 %t200, label %match_then_15_198, label %match_next_15_199
+match_then_15_198:
+  %t202 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t203 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t202, i32 0, i32 6
+  %t204 = sext i32 8 to i64
+  %t205 = icmp ult i64 %t204, 10
+  br i1 %t205, label %arr_rplace_ok_1218, label %arr_rplace_oob_1219
 arr_rplace_ok_1218:
-  %t200 = getelementptr inbounds [10 x i16], [10 x i16]* %t197, i32 0, i64 %t198
+  %t206 = getelementptr inbounds [10 x i16], [10 x i16]* %t203, i32 0, i64 %t204
   br label %arr_rplace_end_1220
 arr_rplace_oob_1219:
-  store i16 0, i16* %t201
+  store i16 0, i16* %t207
   br label %arr_rplace_end_1220
 arr_rplace_end_1220:
-  %t202 = phi i16* [ %t200, %arr_rplace_ok_1218 ], [ %t201, %arr_rplace_oob_1219 ]
-  %t203 = load i16, i16* %t202
-  store i16 %t203, i16* %t195
-  %t204 = load i16, i16* %t195
-  %t205 = and i32 8, 15
-  %t206 = trunc i32 %t205 to i16
-  %t207 = lshr i16 %t204, %t206
-  %t208 = zext i16 %t207 to i32
+  %t208 = phi i16* [ %t206, %arr_rplace_ok_1218 ], [ %t207, %arr_rplace_oob_1219 ]
+  %t209 = load i16, i16* %t208
+  store i16 %t209, i16* %t201
+  %t210 = load i16, i16* %t201
+  %t211 = and i32 8, 15
+  %t212 = trunc i32 %t211 to i16
+  %t213 = lshr i16 %t210, %t212
+  %t214 = zext i16 %t213 to i32
   br label %match_end_4
-match_next_15_193:
-  %t211 = icmp eq i32 %t3, 210
-  br i1 %t211, label %match_then_16_209, label %match_next_16_210
-match_then_16_209:
-  %t213 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t214 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t213, i32 0, i32 6
-  %t215 = sext i32 9 to i64
-  %t216 = icmp ult i64 %t215, 10
-  br i1 %t216, label %arr_rplace_ok_1221, label %arr_rplace_oob_1222
+match_next_15_199:
+  %t217 = icmp eq i32 %t3, 210
+  br i1 %t217, label %match_then_16_215, label %match_next_16_216
+match_then_16_215:
+  %t219 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t220 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t219, i32 0, i32 6
+  %t221 = sext i32 9 to i64
+  %t222 = icmp ult i64 %t221, 10
+  br i1 %t222, label %arr_rplace_ok_1221, label %arr_rplace_oob_1222
 arr_rplace_ok_1221:
-  %t217 = getelementptr inbounds [10 x i16], [10 x i16]* %t214, i32 0, i64 %t215
+  %t223 = getelementptr inbounds [10 x i16], [10 x i16]* %t220, i32 0, i64 %t221
   br label %arr_rplace_end_1223
 arr_rplace_oob_1222:
-  store i16 0, i16* %t218
+  store i16 0, i16* %t224
   br label %arr_rplace_end_1223
 arr_rplace_end_1223:
-  %t219 = phi i16* [ %t217, %arr_rplace_ok_1221 ], [ %t218, %arr_rplace_oob_1222 ]
-  %t220 = load i16, i16* %t219
-  store i16 %t220, i16* %t212
-  %t221 = load i16, i16* %t212
-  %t222 = and i32 8, 15
-  %t223 = trunc i32 %t222 to i16
-  %t224 = lshr i16 %t221, %t223
-  %t225 = zext i16 %t224 to i32
+  %t225 = phi i16* [ %t223, %arr_rplace_ok_1221 ], [ %t224, %arr_rplace_oob_1222 ]
+  %t226 = load i16, i16* %t225
+  store i16 %t226, i16* %t218
+  %t227 = load i16, i16* %t218
+  %t228 = and i32 8, 15
+  %t229 = trunc i32 %t228 to i16
+  %t230 = lshr i16 %t227, %t229
+  %t231 = zext i16 %t230 to i32
   br label %match_end_4
-match_next_16_210:
-  %t228 = icmp eq i32 %t3, 211
-  br i1 %t228, label %match_then_17_226, label %match_next_17_227
-match_then_17_226:
-  %t230 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t231 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t230, i32 0, i32 6
-  %t232 = sext i32 0 to i64
-  %t233 = icmp ult i64 %t232, 10
-  br i1 %t233, label %arr_rplace_ok_1224, label %arr_rplace_oob_1225
+match_next_16_216:
+  %t234 = icmp eq i32 %t3, 211
+  br i1 %t234, label %match_then_17_232, label %match_next_17_233
+match_then_17_232:
+  %t236 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t237 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t236, i32 0, i32 6
+  %t238 = sext i32 0 to i64
+  %t239 = icmp ult i64 %t238, 10
+  br i1 %t239, label %arr_rplace_ok_1224, label %arr_rplace_oob_1225
 arr_rplace_ok_1224:
-  %t234 = getelementptr inbounds [10 x i16], [10 x i16]* %t231, i32 0, i64 %t232
+  %t240 = getelementptr inbounds [10 x i16], [10 x i16]* %t237, i32 0, i64 %t238
   br label %arr_rplace_end_1226
 arr_rplace_oob_1225:
-  store i16 0, i16* %t235
+  store i16 0, i16* %t241
   br label %arr_rplace_end_1226
 arr_rplace_end_1226:
-  %t236 = phi i16* [ %t234, %arr_rplace_ok_1224 ], [ %t235, %arr_rplace_oob_1225 ]
-  %t237 = load i16, i16* %t236
-  store i16 %t237, i16* %t229
-  %t238 = load i16, i16* %t229
-  %t239 = trunc i16 %t238 to i8
-  %t240 = zext i8 %t239 to i32
+  %t242 = phi i16* [ %t240, %arr_rplace_ok_1224 ], [ %t241, %arr_rplace_oob_1225 ]
+  %t243 = load i16, i16* %t242
+  store i16 %t243, i16* %t235
+  %t244 = load i16, i16* %t235
+  %t245 = trunc i16 %t244 to i8
+  %t246 = zext i8 %t245 to i32
   br label %match_end_4
-match_next_17_227:
-  %t243 = icmp eq i32 %t3, 212
-  br i1 %t243, label %match_then_18_241, label %match_next_18_242
-match_then_18_241:
-  %t245 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t246 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t245, i32 0, i32 6
-  %t247 = sext i32 1 to i64
-  %t248 = icmp ult i64 %t247, 10
-  br i1 %t248, label %arr_rplace_ok_1227, label %arr_rplace_oob_1228
+match_next_17_233:
+  %t249 = icmp eq i32 %t3, 212
+  br i1 %t249, label %match_then_18_247, label %match_next_18_248
+match_then_18_247:
+  %t251 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t252 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t251, i32 0, i32 6
+  %t253 = sext i32 1 to i64
+  %t254 = icmp ult i64 %t253, 10
+  br i1 %t254, label %arr_rplace_ok_1227, label %arr_rplace_oob_1228
 arr_rplace_ok_1227:
-  %t249 = getelementptr inbounds [10 x i16], [10 x i16]* %t246, i32 0, i64 %t247
+  %t255 = getelementptr inbounds [10 x i16], [10 x i16]* %t252, i32 0, i64 %t253
   br label %arr_rplace_end_1229
 arr_rplace_oob_1228:
-  store i16 0, i16* %t250
+  store i16 0, i16* %t256
   br label %arr_rplace_end_1229
 arr_rplace_end_1229:
-  %t251 = phi i16* [ %t249, %arr_rplace_ok_1227 ], [ %t250, %arr_rplace_oob_1228 ]
-  %t252 = load i16, i16* %t251
-  store i16 %t252, i16* %t244
-  %t253 = load i16, i16* %t244
-  %t254 = trunc i16 %t253 to i8
-  %t255 = zext i8 %t254 to i32
+  %t257 = phi i16* [ %t255, %arr_rplace_ok_1227 ], [ %t256, %arr_rplace_oob_1228 ]
+  %t258 = load i16, i16* %t257
+  store i16 %t258, i16* %t250
+  %t259 = load i16, i16* %t250
+  %t260 = trunc i16 %t259 to i8
+  %t261 = zext i8 %t260 to i32
   br label %match_end_4
-match_next_18_242:
-  %t258 = icmp eq i32 %t3, 213
-  br i1 %t258, label %match_then_19_256, label %match_next_19_257
-match_then_19_256:
-  %t260 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t261 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t260, i32 0, i32 6
-  %t262 = sext i32 2 to i64
-  %t263 = icmp ult i64 %t262, 10
-  br i1 %t263, label %arr_rplace_ok_1230, label %arr_rplace_oob_1231
+match_next_18_248:
+  %t264 = icmp eq i32 %t3, 213
+  br i1 %t264, label %match_then_19_262, label %match_next_19_263
+match_then_19_262:
+  %t266 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t267 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t266, i32 0, i32 6
+  %t268 = sext i32 2 to i64
+  %t269 = icmp ult i64 %t268, 10
+  br i1 %t269, label %arr_rplace_ok_1230, label %arr_rplace_oob_1231
 arr_rplace_ok_1230:
-  %t264 = getelementptr inbounds [10 x i16], [10 x i16]* %t261, i32 0, i64 %t262
+  %t270 = getelementptr inbounds [10 x i16], [10 x i16]* %t267, i32 0, i64 %t268
   br label %arr_rplace_end_1232
 arr_rplace_oob_1231:
-  store i16 0, i16* %t265
+  store i16 0, i16* %t271
   br label %arr_rplace_end_1232
 arr_rplace_end_1232:
-  %t266 = phi i16* [ %t264, %arr_rplace_ok_1230 ], [ %t265, %arr_rplace_oob_1231 ]
-  %t267 = load i16, i16* %t266
-  store i16 %t267, i16* %t259
-  %t268 = load i16, i16* %t259
-  %t269 = trunc i16 %t268 to i8
-  %t270 = zext i8 %t269 to i32
+  %t272 = phi i16* [ %t270, %arr_rplace_ok_1230 ], [ %t271, %arr_rplace_oob_1231 ]
+  %t273 = load i16, i16* %t272
+  store i16 %t273, i16* %t265
+  %t274 = load i16, i16* %t265
+  %t275 = trunc i16 %t274 to i8
+  %t276 = zext i8 %t275 to i32
   br label %match_end_4
-match_next_19_257:
-  %t273 = icmp eq i32 %t3, 214
-  br i1 %t273, label %match_then_20_271, label %match_next_20_272
-match_then_20_271:
-  %t275 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t276 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t275, i32 0, i32 6
-  %t277 = sext i32 3 to i64
-  %t278 = icmp ult i64 %t277, 10
-  br i1 %t278, label %arr_rplace_ok_1233, label %arr_rplace_oob_1234
+match_next_19_263:
+  %t279 = icmp eq i32 %t3, 214
+  br i1 %t279, label %match_then_20_277, label %match_next_20_278
+match_then_20_277:
+  %t281 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t282 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t281, i32 0, i32 6
+  %t283 = sext i32 3 to i64
+  %t284 = icmp ult i64 %t283, 10
+  br i1 %t284, label %arr_rplace_ok_1233, label %arr_rplace_oob_1234
 arr_rplace_ok_1233:
-  %t279 = getelementptr inbounds [10 x i16], [10 x i16]* %t276, i32 0, i64 %t277
+  %t285 = getelementptr inbounds [10 x i16], [10 x i16]* %t282, i32 0, i64 %t283
   br label %arr_rplace_end_1235
 arr_rplace_oob_1234:
-  store i16 0, i16* %t280
+  store i16 0, i16* %t286
   br label %arr_rplace_end_1235
 arr_rplace_end_1235:
-  %t281 = phi i16* [ %t279, %arr_rplace_ok_1233 ], [ %t280, %arr_rplace_oob_1234 ]
-  %t282 = load i16, i16* %t281
-  store i16 %t282, i16* %t274
-  %t283 = load i16, i16* %t274
-  %t284 = trunc i16 %t283 to i8
-  %t285 = zext i8 %t284 to i32
+  %t287 = phi i16* [ %t285, %arr_rplace_ok_1233 ], [ %t286, %arr_rplace_oob_1234 ]
+  %t288 = load i16, i16* %t287
+  store i16 %t288, i16* %t280
+  %t289 = load i16, i16* %t280
+  %t290 = trunc i16 %t289 to i8
+  %t291 = zext i8 %t290 to i32
   br label %match_end_4
-match_next_20_272:
-  %t288 = icmp eq i32 %t3, 215
-  br i1 %t288, label %match_then_21_286, label %match_next_21_287
-match_then_21_286:
-  %t290 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t291 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t290, i32 0, i32 6
-  %t292 = sext i32 4 to i64
-  %t293 = icmp ult i64 %t292, 10
-  br i1 %t293, label %arr_rplace_ok_1236, label %arr_rplace_oob_1237
+match_next_20_278:
+  %t294 = icmp eq i32 %t3, 215
+  br i1 %t294, label %match_then_21_292, label %match_next_21_293
+match_then_21_292:
+  %t296 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t297 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t296, i32 0, i32 6
+  %t298 = sext i32 4 to i64
+  %t299 = icmp ult i64 %t298, 10
+  br i1 %t299, label %arr_rplace_ok_1236, label %arr_rplace_oob_1237
 arr_rplace_ok_1236:
-  %t294 = getelementptr inbounds [10 x i16], [10 x i16]* %t291, i32 0, i64 %t292
+  %t300 = getelementptr inbounds [10 x i16], [10 x i16]* %t297, i32 0, i64 %t298
   br label %arr_rplace_end_1238
 arr_rplace_oob_1237:
-  store i16 0, i16* %t295
+  store i16 0, i16* %t301
   br label %arr_rplace_end_1238
 arr_rplace_end_1238:
-  %t296 = phi i16* [ %t294, %arr_rplace_ok_1236 ], [ %t295, %arr_rplace_oob_1237 ]
-  %t297 = load i16, i16* %t296
-  store i16 %t297, i16* %t289
-  %t298 = load i16, i16* %t289
-  %t299 = trunc i16 %t298 to i8
-  %t300 = zext i8 %t299 to i32
+  %t302 = phi i16* [ %t300, %arr_rplace_ok_1236 ], [ %t301, %arr_rplace_oob_1237 ]
+  %t303 = load i16, i16* %t302
+  store i16 %t303, i16* %t295
+  %t304 = load i16, i16* %t295
+  %t305 = trunc i16 %t304 to i8
+  %t306 = zext i8 %t305 to i32
   br label %match_end_4
-match_next_21_287:
-  %t303 = icmp eq i32 %t3, 216
-  br i1 %t303, label %match_then_22_301, label %match_next_22_302
-match_then_22_301:
-  %t305 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t306 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t305, i32 0, i32 6
-  %t307 = sext i32 5 to i64
-  %t308 = icmp ult i64 %t307, 10
-  br i1 %t308, label %arr_rplace_ok_1239, label %arr_rplace_oob_1240
+match_next_21_293:
+  %t309 = icmp eq i32 %t3, 216
+  br i1 %t309, label %match_then_22_307, label %match_next_22_308
+match_then_22_307:
+  %t311 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t312 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t311, i32 0, i32 6
+  %t313 = sext i32 5 to i64
+  %t314 = icmp ult i64 %t313, 10
+  br i1 %t314, label %arr_rplace_ok_1239, label %arr_rplace_oob_1240
 arr_rplace_ok_1239:
-  %t309 = getelementptr inbounds [10 x i16], [10 x i16]* %t306, i32 0, i64 %t307
+  %t315 = getelementptr inbounds [10 x i16], [10 x i16]* %t312, i32 0, i64 %t313
   br label %arr_rplace_end_1241
 arr_rplace_oob_1240:
-  store i16 0, i16* %t310
+  store i16 0, i16* %t316
   br label %arr_rplace_end_1241
 arr_rplace_end_1241:
-  %t311 = phi i16* [ %t309, %arr_rplace_ok_1239 ], [ %t310, %arr_rplace_oob_1240 ]
-  %t312 = load i16, i16* %t311
-  store i16 %t312, i16* %t304
-  %t313 = load i16, i16* %t304
-  %t314 = trunc i16 %t313 to i8
-  %t315 = zext i8 %t314 to i32
+  %t317 = phi i16* [ %t315, %arr_rplace_ok_1239 ], [ %t316, %arr_rplace_oob_1240 ]
+  %t318 = load i16, i16* %t317
+  store i16 %t318, i16* %t310
+  %t319 = load i16, i16* %t310
+  %t320 = trunc i16 %t319 to i8
+  %t321 = zext i8 %t320 to i32
   br label %match_end_4
-match_next_22_302:
-  %t318 = icmp eq i32 %t3, 217
-  br i1 %t318, label %match_then_23_316, label %match_next_23_317
-match_then_23_316:
-  %t320 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t321 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t320, i32 0, i32 6
-  %t322 = sext i32 6 to i64
-  %t323 = icmp ult i64 %t322, 10
-  br i1 %t323, label %arr_rplace_ok_1242, label %arr_rplace_oob_1243
+match_next_22_308:
+  %t324 = icmp eq i32 %t3, 217
+  br i1 %t324, label %match_then_23_322, label %match_next_23_323
+match_then_23_322:
+  %t326 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t327 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t326, i32 0, i32 6
+  %t328 = sext i32 6 to i64
+  %t329 = icmp ult i64 %t328, 10
+  br i1 %t329, label %arr_rplace_ok_1242, label %arr_rplace_oob_1243
 arr_rplace_ok_1242:
-  %t324 = getelementptr inbounds [10 x i16], [10 x i16]* %t321, i32 0, i64 %t322
+  %t330 = getelementptr inbounds [10 x i16], [10 x i16]* %t327, i32 0, i64 %t328
   br label %arr_rplace_end_1244
 arr_rplace_oob_1243:
-  store i16 0, i16* %t325
+  store i16 0, i16* %t331
   br label %arr_rplace_end_1244
 arr_rplace_end_1244:
-  %t326 = phi i16* [ %t324, %arr_rplace_ok_1242 ], [ %t325, %arr_rplace_oob_1243 ]
-  %t327 = load i16, i16* %t326
-  store i16 %t327, i16* %t319
-  %t328 = load i16, i16* %t319
-  %t329 = trunc i16 %t328 to i8
-  %t330 = zext i8 %t329 to i32
+  %t332 = phi i16* [ %t330, %arr_rplace_ok_1242 ], [ %t331, %arr_rplace_oob_1243 ]
+  %t333 = load i16, i16* %t332
+  store i16 %t333, i16* %t325
+  %t334 = load i16, i16* %t325
+  %t335 = trunc i16 %t334 to i8
+  %t336 = zext i8 %t335 to i32
   br label %match_end_4
-match_next_23_317:
-  %t333 = icmp eq i32 %t3, 218
-  br i1 %t333, label %match_then_24_331, label %match_next_24_332
-match_then_24_331:
-  %t335 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t336 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t335, i32 0, i32 6
-  %t337 = sext i32 7 to i64
-  %t338 = icmp ult i64 %t337, 10
-  br i1 %t338, label %arr_rplace_ok_1245, label %arr_rplace_oob_1246
+match_next_23_323:
+  %t339 = icmp eq i32 %t3, 218
+  br i1 %t339, label %match_then_24_337, label %match_next_24_338
+match_then_24_337:
+  %t341 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t342 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t341, i32 0, i32 6
+  %t343 = sext i32 7 to i64
+  %t344 = icmp ult i64 %t343, 10
+  br i1 %t344, label %arr_rplace_ok_1245, label %arr_rplace_oob_1246
 arr_rplace_ok_1245:
-  %t339 = getelementptr inbounds [10 x i16], [10 x i16]* %t336, i32 0, i64 %t337
+  %t345 = getelementptr inbounds [10 x i16], [10 x i16]* %t342, i32 0, i64 %t343
   br label %arr_rplace_end_1247
 arr_rplace_oob_1246:
-  store i16 0, i16* %t340
+  store i16 0, i16* %t346
   br label %arr_rplace_end_1247
 arr_rplace_end_1247:
-  %t341 = phi i16* [ %t339, %arr_rplace_ok_1245 ], [ %t340, %arr_rplace_oob_1246 ]
-  %t342 = load i16, i16* %t341
-  store i16 %t342, i16* %t334
-  %t343 = load i16, i16* %t334
-  %t344 = trunc i16 %t343 to i8
-  %t345 = zext i8 %t344 to i32
+  %t347 = phi i16* [ %t345, %arr_rplace_ok_1245 ], [ %t346, %arr_rplace_oob_1246 ]
+  %t348 = load i16, i16* %t347
+  store i16 %t348, i16* %t340
+  %t349 = load i16, i16* %t340
+  %t350 = trunc i16 %t349 to i8
+  %t351 = zext i8 %t350 to i32
   br label %match_end_4
-match_next_24_332:
-  %t348 = icmp eq i32 %t3, 219
-  br i1 %t348, label %match_then_25_346, label %match_next_25_347
-match_then_25_346:
-  %t350 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t351 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t350, i32 0, i32 6
-  %t352 = sext i32 8 to i64
-  %t353 = icmp ult i64 %t352, 10
-  br i1 %t353, label %arr_rplace_ok_1248, label %arr_rplace_oob_1249
+match_next_24_338:
+  %t354 = icmp eq i32 %t3, 219
+  br i1 %t354, label %match_then_25_352, label %match_next_25_353
+match_then_25_352:
+  %t356 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t357 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t356, i32 0, i32 6
+  %t358 = sext i32 8 to i64
+  %t359 = icmp ult i64 %t358, 10
+  br i1 %t359, label %arr_rplace_ok_1248, label %arr_rplace_oob_1249
 arr_rplace_ok_1248:
-  %t354 = getelementptr inbounds [10 x i16], [10 x i16]* %t351, i32 0, i64 %t352
+  %t360 = getelementptr inbounds [10 x i16], [10 x i16]* %t357, i32 0, i64 %t358
   br label %arr_rplace_end_1250
 arr_rplace_oob_1249:
-  store i16 0, i16* %t355
+  store i16 0, i16* %t361
   br label %arr_rplace_end_1250
 arr_rplace_end_1250:
-  %t356 = phi i16* [ %t354, %arr_rplace_ok_1248 ], [ %t355, %arr_rplace_oob_1249 ]
-  %t357 = load i16, i16* %t356
-  store i16 %t357, i16* %t349
-  %t358 = load i16, i16* %t349
-  %t359 = trunc i16 %t358 to i8
-  %t360 = zext i8 %t359 to i32
+  %t362 = phi i16* [ %t360, %arr_rplace_ok_1248 ], [ %t361, %arr_rplace_oob_1249 ]
+  %t363 = load i16, i16* %t362
+  store i16 %t363, i16* %t355
+  %t364 = load i16, i16* %t355
+  %t365 = trunc i16 %t364 to i8
+  %t366 = zext i8 %t365 to i32
   br label %match_end_4
-match_next_25_347:
-  %t363 = icmp eq i32 %t3, 220
-  br i1 %t363, label %match_then_26_361, label %match_next_26_362
-match_then_26_361:
-  %t365 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t366 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t365, i32 0, i32 6
-  %t367 = sext i32 9 to i64
-  %t368 = icmp ult i64 %t367, 10
-  br i1 %t368, label %arr_rplace_ok_1251, label %arr_rplace_oob_1252
+match_next_25_353:
+  %t369 = icmp eq i32 %t3, 220
+  br i1 %t369, label %match_then_26_367, label %match_next_26_368
+match_then_26_367:
+  %t371 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t372 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t371, i32 0, i32 6
+  %t373 = sext i32 9 to i64
+  %t374 = icmp ult i64 %t373, 10
+  br i1 %t374, label %arr_rplace_ok_1251, label %arr_rplace_oob_1252
 arr_rplace_ok_1251:
-  %t369 = getelementptr inbounds [10 x i16], [10 x i16]* %t366, i32 0, i64 %t367
+  %t375 = getelementptr inbounds [10 x i16], [10 x i16]* %t372, i32 0, i64 %t373
   br label %arr_rplace_end_1253
 arr_rplace_oob_1252:
-  store i16 0, i16* %t370
+  store i16 0, i16* %t376
   br label %arr_rplace_end_1253
 arr_rplace_end_1253:
-  %t371 = phi i16* [ %t369, %arr_rplace_ok_1251 ], [ %t370, %arr_rplace_oob_1252 ]
-  %t372 = load i16, i16* %t371
-  store i16 %t372, i16* %t364
-  %t373 = load i16, i16* %t364
-  %t374 = trunc i16 %t373 to i8
-  %t375 = zext i8 %t374 to i32
+  %t377 = phi i16* [ %t375, %arr_rplace_ok_1251 ], [ %t376, %arr_rplace_oob_1252 ]
+  %t378 = load i16, i16* %t377
+  store i16 %t378, i16* %t370
+  %t379 = load i16, i16* %t370
+  %t380 = trunc i16 %t379 to i8
+  %t381 = zext i8 %t380 to i32
   br label %match_end_4
-match_next_26_362:
-  %t378 = icmp eq i32 %t3, 221
-  br i1 %t378, label %match_then_27_376, label %match_next_27_377
-match_then_27_376:
-  %t379 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t380 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t379, i32 0, i32 19
-  %t381 = load i16, i16* %t380
-  %t382 = zext i16 %t381 to i32
+match_next_26_368:
+  %t384 = icmp eq i32 %t3, 221
+  br i1 %t384, label %match_then_27_382, label %match_next_27_383
+match_then_27_382:
+  %t385 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t386 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t385, i32 0, i32 19
+  %t387 = load i16, i16* %t386
+  %t388 = zext i16 %t387 to i32
   br label %match_end_4
-match_next_27_377:
-  %t385 = icmp eq i32 %t3, 222
-  br i1 %t385, label %match_then_28_383, label %match_next_28_384
-match_then_28_383:
-  %t386 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t387 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t386, i32 0, i32 20
-  %t388 = load i8, i8* %t387
-  %t389 = zext i8 %t388 to i32
+match_next_27_383:
+  %t391 = icmp eq i32 %t3, 222
+  br i1 %t391, label %match_then_28_389, label %match_next_28_390
+match_then_28_389:
+  %t392 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t393 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t392, i32 0, i32 20
+  %t394 = load i8, i8* %t393
+  %t395 = zext i8 %t394 to i32
   br label %match_end_4
-match_next_28_384:
-  %t392 = icmp eq i32 %t3, 223
-  br i1 %t392, label %match_then_29_390, label %match_next_29_391
-match_then_29_390:
-  %t393 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t394 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t393, i32 0, i32 21
-  %t395 = load i8, i8* %t394
-  %t396 = zext i8 %t395 to i32
+match_next_28_390:
+  %t398 = icmp eq i32 %t3, 223
+  br i1 %t398, label %match_then_29_396, label %match_next_29_397
+match_then_29_396:
+  %t399 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t400 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t399, i32 0, i32 21
+  %t401 = load i8, i8* %t400
+  %t402 = zext i8 %t401 to i32
   br label %match_end_4
-match_next_29_391:
-  %t399 = icmp eq i32 %t3, 224
-  br i1 %t399, label %match_then_30_397, label %match_next_30_398
-match_then_30_397:
-  %t400 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t401 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t400, i32 0, i32 22
-  %t402 = load i8, i8* %t401
-  %t403 = zext i8 %t402 to i32
+match_next_29_397:
+  %t405 = icmp eq i32 %t3, 224
+  br i1 %t405, label %match_then_30_403, label %match_next_30_404
+match_then_30_403:
+  %t406 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t407 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t406, i32 0, i32 22
+  %t408 = load i8, i8* %t407
+  %t409 = zext i8 %t408 to i32
   br label %match_end_4
-match_next_30_398:
-  %t406 = icmp eq i32 %t3, 225
-  br i1 %t406, label %match_then_31_404, label %match_next_31_405
-match_then_31_404:
-  %t407 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t408 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t407, i32 0, i32 11
-  %t409 = load i8, i8* %t408
-  %t410 = zext i8 %t409 to i32
+match_next_30_404:
+  %t412 = icmp eq i32 %t3, 225
+  br i1 %t412, label %match_then_31_410, label %match_next_31_411
+match_then_31_410:
+  %t413 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t414 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t413, i32 0, i32 11
+  %t415 = load i8, i8* %t414
+  %t416 = zext i8 %t415 to i32
   br label %match_end_4
-match_next_31_405:
-  %t413 = icmp eq i32 %t3, 226
-  br i1 %t413, label %match_then_32_411, label %match_next_32_412
-match_then_32_411:
-  %t414 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t415 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t414, i32 0, i32 12
-  %t416 = load i8, i8* %t415
-  %t417 = zext i8 %t416 to i32
+match_next_31_411:
+  %t419 = icmp eq i32 %t3, 226
+  br i1 %t419, label %match_then_32_417, label %match_next_32_418
+match_then_32_417:
+  %t420 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t421 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t420, i32 0, i32 12
+  %t422 = load i8, i8* %t421
+  %t423 = zext i8 %t422 to i32
   br label %match_end_4
-match_next_32_412:
-  %t420 = icmp eq i32 %t3, 227
-  br i1 %t420, label %match_then_33_418, label %match_next_33_419
-match_then_33_418:
-  %t421 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t422 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t421, i32 0, i32 13
-  %t423 = load i8, i8* %t422
-  %t424 = zext i8 %t423 to i32
+match_next_32_418:
+  %t426 = icmp eq i32 %t3, 227
+  br i1 %t426, label %match_then_33_424, label %match_next_33_425
+match_then_33_424:
+  %t427 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t428 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t427, i32 0, i32 13
+  %t429 = load i8, i8* %t428
+  %t430 = zext i8 %t429 to i32
   br label %match_end_4
-match_next_33_419:
-  %t427 = icmp eq i32 %t3, 228
-  br i1 %t427, label %match_then_34_425, label %match_next_34_426
-match_then_34_425:
-  %t428 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t429 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t428, i32 0, i32 14
-  %t430 = load i8, i8* %t429
-  %t431 = zext i8 %t430 to i32
+match_next_33_425:
+  %t433 = icmp eq i32 %t3, 228
+  br i1 %t433, label %match_then_34_431, label %match_next_34_432
+match_then_34_431:
+  %t434 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t435 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t434, i32 0, i32 14
+  %t436 = load i8, i8* %t435
+  %t437 = zext i8 %t436 to i32
   br label %match_end_4
-match_next_34_426:
-  %t434 = icmp eq i32 %t3, 229
-  br i1 %t434, label %match_then_35_432, label %match_next_35_433
-match_then_35_432:
-  %t435 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t436 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t435, i32 0, i32 15
-  %t437 = load i8, i8* %t436
-  %t438 = zext i8 %t437 to i32
+match_next_34_432:
+  %t440 = icmp eq i32 %t3, 229
+  br i1 %t440, label %match_then_35_438, label %match_next_35_439
+match_then_35_438:
+  %t441 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t442 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t441, i32 0, i32 15
+  %t443 = load i8, i8* %t442
+  %t444 = zext i8 %t443 to i32
   br label %match_end_4
-match_next_35_433:
-  %t441 = icmp eq i32 %t3, 230
-  br i1 %t441, label %match_then_36_439, label %match_next_36_440
-match_then_36_439:
-  %t442 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t443 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t442, i32 0, i32 16
-  %t444 = load i8, i8* %t443
-  %t445 = zext i8 %t444 to i32
+match_next_35_439:
+  %t447 = icmp eq i32 %t3, 230
+  br i1 %t447, label %match_then_36_445, label %match_next_36_446
+match_then_36_445:
+  %t448 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t449 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t448, i32 0, i32 16
+  %t450 = load i8, i8* %t449
+  %t451 = zext i8 %t450 to i32
   br label %match_end_4
-match_next_36_440:
-  %t448 = icmp eq i32 %t3, 231
-  br i1 %t448, label %match_then_37_446, label %match_next_37_447
-match_then_37_446:
-  %t449 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t450 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t449, i32 0, i32 5
-  %t451 = sext i32 0 to i64
-  %t452 = icmp ult i64 %t451, 10
-  br i1 %t452, label %arr_rplace_ok_1254, label %arr_rplace_oob_1255
+match_next_36_446:
+  %t454 = icmp eq i32 %t3, 231
+  br i1 %t454, label %match_then_37_452, label %match_next_37_453
+match_then_37_452:
+  %t455 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t456 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t455, i32 0, i32 5
+  %t457 = sext i32 0 to i64
+  %t458 = icmp ult i64 %t457, 10
+  br i1 %t458, label %arr_rplace_ok_1254, label %arr_rplace_oob_1255
 arr_rplace_ok_1254:
-  %t453 = getelementptr inbounds [10 x i8], [10 x i8]* %t450, i32 0, i64 %t451
+  %t459 = getelementptr inbounds [10 x i8], [10 x i8]* %t456, i32 0, i64 %t457
   br label %arr_rplace_end_1256
 arr_rplace_oob_1255:
-  store i8 0, i8* %t454
+  store i8 0, i8* %t460
   br label %arr_rplace_end_1256
 arr_rplace_end_1256:
-  %t455 = phi i8* [ %t453, %arr_rplace_ok_1254 ], [ %t454, %arr_rplace_oob_1255 ]
-  %t456 = load i8, i8* %t455
-  %t457 = zext i8 %t456 to i32
+  %t461 = phi i8* [ %t459, %arr_rplace_ok_1254 ], [ %t460, %arr_rplace_oob_1255 ]
+  %t462 = load i8, i8* %t461
+  %t463 = zext i8 %t462 to i32
   br label %match_end_4
-match_next_37_447:
-  %t460 = icmp eq i32 %t3, 232
-  br i1 %t460, label %match_then_38_458, label %match_next_38_459
-match_then_38_458:
-  %t461 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t462 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t461, i32 0, i32 5
-  %t463 = sext i32 1 to i64
-  %t464 = icmp ult i64 %t463, 10
-  br i1 %t464, label %arr_rplace_ok_1257, label %arr_rplace_oob_1258
+match_next_37_453:
+  %t466 = icmp eq i32 %t3, 232
+  br i1 %t466, label %match_then_38_464, label %match_next_38_465
+match_then_38_464:
+  %t467 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t468 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t467, i32 0, i32 5
+  %t469 = sext i32 1 to i64
+  %t470 = icmp ult i64 %t469, 10
+  br i1 %t470, label %arr_rplace_ok_1257, label %arr_rplace_oob_1258
 arr_rplace_ok_1257:
-  %t465 = getelementptr inbounds [10 x i8], [10 x i8]* %t462, i32 0, i64 %t463
+  %t471 = getelementptr inbounds [10 x i8], [10 x i8]* %t468, i32 0, i64 %t469
   br label %arr_rplace_end_1259
 arr_rplace_oob_1258:
-  store i8 0, i8* %t466
+  store i8 0, i8* %t472
   br label %arr_rplace_end_1259
 arr_rplace_end_1259:
-  %t467 = phi i8* [ %t465, %arr_rplace_ok_1257 ], [ %t466, %arr_rplace_oob_1258 ]
-  %t468 = load i8, i8* %t467
-  %t469 = zext i8 %t468 to i32
+  %t473 = phi i8* [ %t471, %arr_rplace_ok_1257 ], [ %t472, %arr_rplace_oob_1258 ]
+  %t474 = load i8, i8* %t473
+  %t475 = zext i8 %t474 to i32
   br label %match_end_4
-match_next_38_459:
-  %t472 = icmp eq i32 %t3, 233
-  br i1 %t472, label %match_then_39_470, label %match_next_39_471
-match_then_39_470:
-  %t473 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t474 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t473, i32 0, i32 5
-  %t475 = sext i32 2 to i64
-  %t476 = icmp ult i64 %t475, 10
-  br i1 %t476, label %arr_rplace_ok_1260, label %arr_rplace_oob_1261
+match_next_38_465:
+  %t478 = icmp eq i32 %t3, 233
+  br i1 %t478, label %match_then_39_476, label %match_next_39_477
+match_then_39_476:
+  %t479 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t480 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t479, i32 0, i32 5
+  %t481 = sext i32 2 to i64
+  %t482 = icmp ult i64 %t481, 10
+  br i1 %t482, label %arr_rplace_ok_1260, label %arr_rplace_oob_1261
 arr_rplace_ok_1260:
-  %t477 = getelementptr inbounds [10 x i8], [10 x i8]* %t474, i32 0, i64 %t475
+  %t483 = getelementptr inbounds [10 x i8], [10 x i8]* %t480, i32 0, i64 %t481
   br label %arr_rplace_end_1262
 arr_rplace_oob_1261:
-  store i8 0, i8* %t478
+  store i8 0, i8* %t484
   br label %arr_rplace_end_1262
 arr_rplace_end_1262:
-  %t479 = phi i8* [ %t477, %arr_rplace_ok_1260 ], [ %t478, %arr_rplace_oob_1261 ]
-  %t480 = load i8, i8* %t479
-  %t481 = zext i8 %t480 to i32
+  %t485 = phi i8* [ %t483, %arr_rplace_ok_1260 ], [ %t484, %arr_rplace_oob_1261 ]
+  %t486 = load i8, i8* %t485
+  %t487 = zext i8 %t486 to i32
   br label %match_end_4
-match_next_39_471:
-  %t484 = icmp eq i32 %t3, 234
-  br i1 %t484, label %match_then_40_482, label %match_next_40_483
-match_then_40_482:
-  %t485 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t486 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t485, i32 0, i32 5
-  %t487 = sext i32 3 to i64
-  %t488 = icmp ult i64 %t487, 10
-  br i1 %t488, label %arr_rplace_ok_1263, label %arr_rplace_oob_1264
+match_next_39_477:
+  %t490 = icmp eq i32 %t3, 234
+  br i1 %t490, label %match_then_40_488, label %match_next_40_489
+match_then_40_488:
+  %t491 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t492 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t491, i32 0, i32 5
+  %t493 = sext i32 3 to i64
+  %t494 = icmp ult i64 %t493, 10
+  br i1 %t494, label %arr_rplace_ok_1263, label %arr_rplace_oob_1264
 arr_rplace_ok_1263:
-  %t489 = getelementptr inbounds [10 x i8], [10 x i8]* %t486, i32 0, i64 %t487
+  %t495 = getelementptr inbounds [10 x i8], [10 x i8]* %t492, i32 0, i64 %t493
   br label %arr_rplace_end_1265
 arr_rplace_oob_1264:
-  store i8 0, i8* %t490
+  store i8 0, i8* %t496
   br label %arr_rplace_end_1265
 arr_rplace_end_1265:
-  %t491 = phi i8* [ %t489, %arr_rplace_ok_1263 ], [ %t490, %arr_rplace_oob_1264 ]
-  %t492 = load i8, i8* %t491
-  %t493 = zext i8 %t492 to i32
+  %t497 = phi i8* [ %t495, %arr_rplace_ok_1263 ], [ %t496, %arr_rplace_oob_1264 ]
+  %t498 = load i8, i8* %t497
+  %t499 = zext i8 %t498 to i32
   br label %match_end_4
-match_next_40_483:
-  %t496 = icmp eq i32 %t3, 235
-  br i1 %t496, label %match_then_41_494, label %match_next_41_495
-match_then_41_494:
-  %t497 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t498 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t497, i32 0, i32 5
-  %t499 = sext i32 4 to i64
-  %t500 = icmp ult i64 %t499, 10
-  br i1 %t500, label %arr_rplace_ok_1266, label %arr_rplace_oob_1267
+match_next_40_489:
+  %t502 = icmp eq i32 %t3, 235
+  br i1 %t502, label %match_then_41_500, label %match_next_41_501
+match_then_41_500:
+  %t503 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t504 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t503, i32 0, i32 5
+  %t505 = sext i32 4 to i64
+  %t506 = icmp ult i64 %t505, 10
+  br i1 %t506, label %arr_rplace_ok_1266, label %arr_rplace_oob_1267
 arr_rplace_ok_1266:
-  %t501 = getelementptr inbounds [10 x i8], [10 x i8]* %t498, i32 0, i64 %t499
+  %t507 = getelementptr inbounds [10 x i8], [10 x i8]* %t504, i32 0, i64 %t505
   br label %arr_rplace_end_1268
 arr_rplace_oob_1267:
-  store i8 0, i8* %t502
+  store i8 0, i8* %t508
   br label %arr_rplace_end_1268
 arr_rplace_end_1268:
-  %t503 = phi i8* [ %t501, %arr_rplace_ok_1266 ], [ %t502, %arr_rplace_oob_1267 ]
-  %t504 = load i8, i8* %t503
-  %t505 = zext i8 %t504 to i32
+  %t509 = phi i8* [ %t507, %arr_rplace_ok_1266 ], [ %t508, %arr_rplace_oob_1267 ]
+  %t510 = load i8, i8* %t509
+  %t511 = zext i8 %t510 to i32
   br label %match_end_4
-match_next_41_495:
-  %t508 = icmp eq i32 %t3, 236
-  br i1 %t508, label %match_then_42_506, label %match_next_42_507
-match_then_42_506:
-  %t509 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t510 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t509, i32 0, i32 5
-  %t511 = sext i32 5 to i64
-  %t512 = icmp ult i64 %t511, 10
-  br i1 %t512, label %arr_rplace_ok_1269, label %arr_rplace_oob_1270
+match_next_41_501:
+  %t514 = icmp eq i32 %t3, 236
+  br i1 %t514, label %match_then_42_512, label %match_next_42_513
+match_then_42_512:
+  %t515 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t516 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t515, i32 0, i32 5
+  %t517 = sext i32 5 to i64
+  %t518 = icmp ult i64 %t517, 10
+  br i1 %t518, label %arr_rplace_ok_1269, label %arr_rplace_oob_1270
 arr_rplace_ok_1269:
-  %t513 = getelementptr inbounds [10 x i8], [10 x i8]* %t510, i32 0, i64 %t511
+  %t519 = getelementptr inbounds [10 x i8], [10 x i8]* %t516, i32 0, i64 %t517
   br label %arr_rplace_end_1271
 arr_rplace_oob_1270:
-  store i8 0, i8* %t514
+  store i8 0, i8* %t520
   br label %arr_rplace_end_1271
 arr_rplace_end_1271:
-  %t515 = phi i8* [ %t513, %arr_rplace_ok_1269 ], [ %t514, %arr_rplace_oob_1270 ]
-  %t516 = load i8, i8* %t515
-  %t517 = zext i8 %t516 to i32
+  %t521 = phi i8* [ %t519, %arr_rplace_ok_1269 ], [ %t520, %arr_rplace_oob_1270 ]
+  %t522 = load i8, i8* %t521
+  %t523 = zext i8 %t522 to i32
   br label %match_end_4
-match_next_42_507:
-  %t520 = icmp eq i32 %t3, 237
-  br i1 %t520, label %match_then_43_518, label %match_next_43_519
-match_then_43_518:
-  %t521 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t522 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t521, i32 0, i32 5
-  %t523 = sext i32 6 to i64
-  %t524 = icmp ult i64 %t523, 10
-  br i1 %t524, label %arr_rplace_ok_1272, label %arr_rplace_oob_1273
+match_next_42_513:
+  %t526 = icmp eq i32 %t3, 237
+  br i1 %t526, label %match_then_43_524, label %match_next_43_525
+match_then_43_524:
+  %t527 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t528 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t527, i32 0, i32 5
+  %t529 = sext i32 6 to i64
+  %t530 = icmp ult i64 %t529, 10
+  br i1 %t530, label %arr_rplace_ok_1272, label %arr_rplace_oob_1273
 arr_rplace_ok_1272:
-  %t525 = getelementptr inbounds [10 x i8], [10 x i8]* %t522, i32 0, i64 %t523
+  %t531 = getelementptr inbounds [10 x i8], [10 x i8]* %t528, i32 0, i64 %t529
   br label %arr_rplace_end_1274
 arr_rplace_oob_1273:
-  store i8 0, i8* %t526
+  store i8 0, i8* %t532
   br label %arr_rplace_end_1274
 arr_rplace_end_1274:
-  %t527 = phi i8* [ %t525, %arr_rplace_ok_1272 ], [ %t526, %arr_rplace_oob_1273 ]
-  %t528 = load i8, i8* %t527
-  %t529 = zext i8 %t528 to i32
+  %t533 = phi i8* [ %t531, %arr_rplace_ok_1272 ], [ %t532, %arr_rplace_oob_1273 ]
+  %t534 = load i8, i8* %t533
+  %t535 = zext i8 %t534 to i32
   br label %match_end_4
-match_next_43_519:
-  %t532 = icmp eq i32 %t3, 238
-  br i1 %t532, label %match_then_44_530, label %match_next_44_531
-match_then_44_530:
-  %t533 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t534 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t533, i32 0, i32 5
-  %t535 = sext i32 7 to i64
-  %t536 = icmp ult i64 %t535, 10
-  br i1 %t536, label %arr_rplace_ok_1275, label %arr_rplace_oob_1276
+match_next_43_525:
+  %t538 = icmp eq i32 %t3, 238
+  br i1 %t538, label %match_then_44_536, label %match_next_44_537
+match_then_44_536:
+  %t539 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t540 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t539, i32 0, i32 5
+  %t541 = sext i32 7 to i64
+  %t542 = icmp ult i64 %t541, 10
+  br i1 %t542, label %arr_rplace_ok_1275, label %arr_rplace_oob_1276
 arr_rplace_ok_1275:
-  %t537 = getelementptr inbounds [10 x i8], [10 x i8]* %t534, i32 0, i64 %t535
+  %t543 = getelementptr inbounds [10 x i8], [10 x i8]* %t540, i32 0, i64 %t541
   br label %arr_rplace_end_1277
 arr_rplace_oob_1276:
-  store i8 0, i8* %t538
+  store i8 0, i8* %t544
   br label %arr_rplace_end_1277
 arr_rplace_end_1277:
-  %t539 = phi i8* [ %t537, %arr_rplace_ok_1275 ], [ %t538, %arr_rplace_oob_1276 ]
-  %t540 = load i8, i8* %t539
-  %t541 = zext i8 %t540 to i32
+  %t545 = phi i8* [ %t543, %arr_rplace_ok_1275 ], [ %t544, %arr_rplace_oob_1276 ]
+  %t546 = load i8, i8* %t545
+  %t547 = zext i8 %t546 to i32
   br label %match_end_4
-match_next_44_531:
-  %t544 = icmp eq i32 %t3, 239
-  br i1 %t544, label %match_then_45_542, label %match_next_45_543
-match_then_45_542:
-  %t545 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t546 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t545, i32 0, i32 5
-  %t547 = sext i32 8 to i64
-  %t548 = icmp ult i64 %t547, 10
-  br i1 %t548, label %arr_rplace_ok_1278, label %arr_rplace_oob_1279
+match_next_44_537:
+  %t550 = icmp eq i32 %t3, 239
+  br i1 %t550, label %match_then_45_548, label %match_next_45_549
+match_then_45_548:
+  %t551 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t552 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t551, i32 0, i32 5
+  %t553 = sext i32 8 to i64
+  %t554 = icmp ult i64 %t553, 10
+  br i1 %t554, label %arr_rplace_ok_1278, label %arr_rplace_oob_1279
 arr_rplace_ok_1278:
-  %t549 = getelementptr inbounds [10 x i8], [10 x i8]* %t546, i32 0, i64 %t547
+  %t555 = getelementptr inbounds [10 x i8], [10 x i8]* %t552, i32 0, i64 %t553
   br label %arr_rplace_end_1280
 arr_rplace_oob_1279:
-  store i8 0, i8* %t550
+  store i8 0, i8* %t556
   br label %arr_rplace_end_1280
 arr_rplace_end_1280:
-  %t551 = phi i8* [ %t549, %arr_rplace_ok_1278 ], [ %t550, %arr_rplace_oob_1279 ]
-  %t552 = load i8, i8* %t551
-  %t553 = zext i8 %t552 to i32
+  %t557 = phi i8* [ %t555, %arr_rplace_ok_1278 ], [ %t556, %arr_rplace_oob_1279 ]
+  %t558 = load i8, i8* %t557
+  %t559 = zext i8 %t558 to i32
   br label %match_end_4
-match_next_45_543:
-  %t556 = icmp eq i32 %t3, 240
-  br i1 %t556, label %match_then_46_554, label %match_next_46_555
-match_then_46_554:
-  %t557 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t558 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t557, i32 0, i32 5
-  %t559 = sext i32 9 to i64
-  %t560 = icmp ult i64 %t559, 10
-  br i1 %t560, label %arr_rplace_ok_1281, label %arr_rplace_oob_1282
+match_next_45_549:
+  %t562 = icmp eq i32 %t3, 240
+  br i1 %t562, label %match_then_46_560, label %match_next_46_561
+match_then_46_560:
+  %t563 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t564 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t563, i32 0, i32 5
+  %t565 = sext i32 9 to i64
+  %t566 = icmp ult i64 %t565, 10
+  br i1 %t566, label %arr_rplace_ok_1281, label %arr_rplace_oob_1282
 arr_rplace_ok_1281:
-  %t561 = getelementptr inbounds [10 x i8], [10 x i8]* %t558, i32 0, i64 %t559
+  %t567 = getelementptr inbounds [10 x i8], [10 x i8]* %t564, i32 0, i64 %t565
   br label %arr_rplace_end_1283
 arr_rplace_oob_1282:
-  store i8 0, i8* %t562
+  store i8 0, i8* %t568
   br label %arr_rplace_end_1283
 arr_rplace_end_1283:
-  %t563 = phi i8* [ %t561, %arr_rplace_ok_1281 ], [ %t562, %arr_rplace_oob_1282 ]
-  %t564 = load i8, i8* %t563
-  %t565 = zext i8 %t564 to i32
+  %t569 = phi i8* [ %t567, %arr_rplace_ok_1281 ], [ %t568, %arr_rplace_oob_1282 ]
+  %t570 = load i8, i8* %t569
+  %t571 = zext i8 %t570 to i32
   br label %match_end_4
-match_next_46_555:
-  %t568 = icmp eq i32 %t3, 241
-  br i1 %t568, label %match_then_47_566, label %match_next_47_567
-match_then_47_566:
-  %t569 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t570 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t569, i32 0, i32 6
-  %t571 = sext i32 0 to i64
-  %t572 = icmp ult i64 %t571, 10
-  br i1 %t572, label %arr_rplace_ok_1284, label %arr_rplace_oob_1285
+match_next_46_561:
+  %t574 = icmp eq i32 %t3, 241
+  br i1 %t574, label %match_then_47_572, label %match_next_47_573
+match_then_47_572:
+  %t575 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t576 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t575, i32 0, i32 6
+  %t577 = sext i32 0 to i64
+  %t578 = icmp ult i64 %t577, 10
+  br i1 %t578, label %arr_rplace_ok_1284, label %arr_rplace_oob_1285
 arr_rplace_ok_1284:
-  %t573 = getelementptr inbounds [10 x i16], [10 x i16]* %t570, i32 0, i64 %t571
+  %t579 = getelementptr inbounds [10 x i16], [10 x i16]* %t576, i32 0, i64 %t577
   br label %arr_rplace_end_1286
 arr_rplace_oob_1285:
-  store i16 0, i16* %t574
+  store i16 0, i16* %t580
   br label %arr_rplace_end_1286
 arr_rplace_end_1286:
-  %t575 = phi i16* [ %t573, %arr_rplace_ok_1284 ], [ %t574, %arr_rplace_oob_1285 ]
-  %t576 = load i16, i16* %t575
-  %t577 = zext i16 %t576 to i32
+  %t581 = phi i16* [ %t579, %arr_rplace_ok_1284 ], [ %t580, %arr_rplace_oob_1285 ]
+  %t582 = load i16, i16* %t581
+  %t583 = zext i16 %t582 to i32
   br label %match_end_4
-match_next_47_567:
-  %t580 = icmp eq i32 %t3, 242
-  br i1 %t580, label %match_then_48_578, label %match_next_48_579
-match_then_48_578:
-  %t581 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t582 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t581, i32 0, i32 6
-  %t583 = sext i32 1 to i64
-  %t584 = icmp ult i64 %t583, 10
-  br i1 %t584, label %arr_rplace_ok_1287, label %arr_rplace_oob_1288
+match_next_47_573:
+  %t586 = icmp eq i32 %t3, 242
+  br i1 %t586, label %match_then_48_584, label %match_next_48_585
+match_then_48_584:
+  %t587 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t588 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t587, i32 0, i32 6
+  %t589 = sext i32 1 to i64
+  %t590 = icmp ult i64 %t589, 10
+  br i1 %t590, label %arr_rplace_ok_1287, label %arr_rplace_oob_1288
 arr_rplace_ok_1287:
-  %t585 = getelementptr inbounds [10 x i16], [10 x i16]* %t582, i32 0, i64 %t583
+  %t591 = getelementptr inbounds [10 x i16], [10 x i16]* %t588, i32 0, i64 %t589
   br label %arr_rplace_end_1289
 arr_rplace_oob_1288:
-  store i16 0, i16* %t586
+  store i16 0, i16* %t592
   br label %arr_rplace_end_1289
 arr_rplace_end_1289:
-  %t587 = phi i16* [ %t585, %arr_rplace_ok_1287 ], [ %t586, %arr_rplace_oob_1288 ]
-  %t588 = load i16, i16* %t587
-  %t589 = zext i16 %t588 to i32
+  %t593 = phi i16* [ %t591, %arr_rplace_ok_1287 ], [ %t592, %arr_rplace_oob_1288 ]
+  %t594 = load i16, i16* %t593
+  %t595 = zext i16 %t594 to i32
   br label %match_end_4
-match_next_48_579:
-  %t592 = icmp eq i32 %t3, 243
-  br i1 %t592, label %match_then_49_590, label %match_next_49_591
-match_then_49_590:
-  %t593 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t594 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t593, i32 0, i32 6
-  %t595 = sext i32 2 to i64
-  %t596 = icmp ult i64 %t595, 10
-  br i1 %t596, label %arr_rplace_ok_1290, label %arr_rplace_oob_1291
+match_next_48_585:
+  %t598 = icmp eq i32 %t3, 243
+  br i1 %t598, label %match_then_49_596, label %match_next_49_597
+match_then_49_596:
+  %t599 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t600 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t599, i32 0, i32 6
+  %t601 = sext i32 2 to i64
+  %t602 = icmp ult i64 %t601, 10
+  br i1 %t602, label %arr_rplace_ok_1290, label %arr_rplace_oob_1291
 arr_rplace_ok_1290:
-  %t597 = getelementptr inbounds [10 x i16], [10 x i16]* %t594, i32 0, i64 %t595
+  %t603 = getelementptr inbounds [10 x i16], [10 x i16]* %t600, i32 0, i64 %t601
   br label %arr_rplace_end_1292
 arr_rplace_oob_1291:
-  store i16 0, i16* %t598
+  store i16 0, i16* %t604
   br label %arr_rplace_end_1292
 arr_rplace_end_1292:
-  %t599 = phi i16* [ %t597, %arr_rplace_ok_1290 ], [ %t598, %arr_rplace_oob_1291 ]
-  %t600 = load i16, i16* %t599
-  %t601 = zext i16 %t600 to i32
+  %t605 = phi i16* [ %t603, %arr_rplace_ok_1290 ], [ %t604, %arr_rplace_oob_1291 ]
+  %t606 = load i16, i16* %t605
+  %t607 = zext i16 %t606 to i32
   br label %match_end_4
-match_next_49_591:
-  %t604 = icmp eq i32 %t3, 244
-  br i1 %t604, label %match_then_50_602, label %match_next_50_603
-match_then_50_602:
-  %t605 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t606 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t605, i32 0, i32 6
-  %t607 = sext i32 3 to i64
-  %t608 = icmp ult i64 %t607, 10
-  br i1 %t608, label %arr_rplace_ok_1293, label %arr_rplace_oob_1294
+match_next_49_597:
+  %t610 = icmp eq i32 %t3, 244
+  br i1 %t610, label %match_then_50_608, label %match_next_50_609
+match_then_50_608:
+  %t611 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t612 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t611, i32 0, i32 6
+  %t613 = sext i32 3 to i64
+  %t614 = icmp ult i64 %t613, 10
+  br i1 %t614, label %arr_rplace_ok_1293, label %arr_rplace_oob_1294
 arr_rplace_ok_1293:
-  %t609 = getelementptr inbounds [10 x i16], [10 x i16]* %t606, i32 0, i64 %t607
+  %t615 = getelementptr inbounds [10 x i16], [10 x i16]* %t612, i32 0, i64 %t613
   br label %arr_rplace_end_1295
 arr_rplace_oob_1294:
-  store i16 0, i16* %t610
+  store i16 0, i16* %t616
   br label %arr_rplace_end_1295
 arr_rplace_end_1295:
-  %t611 = phi i16* [ %t609, %arr_rplace_ok_1293 ], [ %t610, %arr_rplace_oob_1294 ]
-  %t612 = load i16, i16* %t611
-  %t613 = zext i16 %t612 to i32
+  %t617 = phi i16* [ %t615, %arr_rplace_ok_1293 ], [ %t616, %arr_rplace_oob_1294 ]
+  %t618 = load i16, i16* %t617
+  %t619 = zext i16 %t618 to i32
   br label %match_end_4
-match_next_50_603:
-  %t616 = icmp eq i32 %t3, 245
-  br i1 %t616, label %match_then_51_614, label %match_next_51_615
-match_then_51_614:
-  %t617 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t618 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t617, i32 0, i32 6
-  %t619 = sext i32 4 to i64
-  %t620 = icmp ult i64 %t619, 10
-  br i1 %t620, label %arr_rplace_ok_1296, label %arr_rplace_oob_1297
+match_next_50_609:
+  %t622 = icmp eq i32 %t3, 245
+  br i1 %t622, label %match_then_51_620, label %match_next_51_621
+match_then_51_620:
+  %t623 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t624 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t623, i32 0, i32 6
+  %t625 = sext i32 4 to i64
+  %t626 = icmp ult i64 %t625, 10
+  br i1 %t626, label %arr_rplace_ok_1296, label %arr_rplace_oob_1297
 arr_rplace_ok_1296:
-  %t621 = getelementptr inbounds [10 x i16], [10 x i16]* %t618, i32 0, i64 %t619
+  %t627 = getelementptr inbounds [10 x i16], [10 x i16]* %t624, i32 0, i64 %t625
   br label %arr_rplace_end_1298
 arr_rplace_oob_1297:
-  store i16 0, i16* %t622
+  store i16 0, i16* %t628
   br label %arr_rplace_end_1298
 arr_rplace_end_1298:
-  %t623 = phi i16* [ %t621, %arr_rplace_ok_1296 ], [ %t622, %arr_rplace_oob_1297 ]
-  %t624 = load i16, i16* %t623
-  %t625 = zext i16 %t624 to i32
+  %t629 = phi i16* [ %t627, %arr_rplace_ok_1296 ], [ %t628, %arr_rplace_oob_1297 ]
+  %t630 = load i16, i16* %t629
+  %t631 = zext i16 %t630 to i32
   br label %match_end_4
-match_next_51_615:
-  %t628 = icmp eq i32 %t3, 246
-  br i1 %t628, label %match_then_52_626, label %match_next_52_627
-match_then_52_626:
-  %t629 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t630 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t629, i32 0, i32 6
-  %t631 = sext i32 5 to i64
-  %t632 = icmp ult i64 %t631, 10
-  br i1 %t632, label %arr_rplace_ok_1299, label %arr_rplace_oob_1300
+match_next_51_621:
+  %t634 = icmp eq i32 %t3, 246
+  br i1 %t634, label %match_then_52_632, label %match_next_52_633
+match_then_52_632:
+  %t635 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t636 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t635, i32 0, i32 6
+  %t637 = sext i32 5 to i64
+  %t638 = icmp ult i64 %t637, 10
+  br i1 %t638, label %arr_rplace_ok_1299, label %arr_rplace_oob_1300
 arr_rplace_ok_1299:
-  %t633 = getelementptr inbounds [10 x i16], [10 x i16]* %t630, i32 0, i64 %t631
+  %t639 = getelementptr inbounds [10 x i16], [10 x i16]* %t636, i32 0, i64 %t637
   br label %arr_rplace_end_1301
 arr_rplace_oob_1300:
-  store i16 0, i16* %t634
+  store i16 0, i16* %t640
   br label %arr_rplace_end_1301
 arr_rplace_end_1301:
-  %t635 = phi i16* [ %t633, %arr_rplace_ok_1299 ], [ %t634, %arr_rplace_oob_1300 ]
-  %t636 = load i16, i16* %t635
-  %t637 = zext i16 %t636 to i32
+  %t641 = phi i16* [ %t639, %arr_rplace_ok_1299 ], [ %t640, %arr_rplace_oob_1300 ]
+  %t642 = load i16, i16* %t641
+  %t643 = zext i16 %t642 to i32
   br label %match_end_4
-match_next_52_627:
-  %t640 = icmp eq i32 %t3, 247
-  br i1 %t640, label %match_then_53_638, label %match_next_53_639
-match_then_53_638:
-  %t641 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t642 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t641, i32 0, i32 6
-  %t643 = sext i32 6 to i64
-  %t644 = icmp ult i64 %t643, 10
-  br i1 %t644, label %arr_rplace_ok_1302, label %arr_rplace_oob_1303
+match_next_52_633:
+  %t646 = icmp eq i32 %t3, 247
+  br i1 %t646, label %match_then_53_644, label %match_next_53_645
+match_then_53_644:
+  %t647 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t648 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t647, i32 0, i32 6
+  %t649 = sext i32 6 to i64
+  %t650 = icmp ult i64 %t649, 10
+  br i1 %t650, label %arr_rplace_ok_1302, label %arr_rplace_oob_1303
 arr_rplace_ok_1302:
-  %t645 = getelementptr inbounds [10 x i16], [10 x i16]* %t642, i32 0, i64 %t643
+  %t651 = getelementptr inbounds [10 x i16], [10 x i16]* %t648, i32 0, i64 %t649
   br label %arr_rplace_end_1304
 arr_rplace_oob_1303:
-  store i16 0, i16* %t646
+  store i16 0, i16* %t652
   br label %arr_rplace_end_1304
 arr_rplace_end_1304:
-  %t647 = phi i16* [ %t645, %arr_rplace_ok_1302 ], [ %t646, %arr_rplace_oob_1303 ]
-  %t648 = load i16, i16* %t647
-  %t649 = zext i16 %t648 to i32
+  %t653 = phi i16* [ %t651, %arr_rplace_ok_1302 ], [ %t652, %arr_rplace_oob_1303 ]
+  %t654 = load i16, i16* %t653
+  %t655 = zext i16 %t654 to i32
   br label %match_end_4
-match_next_53_639:
-  %t652 = icmp eq i32 %t3, 248
-  br i1 %t652, label %match_then_54_650, label %match_next_54_651
-match_then_54_650:
-  %t653 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t654 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t653, i32 0, i32 6
-  %t655 = sext i32 7 to i64
-  %t656 = icmp ult i64 %t655, 10
-  br i1 %t656, label %arr_rplace_ok_1305, label %arr_rplace_oob_1306
+match_next_53_645:
+  %t658 = icmp eq i32 %t3, 248
+  br i1 %t658, label %match_then_54_656, label %match_next_54_657
+match_then_54_656:
+  %t659 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t660 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t659, i32 0, i32 6
+  %t661 = sext i32 7 to i64
+  %t662 = icmp ult i64 %t661, 10
+  br i1 %t662, label %arr_rplace_ok_1305, label %arr_rplace_oob_1306
 arr_rplace_ok_1305:
-  %t657 = getelementptr inbounds [10 x i16], [10 x i16]* %t654, i32 0, i64 %t655
+  %t663 = getelementptr inbounds [10 x i16], [10 x i16]* %t660, i32 0, i64 %t661
   br label %arr_rplace_end_1307
 arr_rplace_oob_1306:
-  store i16 0, i16* %t658
+  store i16 0, i16* %t664
   br label %arr_rplace_end_1307
 arr_rplace_end_1307:
-  %t659 = phi i16* [ %t657, %arr_rplace_ok_1305 ], [ %t658, %arr_rplace_oob_1306 ]
-  %t660 = load i16, i16* %t659
-  %t661 = zext i16 %t660 to i32
+  %t665 = phi i16* [ %t663, %arr_rplace_ok_1305 ], [ %t664, %arr_rplace_oob_1306 ]
+  %t666 = load i16, i16* %t665
+  %t667 = zext i16 %t666 to i32
   br label %match_end_4
-match_next_54_651:
-  %t664 = icmp eq i32 %t3, 249
-  br i1 %t664, label %match_then_55_662, label %match_next_55_663
-match_then_55_662:
-  %t665 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t666 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t665, i32 0, i32 6
-  %t667 = sext i32 8 to i64
-  %t668 = icmp ult i64 %t667, 10
-  br i1 %t668, label %arr_rplace_ok_1308, label %arr_rplace_oob_1309
+match_next_54_657:
+  %t670 = icmp eq i32 %t3, 249
+  br i1 %t670, label %match_then_55_668, label %match_next_55_669
+match_then_55_668:
+  %t671 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t672 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t671, i32 0, i32 6
+  %t673 = sext i32 8 to i64
+  %t674 = icmp ult i64 %t673, 10
+  br i1 %t674, label %arr_rplace_ok_1308, label %arr_rplace_oob_1309
 arr_rplace_ok_1308:
-  %t669 = getelementptr inbounds [10 x i16], [10 x i16]* %t666, i32 0, i64 %t667
+  %t675 = getelementptr inbounds [10 x i16], [10 x i16]* %t672, i32 0, i64 %t673
   br label %arr_rplace_end_1310
 arr_rplace_oob_1309:
-  store i16 0, i16* %t670
+  store i16 0, i16* %t676
   br label %arr_rplace_end_1310
 arr_rplace_end_1310:
-  %t671 = phi i16* [ %t669, %arr_rplace_ok_1308 ], [ %t670, %arr_rplace_oob_1309 ]
-  %t672 = load i16, i16* %t671
-  %t673 = zext i16 %t672 to i32
+  %t677 = phi i16* [ %t675, %arr_rplace_ok_1308 ], [ %t676, %arr_rplace_oob_1309 ]
+  %t678 = load i16, i16* %t677
+  %t679 = zext i16 %t678 to i32
   br label %match_end_4
-match_next_55_663:
-  %t676 = icmp eq i32 %t3, 250
-  br i1 %t676, label %match_then_56_674, label %match_next_56_675
-match_then_56_674:
-  %t677 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t678 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t677, i32 0, i32 6
-  %t679 = sext i32 9 to i64
-  %t680 = icmp ult i64 %t679, 10
-  br i1 %t680, label %arr_rplace_ok_1311, label %arr_rplace_oob_1312
+match_next_55_669:
+  %t682 = icmp eq i32 %t3, 250
+  br i1 %t682, label %match_then_56_680, label %match_next_56_681
+match_then_56_680:
+  %t683 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t684 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t683, i32 0, i32 6
+  %t685 = sext i32 9 to i64
+  %t686 = icmp ult i64 %t685, 10
+  br i1 %t686, label %arr_rplace_ok_1311, label %arr_rplace_oob_1312
 arr_rplace_ok_1311:
-  %t681 = getelementptr inbounds [10 x i16], [10 x i16]* %t678, i32 0, i64 %t679
+  %t687 = getelementptr inbounds [10 x i16], [10 x i16]* %t684, i32 0, i64 %t685
   br label %arr_rplace_end_1313
 arr_rplace_oob_1312:
-  store i16 0, i16* %t682
+  store i16 0, i16* %t688
   br label %arr_rplace_end_1313
 arr_rplace_end_1313:
-  %t683 = phi i16* [ %t681, %arr_rplace_ok_1311 ], [ %t682, %arr_rplace_oob_1312 ]
-  %t684 = load i16, i16* %t683
-  %t685 = zext i16 %t684 to i32
+  %t689 = phi i16* [ %t687, %arr_rplace_ok_1311 ], [ %t688, %arr_rplace_oob_1312 ]
+  %t690 = load i16, i16* %t689
+  %t691 = zext i16 %t690 to i32
   br label %match_end_4
-match_next_56_675:
-  %t688 = icmp eq i32 %t3, 251
-  br i1 %t688, label %match_then_57_686, label %match_next_57_687
-match_then_57_686:
-  %t689 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t690 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t689, i32 0, i32 6
-  %t691 = sext i32 8 to i64
-  %t692 = icmp ult i64 %t691, 10
-  br i1 %t692, label %arr_rplace_ok_1314, label %arr_rplace_oob_1315
+match_next_56_681:
+  %t694 = icmp eq i32 %t3, 251
+  br i1 %t694, label %match_then_57_692, label %match_next_57_693
+match_then_57_692:
+  %t695 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t696 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t695, i32 0, i32 6
+  %t697 = sext i32 8 to i64
+  %t698 = icmp ult i64 %t697, 10
+  br i1 %t698, label %arr_rplace_ok_1314, label %arr_rplace_oob_1315
 arr_rplace_ok_1314:
-  %t693 = getelementptr inbounds [10 x i16], [10 x i16]* %t690, i32 0, i64 %t691
+  %t699 = getelementptr inbounds [10 x i16], [10 x i16]* %t696, i32 0, i64 %t697
   br label %arr_rplace_end_1316
 arr_rplace_oob_1315:
-  store i16 0, i16* %t694
+  store i16 0, i16* %t700
   br label %arr_rplace_end_1316
 arr_rplace_end_1316:
-  %t695 = phi i16* [ %t693, %arr_rplace_ok_1314 ], [ %t694, %arr_rplace_oob_1315 ]
-  %t696 = load i16, i16* %t695
-  %t697 = zext i16 %t696 to i32
+  %t701 = phi i16* [ %t699, %arr_rplace_ok_1314 ], [ %t700, %arr_rplace_oob_1315 ]
+  %t702 = load i16, i16* %t701
+  %t703 = zext i16 %t702 to i32
   br label %match_end_4
-match_next_57_687:
-  %t700 = icmp eq i32 %t3, 252
-  br i1 %t700, label %match_then_58_698, label %match_next_58_699
-match_then_58_698:
-  %t701 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t702 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t701, i32 0, i32 6
-  %t703 = sext i32 9 to i64
-  %t704 = icmp ult i64 %t703, 10
-  br i1 %t704, label %arr_rplace_ok_1317, label %arr_rplace_oob_1318
+match_next_57_693:
+  %t706 = icmp eq i32 %t3, 252
+  br i1 %t706, label %match_then_58_704, label %match_next_58_705
+match_then_58_704:
+  %t707 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t708 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t707, i32 0, i32 6
+  %t709 = sext i32 9 to i64
+  %t710 = icmp ult i64 %t709, 10
+  br i1 %t710, label %arr_rplace_ok_1317, label %arr_rplace_oob_1318
 arr_rplace_ok_1317:
-  %t705 = getelementptr inbounds [10 x i16], [10 x i16]* %t702, i32 0, i64 %t703
+  %t711 = getelementptr inbounds [10 x i16], [10 x i16]* %t708, i32 0, i64 %t709
   br label %arr_rplace_end_1319
 arr_rplace_oob_1318:
-  store i16 0, i16* %t706
+  store i16 0, i16* %t712
   br label %arr_rplace_end_1319
 arr_rplace_end_1319:
-  %t707 = phi i16* [ %t705, %arr_rplace_ok_1317 ], [ %t706, %arr_rplace_oob_1318 ]
-  %t708 = load i16, i16* %t707
-  %t709 = zext i16 %t708 to i32
+  %t713 = phi i16* [ %t711, %arr_rplace_ok_1317 ], [ %t712, %arr_rplace_oob_1318 ]
+  %t714 = load i16, i16* %t713
+  %t715 = zext i16 %t714 to i32
   br label %match_end_4
-match_next_58_699:
-  %t712 = icmp eq i32 %t3, 253
-  br i1 %t712, label %match_then_59_710, label %match_next_59_711
-match_then_59_710:
-  %t713 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t714 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t713, i32 0, i32 8
-  %t715 = load i8, i8* %t714
-  %t716 = zext i8 %t715 to i32
+match_next_58_705:
+  %t718 = icmp eq i32 %t3, 253
+  br i1 %t718, label %match_then_59_716, label %match_next_59_717
+match_then_59_716:
+  %t719 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t720 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t719, i32 0, i32 8
+  %t721 = load i8, i8* %t720
+  %t722 = zext i8 %t721 to i32
   br label %match_end_4
-match_next_59_711:
-  %t719 = icmp eq i32 %t3, 254
-  br i1 %t719, label %match_then_60_717, label %match_next_60_718
-match_then_60_717:
-  %t720 = load %cpu__Cpu*, %cpu__Cpu** %t0
-  %t721 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t720, i32 0, i32 9
-  %t722 = load i8, i8* %t721
-  %t723 = zext i8 %t722 to i32
+match_next_59_717:
+  %t725 = icmp eq i32 %t3, 254
+  br i1 %t725, label %match_then_60_723, label %match_next_60_724
+match_then_60_723:
+  %t726 = load %cpu__Cpu*, %cpu__Cpu** %t0
+  %t727 = getelementptr inbounds %cpu__Cpu, %cpu__Cpu* %t726, i32 0, i32 9
+  %t728 = load i8, i8* %t727
+  %t729 = zext i8 %t728 to i32
   br label %match_end_4
-match_next_60_718:
+match_next_60_724:
   br label %match_end_4
 match_end_4:
-  %t726 = phi i32 [ %t13, %match_then_0_6 ], [ %t20, %match_then_1_14 ], [ %t27, %match_then_2_21 ], [ %t34, %match_then_3_28 ], [ %t41, %match_then_4_35 ], [ %t48, %match_then_5_42 ], [ %t55, %match_then_6_49 ], [ %t72, %arr_rplace_end_1196 ], [ %t89, %arr_rplace_end_1199 ], [ %t106, %arr_rplace_end_1202 ], [ %t123, %arr_rplace_end_1205 ], [ %t140, %arr_rplace_end_1208 ], [ %t157, %arr_rplace_end_1211 ], [ %t174, %arr_rplace_end_1214 ], [ %t191, %arr_rplace_end_1217 ], [ %t208, %arr_rplace_end_1220 ], [ %t225, %arr_rplace_end_1223 ], [ %t240, %arr_rplace_end_1226 ], [ %t255, %arr_rplace_end_1229 ], [ %t270, %arr_rplace_end_1232 ], [ %t285, %arr_rplace_end_1235 ], [ %t300, %arr_rplace_end_1238 ], [ %t315, %arr_rplace_end_1241 ], [ %t330, %arr_rplace_end_1244 ], [ %t345, %arr_rplace_end_1247 ], [ %t360, %arr_rplace_end_1250 ], [ %t375, %arr_rplace_end_1253 ], [ %t382, %match_then_27_376 ], [ %t389, %match_then_28_383 ], [ %t396, %match_then_29_390 ], [ %t403, %match_then_30_397 ], [ %t410, %match_then_31_404 ], [ %t417, %match_then_32_411 ], [ %t424, %match_then_33_418 ], [ %t431, %match_then_34_425 ], [ %t438, %match_then_35_432 ], [ %t445, %match_then_36_439 ], [ %t457, %arr_rplace_end_1256 ], [ %t469, %arr_rplace_end_1259 ], [ %t481, %arr_rplace_end_1262 ], [ %t493, %arr_rplace_end_1265 ], [ %t505, %arr_rplace_end_1268 ], [ %t517, %arr_rplace_end_1271 ], [ %t529, %arr_rplace_end_1274 ], [ %t541, %arr_rplace_end_1277 ], [ %t553, %arr_rplace_end_1280 ], [ %t565, %arr_rplace_end_1283 ], [ %t577, %arr_rplace_end_1286 ], [ %t589, %arr_rplace_end_1289 ], [ %t601, %arr_rplace_end_1292 ], [ %t613, %arr_rplace_end_1295 ], [ %t625, %arr_rplace_end_1298 ], [ %t637, %arr_rplace_end_1301 ], [ %t649, %arr_rplace_end_1304 ], [ %t661, %arr_rplace_end_1307 ], [ %t673, %arr_rplace_end_1310 ], [ %t685, %arr_rplace_end_1313 ], [ %t697, %arr_rplace_end_1316 ], [ %t709, %arr_rplace_end_1319 ], [ %t716, %match_then_59_710 ], [ %t723, %match_then_60_717 ], [ 0, %match_next_60_718 ]
-  ret i32 %t726
+  %t732 = phi i32 [ %t13, %match_then_0_6 ], [ %t22, %match_then_1_14 ], [ %t33, %match_then_2_23 ], [ %t40, %match_then_3_34 ], [ %t47, %match_then_4_41 ], [ %t54, %match_then_5_48 ], [ %t61, %match_then_6_55 ], [ %t78, %arr_rplace_end_1196 ], [ %t95, %arr_rplace_end_1199 ], [ %t112, %arr_rplace_end_1202 ], [ %t129, %arr_rplace_end_1205 ], [ %t146, %arr_rplace_end_1208 ], [ %t163, %arr_rplace_end_1211 ], [ %t180, %arr_rplace_end_1214 ], [ %t197, %arr_rplace_end_1217 ], [ %t214, %arr_rplace_end_1220 ], [ %t231, %arr_rplace_end_1223 ], [ %t246, %arr_rplace_end_1226 ], [ %t261, %arr_rplace_end_1229 ], [ %t276, %arr_rplace_end_1232 ], [ %t291, %arr_rplace_end_1235 ], [ %t306, %arr_rplace_end_1238 ], [ %t321, %arr_rplace_end_1241 ], [ %t336, %arr_rplace_end_1244 ], [ %t351, %arr_rplace_end_1247 ], [ %t366, %arr_rplace_end_1250 ], [ %t381, %arr_rplace_end_1253 ], [ %t388, %match_then_27_382 ], [ %t395, %match_then_28_389 ], [ %t402, %match_then_29_396 ], [ %t409, %match_then_30_403 ], [ %t416, %match_then_31_410 ], [ %t423, %match_then_32_417 ], [ %t430, %match_then_33_424 ], [ %t437, %match_then_34_431 ], [ %t444, %match_then_35_438 ], [ %t451, %match_then_36_445 ], [ %t463, %arr_rplace_end_1256 ], [ %t475, %arr_rplace_end_1259 ], [ %t487, %arr_rplace_end_1262 ], [ %t499, %arr_rplace_end_1265 ], [ %t511, %arr_rplace_end_1268 ], [ %t523, %arr_rplace_end_1271 ], [ %t535, %arr_rplace_end_1274 ], [ %t547, %arr_rplace_end_1277 ], [ %t559, %arr_rplace_end_1280 ], [ %t571, %arr_rplace_end_1283 ], [ %t583, %arr_rplace_end_1286 ], [ %t595, %arr_rplace_end_1289 ], [ %t607, %arr_rplace_end_1292 ], [ %t619, %arr_rplace_end_1295 ], [ %t631, %arr_rplace_end_1298 ], [ %t643, %arr_rplace_end_1301 ], [ %t655, %arr_rplace_end_1304 ], [ %t667, %arr_rplace_end_1307 ], [ %t679, %arr_rplace_end_1310 ], [ %t691, %arr_rplace_end_1313 ], [ %t703, %arr_rplace_end_1316 ], [ %t715, %arr_rplace_end_1319 ], [ %t722, %match_then_59_716 ], [ %t729, %match_then_60_723 ], [ 0, %match_next_60_724 ]
+  ret i32 %t732
 }
 
 define void @cpu__Cpu__set_reg_value(%cpu__Cpu* %self, i8 %code, i32 %val) {

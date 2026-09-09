@@ -878,4 +878,30 @@ impl Codegen {
         self.line(&format!("  {} = call i32 @SDL_GetTicks()", reg));
         format!("i32 {}", reg)
     }
+
+    /// `now_seconds() -> int`: seconds since the Nova-16 RTC epoch
+    /// (2018-07-17 00:00:00 UTC = 1531785600, matching the Python
+    /// reference's `RTC_EPOCH_UNIX`), computed by calling C's `time(NULL)`
+    /// and subtracting the epoch.  Used to implement the Nova-16 RTC
+    /// registers C0 (low word) and C1 (high word).  C's `time()` returns
+    /// `time_t` (i64 on 64-bit Windows); we call it, truncate to i32,
+    /// subtract the epoch, and clamp to >= 0 (matching the Python
+    /// reference's `max(0, int(time.time()) - RTC_EPOCH_UNIX)`).
+    pub(super) fn emit_now_seconds(&mut self) -> String {
+        // Each LLVM IR instruction needs a fresh SSA register name --
+        // reusing the same name as destination for `trunc`/`sub`/`icmp`
+        // is an SSA violation that the IR verifier rejects.
+        let time_reg = self.tmp_name();       // i64: raw time(NULL) result
+        let trunc_reg = self.tmp_name();      // i32: time truncated to i32
+        let sub_reg = self.tmp_name();        // i32: seconds since RTC epoch
+        let cond_reg = self.tmp_name();       // i1:  is sub_reg negative?
+        let result_reg = self.tmp_name();     // i32: clamped result
+        self.line(&format!("  {} = call i64 @time(i64* null)", time_reg));
+        self.line(&format!("  {} = trunc i64 {} to i32", trunc_reg, time_reg));
+        self.line(&format!("  {} = sub i32 {}, 1531785600", sub_reg, trunc_reg));
+        // Clamp to >= 0 (matching Python's max(0, ...))
+        self.line(&format!("  {} = icmp slt i32 {}, 0", cond_reg, sub_reg));
+        self.line(&format!("  {} = select i1 {}, i32 0, i32 {}", result_reg, cond_reg, sub_reg));
+        format!("i32 {}", result_reg)
+    }
 }

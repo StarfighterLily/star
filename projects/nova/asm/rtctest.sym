@@ -1,0 +1,6 @@
+# Symbol table
+# Format: <symbol> <value>
+MAIN 0x1000
+DELAY 0x1017
+NO_CHANGE 0x104A
+DONE 0x104F
