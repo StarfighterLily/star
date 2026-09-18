@@ -1,0 +1,6 @@
+# Symbol table
+# Format: <symbol> <value>
+START 0x0000
+DONE 0x007C
+HANDLER 0x007D
+HLEAVE 0x009E

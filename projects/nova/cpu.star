@@ -849,6 +849,10 @@ impl Cpu:
         let flags_word = self.flags.pack()
         self.push16(flags_word as i32)
         self.push16((self.pc as u16) as i32)
+        # Pure Option B (Python `4902a2e`): snapshot the entry BANK and force
+        # bank 0 visible for the handler. `Memory::irq_enter` owns the
+        # nesting stack; IRET (`cpu_control.star::op_iret`) restores it.
+        self.mem.irq_enter()
         self.flags.set_i(false)
         let vec_addr = wrap_addr(IVT_BASE + vector * 4)
         self.pc = Wrapping<u16>(self.mem.read_word(vec_addr))

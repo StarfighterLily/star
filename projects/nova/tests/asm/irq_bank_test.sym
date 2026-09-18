@@ -1,0 +1,7 @@
+# Symbol table
+# Format: <symbol> <value>
+START 0x0000
+WAIT 0x0039
+DONE 0x0099
+HANDLER 0x009A
+HLEAVE 0x00BB

@@ -244,6 +244,7 @@ impl cpu::Cpu:
         for i in 0..245_760:
             self.mem.bank_ram[i] = 0 as u8
         self.mem.bank = 0 as u8
+        self.mem.bank_irq_depth = 0
 
         for i in 0..65_536:
             self.screen.screen[i] = 0 as u8

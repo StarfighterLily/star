@@ -90,6 +90,9 @@ impl cpu::Cpu:
         let flg = self.pop16()
         self.flags.unpack(flg as u16)
         self.pc = Wrapping<u16>((cpu::wrap_addr(pcv)) as u16)
+        # Pure Option B (Python `4902a2e`): restore the entry BANK snapshot
+        # for this nesting level. No ISA/stack-frame change.
+        self.mem.irq_leave()
 
     fn op_int(mut self):
         let (op1, _op2, _op3) = self.decode_operands(1)

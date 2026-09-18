@@ -3859,3 +3859,144 @@ Verification for the branch-encoding half (round summary):
   the checked-in uart_framed bin exactly, confirming the delta is
   Python-side and predates this round.
 
+## Pure Option B port: BANK preserved across interrupts (sync with Python `4902a2e`)
+
+Background: the Python reference gained a memory-banking hazard fix that
+this port had to mirror. The Nova-16 has no MMU (deliberately -- see the
+"spirit of the machine" analysis in the Nova project: flat 64KB + bank
+window + cooperative software discipline is the architecture), but the
+interrupt entry sequence pushed only flags + PC and left the BANK
+register unsaved. An interrupt firing while BANK != 0 would run the
+handler against the wrong bank mapping. The chosen fix ("Pure Option B")
+is emulator-side only: snapshot the entry BANK at interrupt entry, force
+bank 0 visible for the handler, restore the snapshot on IRET. No ISA
+change, no stack-frame change, no new opcodes -- invisible to existing
+binaries. This section documents porting that to the Star emulator.
+
+### Python-side reference state (what was being synced)
+
+- Commit `4902a2e` (c:\Code\projects\Nova) already landed the core of it:
+  `nova/bus/interrupt.py::_trigger` and `nova_cpu.py::_trigger_interrupt`
+  push the entry BANK onto a CPU-owned nesting stack
+  (`cpu._bank_irq_stack`) and force bank 0; `core/exec.py::_iret` and
+  `instructions.py::IRet.execute` pop and restore it via `set_bank` (so
+  the reference's icache invalidation still fires on restore). Plus
+  `tests/unit/test_interrupt_bank_preserved.py` (4 tests: bus path,
+  legacy path, nested LIFO unwind, bank-0 no-op case).
+- Found unported during this sweep: the software-`INT` instruction path.
+  `core/exec_handlers.py::_int` (opcode 0x30) had its own inline
+  trigger sequence that bypassed both entry points above, so a software
+  INT from a banked context would still clobber the mapping. Fixed in
+  the Python working tree by routing it through the same
+  snapshot/restore logic (the hardware-IRQ equivalent already went
+  through `InterruptController._trigger`, which is why only `_int`
+   needed the extra hook).
+
+### Star-side changes (this port)
+
+All in `projects/nova/` -- no compiler (`src/`) changes were required;
+fixed-size arrays plus a plain struct field were sufficient (noted
+because the task explicitly allowed Star-language work if needed; the
+existing `[u8; 8]` stack + depth counter pattern is idiomatic here).
+
+- `memory.star`: the nesting stack lives in `Memory`, NOT `Cpu`. This
+  was deliberate: `Cpu(...)` has five construction sites in this port
+  (`main.star`, `debugger.star`, `uart_bridge.star`,
+  `uart_tcp_bridge.star`, `tests/run_bin.star`), and putting the stack
+  on `Cpu` would have required touching all of them plus their struct
+  literals. `Memory` already flows everywhere the CPU goes, and
+  `new_memory()` is built in place at every site, so the two new fields
+  (`bank_irq_stack: [u8; 8]`, `bank_irq_depth: i32`) ride along with
+  zero call-site churn. Depth 8 matches any realistic nesting (the
+  reference disables I on entry, so nesting requires a handler that
+  re-enables interrupts); on overflow the oldest snapshot is kept
+  rather than growing unboundedly, mirroring the Python side's bounded
+  LIFO behavior.
+  - `Memory::irq_enter(mut self)`: push `self.bank` at
+    `bank_irq_depth` (even when it is 0 -- keeps entry/leave balanced
+    and is cheaper than branching on the interesting case), then set
+    `bank = 0` only if it was nonzero. Mirrors
+    `InterruptController._trigger` / `CPU._trigger_interrupt`.
+  - `Memory::irq_leave(mut self)`: pop the snapshot and restore it only
+    if it differs. A stray IRET with depth 0 is a no-op (same
+    defense-in-depth posture as the reference: one bad call must not
+    corrupt the machine). No icache to invalidate in this port, so the
+    restore is a plain assignment -- the reference restores via
+    `set_bank` mostly so its opcode-fetch cache gets invalidated.
+- `cpu.star` (hardware/IRQ trigger path, ~line 852): after pushing
+  flags + PC, call `self.mem.irq_enter()` before clearing I and
+  vectoring. This is the single shared entry point for all async
+  sources in this port (timer/keyboard/UART/mouse/user), so one hook
+  covers them all.
+- `cpu_control.star::op_iret` (~line 93): after popping PC + flags,
+  call `self.mem.irq_leave()`.
+- `cpu_control.star::op_int`: verified to route through the shared
+  trigger path that now calls `irq_enter` -- no separate hook needed
+  (unlike Python, where `_int` had a private inline sequence; this
+  port's software INT goes through the same code as hardware IRQs, and
+  the new `int_bank_test` proves it end to end).
+
+### New parity tests
+
+- `tests/asm/irq_bank_test.asm` (+ assembled `.bin`/`.org`): sets BANK=3,
+  writes a marker byte through the banked window, seeds `R9` BEFORE
+  enabling the timer, then enters a `WAIT` loop. The timer IRQ handler
+  reads the marker through the banked window (proving the handler runs
+  banked-safe), sets R1-R3, and IRETs. Main then checks R1/R2/R3 and the
+  restored mapping, sets R4, halts. Pass = R1=R2=R3=R4=1 and R0 keeps
+  the marker (0x5A). NOTE: an earlier revision of this test enabled the
+  timer before seeding R9 and exposed a genuine race -- the IRQ could
+  fire between the timer-enable and the `MOV R9, 0`, leaving the test
+  stuck in WAIT forever on BOTH emulators (identical behavior, so it
+  was a test bug, not a parity bug; both emulators agree on timer
+  gating). Fixed by seeding before the enable.
+- `tests/asm/int_bank_test.asm` (+ assembled `.bin`/`.org`): same shape
+  but drives the bank save/restore through the software-`INT`
+  instruction (vector 4) instead of the timer -- the one Python path
+  not exercised by `4902a2e`'s own tests. Both `.bin`s were assembled
+  with the Python `nova_assembler.py` from the c:\Code\projects\Nova
+  tree, so the checked-in binaries are byte-identical inputs for both
+  emulators.
+
+### Verification (round summary)
+
+- `irq_bank_test.bin` @ 200000 cycles: BOTH emulators halt with
+  R0=0x5A, R1=R2=R3=R4=1, BANK restored to 0, PC just past HLT
+  (Star: pc=154/0x9A; Python: pc=0x009A -- identical).
+- `int_bank_test.bin` @ 200000 cycles: BOTH emulators halt with
+  R0=0x5A, R1=R2=R3=R4=1, BANK=0 (Star: pc=125/0x7D; Python: pc=0x007D
+  -- identical). Software INT from a banked context is now safe on both.
+- Python unit suite: 871 passed, 13 skipped (includes
+  `test_interrupt_bank_preserved.py`).
+- Full rebuild with the documented invocation:
+  `star build projects/nova/main.star -L sdl/lib/x64 -l SDL2
+  -l comdlg32 -o projects/nova/nova16.exe` -- exit 0,
+  `nova16.exe` (315,392 bytes) rebuilt successfully with all changes
+  in. Dependent executables (`tests/run_bin.exe`, `debugger.exe`,
+  `uart_bridge.exe`, `uart_tcp_bridge.exe`) rebuilt from the same
+  tree as well.
+
+### Toolchain notes (environment, not source)
+
+- The `star` on PATH was a stale Aug-5 debug build lacking
+  `now_seconds` and newer codegen; `cargo build` cannot link a debug
+  compiler in this shell (no MSVC `link.exe`). Resolution: refreshed
+  the stale PATH binary by copying the current release compiler
+  (`target/release/star.exe`, gitignored artifact, HEAD `4ab6cc7`,
+  2026-09-08) over `target/debug/star.exe`. Pure artifact swap, no
+  source change; after this, the documented build invocation works
+  verbatim.
+- No Star-language features needed adding this round. The nesting
+  stack is a fixed-size array in `Memory`, which the language already
+  handles natively.
+- `main.star` (full-reset path, ~line 247): `bank_irq_depth = 0` added
+  next to the existing `bank = 0` reset so a system reset cannot leave
+  stale snapshots live. The stack bytes themselves are not scrubbed
+  (dead data below the depth pointer, same as the Python side).
+- A one-shot `patch_int_bank.py` script used to apply that `_int` fix
+  was removed after the edit landed in the working tree.
+- New helper: `scripts/parity_run.py` -- loads a `.bin` (+ `.org`) into
+  a standalone `initialize_system()` emulator, runs to halt/cycle cap,
+  and dumps PC/R/P/BANK/IVT in a compact form for cross-emulator
+  comparison against `tests/run_bin.exe` output.
+

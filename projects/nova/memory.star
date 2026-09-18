@@ -5,6 +5,18 @@
 # banks 1-15 are independent 16KB pages of extra RAM, selected by the `BANK`
 # register (0-15) and otherwise invisible outside that address window.
 #
+# Pure Option B (Python `4902a2e`): BANK is preserved across interrupts with
+# no ISA/stack-frame change. `Memory` owns a small nesting stack of entry
+# BANK snapshots (`bank_irq_stack` + `bank_irq_depth`): `irq_enter` pushes
+# the entry bank and forces bank 0 visible for the handler, `irq_leave`
+# pops the snapshot and restores it. It lives in `Memory` (not `Cpu`) so the
+# five `Cpu(...)` construction sites (`main.star`, `debugger.star`,
+# `uart_bridge.star`, `uart_tcp_bridge.star`, `tests/run_bin.star`) stay
+# untouched -- the stack rides along inside the already-constructed
+# `new_memory()`. Depth 8 covers any realistic nesting (the reference
+# disables I on entry, so nesting needs a handler that re-enables them);
+# deeper nesting keeps the oldest entries instead of growing unboundedly.
+#
 # Deliberately NOT ported from the Python reference (see projects/nova/NOTES.md
 # "Python-only speed hacks skipped"): the opcode-fetch instruction cache, the
 # `read_byte`/`read_byte_fast` bounds-checked-vs-not split, and any
@@ -24,6 +36,8 @@ struct Memory:
     mut ram: [u8; 65_536]
     mut bank_ram: [u8; 245_760]   # 15 banks * 16384 bytes (banks 1-15; bank 0 has no storage here)
     mut bank: u8
+    mut bank_irq_stack: [u8; 8]   # Option B nesting snapshots (entry BANK per level)
+    mut bank_irq_depth: i32       # how many snapshots are live (0..8)
 
 # `new_memory()` returns `Memory` (~300KB: two fixed arrays plus the bank
 # byte) by value. This used to be impossible -- a plain function returning a
@@ -36,7 +50,7 @@ struct Memory:
 # fresh struct literal -- gets built directly into the caller's storage, zero
 # copies of the whole aggregate). Confirmed with a real `star build`.
 fn new_memory() -> Memory:
-    Memory(ram = [0 as u8; 65_536], bank_ram = [0 as u8; 245_760], bank = 0 as u8)
+    Memory(ram = [0 as u8; 65_536], bank_ram = [0 as u8; 245_760], bank = 0 as u8, bank_irq_stack = [0 as u8; 8], bank_irq_depth = 0)
 
 impl Memory:
     fn read_byte(self, addr: i32) -> u8:
@@ -68,3 +82,26 @@ impl Memory:
         let lo = v as u8
         self.write_byte(addr, hi)
         self.write_byte(addr + 1, lo)
+
+    # Pure Option B: interrupt entry. Snapshot the current BANK for this
+    # nesting level and force bank 0 visible for the handler, mirroring
+    # Python `InterruptController._trigger` / `CPU._trigger_interrupt`. The
+    # snapshot is pushed even when the entry bank is already 0 (keeps
+    # entry/leave balanced); only a nonzero bank forces a switch.
+    fn irq_enter(mut self):
+        if self.bank_irq_depth < 8:
+            self.bank_irq_stack[self.bank_irq_depth] = self.bank
+            self.bank_irq_depth += 1
+        if self.bank != (0 as u8):
+            self.bank = 0 as u8
+
+    # Pure Option B: IRET. Pop this nesting level's snapshot and restore it,
+    # mirroring Python `_iret`/`IRet.execute` (which call `set_bank`, so the
+    # icache invalidation still happens there -- this port has no icache to
+    # invalidate). A stray IRET with no live snapshot is a no-op.
+    fn irq_leave(mut self):
+        if self.bank_irq_depth > 0:
+            self.bank_irq_depth -= 1
+            let saved = self.bank_irq_stack[self.bank_irq_depth]
+            if self.bank != saved:
+                self.bank = saved
