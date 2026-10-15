@@ -81,14 +81,16 @@ impl cpu::Cpu:
         let width = self.operand_width(op1)
         let a = self.operand_read(op1, width)
         let b = self.operand_read(op2, width)
+        # High word of the product, always `>> 16` with 16-bit flags, exactly
+        # like core/exec_handlers.py::_mulh (`(values[0] * values[1]) >> 16`,
+        # `_set_arith_flags(..., 16, ...)`) -- it does not switch to `>> 8`
+        # for byte operands, and it does set the flags. This used to divide
+        # by 256 for 8-bit operands and leave the flags alone.
         let product: i64 = (a as i64) * (b as i64)
-        let mut hi: i64 = 0 as i64
-        if width == 8:
-            hi = product / (256 as i64)
-        else:
-            hi = product / (65_536 as i64)
+        let hi = (product / (65_536 as i64)) as i32
         let ww = self.write_width_for(op1, op2)
-        self.operand_write(op1, ww, self.mask_to_width(hi as i32, ww))
+        self.operand_write(op1, ww, self.mask_to_width(hi, ww))
+        self.flags.apply_arith(hi, a, b, 16, false, false)
 
     fn op_div(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)
@@ -120,16 +122,24 @@ impl cpu::Cpu:
         if b == 0:
             println("[nova16] DIVH by zero -- ignored")
         else:
+            # 32-by-16 divide with the destination as the HIGH word and P3
+            # (register code 0xF4) as the LOW word, exactly like
+            # core/exec_handlers.py::_divh: the low 16 bits of the quotient go
+            # to the destination, then the remainder to P3 (destination first,
+            # so `DIVH P3, src` ends with P3 == remainder, as DIV above), and
+            # the flags follow the 16-bit quotient. This used to compute
+            # (dest << 16) / src, ignoring P3 and leaving it untouched, so a
+            # 32-bit division gave a different answer than the reference.
             let ai: i64 = a as i64
             let bi: i64 = b as i64
-            let mut shifted: i64 = ai
-            if width == 8:
-                shifted = ai * (256 as i64)
-            else:
-                shifted = ai * (65_536 as i64)
-            let q = shifted / bi
+            let lo: i64 = (self.get_reg_value(0xF4 as u8) as i64) % (65_536 as i64)
+            let dividend: i64 = ai * (65_536 as i64) + lo
+            let q16 = ((dividend / bi) % (65_536 as i64)) as i32
+            let rem16 = ((dividend % bi) % (65_536 as i64)) as i32
             let ww = self.write_width_for(op1, op2)
-            self.operand_write(op1, ww, self.mask_to_width(q as i32, ww))
+            self.operand_write(op1, ww, self.mask_to_width(q16, ww))
+            self.set_reg_value(0xF4 as u8, rem16)
+            self.flags.apply_arith(q16, a, b, 16, false, false)
 
     fn op_mod(mut self):
         let (op1, op2, _op3) = self.decode_operands(2)

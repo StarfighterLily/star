@@ -39,18 +39,20 @@
 # the `fill(0)` entirely unobservable. This port's `vblit` therefore doesn't
 # clear anything -- see its own comment.
 #
-# Blend modes (`SBLEND`): confirmed, by reading `nova/graphics/blitter.py`
-# directly, to be genuinely dead code in the reference itself -- `Blitter.
-# blend_pixel`/`_set_pixel_to_layer` (the only blend-aware pixel write) is
-# defined but never called from anywhere in the reference (`SWRITE`'s real
-# path, `_set_pixel_fast`, and every drawing primitive -- `draw_line`/
-# `draw_rectangle`/`draw_circle`/`draw_char`/fill/invert -- all write
-# raw, unblended values straight into the target layer buffer). So the
-# pre-existing stub here (`SBLEND` recognized, operand consumed, no
-# additive/subtractive/multiply/screen blending wired into any draw path) is
-# not a simplification at all -- it's already a bug-for-bug match. Recorded
-# here (and in NOTES.md) so a future session doesn't "fix" this into
-# something the reference doesn't actually do.
+# Blend modes (`SBLEND` mode, `SALPHA` intensity): the reference now blends
+# for real (`nova/graphics/blitter.py::blend_pixel`, wired into `SWRITE`,
+# `draw_line`, `draw_rectangle`, `draw_circle`, `fill_layer` and the
+# character writer). This file used to keep `SBLEND` as a stub on the
+# grounds that the reference's blend code was dead -- true when written,
+# no longer true, so that note is withdrawn. `blend_pixel` below is a
+# formula-for-formula port, including Python's floor (not truncating)
+# division in mode 0, and every primitive keeps the reference's exact write
+# sequence -- a blended pixel's value depends on how many times it is
+# written, and the reference writes some pixels more than once (an outline
+# rectangle's corners; the filled circle's repeated scanlines), so the loops
+# below deliberately repeat those writes too. Sprites, blits, layer ops and
+# SINV never blend, matching the reference. Mode 0 with alpha 255 (the reset
+# state) is a plain overwrite, the reference's own fast path.
 
 import "font_data.star" as fontdata
 
@@ -70,6 +72,8 @@ struct Screen:
     mut sp4: [u8; 65_536]      # layer 8
     mut vram: [u8; 65_536]
     mut font: fontdata::FontData
+    mut blend_mode: i32     # SBLEND: 0 normal, 1 add, 2 sub, 3 multiply, 4 screen
+    mut blend_alpha: i32    # SALPHA: 0-255
 
 # `new_screen()` returns `Screen` (10 x 64KB arrays plus the font) by value
 # -- same fix as `memory.star`'s `new_memory()`, see its comment and
@@ -87,6 +91,8 @@ fn new_screen() -> Screen:
         sp4 = [0 as u8; 65_536],
         vram = [0 as u8; 65_536],
         font = fontdata::new_font_data(),
+        blend_mode = 0,
+        blend_alpha = 255,
     )
 
 fn in_bounds(x: i32, y: i32) -> bool:
@@ -97,6 +103,17 @@ fn pixel_index(x: i32, y: i32) -> i32:
 
 fn valid_layer(vl: i32) -> bool:
     vl >= 0 and vl < LAYER_COUNT
+
+# Python's `//`: floor division (rounds toward negative infinity), where
+# Star's `/` truncates toward zero. Only blend mode 0 divides a value that
+# can be negative.
+fn floor_div(a: i32, b: i32) -> i32:
+    let q = a / b
+    let r = a % b
+    if r != 0 and (a < 0) != (b < 0):
+        q - 1
+    else:
+        q
 
 impl Screen:
     # ── Layer access (flat pixel index, 0-65535) ─────────────────────────
@@ -145,6 +162,46 @@ impl Screen:
             self.sp3[idx] = v
         elif vl == 8:
             self.sp4[idx] = v
+
+    # ── Blending (`Blitter.blend_pixel`, formula for formula) ─────────────
+
+    fn set_blend_mode(mut self, mode: i32):
+        self.blend_mode = clamp_i32(mode, 0, 4)
+
+    fn set_blend_alpha(mut self, alpha: i32):
+        self.blend_alpha = clamp_i32(alpha, 0, 255)
+
+    fn blend_enabled(self) -> bool:
+        not (self.blend_mode == 0 and self.blend_alpha == 255)
+
+    fn blend_pixel(self, existing: u8, new: u8) -> u8:
+        let e = existing as i32
+        let n = new as i32
+        let a = self.blend_alpha
+        let mut r = n
+        if self.blend_mode == 0:
+            if a < 255:
+                r = clamp_i32(e + floor_div((n - e) * a + 127, 255), 0, 255)
+        elif self.blend_mode == 1:
+            r = min_i32(255, e + (n * a + 127) / 255)
+        elif self.blend_mode == 2:
+            r = max_i32(0, e - (n * a + 127) / 255)
+        elif self.blend_mode == 3:
+            r = min_i32(255, (e * n * a + 32_512) / 65_025)
+        elif self.blend_mode == 4:
+            r = clamp_i32(255 - ((255 - e) * (255 - n) * a + 32_512) / 65_025, 0, 255)
+        r as u8
+
+    # draw_set: the blend-aware pixel write every drawing primitive and
+    # SWRITE use (`Blitter._set_pixel_to_layer` / the primitives' own
+    # `blend_pixel(target[y, x], color) if blend else color`).
+    fn draw_set(mut self, vl: i32, x: i32, y: i32, v: u8):
+        if in_bounds(x, y):
+            let idx = pixel_index(x, y)
+            if self.blend_enabled():
+                self.layer_set_idx(vl, idx, self.blend_pixel(self.layer_get_idx(vl, idx), v))
+            else:
+                self.layer_set_idx(vl, idx, v)
 
     # ── Layer access (x, y) ───────────────────────────────────────────────
 
@@ -212,11 +269,15 @@ impl Screen:
         for i in 0..65_536:
             self.vram[i] = self.composite_pixel_idx(i)
 
-    # SFILL: bulk raw fill of layer `vl` (`GFX.fill_layer` -- `target.fill
-    # (value)`, no blending -- see file header).
+    # SFILL: fill layer `vl` (`GFX.fill_layer` -- `target.fill(value)`, or
+    # `blend_array(target, value)` once per pixel while blending is active).
     fn sfill(mut self, vl: i32, color: u8):
-        for i in 0..65_536:
-            self.layer_set_idx(vl, i, color)
+        if self.blend_enabled():
+            for i in 0..65_536:
+                self.layer_set_idx(vl, i, self.blend_pixel(self.layer_get_idx(vl, i), color))
+        else:
+            for i in 0..65_536:
+                self.layer_set_idx(vl, i, color)
 
     # SINV: bulk raw invert of layer `vl` (`GFX.invert_colors` -- `255 -
     # target`).
@@ -259,7 +320,7 @@ impl Screen:
         let mut y = y0
         let mut going = true
         while going:
-            self.layer_set(vl, x, y, color)
+            self.draw_set(vl, x, y, color)
             if x == x1 and y == y1:
                 going = false
             else:
@@ -271,33 +332,43 @@ impl Screen:
                     err += dx
                     y += sy
 
+    # SRECT (`GFX.draw_rectangle`): each corner is clamped on screen but the
+    # pair is NOT reordered -- the reference fills `target[y1:y2+1, x1:x2+1]`
+    # with numpy slices, which are simply empty for a reversed range. So a
+    # reversed filled rectangle draws nothing, and a reversed outline keeps
+    # only its two edge runs whose range is still ascending. The outline is
+    # four runs in the reference's order (top row, bottom row, left column,
+    # right column), so corners are written twice -- which matters while
+    # blending, and is deliberate.
     fn srect(mut self, vl: i32, x0: i32, y0: i32, x1: i32, y1: i32, color: u8, filled: bool):
         let xa = clamp_i32(x0, 0, WIDTH - 1)
         let ya = clamp_i32(y0, 0, HEIGHT - 1)
         let xb = clamp_i32(x1, 0, WIDTH - 1)
         let yb = clamp_i32(y1, 0, HEIGHT - 1)
-        let xlo = min_i32(xa, xb)
-        let xhi = max_i32(xa, xb)
-        let ylo = min_i32(ya, yb)
-        let yhi = max_i32(ya, yb)
         if filled:
-            let mut yy = ylo
-            while yy <= yhi:
-                let mut xx = xlo
-                while xx <= xhi:
-                    self.layer_set(vl, xx, yy, color)
+            let mut yy = ya
+            while yy <= yb:
+                let mut xx = xa
+                while xx <= xb:
+                    self.draw_set(vl, xx, yy, color)
                     xx += 1
                 yy += 1
         else:
-            let mut xx = xlo
-            while xx <= xhi:
-                self.layer_set(vl, xx, ylo, color)
-                self.layer_set(vl, xx, yhi, color)
+            let mut xx = xa
+            while xx <= xb:
+                self.draw_set(vl, xx, ya, color)
                 xx += 1
-            let mut yy = ylo
-            while yy <= yhi:
-                self.layer_set(vl, xlo, yy, color)
-                self.layer_set(vl, xhi, yy, color)
+            xx = xa
+            while xx <= xb:
+                self.draw_set(vl, xx, yb, color)
+                xx += 1
+            let mut yy = ya
+            while yy <= yb:
+                self.draw_set(vl, xa, yy, color)
+                yy += 1
+            yy = ya
+            while yy <= yb:
+                self.draw_set(vl, xb, yy, color)
                 yy += 1
 
     fn scirc(mut self, vl: i32, cx: i32, cy: i32, radius: i32, color: u8, filled: bool):
@@ -308,13 +379,13 @@ impl Screen:
             while x >= y:
                 let mut i = cx - x
                 while i <= cx + x:
-                    self.layer_set(vl, i, cy + y, color)
-                    self.layer_set(vl, i, cy - y, color)
+                    self.draw_set(vl, i, cy + y, color)
+                    self.draw_set(vl, i, cy - y, color)
                     i += 1
                 let mut j = cx - y
                 while j <= cx + y:
-                    self.layer_set(vl, j, cy + x, color)
-                    self.layer_set(vl, j, cy - x, color)
+                    self.draw_set(vl, j, cy + x, color)
+                    self.draw_set(vl, j, cy - x, color)
                     j += 1
                 y += 1
                 err += 1 + 2 * y
@@ -323,14 +394,14 @@ impl Screen:
                     err += 1 - 2 * x
         else:
             while x >= y:
-                self.layer_set(vl, cx + x, cy + y, color)
-                self.layer_set(vl, cx - x, cy + y, color)
-                self.layer_set(vl, cx + x, cy - y, color)
-                self.layer_set(vl, cx - x, cy - y, color)
-                self.layer_set(vl, cx + y, cy + x, color)
-                self.layer_set(vl, cx - y, cy + x, color)
-                self.layer_set(vl, cx + y, cy - x, color)
-                self.layer_set(vl, cx - y, cy - x, color)
+                self.draw_set(vl, cx + x, cy + y, color)
+                self.draw_set(vl, cx - x, cy + y, color)
+                self.draw_set(vl, cx + x, cy - y, color)
+                self.draw_set(vl, cx - x, cy - y, color)
+                self.draw_set(vl, cx + y, cy + x, color)
+                self.draw_set(vl, cx - y, cy + x, color)
+                self.draw_set(vl, cx + y, cy - x, color)
+                self.draw_set(vl, cx - y, cy - x, color)
                 y += 1
                 err += 1 + 2 * y
                 if 2 * (err - x) + 1 > 0:
@@ -345,7 +416,7 @@ impl Screen:
             let rowbyte = self.font.glyphs[base + row]
             for col in 0..8:
                 if bit_get(rowbyte, 7 - col):
-                    self.layer_set(vl, x + col, y + row, color)
+                    self.draw_set(vl, x + col, y + row, color)
 
     # TEXT (the actual string-reading loop lives on `Cpu` instead, as
     # `Cpu::draw_text` -- see cpu.star. It needs to read bytes from `Memory`

@@ -859,7 +859,14 @@ impl Cpu:
 
     fn check_interrupts(mut self):
         if self.flags.i():
-            if self.pending_timer_irq:
+            # The timer vector is masked by TC bit 1 (IRQ enable), exactly
+            # like the reference, whose timer write drives
+            # `set_enable(VECTOR_TIMER, ...)` and whose dispatch requires
+            # `cpu.interrupts[VECTOR_TIMER]`. A request raised while masked
+            # stays pending until the mask lifts. Without this a handler that
+            # disarmed the timer (`MOV TC, 0`) before IRET was re-entered at
+            # once by a request latched during its own run.
+            if self.pending_timer_irq and bit_get(self.tc as u8, 1):
                 self.pending_timer_irq = false
                 self.trigger_interrupt(0)
             elif self.uart.interrupt_enabled and self.uart.irq_pending():
@@ -882,9 +889,12 @@ impl Cpu:
             let divisor = ((self.ts as u8) as i32) + 1
             if self.timer_subcycle >= divisor:
                 self.timer_subcycle = 0
+                # TT wraps mod 256 like the Python reference's
+                # `(regs[0] + 1) & 0xFF`; it used to saturate at 255, so a
+                # program polling TT for wrap-arounds saw it stick.
                 let mut newtt = ((self.tt as u8) as i32) + 1
                 if newtt > 255:
-                    newtt = 255
+                    newtt = 0
                 self.tt = Wrapping<u8>(newtt as u8)
                 if bit_get(self.tc as u8, 1) and ((self.tm as u8) as i32) > 0 and newtt >= ((self.tm as u8) as i32):
                     self.tt = Wrapping<u8>(0 as u8)
@@ -900,6 +910,13 @@ impl Cpu:
             self.halted = self.halted
         else:
             self.timer_tick()
+            # A timer request is taken at the start of the step that raised
+            # it, before this step's fetch, like the reference (its
+            # `timer.fired` handler dispatches synchronously from the tick).
+            # The handler's first instruction then runs this step, and IRET
+            # returns to the instruction that would have run.
+            if self.pending_timer_irq:
+                self.check_interrupts()
             let opcode = self.fetch_u8()
             self.execute(opcode)
             self.cycles += 1 as i64
@@ -1270,6 +1287,8 @@ impl Cpu:
             0xB3 ->
                 self.op_mousectrl()
             0xB4 ->
+                self.op_salpha()
+            0xB5 ->
                 self.op_serfstat()
             _ ->
                 self.unimplemented_opcode(opcode)

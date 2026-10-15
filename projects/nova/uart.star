@@ -36,7 +36,7 @@
 # because "no opcode drives framing" -- true until now. `write_control`
 # below now reads control bit 2 (`0x04`, matching `docs/UART_SYSTEM.md`'s
 # already-documented-but-previously-inert "Framed mode enable" bit) into
-# `framed_mode`, and a new dedicated opcode, `SERFSTAT` (`0xB4`, see
+# `framed_mode`, and a new dedicated opcode, `SERFSTAT` (`0xB5`, see
 # `cpu_io.star::op_serfstat`), reads back `framed_mode`/latched checksum-
 # error state that `SERSTAT`'s own two low bits (by design, see below) never
 # exposed. That closes the actual gap: `SERCTRL`/`SERFSTAT`/`SERIN` are now

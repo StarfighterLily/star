@@ -76,7 +76,8 @@ impl cpu::Cpu:
         let v = self.operand_read(op1, 8)
         self.uart.write_control(v as u8)
 
-    # SERFSTAT (0xB4, todo.md P2 #3): extended UART status -- framed-mode
+    # SERFSTAT (0xB5, todo.md P2 #3; moved off 0xB4, which is the reference's
+    # SALPHA): extended UART status -- framed-mode
     # enabled + latched checksum-error bits that SERSTAT's own two low bits
     # never expose (see uart.star::read_extended_status).
     fn op_serfstat(mut self):

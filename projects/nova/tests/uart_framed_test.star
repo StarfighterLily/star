@@ -1,6 +1,6 @@
 # Headless regression test for UART framed-mode parsing (todo.md P2 #3):
 # `SERCTRL`'s control bit 2 (framed-mode enable), the new `SERFSTAT` opcode
-# (0xB4, extended status), and the frame parser wired into
+# (0xB5, extended status), and the frame parser wired into
 # `Uart::host_push_rx` (`../uart.star`). Runs the real assembled program
 # `tests/asm/uart_framed_test.asm` (its own header comment has the full
 # design) through `Cpu::step()` -- SERCTRL/SERFSTAT/SERIN all execute as

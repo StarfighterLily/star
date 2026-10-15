@@ -67,15 +67,20 @@ impl cpu::Cpu:
 
     # ── Graphics ─────────────────────────────────────────────────────────
 
-    # SBLEND: recognized and its operand consumed, matching the reference
-    # exactly -- confirmed by reading `nova/graphics/blitter.py` directly
-    # that `blend_pixel`/`_set_pixel_to_layer` (the only blend-aware pixel
-    # write) is dead code there too (never called from `SWRITE`'s real path
-    # or any drawing primitive), so a real stub is a bug-for-bug match, not
-    # a simplification. See screen.star's header comment.
+    # SBLEND / SALPHA: set the blend mode (clamped 0-4) and intensity
+    # (clamped 0-255), `GFX.set_blend_mode`/`set_blend_alpha`. Every drawing
+    # primitive and SWRITE then blend through `Screen::draw_set`; see
+    # screen.star's header comment. (SBLEND used to be a stub, back when the
+    # reference's blend code was dead.)
     fn op_sblend(mut self):
-        let ops = self.decode_operands(1)
-        self.halted = self.halted
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let v = self.operand_read(op1, self.operand_width(op1))
+        self.screen.set_blend_mode(v)
+
+    fn op_salpha(mut self):
+        let (op1, _op2, _op3) = self.decode_operands(1)
+        let v = self.operand_read(op1, self.operand_width(op1))
+        self.screen.set_blend_alpha(v)
 
     # SREAD reads the *composited* screen (matching `GFX.get_screen_val` ->
     # `self.screen` -> the compositor's own composited property) --
@@ -93,7 +98,7 @@ impl cpu::Cpu:
         let (op1, _op2, _op3) = self.decode_operands(1)
         let v = self.operand_read(op1, 8)
         let (x, y) = self.vxy()
-        self.screen.layer_set(self.vl as i32, x, y, v as u8)
+        self.screen.draw_set(self.vl as i32, x, y, v as u8)
 
     fn op_vread(mut self):
         let (op1, _op2, _op3) = self.decode_operands(1)

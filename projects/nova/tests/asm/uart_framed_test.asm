@@ -1,7 +1,7 @@
 ; Nova-16 UART framed-mode protocol test (todo.md P2 #3).
 ;
 ; Exercises the opcode-reachable half of framed-mode parsing: SERCTRL's
-; control bit 2 (framed-mode enable) and the new SERFSTAT opcode (0xB4,
+; control bit 2 (framed-mode enable) and the new SERFSTAT opcode (0xB5,
 ; extended status -- framed-mode-enabled + latched checksum-error bits that
 ; SERSTAT's own two low bits never expose). The frame *bytes* themselves
 ; only ever arrive via Uart::host_push_rx -- no opcode can inject RX bytes,

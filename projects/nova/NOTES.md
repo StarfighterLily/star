@@ -1043,7 +1043,7 @@ execute cycle, all four addressing modes, and 180+ opcodes:
   CALLZ CALLNZ RETN LOOP LOOPZ WHILE INT`
 - Memory bulk: `MEMCPY MEMSET MEMMOVE MEMSWAP MEMTEST`
 - Random: `RND RNDR`
-- Graphics: `SBLEND(stub, see below) SREAD SWRITE VREAD VWRITE SBLIT VBLIT
+- Graphics: `SBLEND SALPHA SREAD SWRITE VREAD VWRITE SBLIT VBLIT
   SFILL SINV SLINE SRECT SCIRC SROL SROT SSHFT SFLIP CHAR TEXT` — every one
   of these except `SREAD`/`VREAD`/`VWRITE` now targets whichever of the 9
   layers `VL` selects, not just layer 0 (see "Layer compositing and
@@ -1129,7 +1129,7 @@ in:
 - ~~UART framed-mode protocol parsing~~ (start byte + length + payload +
   checksum) — **now implemented** (todo.md P2 #3): `uart.star`'s
   `parse_frame_byte`, gated behind `SERCTRL` control bit 2, plus the new
-  `SERFSTAT` opcode (`0xB4`) for reading back framed-mode-enabled/latched
+  `SERFSTAT` opcode (`0xB5`) for reading back framed-mode-enabled/latched
   checksum-error state. **The host bridge itself is also implemented**
   (todo.md P0 #1, reversing this section's own earlier "left out, no opcode
   can drive it" entry): `uart.star::host_push_rx` feeds a real host byte
@@ -1179,15 +1179,14 @@ in:
   however many divisor-periods elapsed," which only differs from the
   reference under a `TS` so small relative to instruction throughput that
   multiple periods elapse between ticks — an edge case, not the common
-  path.
-- **`SBLEND` (blend mode) is a stub, and confirmed to be a bug-for-bug
-  match rather than a simplification**: reading `nova/graphics/blitter.py`
-  directly shows `Blitter.blend_pixel`/`_set_pixel_to_layer` (the only
-  blend-aware pixel write) is never called from anywhere in the reference
-  — `SWRITE`'s real path and every drawing primitive write raw, unblended
-  values. See `screen.star`'s header comment for the full trace. This was
-  reconfirmed during this round specifically because it looked like an
-  obvious gap to close — it isn't one.
+  path. (2026-10-15: carried back — the reference now caps the same way,
+  so this is no longer a divergence.)
+- ~~**`SBLEND` (blend mode) is a stub**~~ — **withdrawn (2026-10-15)**.
+  This bullet was true when written: the reference's `blend_pixel` was dead
+  code. The reference has since wired blending into `SWRITE` and every
+  drawing primitive and added `SALPHA` (`0xB4`), so this port now blends
+  for real too — see "Reconciliation with the Python reference" at the end
+  of this file and `screen.star`'s header comment.
 - **`SPLAY`/`SSTOP`/`STRIG` now update real audio state (todo.md P0 #1)** —
   previously this bullet read "update no actual audio state"; see
   `sound.star` and the "What's not implemented" entry above for what
@@ -1204,7 +1203,9 @@ in:
 - **DIV/MOD/DIVH by zero print a diagnostic and leave the destination
   unchanged**, rather than raising a hardware fault/trap — a defensive
   choice so a buggy test program halts with a readable message instead of
-  the whole emulator process aborting.
+  the whole emulator process aborting. (2026-10-15: carried back — the
+  reference now does the same for DIV/MOD/DIVH/FDIV, printing to stderr
+  because its stdout carries the MCP server's JSON-RPC stream.)
 - **An unknown/unimplemented opcode halts the CPU with a diagnostic**
   (`pc`, opcode byte) rather than either crashing or silently
   misinterpreting the following bytes as something else — the safest
@@ -1292,7 +1293,7 @@ was checked against; not repeated here. What's checked in:
   harness", just checked in this time.
 - `tests/asm/uart_framed_test.asm` (+ assembled `.bin`/`.org`/`.sym`) and
   `tests/uart_framed_test.star` — added for UART framed-mode parsing
-  (todo.md P2 #3, new opcode `SERFSTAT`/`0xB4`): a real assembled program
+  (todo.md P2 #3, new opcode `SERFSTAT`/`0xB5`): a real assembled program
   run through actual `Cpu::step()` calls, with `host_push_rx` called
   directly only for the frame bytes themselves (the one piece no opcode can
   drive, same as raw mode's own host bridge). See "UART" above for the full
@@ -2743,10 +2744,9 @@ Design decisions, each also explained at its point of use in `screen.star`:
   `GFX.set_screen_val`/`_set_pixel_fast` and every drawing primitive
   (`draw_line`/`draw_rectangle`/`draw_circle`/`draw_char`/fill/invert) all
   route through `get_layer_buffer_by_num(self.VL)`.
-- **`SBLEND`/blend modes are still a stub, and this round specifically
-  confirmed that's correct, not a gap** — see "Known simplifications"
-  above and `screen.star`'s header comment: `blend_pixel` is genuinely dead
-  code in the reference itself.
+- ~~**`SBLEND`/blend modes are still a stub**~~ — superseded: blending is
+  real now in both emulators (see "Reconciliation with the Python
+  reference" at the end of this file).
 - **An out-of-range `LSWAP`/`LMOVE`/`LCOPY` target layer is a silent
   no-op** rather than the reference's `raise ValueError` — matching this
   project's established "memory/graphics ops always bounds-check, never
@@ -2981,7 +2981,7 @@ live Python reference exactly (`PUSH R0`: `SP` 0x9000→0x8FFF; `PUSH P0`:
 default; `POP R0`: `SP` 0x8FFF→0x9000, value 0xAB; `POP P0`: `SP`
 0x8FFD→0x8FFF, value 0x1234).
 
-## UART (0xA2-0xA5, 0xB4)
+## UART (0xA2-0xA5, 0xB5)
 
 Added in this round: `SERIN SEROUT SERSTAT SERCTRL`, ported from
 `nova_uart.py::NovaUART`'s raw-mode data path. Lives in its own file,
@@ -3011,7 +3011,10 @@ see "TCP transport" below, after framed mode.
 other half of "no opcode drives framing": `SERCTRL`'s control bit 2
 (`0x04`, matching `docs/UART_SYSTEM.md`'s already-documented-but-previously
 -inert "Framed mode enable" bit) now actually gates `write_control` into
-`framed_mode`, and a new opcode, `SERFSTAT` (`0xB4` -- picked because
+`framed_mode`, and a new opcode, `SERFSTAT` (originally `0xB4`; moved to
+`0xB5` on 2026-10-15 because the reference independently assigned `0xB4`
+to `SALPHA` -- see "Reconciliation with the Python reference". `0xB4` was
+picked because
 `0xA6`-`0xAB` turned out to already be taken by `SETBP`/`CLRBP`/`ENABRK`/
 `DISBRK`/`ENATRAP`/`DISATRAP`, unimplemented-in-`cpu.star`'s-`execute`
 debugger/trap pseudo-opcodes reserved by the assembler but never dispatched
@@ -3162,7 +3165,7 @@ integration test above:
   every opcode-reachable piece: `SERCTRL 0x04` to enable framed mode,
   `SERFSTAT` to confirm the enable bit and check/clear the latched
   checksum-error bit, and `SERIN`/`SERSTAT` polling loops draining the RX
-  FIFO. Disassembled back with `disasm.exe` to confirm `0xB4` round-trips
+  FIFO. Disassembled back with `disasm.exe` to confirm `0xB5` round-trips
   as `SERFSTAT` cleanly (see its own header comment for the full expected-
   register checklist).
 - `tests/uart_framed_test.star` — a headless harness in the same
@@ -3857,7 +3860,9 @@ Verification for the branch-encoding half (round summary):
   0xB4 surface, deliberately assembled by `assembler.star` per its own
   section above). A pristine pre-change `assembler.star` build reproduces
   the checked-in uart_framed bin exactly, confirming the delta is
-  Python-side and predates this round.
+  Python-side and predates this round. (2026-10-15: no longer an
+  exception -- the reference gained `SERFSTAT` at `0xB5`, and both
+  assemblers now produce a byte-identical `uart_framed_test.bin`.)
 
 ## Pure Option B port: BANK preserved across interrupts (sync with Python `4902a2e`)
 
@@ -4000,3 +4005,74 @@ existing `[u8; 8]` stack + depth counter pattern is idiomatic here).
   and dumps PC/R/P/BANK/IVT in a compact form for cross-emulator
   comparison against `tests/run_bin.exe` output.
 
+## Reconciliation with the Python reference (2026-10-15)
+
+Both emulators were run on the same binaries side by side -- the reference
+headless with its UART wired to stdout, this port's `nova16.exe` with
+`SEROUT` captured from its stdout -- and every difference found was settled
+in one direction or the other. Policy for this round (set by the project
+owner): the timer and `DIVH` follow the reference unless this file argues
+otherwise, and where this file does argue a point, the reference changes
+instead. "Status: this port now supersedes the Python reference" asks for
+each such call to be reasoned, not assumed; the reasoning is given per item.
+
+Changed in this port (now matching the reference):
+
+- **`DIVH` divides the 32-bit value `dest:P3`**, writes the quotient's low
+  word to `dest`, then the remainder to `P3`, and sets the flags from the
+  16-bit quotient -- always `<< 16`, even for a byte destination. This port
+  computed `(dest << 16) / src`, ignoring `P3`, leaving it untouched and
+  setting no flags (following `docs/`' one-line description). First
+  principles favor the reference: `P3` is already `DIV`'s remainder
+  register, a real 32/16 divide is the only reason for the opcode to exist,
+  and the doc's formula is just the `P3 = 0` case. The instruction
+  reference now spells this out.
+- **`MULH` is always `>> 16` and sets the flags** (it used `>> 8` for byte
+  operands and left the flags alone), like the reference's `_mulh`.
+- **`TT` wraps mod 256** instead of saturating at 255. Nothing here argued
+  for saturation; a saturated counter cannot be polled for wrap-arounds.
+- **A timer request is masked by `TC` bit 1** and stays pending while
+  masked (the reference's `set_enable(VECTOR_TIMER, ...)`). A handler that
+  disarmed the timer before `IRET` used to be re-entered at once by a
+  request latched during its own run (`irq_bank_test`: 76 vs 56 cycles).
+- **A timer request is taken at the start of the step that raised it**,
+  before that step's fetch (the reference dispatches synchronously from the
+  tick), so `IRET` returns to the instruction that would have run.
+- **Blending is real** (`SBLEND` modes 0-4, new `SALPHA` at `0xB4`),
+  formula for formula including Python's floor division, applied to
+  `SWRITE`/`SLINE`/`SRECT`/`SCIRC`/`SFILL`/`CHAR`/`TEXT` with the
+  reference's exact write sequence (outline-rectangle corners and repeated
+  filled-circle rows blend more than once, deliberately).
+- **`SRECT` clamps but no longer reorders its corners**: the reference's
+  numpy slices are empty for a reversed range, so a reversed filled
+  rectangle draws nothing and a reversed outline keeps only its ascending
+  runs.
+- **`SERFSTAT` moved to `0xB5`**: the reference assigned `0xB4` to `SALPHA`
+  after this port had taken it; the owner chose to keep `SALPHA` there
+  (Astrid's `set_blend_alpha` emits it) and both emulators now carry
+  `SERFSTAT` at `0xB5`.
+
+Changed in the reference (matching this port):
+
+- `DIV`/`MOD`/`DIVH`/`FDIV` by zero print a diagnostic and leave everything
+  unchanged instead of raising ("Known simplifications" above).
+- Timer catch-up is capped at one count per divisor period (same).
+- `SERFSTAT` (`0xB5`) added, reading framed mode and the latched checksum
+  error with read-clear, exactly as `uart.star::read_extended_status`.
+- `SREAD` returns the true composite. The reference's layer-0 write fast
+  path (and its `CHAR`/`TEXT` path) wrote straight into its cached
+  composite, so a layer-0 pixel showed through an opaque upper layer until
+  something forced a recomposite -- the one place where its composite cache
+  was *not* the pure optimization this port's `screen.star` header assumes.
+
+Verification: an asm probe of `DIVH`/`MULH` (incl. flags), divide-by-zero,
+timer wrap / lowered-`TS` / masked `TC=3`, and `SREAD` under an opaque layer
+prints identical tokens on both emulators; a blending probe (every mode at
+alpha 255/160/37 across all eight primitives, two layers, a reversed
+rectangle) prints 15 identical screen hashes; all 18 `tests/asm/*.bin`
+match `scripts/parity_run.py` exactly (registers, PC, cycles) through
+`tests/run_bin.exe`; `uart_framed_test.exe` 10/10 and
+`mouse_interrupt_test.exe` 5/5 PASS; `uart_framed_test.bin` is
+byte-identical from both assemblers; the Astrid camera demos' full serial
+traces (every line and circle of every frame) are identical. The
+reference's new `tests/unit/test_emulator_parity.py` pins each point above.
