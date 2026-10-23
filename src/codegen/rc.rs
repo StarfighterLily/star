@@ -323,9 +323,23 @@ impl Codegen {
         if let Some(frame) = self.owned_stack.pop() {
             if emit_release {
                 for (ptr, ty) in frame.iter().rev() {
-                    self.emit_release_at(ptr, ty);
+                    self.emit_scope_release(ptr, ty);
                 }
             }
+        }
+    }
+
+    /// Release one `owned_stack` slot at a scope exit. An `emit_place`
+    /// spill slot is re-zeroed afterwards: it may be filled only on some
+    /// paths through its scope (see `emit_place`'s fallback arm), so when
+    /// that scope is a loop body, an iteration that skips the spill must
+    /// find null there, not the value the previous iteration already
+    /// released.
+    fn emit_scope_release(&mut self, ptr: &str, ty: &Ty) {
+        self.emit_release_at(ptr, ty);
+        if self.spill_slots.contains(ptr) {
+            let ty_str = self.llvm_ty(ty);
+            self.line(&format!("  store {} zeroinitializer, {}* {}", ty_str, ty_str, ptr));
         }
     }
 
@@ -347,7 +361,7 @@ impl Codegen {
     pub(super) fn emit_releases_for_return(&mut self) {
         for frame in self.owned_stack.clone().iter().rev() {
             for (ptr, ty) in frame.iter().rev() {
-                self.emit_release_at(ptr, ty);
+                self.emit_scope_release(ptr, ty);
             }
         }
     }
@@ -359,7 +373,7 @@ impl Codegen {
     pub(super) fn emit_releases_since(&mut self, depth: usize) {
         for frame in self.owned_stack.clone()[depth..].iter().rev() {
             for (ptr, ty) in frame.iter().rev() {
-                self.emit_release_at(ptr, ty);
+                self.emit_scope_release(ptr, ty);
             }
         }
     }

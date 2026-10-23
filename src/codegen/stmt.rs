@@ -418,6 +418,7 @@ impl Codegen {
     pub(super) fn emit_fn(&mut self, f: &TypedFnDef, owner: Option<&str>) {
         self.symbols.clear();
         self.owned_stack.clear();
+        self.spill_slots.clear();
         self.push_scope();
         self.tmp = 0;
         // Isolate this function's own IR text so `hoist_allocas_to_entry`

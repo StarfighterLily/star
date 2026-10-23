@@ -50,6 +50,11 @@ mod wrapping;
 
 use std::fmt::Write;
 
+/// Prefix marking an emitted IR line that `Codegen::hoist_allocas_to_entry`
+/// must move into the entry block (after the allocas) and strip. Never
+/// survives into final IR.
+const ENTRY_INIT_MARK: &str = "\u{1}entry-init\u{1}";
+
 use crate::diagnostics::{Diagnostic, Span};
 use crate::types::*;
 
@@ -180,6 +185,13 @@ pub struct Codegen {
     /// `return`/`break`/`continue`), closing the leaks documented in
     /// todo.md §3.6.
     owned_stack: Vec<Vec<(String, Ty)>>,
+    /// The subset of `owned_stack` slots that are `emit_place` spill slots
+    /// for a by-value temporary (not `let`/parameter locals): these may be
+    /// filled only conditionally within their scope, so they're zeroed at
+    /// function entry and re-zeroed after each release -- see `emit_place`'s
+    /// fallback arm. Cleared per function along with `tmp`, since slot names
+    /// restart there.
+    spill_slots: std::collections::HashSet<String>,
     /// Maps a top-level function name -> the name of the no-capture,
     /// envp-ignoring thunk generated the first time that function is used as
     /// a first-class value (see `Codegen::emit_fn_value`), so referencing the
@@ -398,6 +410,7 @@ impl Codegen {
             enum_variant_fields: std::collections::HashMap::new(),
             loop_stack: Vec::new(),
             owned_stack: Vec::new(),
+            spill_slots: std::collections::HashSet::new(),
             fn_value_thunks: std::collections::HashMap::new(),
             list_release_thunks: std::collections::HashMap::new(),
             set_release_thunks: std::collections::HashMap::new(),
@@ -1794,6 +1807,22 @@ impl Codegen {
                 let bare = self.untag(&val, &ty);
                 let ptr = self.tmp_name();
                 self.line(&format!("  {} = alloca {}", ptr, ty_str));
+                // The release `track_owned` schedules below runs at the end of
+                // the enclosing *scope*, but this spill can sit on a path
+                // that's only conditionally taken within it -- the right
+                // operand of `and`/`or` (`a and f().field`), most commonly.
+                // On a path that skipped it, that release used to read
+                // whatever garbage the uninitialized slot held and segfault
+                // (found porting HavokOS's parser: `self.peek(1).kind` behind
+                // a false `and`). So the slot is zeroed once at function entry
+                // (a release of all-null fields is a no-op), and re-zeroed
+                // after every scope-exit release (`rc.rs`'s
+                // `emit_scope_release`), so a loop iteration that skips the
+                // spill can't release the previous iteration's value twice.
+                if self.contains_rc(&ty) {
+                    self.line(&format!("{}  store {} zeroinitializer, {}* {}", ENTRY_INIT_MARK, ty_str, ty_str, ptr));
+                    self.spill_slots.insert(ptr.clone());
+                }
                 self.line(&format!("  store {} {}, {}* {}", ty_str, bare, ty_str, ptr));
                 // This spilled pointer is the *only* reference to whatever
                 // `expr` evaluated to (a `List`/`Map`/`Set`/`Table` object
@@ -1943,9 +1972,16 @@ impl Codegen {
     /// writing a stress-test regression for the `TypedStmt::Expr` RC-release
     /// fix (see `emit_stmt`), which happened to be the first codegen path
     /// exercised at a high enough iteration count to trigger it.
+    ///
+    /// Lines prefixed with `ENTRY_INIT_MARK` (the zero-initializing store for
+    /// a conditionally-filled spill slot -- see `emit_place`'s fallback arm)
+    /// are hoisted too, mark stripped, and placed right after the allocas:
+    /// that store has to dominate every path to the slot's scope-exit
+    /// release, which only the entry block does.
     fn hoist_allocas_to_entry(func_ir: &str) -> String {
         let mut entry_idx = None;
         let mut alloca_lines: Vec<&str> = Vec::new();
+        let mut init_lines: Vec<&str> = Vec::new();
         let mut rest: Vec<&str> = Vec::new();
         for line in func_ir.lines() {
             let trimmed = line.trim_start();
@@ -1957,6 +1993,12 @@ impl Codegen {
             if entry_idx.is_some() && trimmed.starts_with('%') && trimmed.contains("= alloca ") {
                 alloca_lines.push(line);
                 continue;
+            }
+            if entry_idx.is_some() {
+                if let Some(init) = line.strip_prefix(ENTRY_INIT_MARK) {
+                    init_lines.push(init);
+                    continue;
+                }
             }
             rest.push(line);
         }
@@ -1971,7 +2013,7 @@ impl Codegen {
             out.push_str(line);
             out.push('\n');
             if i == idx {
-                for a in &alloca_lines {
+                for a in alloca_lines.iter().chain(init_lines.iter()) {
                     out.push_str(a);
                     out.push('\n');
                 }

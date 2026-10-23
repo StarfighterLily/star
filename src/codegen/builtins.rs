@@ -11,7 +11,8 @@ impl Codegen {
     /// Shared lowering for the `print`/`println` builtins: an f-string
     /// argument is flattened into a single `printf` format string
     /// (interpolations become `%d`/`%f`/`%s` holes); any other argument is
-    /// passed straight through as a format-string pointer. `println` differs
+    /// printed through a constant `"%s"` format, never used as the format
+    /// itself (see the comment at that call). `println` differs
     /// from `print` only in that it guarantees a trailing newline even when
     /// the argument isn't an f-string (an f-string argument already gets one
     /// baked into its format string either way).
@@ -312,7 +313,18 @@ impl Codegen {
             // `Ident`/`Field` argument). This is already the raw `i8*`
             // pointer `printf` expects, no boxing indirection to unwrap.
             let loaded = self.untag(&val, &Ty::Str);
-            self.line(&format!("  call i32 (i8*, ...) @printf(i8* {})", loaded));
+            // The value is printed through a constant `"%s"` format, never
+            // used *as* the format: a runtime string containing `%` (`"100%"`,
+            // MUD colour codes like `"%^RED%^"`, or any user input) would
+            // otherwise be interpreted as conversion specifiers -- dropped
+            // characters at best, and `%s`/`%n` reading or writing through
+            // garbage varargs (a segfault) at worst. Found by
+            // `projects/havokos` (NOTES.md, "Star compiler bugs found").
+            let pct_s = self.global_name();
+            self.global_defs.push(format!("{} = private unnamed_addr constant [3 x i8] c\"%s\\00\"", pct_s));
+            let pct_s_ptr = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds [3 x i8], [3 x i8]* {}, i64 0, i64 0", pct_s_ptr, pct_s));
+            self.line(&format!("  call i32 (i8*, ...) @printf(i8* {}, i8* {})", pct_s_ptr, loaded));
             // Same reasoning as `emit_raw_str_ptr`/the f-string branch
             // above: release whatever `emit_expr(arg)` left us owning --
             // only now that `printf` above has actually read through

@@ -5,7 +5,107 @@ the full workflow and `projects/nova/NOTES.md` for the Nova-16 port's own
 round-by-round log (a separate document because it predates this board and
 is long enough to want its own file).
 
-## Current focus: porting NoBASIC to Star
+## Current focus: porting HavokOS (LPMUD driver) to Star
+
+New effort (started 2026-10-22, see `projects/havokos/havokos.md` for the
+charter): a native Star port of HavokOS, the clean-room Pike LPMUD driver at
+`E:\dsdev\havokos`. MVP: boot the stock Dead Souls 3.9 mudlib
+(`E:\ds3.9\lib`) and let a player log in. **Never open FluffOS source**,
+including the `E:\ds3.9\fluffos-2.23-ds03\` tree that ships next to the
+mudlib. The reference *transpiles* LPC to Pike and relies on Pike's runtime
+compiler, and Star can't compile code at runtime, so from the parser on this
+is an LPC bytecode compiler + VM rather than a line-by-line port. See
+`projects/havokos/NOTES.md` for the architecture, the Star constraints that
+shape it (probed, not assumed), and the milestone plan. Each milestone is
+verified against the live Pike driver (Pike is installed) on the real
+mudlib before it's marked done.
+
+- [x] **HavokOS P0 #1 (M1): LPC front end.** Done. `projects/havokos/
+      lexer.star` + `preprocess.star` (a from-scratch token-level
+      preprocessor replacing both `preprocess.pike` and the Pike `cpp()` it
+      wraps) reproduce the reference front end's post-preprocessing token
+      stream on every DS3.9 `.c` file:
+      - All 2378 match a frozen fixture generated from the live reference
+        (`tests/run_tokdump_test.ps1`), about 20 s per run.
+      - 2376 succeed and the same 2 fail.
+      - 9 files with `@MARK` text blocks are compared without line numbers.
+        The reference reports wrong lines there, and this port deliberately
+        doesn't reproduce that bug (NOTES.md "Deliberate deviations").
+      - Macro edge cases DS3.9 never exercises are pinned against Pike
+        `cpp()` by `tests/run_pp_cases_test.ps1`. Two of those rules
+        differ from ISO C: no rescanning into the following text, and no
+        permanent blue paint.
+      Found and fixed a genuine Star **compiler** bug along the way:
+      `print`/`println` of a non-f-string `str` passed it to `printf` as
+      the format, so `%` in the data was interpreted (`"%^RED%^"` printed
+      as `"^RED^"`, `"%s"` segfaulted). Fix in
+      `src/codegen/builtins.rs::emit_print_like`, regression test
+      `tests/frontend_print_percent.rs`.
+- [x] **HavokOS P0 #2 (M2): parser.** Done. `projects/havokos/ast.star`
+      (a `Node` arena with one `NodeKind` variant per reference node kind)
+      + `parser.star` (`parser.pike` ported method for method) reproduce
+      the reference parser's AST exactly:
+      - All 2378 DS3.9 files match a frozen fixture of the live
+        reference's canonical AST dumps (`tests/run_astdump_test.ps1`),
+        about 21 s per run. The same 2376 parse and the same 2 fail.
+      - The 9 `@MARK` files are compared without line numbers, as in M1.
+      - Grammar DS3.9 never uses (case ranges, scoped function pointers,
+        `parse_command`, default arguments, `ob->(expr)`, labelled
+        inherits) is pinned by `tests/fixtures/astlib/ast_cases.c`, and 12
+        one-mistake files check success/failure parity
+        (`tests/run_ast_cases_test.ps1`).
+      Found and fixed a genuine Star **compiler** bug along the way: a
+      field read off a struct-returning call (`f().field`) on the
+      right-hand side of `and`/`or` spilled into a slot that was released
+      at scope exit even when the short-circuit skipped it. That released
+      uninitialized stack and segfaulted the parser on its first file.
+      Fix in `src/codegen/mod.rs` (`emit_place`) and `src/codegen/rc.rs`
+      (`emit_scope_release`), regression test
+      `tests/frontend_spill_slot_conditional_release.rs`. Full suite
+      re-run: 2093 pass, and the only failures are the 5 pre-existing
+      `@fgetc` ones below.
+- [ ] **HavokOS P0 #3 (M3): bytecode compiler + VM core.** Expressions,
+      statements, functions, inherits, `::` calls, closures/function
+      pointers, `catch`/`throw`, call_other. Value model as planned in
+      NOTES.md: handle-based arrays and mappings, since Star `List` is
+      copy-on-write. Exit criterion: the language-semantics cases of
+      `pike/tests/run_tests.pike`'s case table. Depends on #2.
+- [ ] **HavokOS P1 #1 (M4): efuns.** Strings (`sprintf`/`sscanf`/...),
+      arrays, mappings, math, files, time, the save/restore format.
+- [ ] **HavokOS P1 #2 (M5): object model.** Master/sefun loading, load/
+      clone/destruct, environment/move, add_action/commands, call_outs,
+      heart beats, reset/clean_up.
+- [ ] **HavokOS P1 #3 (M6): network + boot (MVP).** Needs new Star
+      `tcp_listen`/`tcp_accept` builtins in `src/codegen/net.rs`, since
+      today only client sockets exist and FFI can't build a `sockaddr_in`.
+      Then telnet and login, and DS3.9 boots.
+- [ ] **HavokOS P2 #1: Star compiler, capitalized `extern "C"` names.**
+      `extern "C" fn Sleep(ms: i32)` / `GetTickCount()` fail with
+      "undefined type `Sleep`": a capitalized name is resolved as a type,
+      which blocks binding most of the Win32 API. Repro in
+      `projects/havokos/NOTES.md`, constraint #7.
+- [ ] **HavokOS P2 #2: Star compiler, O(1) `str` indexing.** `s[i]` runs
+      `strlen` for its bounds check, so a char-at-a-time scan is quadratic:
+      about 70 s for 1 MB, against about 1 ms over `Bytes`. Fixing it
+      likely means storing the length in the `str` RC header. Worked around
+      in HavokOS by using `Bytes` everywhere hot.
+
+- [ ] **P0: pre-existing test failures at HEAD `84d14e7`.**
+      `file_read_line`'s codegen references `@fgetc` without declaring it
+      ("internal compiler error: malformed LLVM IR ... undefined global
+      `@fgetc`"). Five tests fail, all on that root cause:
+      `frontend_file_io` (`codegen_file_read_line_uses_fgetc_not_getchar`,
+      `runtime_file_read_line_end_to_end`,
+      `..._truncates_oversized_line_end_to_end`,
+      `..._without_trailing_newline_end_to_end`) and
+      `frontend_bughunt_transient_rc_release`
+      (`runtime_file_and_env_builtins_with_fresh_str_arguments_end_to_end`).
+      Found 2026-10-22 during the HavokOS M1 full-suite run and confirmed
+      to fail identically with that round's changes stashed. Not
+      investigated further. The other 2089 tests pass. Same 5 still
+      failing on 2026-10-23 after the M2 compiler fix (2093 others pass).
+
+## Previous focus: porting NoBASIC to Star
 
 New effort (started 2026-08-05): port the NoBASIC language compiler --
 today a reference Python implementation living in a sibling project,
@@ -224,3 +324,27 @@ reconciled to match whichever of the two Python sources looks more
   comment for the precise remaining-work list, kept there rather than
   duplicated here since it's the file most likely to need updating as
   each piece lands.
+- 2026-10-22: Started the HavokOS port (new "Current focus" section above;
+  the NoBASIC items are now "Previous focus" and stay open). HavokOS P0 #1
+  (M1, LPC front end) is done. See its entry above and
+  `projects/havokos/NOTES.md`, which also covers:
+  - the Star capability probes behind the design: `List` copy-on-write
+    value semantics, `mut` free-function params being copies,
+    O(n) `str` indexing, and no server sockets;
+  - the two deliberate deviations from the reference;
+  - the Star compiler `print`/`println` format-string bug found and fixed
+    (`tests/frontend_print_percent.rs`).
+  Filed two Star compiler issues as HavokOS P2 #1/#2 rather than fixing
+  them in this round.
+- 2026-10-23: HavokOS P0 #2 (M2, parser) is done. See its entry above and
+  `projects/havokos/NOTES.md` ("2026-10-23: M2 parser" and Star compiler
+  bug #4), which also covers:
+  - the canonical AST dump format and why the Star side hand-sorts keys
+    (Star has no ordering on `str`);
+  - the reference's Pike-evaluation-order line numbers this port keeps
+    (a `for` init expression reports the line of its `;`);
+  - the conditional spill-slot release bug found and fixed
+    (`tests/frontend_spill_slot_conditional_release.rs`; each half of the
+    fix has a test that fails without it).
+  The `star` on `PATH` here is a stale Sep 8 debug build, so the HavokOS
+  tools are built with `target/release/star.exe`.

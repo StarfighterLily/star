@@ -1,0 +1,12 @@
+/err/e1.c FAIL
+/err/e10.c FAIL
+/err/e11.c OK 1 2812662540
+/err/e12.c FAIL
+/err/e2.c FAIL
+/err/e3.c FAIL
+/err/e4.c FAIL
+/err/e5.c FAIL
+/err/e6.c FAIL
+/err/e7.c FAIL
+/err/e8.c FAIL
+/err/e9.c FAIL

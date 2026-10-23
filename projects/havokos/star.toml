@@ -1,0 +1,8 @@
+# HavokOS -- an LPMUD driver, ported natively to Star from the clean-room
+# Pike implementation at E:\dsdev\havokos. See NOTES.md in this directory
+# for the architecture and the round-by-round log.
+
+[package]
+name = "havokos"
+version = "0.1.0"
+entry = "main.star"

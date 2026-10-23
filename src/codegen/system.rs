@@ -41,6 +41,7 @@ impl Codegen {
     pub(super) fn emit_system(&mut self, s: &TypedSystemDef) {
         self.symbols.clear();
         self.owned_stack.clear();
+        self.spill_slots.clear();
         self.push_scope();
         self.tmp = 0;
         let fn_start = self.ir.len();
