@@ -104,8 +104,44 @@ mudlib before it's marked done.
       deliberate deviations are documented in NOTES.md (#3-#6: double
       floats, negative-constant switch, per-declaration closure cells,
       64-bit int wrap).
-- [ ] **HavokOS P1 #1 (M4): efuns.** Strings (`sprintf`/`sscanf`/...),
-      arrays, mappings, math, files, time, the save/restore format.
+- [x] **HavokOS P1 #1 (M4): efuns.** Done. The efun library, one file per
+      area (`efuns_str`/`efuns_arr`/`efuns_file`, `sprintf`, `sscanf`,
+      `regex`, `md5`, `tcolour`, `saveformat`, `numfmt`, `buf`.star), plus
+      `sscanf` lvalues compiled the emitter's way and the master loaded at
+      boot for valid_read/valid_write. Checked against the live Pike driver
+      (`tests/run_cases_test.ps1`, now all six fixtures, 458 cases):
+      - The reference table's 20 efun-library cases (`m4_selection.txt`).
+      - 204 edge cases of this port's own (`m4_cases.txt`). `sprintf`/
+        `sscanf` are Pike's built-ins in the reference, so their rules were
+        probed against Pike: strict types (`sprintf("%f", 3)` returns the
+        format), precision 3 by default, `%:N`, `%Nc`, %O's layout, column
+        mode. Every file efun runs on a scratch area of the test mudlib,
+        and all of the reference's FluffOS-derived `terminal_colour` cases
+        run in one case.
+      - The 740 `query_num`/`pluralize` golden values (FluffOS output).
+      - 36 calls to Dead Souls 3.9's own simul_efuns on the real mudlib,
+        both drivers booted to DS3.9's simul_efun object (`-ds`). That
+        needed `get_config()`, added.
+      The DS3.9 compile sweep and the M1/M2 token/AST sweeps still pass,
+      with the tools rebuilt on the changed compiler.
+      Found and fixed along the way:
+      - A genuine Star **compiler** bug: math builtins (`sqrt`/`pow`/
+        `sin`/`log`/...) narrowed an `f64` argument to `f32`. Fix in
+        `src/types/mod.rs` (`math_result_ty`) and
+        `src/codegen/builtins.rs`, regression test
+        `tests/frontend_math_f64.rs` (4 of its 7 tests fail without it).
+      - An M3 bug in the port: LPC int `+`/`-`/`*`/`/`/`%`/shifts used
+        Star's trapping `i64` ops, so an overflow aborted the whole driver.
+        They now wrap (`vm.star` `wadd`/.../`wshr`).
+      New Star compiler surface: filesystem and calendar builtins
+      (`dir_list`, `path_kind`, `file_size`, `file_mtime`, `dir_create`,
+      `dir_remove`, `file_remove`, `file_rename`, `local_time`;
+      `src/codegen/fs.rs`, `tests/frontend_fs.rs`), because the FFI can't
+      read a C struct out-parameter. The Linux arm is IR/object-verified
+      only (`docs/cross_platform_scope.md`).
+      Four new deliberate deviations are documented in NOTES.md (#7 no NUL
+      bytes in strings, #8 map/filter over strings work, #9 insertion-order
+      mappings, plus #3's float-printing note).
 - [ ] **HavokOS P1 #2 (M5): object model.** Master/sefun loading, load/
       clone/destruct, environment/move, add_action/commands, call_outs,
       heart beats, reset/clean_up.
@@ -123,6 +159,14 @@ mudlib before it's marked done.
       about 70 s for 1 MB, against about 1 ms over `Bytes`. Fixing it
       likely means storing the length in the `str` RC header. Worked around
       in HavokOS by using `Bytes` everywhere hot.
+- [ ] **HavokOS P2 #3: Star compiler, float literals are single
+      precision.** `2.718281828459045 as f64` is 2.7182817...: a float
+      literal is typed `f32` and only then widened, so an `f64` constant
+      silently loses everything past the 7th digit. Found in M4 while
+      writing `tests/frontend_math_f64.rs`. Worked around in HavokOS by
+      computing constants (`(1.0 as f64) / (3.0 as f64)`). A fix probably
+      means typing a literal from its `as f64` / `f64` context, the way
+      integer literals already get `as i64`.
 
 - [ ] **P0: pre-existing test failures at HEAD `84d14e7`.**
       `file_read_line`'s codegen references `@fgetc` without declaring it
@@ -139,7 +183,9 @@ mudlib before it's marked done.
       investigated further. The other 2089 tests pass. Same 5 still
       failing on 2026-10-23 after the M2 compiler fix (2093 others pass),
       and again after the M3 `src/modules.rs` fix (2097 others pass,
-      including M3's 4 new tests).
+      including M3's 4 new tests), and after M4's compiler changes (2111
+      others pass, including M4's 14 new tests in `frontend_math_f64.rs`
+      and `frontend_fs.rs`).
 
 ## Previous focus: porting NoBASIC to Star
 
@@ -400,3 +446,17 @@ reconciled to match whichever of the two Python sources looks more
   The editor's language server keeps `target/debug/star.exe` locked on
   this machine, so this round ran the Star test suite with
   `CARGO_TARGET_DIR=target/alt`.
+- 2026-10-23: HavokOS P1 #1 (M4, efuns) is done. See its entry above and
+  `projects/havokos/NOTES.md` ("2026-10-23: M4 efuns", constraints #9-#13,
+  deviations #7-#9, Star compiler bug #6), which also covers:
+  - how Pike's sprintf/sscanf rules were pinned down (probes against the
+    live interpreter, then frozen as fixture cases);
+  - why floats are formatted from their exact decimal expansion
+    (`numfmt.star`), and why string building goes through `buf.star`
+    (`x = f(x)` on a `Bytes` copies the whole buffer every call);
+  - the new Star compiler builtins for files and local time
+    (`src/codegen/fs.rs`), and the `f64` math builtin fix
+    (`tests/frontend_math_f64.rs`);
+  - running real Dead Souls 3.9 simul_efuns on both drivers (`-ds`).
+  Filed the single-precision float literal issue as HavokOS P2 #3. Known
+  slow spot left for M5: `a += ({ x })` in a long loop.

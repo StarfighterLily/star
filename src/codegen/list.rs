@@ -30,7 +30,7 @@ impl Codegen {
     /// header. Always routed through this helper (rather than formatted
     /// ad-hoc) so every call site agrees byte-for-byte on the type's
     /// textual spelling.
-    fn list_payload_llvm_ty(&self, elem_ty: &Ty) -> String {
+    pub(super) fn list_payload_llvm_ty(&self, elem_ty: &Ty) -> String {
         format!("{{ {}*, i64, i64 }}", self.llvm_ty(elem_ty))
     }
 
@@ -49,7 +49,7 @@ impl Codegen {
     /// separately `malloc`'d `data` buffer that must be `free`d once the
     /// object's last reference goes away, regardless of whether `elem_ty`
     /// itself carries any RC content.
-    fn list_release_thunk_operand(&mut self, elem_ty: &Ty) -> String {
+    pub(super) fn list_release_thunk_operand(&mut self, elem_ty: &Ty) -> String {
         let key = self.mangle_ty(elem_ty);
         if let Some(name) = self.list_release_thunks.get(&key).cloned() {
             let reg = self.tmp_name();
@@ -270,7 +270,7 @@ impl Codegen {
     /// Hardcodes an 8-byte element stride since every element pushed here is
     /// a `str` (`i8*`, pointer-width) -- not a generic helper, unlike
     /// `list_release_thunk_operand`'s per-element-type cache.
-    fn emit_dynamic_str_list_push(&mut self, data_slot: &str, len_slot: &str, cap_slot: &str, value: &str) {
+    pub(super) fn emit_dynamic_str_list_push(&mut self, data_slot: &str, len_slot: &str, cap_slot: &str, value: &str) {
         let len = self.tmp_name();
         self.line(&format!("  {} = load i64, i64* {}", len, len_slot));
         let cap = self.tmp_name();
@@ -440,6 +440,14 @@ impl Codegen {
         self.line(&format!("  call void @star_rc_release(i8* {})", s_raw));
         self.line(&format!("  call void @star_rc_release(i8* {})", sep_raw));
 
+        self.emit_finish_dynamic_str_list(&data_slot, &len_slot, &cap_slot)
+    }
+
+    /// Wrap the `data`/`len`/`cap` slots `emit_dynamic_str_list_push` grew
+    /// into a fresh `List<str>` object (taking over the buffer and the
+    /// strings in it). Shared by `str_split` and `crate::codegen::fs`'s
+    /// `dir_list`.
+    pub(super) fn emit_finish_dynamic_str_list(&mut self, data_slot: &str, len_slot: &str, cap_slot: &str) -> String {
         let elem_ty = Ty::Str;
         let payload_ty = self.list_payload_llvm_ty(&elem_ty);
         let release_fn = self.list_release_thunk_operand(&elem_ty);

@@ -1614,7 +1614,7 @@ impl Compiler:
                 else:
                     self.expr_discard(x)
                 self.emit2(pg::OP_TIME_END, s)
-            ast::NodeKind::Sscanf(args) -> self.efun_call("sscanf", args)
+            ast::NodeKind::Sscanf(args) -> self.sscanf_expr(e, args)
             ast::NodeKind::ParseCommand(args) -> self.efun_call("parse_command", args)
             ast::NodeKind::New(args) ->
                 if args.len() == 0:
@@ -1871,6 +1871,68 @@ impl Compiler:
             self.expr(r)
             self.emit2(pg::OP_BIN, bop)
         self.lv_store(inner)
+        self.lv_finish(chain, bref)
+
+    # sscanf(str, fmt, lv...): the efun returns ({ count, values... }) and
+    # each lvalue is assigned the value it got, if any -- the emitter's
+    # assign_results(lpc_sscanf(...), lambda(array v) { if (sizeof(v) > i)
+    # lv_i = v[i]; ... }), so an lvalue past the last match keeps its value.
+    fn sscanf_expr(mut self, n: i32, args: List<i32>):
+        if args.len() < 2:
+            self.fail("sscanf needs 2+ arguments", n)
+            return
+        self.expr(args[0])
+        self.expr(args[1])
+        let nv = args.len() - 2
+        self.push_int(nv as i64)
+        let k = self.kstr("sscanf")
+        self.emit(pg::OP_CALL_EFUN)
+        self.emit3(self.efun_code("sscanf"), k, 3)
+        let tmp = self.new_slot()
+        self.emit2(pg::OP_STORE_LOCAL, tmp)
+        let ks = self.kstr("sizeof")
+        for i in 0..nv:
+            self.emit2(pg::OP_LOAD_LOCAL, tmp)
+            self.emit(pg::OP_CALL_EFUN)
+            self.emit3(self.efun_code("sizeof"), ks, 1)
+            self.push_int((i + 1) as i64)
+            self.emit2(pg::OP_BIN, pg::B_GT)
+            let j = self.emit_jump(pg::OP_JZ)
+            self.assign_from_slot(args[2 + i], tmp, i + 1)
+            if self.had_error:
+                return
+            self.emit(pg::OP_POP)
+            self.patch_here(j)
+        self.emit2(pg::OP_LOAD_LOCAL, tmp)
+        self.push_int(0 as i64)
+        self.emit(pg::OP_INDEX)
+
+    # `l = tmp[idx]` as a plain assignment, leaving the value
+    fn assign_from_slot(mut self, l: i32, tmp: i32, idx: i32):
+        let chain = self.lv_steps(l)
+        if chain.len() == 1:
+            match self.nodes[chain[0]].kind:
+                ast::NodeKind::Id(name) ->
+                    let v = self.resolve_var(name)
+                    match v:
+                        VarRef::NoVar ->
+                            self.fail(f"Undefined variable '{name}'", chain[0])
+                            return
+                        _ -> 0
+                    self.emit2(pg::OP_LOAD_LOCAL, tmp)
+                    self.push_int(idx as i64)
+                    self.emit(pg::OP_INDEX)
+                    self.emit(pg::OP_DUP)
+                    self.emit_store(v)
+                    return
+                _ ->
+                    self.fail("Illegal lvalue", l)
+                    return
+        let bref = self.lv_push(chain)
+        self.emit2(pg::OP_LOAD_LOCAL, tmp)
+        self.push_int(idx as i64)
+        self.emit(pg::OP_INDEX)
+        self.lv_store(chain[0])
         self.lv_finish(chain, bref)
 
     fn incdec(mut self, n: i32, x: i32, inc: bool, post: bool):

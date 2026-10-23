@@ -1,0 +1,20 @@
+sscanf basic	string a; int b; int n = sscanf("x 12", "%s %d", a, b); return ({ n, a, b });	({2,"x",12})
+sscanf partial	string a = "keep"; int b = 5; int n = sscanf("abc", "%d%s", b, a); return ({ n, a, b });	({0,"keep",5})
+sscanf skip	int b; sscanf("a b 3", "%*s %*s %d", b); return b;	3
+sscanf counts skips	return sscanf("a#5", "a#%*d");	1
+sscanf leftover to next var	string x; int n = sscanf("abc def", "abc", x); return ({ n, x });	({1," def"})
+clone name	object o = clone_object("/test/base_b"); return sscanf(file_name(o), "/test/base_b#%*d");	1
+explode sane	return explode(",a,,b,", ",");	({"a","","b"})
+explode empty	return explode("", ",");	({})
+implode skips nonstrings	return implode(({ "a", 1, "b" }), "-");	"a-b"
+strsrch	return ({ strsrch("hello", "l"), strsrch("hello", "l", -1) });	({2,3})
+replace_string	return replace_string("a.b.c", ".", "/");	"a/b/c"
+pluralize	return ({ pluralize("fly"), pluralize("day"), pluralize("box"), pluralize("rose") });	({"flies","days","boxes","roses"})
+crypt roundtrip	string h = crypt("pw", 0); return crypt("pw", h) == h && crypt("px", h) != h;	1
+member_array	return member_array(3, ({ 1, 3 }));	1
+keys sorted count	return sizeof(keys(([ 1: 1, 2: 2 ])));	2
+typeof	return ({ typeof(1), typeof(""), typeof(({})), typeof(([])), typeof(1.0) });	({"int","string","array","mapping","float"})
+match_path	return match_path(([ "/a/": 1, "/a/b/": 2 ]), "/a/b/c");	2
+save/restore variable	return restore_variable(save_variable(([ "a": ({ 1, "x\\"y" }) ])));	(["a":({1,"x\"y"})])
+save_object roundtrip	object s = clone_object("/test/saver"); s->save_to("/tmp_saver"); s->scramble(); s->restore_from("/tmp_saver"); rm("/tmp_saver.o"); return s->state();	({7,"a \"quoted\"\nline",({1,"two",F3.5,({4})}),(["k":({1,2}),3:"three"]),10,20,1})
+file efuns on a denied path	return ({ file_size("/secret/x"), stat("/secret/x"), read_file("/secret/x"), read_bytes("/secret/x"), write_file("/secret/x", "a"), file_length("/secret/x"), cp("/test/base_a.c", "/secret/y"), cp("/secret/x", "/tmp_y") });	({-1,0,0,0,0,-1,-2,-1})

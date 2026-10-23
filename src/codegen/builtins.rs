@@ -413,8 +413,11 @@ impl Codegen {
         sel
     }
 
-    /// Call a unary LLVM float intrinsic (`sqrt`, `floor`, `ceil`),
-    /// promoting an `i32` argument to `float` first if needed.
+    /// Call a unary LLVM float intrinsic (`sqrt`, `floor`, `sin`, ...),
+    /// promoting an integer argument to `float` first if needed. An `f64`
+    /// argument calls the intrinsic's `.f64` form instead and stays
+    /// `double` (`intrinsic` names the `.f32` form; see
+    /// `crate::types::math_result_ty` for the matching result type).
     pub(super) fn emit_math_unary(&mut self, args: &[TypedExpr], intrinsic: &str) -> String {
         let Some(arg) = args.first() else {
             self.err(&format!("{}(..) expects 1 argument", intrinsic), Span::dummy());
@@ -422,14 +425,44 @@ impl Codegen {
         };
         let ty = self.expr_ty(arg);
         let val = self.emit_expr(arg);
+        if matches!(ty, Ty::F64) {
+            let bare = self.untag(&val, &ty);
+            let reg = self.tmp_name();
+            self.line(&format!("  {} = call double @{}(double {})", reg, intrinsic.replace(".f32", ".f64"), bare));
+            return format!("double {}", reg);
+        }
         let bare = self.promote_to_float(&val, &ty);
         let reg = self.tmp_name();
         self.line(&format!("  {} = call float @{}(float {})", reg, intrinsic, bare));
         format!("float {}", reg)
     }
 
-    /// Call a binary LLVM float intrinsic (`pow`), promoting `i32` arguments
-    /// to `float` first if needed.
+    /// Widen a numeric argument to `double` for an `f64` math call.
+    fn promote_to_double(&mut self, val: &str, ty: &Ty) -> String {
+        let bare = self.untag(val, ty);
+        match ty {
+            Ty::F64 => bare,
+            Ty::Float => {
+                let reg = self.tmp_name();
+                self.line(&format!("  {} = fpext float {} to double", reg, bare));
+                reg
+            }
+            _ => match ty.int_shape() {
+                Some((width, signed)) => {
+                    let reg = self.tmp_name();
+                    let op = if signed { "sitofp" } else { "uitofp" };
+                    self.line(&format!("  {} = {} i{} {} to double", reg, op, width, bare));
+                    reg
+                }
+                None => bare,
+            },
+        }
+    }
+
+    /// Call a binary LLVM float intrinsic (`pow`, `atan2`), promoting
+    /// integer arguments to `float` first if needed -- or both arguments to
+    /// `double` and the `.f64` form when either one is `f64`, mirroring
+    /// `emit_math_unary`.
     pub(super) fn emit_math_binary_f32(&mut self, args: &[TypedExpr], intrinsic: &str) -> String {
         if args.len() < 2 {
             self.err(&format!("{}(..) expects 2 arguments", intrinsic), Span::dummy());
@@ -439,6 +472,19 @@ impl Codegen {
         let rty = self.expr_ty(&args[1]);
         let lval = self.emit_expr(&args[0]);
         let rval = self.emit_expr(&args[1]);
+        if matches!(lty, Ty::F64) || matches!(rty, Ty::F64) {
+            let lbare = self.promote_to_double(&lval, &lty);
+            let rbare = self.promote_to_double(&rval, &rty);
+            let reg = self.tmp_name();
+            self.line(&format!(
+                "  {} = call double @{}(double {}, double {})",
+                reg,
+                intrinsic.replace(".f32", ".f64"),
+                lbare,
+                rbare
+            ));
+            return format!("double {}", reg);
+        }
         let lbare = self.promote_to_float(&lval, &lty);
         let rbare = self.promote_to_float(&rval, &rty);
         let reg = self.tmp_name();

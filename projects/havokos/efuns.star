@@ -1,11 +1,11 @@
-# Efuns -- todo.md HavokOS M3 subset of `havok/efuns.pike`.
-#
-# Only what the M3 language-semantics cases need (efun_table.star lists
-# them); each follows its reference counterpart, which in turn follows
-# FluffOS 2.23 as configured for Dead Souls. The rest of the library
-# (strings, sprintf/sscanf, files, save/restore, ...) is M4: the compiler
-# already resolves those names as efuns, and calling one raises the
-# reference's own "not implemented" error until then.
+# Efuns -- `havok/efuns.pike`. This file is the dispatch and the M3 subset
+# (what the language-semantics cases needed: type predicates, the
+# function-pointer efuns, error/throw, the object-loading core of
+# call_other); todo.md HavokOS M4 added the rest of the library in one file
+# per area (`efuns_str.star`, `efuns_arr.star`, `efuns_file.star`, ...),
+# reached by efun_table.star's code ranges. Efuns of later milestones (the
+# object model, M5; networking, M6) still raise the reference's own "not
+# implemented" error: the compiler already resolves their names as efuns.
 #
 # Every efun gets the calling object (`self_ob`, the reference's `self`) --
 # the frame's object for a direct call, the owner for an efun pointer.
@@ -13,6 +13,11 @@
 import "value.star" as val
 import "vm.star" as vm
 import "efun_table.star" as et
+import "efuns_str.star" as estr
+import "efuns_arr.star" as earr
+import "saveformat.star" as sav
+import "efuns_file.star" as efile
+import "tcolour.star" as tcol
 
 impl vm::Vm:
     fn arg(self, args: List<val::Value>, i: i32) -> val::Value:
@@ -21,6 +26,28 @@ impl vm::Vm:
         val::Value::Undef
 
     fn efun(mut self, code: i32, name: str, args: List<val::Value>, self_ob: i32) -> val::Value:
+        # M4's library, one file per area (efun_table.star's code ranges)
+        if code == et::E_TERMINAL_COLOUR:
+            return self.efun_terminal_colour(args, self_ob)
+        if code >= 40 and code < 70:
+            return self.efun_str(code, name, args, self_ob)
+        if code >= 70 and code < 110:
+            return self.efun_arr(code, name, args, self_ob)
+        if code >= 110 and code < 142:
+            return self.efun_file(code, name, args, self_ob)
+        if code == et::E_MASTER:
+            return self.obj_value(self.master_ob)
+        if code == et::E_GET_CONFIG:
+            return self.efun_get_config(val::int_of(self.arg(args, 0)) as i32)
+        if code == et::E_SAVE_VARIABLE:
+            return val::Value::Str(self.save_variable_str(self.arg(args, 0)))
+        if code == et::E_RESTORE_VARIABLE:
+            match self.arg(args, 0):
+                val::Value::Str(s) ->
+                    return self.restore_variable_str(s)
+                _ ->
+                    self.fail("Bad argument 1 to restore_variable()\n")
+                    return val::Value::Undef
         if code == et::E_UNDEFINEDP:
             match self.arg(args, 0):
                 val::Value::Undef ->
@@ -245,11 +272,87 @@ impl vm::Vm:
                     self.fail("Bad argument 1 to strlen()\n")
                     return val::Value::Undef
         if code == et::E_TO_INT:
-            return self.conv(3, self.arg(args, 0))
+            let v = self.arg(args, 0)
+            match v:
+                val::Value::Undef ->
+                    return v
+                val::Value::Int(x) ->
+                    return v
+                val::Value::Real(x) ->
+                    return self.conv(3, v)
+                val::Value::Str(s) ->
+                    return self.conv(3, v)
+                _ ->
+                    return val::Value::Int(0 as i64)
         if code == et::E_TO_FLOAT:
-            return self.conv(4, self.arg(args, 0))
+            let v = self.arg(args, 0)
+            match v:
+                val::Value::Real(x) ->
+                    return v
+                val::Value::Int(x) ->
+                    return self.conv(4, v)
+                val::Value::Undef ->
+                    return self.conv(4, v)
+                val::Value::Str(s) ->
+                    return self.conv(4, v)
+                _ ->
+                    return val::Value::Real(0.0 as f64)
         self.fail(f"Efun {name}() is not implemented by this driver.\n")
         val::Value::Undef
+
+    fn cfg_str(self, key: str, def: str) -> val::Value:
+        if let Option::Some(v) = self.config.get(key):
+            if v != "":
+                return val::Value::Str(v)
+        val::Value::Str(def)
+
+    fn cfg_int(self, key: str, def: i64) -> val::Value:
+        if let Option::Some(v) = self.config.get(key):
+            let n = vm::parse_int_prefix(v)
+            if n != (0 as i64):
+                return val::Value::Int(n)
+        val::Value::Int(def)
+
+    # get_config(i): the reference's table (efuns.pike get_config()), the
+    # runtime_config.h index order, with its defaults
+    fn efun_get_config(self, idx: i32) -> val::Value:
+        if idx == 0:
+            return self.cfg_str("name", "HavokOS")
+        if idx == 1:
+            return self.cfg_str("address server ip", "localhost")
+        if idx == 2:
+            return val::Value::Str(self.root)
+        if idx == 3:
+            return self.cfg_str("binary directory", "")
+        if idx == 4:
+            return self.cfg_str("log directory", "/log")
+        if idx == 5:
+            return self.cfg_str("include directories", "/secure/include:/include")
+        if idx == 6:
+            return self.cfg_str("save binaries directory", "")
+        if idx == 7:
+            return self.cfg_str("master file", "/secure/daemon/master")
+        if idx == 8:
+            return self.cfg_str("simulated efun file", "/secure/sefun/sefun")
+        if idx == 9:
+            return self.cfg_str("swap file", "")
+        if idx == 10:
+            return self.cfg_str("debug log file", "debug.log")
+        if idx == 11:
+            return self.cfg_str("default error message", "")
+        if idx == 12:
+            return self.cfg_str("default fail message", "What?")
+        if idx == 13:
+            return self.cfg_str("global include file", "<global.h>")
+        if idx == 14:
+            return val::Value::Str("127.0.0.1")
+        if idx == 15:
+            return self.cfg_int("port", 6666 as i64)
+        let keys = ["address server port", "time to clean up", "time to reset", "time to swap", "compiler stack size", "evaluator stack size", "inherit chain size", "maximum evaluation cost", "maximum local variables", "maximum call depth", "maximum array size", "maximum buffer size", "maximum mapping size", "maximum string length", "maximum bits in a bitfield", "maximum byte transfer", "maximum read file size"]
+        let defs = [0, 0, 0, 0, 200, 1000, 30, 5000000, 35, 30, 64000, 400000, 64000, 200000, 1200, 10000, 200000]
+        if idx >= 16 and idx <= 32:
+            return self.cfg_int(keys[idx - 16], defs[idx - 16] as i64)
+        val::Value::Int(0 as i64)
 
     # explode() with FluffOS's "sane" rules (__SANE_EXPLODE_STRING__): one
     # leading delimiter and one trailing empty piece are dropped.

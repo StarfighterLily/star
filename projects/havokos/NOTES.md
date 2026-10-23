@@ -38,7 +38,8 @@ virtual machine**:
 | `lpc/emitter.pike` → Pike source → Pike compiler | `compiler.star`: AST → bytecode (`program.star` format) |
 | Pike runtime executing the generated program | `vm.star`: bytecode interpreter |
 | `havok/driver.pike` object table, call stack, call_outs, heart beats | `vm.star` for now: programs, objects, loading, call_other and the object stack (M3). Call_outs and heart beats join it in M5 |
-| `havok/efuns.pike` | `efuns.star` (the M3 subset); M4 adds more files, split by area |
+| `havok/efuns.pike` | `efuns.star` (dispatch + the M3 subset) and one file per area since M4: `efuns_str.star`, `efuns_arr.star`, `efuns_file.star`, `sprintf.star`, `sscanf.star`, `regex.star`, `md5.star`, `tcolour.star`, `numfmt.star` |
+| `havok/saveformat.pike` | `saveformat.star` (plus the emitter's `__lpc_save`/`__lpc_restore` variable walk) |
 | `havok/net.pike` (telnet), `sockets.pike`, `http.pike`, `tls.pike` | later phases (see roadmap) |
 
 Up to and including the parser, the port can follow the Pike code closely.
@@ -94,6 +95,34 @@ assumed:
    `src/codegen/net.rs`, following that file's existing Winsock/POSIX
    seam pattern.
 
+Found during M4 (2026-10-23), each probed with a throwaway program:
+
+9. **Star's FFI can't read a C struct.** A `ptr` can be passed to C, but
+   nothing in the language loads a field back out of one, so every C call
+   that answers through an out-parameter (`_findfirst64`, `_stat64`,
+   `_localtime64_s`) is out of reach. M4 added filesystem and calendar
+   builtins to the compiler instead (`dir_list`, `path_kind`, `file_size`,
+   `file_mtime`, `dir_create`, `dir_remove`, `file_remove`, `file_rename`,
+   `local_time`; `src/codegen/fs.rs`).
+10. **`x = f(x)` on a `Bytes`/`List` is quadratic.** The caller still holds
+    its reference during the call, so the first push inside `f` copies the
+    whole buffer, on every call: 20k ten-byte appends take 188 ms that way
+    against 1 ms through a `mut self` method. Every string-building efun
+    appends through `buf.star`'s `Buf`, and the recursive formatters (%O,
+    the save encoder) write into a VM-owned `Buf` (`Vm.dsc`, `Vm.enc`).
+11. **`i64` arithmetic traps on overflow** and aborts the process ("signed
+    64-bit integer overflow"). LPC ints wrap (deviation #6), so the VM's
+    operators go through `vm.star`'s `wadd`/`wsub`/`wmul`/`wdiv`/`wmod`
+    (`Wrapping<i64>`) and `wshl`/`wshr` (a shift by 64 or more is poison in
+    LLVM). Until M4 the VM used plain `i64` ops, so an LPC `(1 << 62) * 4`
+    killed the whole driver.
+12. **A float literal is single precision.** `2.718281828459045 as f64` is
+    2.7182817...: the literal is an `f32` before the cast widens it. Exact
+    constants are computed (`(1.0 as f64) / (3.0 as f64)`) or built from
+    integers. Filed in `todo.md`.
+13. **Math builtins narrowed `f64` to `f32`** (fixed in M4, Star compiler
+    bug #6 below).
+
 ## Value representation (M3, `value.star`)
 
 ```
@@ -119,6 +148,13 @@ enum Value:
   both the function and its closures go through the cell, since Pike
   lambdas capture by reference. `$(expr)` values become cells too.
 - No buffers yet. DS3.9 doesn't need them for the MVP.
+- Strings are NUL-terminated (Star `str`), so an LPC string can't hold a
+  `\0` byte (deviation #7).
+- `a += ({ x })` copies the whole left array each time, as LPC semantics
+  require, but the copy costs more than Pike's: 20k appends in a loop take
+  3.3 s against the reference's ~0.3 s. In-place appending when nothing else
+  holds the array needs reference tracking the VM doesn't have yet; it fits
+  with the garbage collector (M5). DS3.9's `+=` loops are over small arrays.
 
 Garbage: the heap tables only grow in M3. The plan stands: a mark-and-sweep
 that runs only *between* top-level evaluations, when the VM stack is empty.
@@ -149,7 +185,8 @@ Pike driver before it's marked done.
   (114+ `({ name, body, expected })` cases) runs under the Star VM. Done
   2026-10-23, see the log.
 - **M4: efuns.** Strings (`sprintf`/`sscanf`/`explode`/`implode`/...),
-  arrays, mappings, math, files, time, save/restore format.
+  arrays, mappings, math, files, time, save/restore format. Done
+  2026-10-23, see the log.
 - **M5: object model.** Master and simul_efun loading, load/clone/
   destruct, environment/move, add_action and command dispatch,
   call_outs, heart beats, reset and clean_up.
@@ -180,13 +217,24 @@ Pike driver before it's marked done.
 | `program.star` | bytecode opcodes, `Program`/`FnDef`/`DispEntry` |
 | `compiler.star` | `Compiler`: one program's AST → `Program`, using the emitter's resolution rules |
 | `vm.star` | `Vm`: heap, operators, interpreter loop, calls, call_other, loading/cloning, the object stack |
-| `efuns.star` | the M3 efun subset |
-| `efun_table.star` | the efun dispatch codes the VM implements |
+| `efuns.star` | efun dispatch, the M3 subset, `get_config()` |
+| `efuns_str.star` | string efuns (strsrch, replace_string, pluralize, query_num, crc32, regexp/reg_assoc/crypt glue, ...) |
+| `efuns_arr.star` | array/mapping/math efuns, the VM's random generator |
+| `efuns_file.star` | time, file and save_object/restore_object efuns, master valid_read/valid_write |
+| `sprintf.star`, `sscanf.star` | Pike's sprintf (with %O) and array_sscanf, as the reference uses them |
+| `numfmt.star` | exact double -> decimal formatting (%f/%e/%g, the save format) |
+| `regex.star` | the PCRE subset behind regexp()/reg_assoc() |
+| `md5.star` | MD5 and MD5-crypt for crypt() |
+| `tcolour.star` | terminal_colour() |
+| `saveformat.star` | save_variable/restore_variable and the .o format |
+| `buf.star` | `Buf`, the in-place byte buffer every string-building efun appends through (constraint #10) |
+| `efun_table.star` | the efun dispatch codes the VM implements, in ranges per file |
 | `efun_names.star` | generated: the reference's implemented efuns and every FluffOS efun name |
 | `tools/ref_efun_names.pike` | generates `efun_names.star` from the live reference |
 | `tools/run_cases.star` | Star side of the M3 case comparison |
 | `tools/ref_cases.pike` | reference side: runs run_tests.pike cases (and `-extra` edge cases) through the live driver |
-| `tests/run_cases_test.ps1` | M3 regression: `fixtures/cases/m3.expected.txt` (76 table cases) and `m3_extra.expected.txt` (92 edge cases) |
+| `tests/run_cases_test.ps1` | M3 + M4 regression: every `fixtures/cases/*.expected.txt` (see the M4 log for what each holds) |
+| `tools/gen_contrib_cases.py` | generates `m4_contrib_cases.txt` from the reference's `tests/contrib_golden.txt` |
 | `tools/compile_sweep.star`, `tools/ref_compile_sweep.pike` | M3 compile sweep over DS3.9, both sides: which files compile, and their inheritance tables |
 | `tests/run_compile_sweep_test.ps1` | M3 regression: all 2378 DS3.9 files' compile results and table hashes against `fixtures/ds39_compile.expected.txt` (frozen reference output), about 21 s |
 
@@ -216,7 +264,13 @@ Each is also documented at the point in the code where it happens.
    the build rather than LPC semantics: FluffOS uses doubles. Both print 6
    significant digits (`%g`), so results only differ past the 7th digit.
    Float *printing* does match the reference, MSVC's 3-digit exponents
-   included (`1e+010`).
+   included (`1e+010`). Where a format shows more digits the difference is
+   visible: the reference's `sprintf("%.10f", 0.1)` is "0.1000000015" and its
+   `save_variable(123456.789)` is "123457.000000" (Pike limits a 32-bit
+   float to 6 significant digits there); here they are "0.1000000000" and
+   "123456.789000". `numfmt.star` formats the exact double, with MSVC's tie
+   rule (half away from zero), so values exact in both widths print
+   identically, and the M4 fixtures use only those.
 4. **A `switch` on a negative constant compiles** (`switch (-2) { case -2:
    ... }`). The reference rejects it: Pike narrows the type of a constant
    switch value, and the emitter's `__D->sw()` workaround for that only
@@ -230,7 +284,28 @@ Each is also documented at the point in the code where it happens.
    between every closure made in the same call. No DS3.9 code is known to
    depend on either behavior.
 6. **Integer overflow wraps** at 64 bits, as in FluffOS. Pike promotes to
-   bignums.
+   bignums. That covers parsing too: `to_int()`/`sscanf("%d")` of a 20-digit
+   number wrap, where the reference returns a bignum.
+7. **Strings can't contain a NUL byte** (`str` is NUL-terminated, as
+   FluffOS strings are too). `sprintf("%c", 0)` is "" rather than a
+   one-character string, and `%Nc` padding bytes of 0 truncate the result.
+   The fixtures avoid NUL bytes.
+8. **map()/filter() over a string work**, as in FluffOS. The reference's
+   string branch fails with "Bad argument 1." for any function, apparently a
+   bug in it, so the fixtures leave strings out.
+9. **Mappings iterate in insertion order** (`keys()`, `values()`, foreach,
+   `save_variable()`). The reference iterates in Pike's hash order, and
+   FluffOS in its own; LPC promises no order. It shows where mudlib code
+   builds a sentence from a mapping: DS3.9's `item_list(({ "a sword", "a
+   shield" }))` is "a sword and a shield" here and "a shield and a sword" in
+   the reference. %O output sorts its keys, so that one matches.
+
+Not in M4: `sprintf`'s table mode (`#`) and its `$ ~ @ / ^` modifiers
+(errors, so the format comes back; DS3.9 uses none), the reference's
+asynchronous save writer and SQLite save store (save_object() writes
+synchronously through a renamed temp file), and its HavokOS-only
+extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
+`astar_path`, quotas), which DS3.9 doesn't call.
 
 ## Star compiler bugs found
 
@@ -272,6 +347,22 @@ Each is also documented at the point in the code where it happens.
    `tests/frontend_extern_diamond_import.rs`: its two positive tests fail
    without the fix, and two more check that a real duplicate is still
    reported.
+
+6. **Math builtins narrowed `f64` to `f32`** (fixed, M4). `sqrt`, `pow`,
+   `floor`, `ceil`, `sin` ... `log10` were typed `Float` and lowered through
+   the `.f32` LLVM intrinsics whatever their argument, so an `f64` came back
+   good to about 7 digits, and assigning it to an `f64` was a type error,
+   which is how it surfaced in `efuns_arr.star`. Fixed in `src/types/mod.rs`
+   (`math_result_ty`: an `f64` argument makes the result `F64`) and
+   `src/codegen/builtins.rs` (the `.f64` intrinsics for it). Regression
+   test `tests/frontend_math_f64.rs`; its four positive tests fail without
+   the fix.
+
+New compiler surface, not a bug: the filesystem and calendar builtins of
+constraint #9 (`src/codegen/fs.rs`, tested by `tests/frontend_fs.rs`).
+Their Linux arm emits IR that compiles to an object for
+`x86_64-unknown-linux-gnu`, but hasn't been linked and run on the devbox,
+which wasn't reachable this round.
 
 Not a bug, but visible: building the VM prints "internal compiler notice:
 suspicious LLVM IR ... block `match_end_N` ... is unreachable" for a few
@@ -423,3 +514,57 @@ compiles their lvalue arguments properly.
 Getting there found one Star compiler bug, now fixed (#5 above).
 
 **Next: M4, efuns.**
+
+### 2026-10-23: M4 efuns
+
+**M4 done.** The efun library, one file per area (see the file table), is
+checked against the live Pike driver four ways, all in
+`tests/run_cases_test.ps1`:
+- **The reference's own case table:** its 20 efun-library cases
+  (`m4_selection.txt`: sscanf, explode/implode, strsrch, replace_string,
+  pluralize, crypt, typeof, match_path, save/restore_variable, the
+  save_object round trip, file efuns on a denied path). The two "efun
+  defaults" cases lean on call_out/query_privs/environment and wait for M5.
+- **204 edge cases of this port's own** (`m4_cases.txt`). The reference's
+  `sprintf()` and `sscanf()` are Pike's own built-ins, so their rules were
+  probed against Pike rather than taken from FluffOS or C (see
+  `sprintf.star`/`sscanf.star`'s headers). Pike is strictly typed (`%f` of
+  an int fails, so the format comes back), its float precision defaults to
+  3, `%:N` sets width *and* precision, `%Nc` writes N bytes, `%s` before a
+  `%d` stops at the first digit or `-`. The cases also cover every file
+  efun on a scratch directory of the test mudlib, the .o format with
+  nosave/static/inherited (and private) variables, and all ~100 of the
+  reference's FluffOS-derived `terminal_colour` cases in one run of its
+  `/test/tc_runner`.
+- **740 golden values** of `query_num()`/`pluralize()` from the reference's
+  `tests/contrib_golden.txt` (FluffOS output), 25 to a case.
+- **The real mudlib:** 36 cases calling Dead Souls 3.9's own simul_efuns
+  (`m4_ds_cases.txt`: center, wrap, convert_string, item_list,
+  conjunction, cardinal, comma, ordinal, absolute_path, morse, ...), with
+  both drivers booted on DS3.9 as far as its simul_efun object
+  (`run_cases.exe -ds`, `ref_cases.pike -ds`). Loading that object needed
+  `get_config()`, which M4 added with the reference's table.
+
+Booting now loads the master after the simul_efun object (as the
+reference does), so the file efuns run its valid_read/valid_write. Its
+other boot duties come with the object model.
+
+Probes and the first runs found:
+- Two Star limitations, filed: constraint #9 (the FFI can't read a C
+  struct, so M4 added filesystem/calendar builtins to the compiler,
+  `src/codegen/fs.rs`, `tests/frontend_fs.rs`) and #12 (float literals are
+  single precision, `todo.md` HavokOS P2 #3).
+- One Star compiler bug, fixed (#6: math builtins narrowed `f64`).
+- One M3 bug in this port, fixed: the VM's int operators trapped on
+  overflow and aborted the driver (constraint #11).
+- One performance trap, worked around (constraint #10, `buf.star`).
+- Four new deliberate deviations (#7-#9, and #3's float-printing note).
+
+Speed, measured end to end against the reference on the same cases (its
+times include about 1 s of boot): 20k sprintf calls with `%O` 0.45 s
+(1.2 s), replace_string on 90 KB twenty times 0.16 s (1.0 s), 20k sscanf
+calls 0.19 s (1.1 s), terminal_colour wrapping 0.10 s (1.0 s). One slow
+spot, inherited from M3: `a += ({ x })` 20k times, 3.3 s (see "Value
+representation").
+
+**Next: M5, the object model.**

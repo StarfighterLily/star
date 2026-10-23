@@ -38,9 +38,19 @@ import "ast.star" as ast
 import "paths.star" as paths
 import "efun_table.star" as et
 import "efun_names.star" as en
+import "buf.star" as bf
 
 
 extern "C" fn clock() -> i32
+extern "C" fn _time64(t: ptr) -> i64
+
+# For the efun files, which can't redeclare these externs (a second
+# `extern "C"` declaration of the same name is a duplicate).
+fn clock_now() -> i32:
+    clock()
+
+fn epoch_now() -> i64:
+    _time64(null_ptr())
 
 struct Frame:
     prog: i32
@@ -66,6 +76,8 @@ struct ObjSlot:
     mut alive: bool
     mut vars: List<val::Value>
     mut clone: bool
+    # time() when created (stat()'s third element)
+    mut load_time: i64 = 0 as i64
 
 struct Vm:
     root: str
@@ -94,6 +106,10 @@ struct Vm:
     mut errmsg: str = ""
     mut sefun_path: str = "/secure/sefun"
     mut sefun_ob: i32 = -1
+    # the master object (file efuns' valid_read/valid_write); -1 until boot
+    # has loaded it, which file efuns treat as "allowed", as FluffOS does
+    mut master_path: str = ""
+    mut master_ob: i32 = -1
     mut sefun_names: Set<str> = Set<str>()
     mut sefun_types: Map<str, str> = Map<str, str>()
     mut efun_codes: Map<str, i32> = Map<str, i32>()
@@ -101,9 +117,21 @@ struct Vm:
     mut known_efuns: Set<str> = Set<str>()
     # compile errors and other driver messages (the reference's werror())
     mut log: List<str> = List<str>()
+    # the driver config (mudos.cfg keys, e.g. "name", "port"), for
+    # get_config() and the predefined macros
+    mut config: Map<str, str> = Map<str, str>()
+    # random()/shuffle()'s generator state (efuns_arr.star), 0 until first use
+    mut rng: i64 = 0 as i64
+    # time() at boot, for uptime()
+    mut boot_time: i64 = 0 as i64
+    # scratch output buffers for the recursive formatters (sprintf's %O,
+    # the save format), appended to in place -- buf.star says why
+    mut dsc: bf::Buf = bf::Buf()
+    mut enc: bf::Buf = bf::Buf()
 
 fn new_vm(root: str) -> Vm:
     let mut v = Vm(root = root, pp = pre::new_pp(root))
+    v.boot_time = epoch_now()
     # handle 0: Pike's one shared empty array (see new_arr)
     v.arrs.push(val::ArrSlot(items = List<val::Value>()))
     v.efun_codes = et::efun_codes()
@@ -115,6 +143,45 @@ fn new_vm(root: str) -> Vm:
     for i in 0..k.len():
         v.known_efuns.insert(k[i])
     v
+
+# LPC int arithmetic wraps at 64 bits (NOTES.md deviation #6). Star's own
+# `i64` `+`/`-`/`*`/`/` trap on overflow and abort the whole process, so an
+# LPC `(1 << 62) * 4` would have taken the driver down; every operator on
+# LPC ints goes through these instead. `Wrapping<i64>` is the same machine
+# arithmetic without the trap (and `MIN / -1` wraps rather than faulting).
+fn wadd(a: i64, b: i64) -> i64:
+    (Wrapping<i64>(a) + Wrapping<i64>(b)) as i64
+
+fn wsub(a: i64, b: i64) -> i64:
+    (Wrapping<i64>(a) - Wrapping<i64>(b)) as i64
+
+fn wmul(a: i64, b: i64) -> i64:
+    (Wrapping<i64>(a) * Wrapping<i64>(b)) as i64
+
+fn wdiv(a: i64, b: i64) -> i64:
+    (Wrapping<i64>(a) / Wrapping<i64>(b)) as i64
+
+fn wmod(a: i64, b: i64) -> i64:
+    (Wrapping<i64>(a) % Wrapping<i64>(b)) as i64
+
+# x << n and x >> n for any n: a shift by 64 or more is poison in LLVM, so
+# it's spelled out (all bits shifted out; `>>` is arithmetic, so a negative
+# x fills with ones). A negative count shifts the other way.
+fn wshl(x: i64, n: i64) -> i64:
+    if n < (0 as i64):
+        return wshr(x, wsub(0 as i64, n))
+    if n >= (64 as i64):
+        return 0 as i64
+    x << (n as i32)
+
+fn wshr(x: i64, n: i64) -> i64:
+    if n < (0 as i64):
+        return wshl(x, wsub(0 as i64, n))
+    if n >= (64 as i64):
+        if x < (0 as i64):
+            return 0 as i64 - (1 as i64)
+        return 0 as i64
+    x >> (n as i32)
 
 fn str_cmp(a: str, b: str) -> i32:
     let x = bytes_from_str(a)
@@ -237,10 +304,10 @@ fn parse_int_prefix(s: str) -> i64:
         i += 1
     let mut v = 0 as i64
     while i < b.len() and (b[i] as i32) >= 48 and (b[i] as i32) <= 57:
-        v = v * (10 as i64) + ((b[i] as i32) - 48) as i64
+        v = wadd(wmul(v, 10 as i64), ((b[i] as i32) - 48) as i64)
         i += 1
     if neg:
-        return (0 as i64) - v
+        return wsub(0 as i64, v)
     v
 
 fn substr(s: str, a: i32, b: i32) -> str:
@@ -576,11 +643,11 @@ impl Vm:
                 bi = 0 as i64
         if !a_real and !b_real:
             if op == pg::B_ADD:
-                return val::Value::Int(ai + bi)
+                return val::Value::Int(wadd(ai, bi))
             if op == pg::B_SUB:
-                return val::Value::Int(ai - bi)
+                return val::Value::Int(wsub(ai, bi))
             if op == pg::B_MUL:
-                return val::Value::Int(ai * bi)
+                return val::Value::Int(wmul(ai, bi))
             if op == pg::B_LT:
                 return self.bool_v(ai < bi)
             if op == pg::B_LE:
@@ -629,9 +696,9 @@ impl Vm:
             if y == (0 as i64):
                 self.fail("Division by zero\n")
                 return val::Value::Undef
-            let mut q = x / y
-            if floor and q * y != x and ((x < (0 as i64)) != (y < (0 as i64))):
-                q = q - (1 as i64)
+            let mut q = wdiv(x, y)
+            if floor and wmul(q, y) != x and ((x < (0 as i64)) != (y < (0 as i64))):
+                q = wsub(q, 1 as i64)
             return val::Value::Int(q)
         if !self.is_num(a):
             self.fail(f"Bad argument 1 to / (expected int or float, got {self.type_name(a)})\n")
@@ -664,9 +731,9 @@ impl Vm:
         if y == (0 as i64):
             self.fail("Modulus by zero.\n")
             return val::Value::Undef
-        let mut r = x % y
+        let mut r = wmod(x, y)
         if floor and r != (0 as i64) and ((r < (0 as i64)) != (y < (0 as i64))):
-            r = r + y
+            r = wadd(r, y)
         val::Value::Int(r)
 
     fn binop(mut self, op: i32, a: val::Value, b: val::Value) -> val::Value:
@@ -705,9 +772,9 @@ impl Vm:
                 if op == pg::B_XOR:
                     return val::Value::Int(x ^ y)
                 if op == pg::B_SHL:
-                    return val::Value::Int(x << (y as i32))
+                    return val::Value::Int(wshl(x, y))
                 if op == pg::B_SHR:
-                    return val::Value::Int(x >> (y as i32))
+                    return val::Value::Int(wshr(x, y))
             self.fail("Bad argument to bitwise operator (expected int).\n")
             return val::Value::Undef
         if op == pg::B_ADD:
@@ -876,7 +943,7 @@ impl Vm:
     fn negate(mut self, v: val::Value) -> val::Value:
         match v:
             val::Value::Undef -> val::Value::Int(0 as i64)
-            val::Value::Int(x) -> val::Value::Int((0 as i64) - x)
+            val::Value::Int(x) -> val::Value::Int(wsub(0 as i64, x))
             val::Value::Real(x) -> val::Value::Real((0.0 as f64) - x)
             _ ->
                 self.fail(f"Bad argument 1 to `-() (got {self.type_name(v)}).\n")
@@ -2139,7 +2206,7 @@ impl Vm:
         let mut vars: List<val::Value> = List<val::Value>()
         for i in 0..self.progs[pid].nvars:
             vars.push(val::Value::Undef)
-        self.objs.push(ObjSlot(prog = pid, gen = 0, name = name, alive = true, vars = vars, clone = clone))
+        self.objs.push(ObjSlot(prog = pid, gen = 0, name = name, alive = true, vars = vars, clone = clone, load_time = epoch_now()))
         self.run_inits(o, pid, 0)
         if self.err:
             self.objs[o].alive = false
@@ -2182,6 +2249,8 @@ impl Vm:
     # `__NO_RESETS__`/`__LAZY_RESETS__` follow the reset settings, which
     # arrive with resets themselves (M5).
     fn configure(mut self, mud_name: str, port: i32):
+        self.config.insert("name", mud_name)
+        self.config.insert("port", f"{port}")
         self.pp.predefine("MUD_NAME", esc_quoted(mud_name))
         self.pp.predefine("__PORT__", f"{port}")
         self.pp.predefine("__HAVOKOS__", "1")
@@ -2248,14 +2317,28 @@ impl Vm:
             return val::Value::Undef
         self.obj_value(o)
 
-    # Boot: the simul_efun object first, so every later program compiles
-    # against its function names (driver boot()). The master object (M5)
-    # isn't loaded yet.
-    fn boot(mut self, sefun_path: str) -> bool:
+    # Boot (driver boot()): the simul_efun object first, so every later
+    # program compiles against its function names, then the master. As in
+    # FluffOS, master applies made while the master's own create() runs are
+    # skipped: master_ob is only set once it has returned. The master's
+    # other boot duties (privs, epilog/preload) come with the object model
+    # (M5); M4 needs it for the file efuns' valid_read/valid_write.
+    fn boot(mut self, sefun_path: str, master_path: str) -> bool:
         self.sefun_path = sefun_path
         self.load_object(sefun_path, -1)
         if self.err:
             self.log.push(f"boot: {self.errmsg}")
+            return false
+        if master_path == "":
+            return true
+        self.master_path = self.normalize(master_path, "")
+        let m = self.load_object(self.master_path, -1)
+        if self.err:
+            self.log.push(f"boot: master: {self.errmsg}")
+            return false
+        self.master_ob = self.obj_of(m)
+        if self.master_ob < 0:
+            self.log.push(f"boot: master {self.master_path} not found")
             return false
         true
 

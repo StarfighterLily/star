@@ -24,6 +24,7 @@ mod file_io;
 mod fixed;
 mod flags;
 mod font;
+mod fs;
 mod gamepad;
 mod geometry;
 mod hash;
@@ -623,6 +624,9 @@ impl Codegen {
         // for whichever `Target` this `Codegen` was built for by
         // `crate::codegen::os::declare_os_externs`.
         self.declare_os_externs();
+        // Filesystem/calendar builtins (`dir_list`, `path_kind`, `local_time`,
+        // ...) -- see `crate::codegen::fs::declare_fs_externs`.
+        self.declare_fs_externs();
         // `tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close`/
         // `tcp_set_nonblocking` builtins -- see
         // `crate::codegen::net`, declared for whichever `Target` this
@@ -769,6 +773,15 @@ impl Codegen {
         self.line("declare float @llvm.log.f32(float)");
         self.line("declare float @llvm.log2.f32(float)");
         self.line("declare float @llvm.log10.f32(float)");
+        // `.f64` forms of the same set, for an `f64` argument
+        // (`Codegen::emit_math_unary`/`emit_math_binary_f32`).
+        for name in [
+            "sqrt", "floor", "ceil", "sin", "cos", "tan", "asin", "acos", "atan", "exp", "exp2", "log", "log2", "log10",
+        ] {
+            self.line(&format!("declare double @llvm.{}.f64(double)", name));
+        }
+        self.line("declare double @llvm.pow.f64(double, double)");
+        self.line("declare double @llvm.atan2.f64(double, double)");
         // Saturating float->int casts backing `expr as <int type>`
         // (`Codegen::emit_cast`'s float->int arm): plain `fptosi`/`fptoui`
         // are undefined behavior (poison) whenever the source value

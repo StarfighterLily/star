@@ -6,7 +6,10 @@
 # instantiate it, call eval() with the object on the driver stack, and
 # compare the result in the canonical form both sides print.
 #
-# Usage: run_cases.exe <minilib_root> <fixture.txt> [-v] [name filter]
+# Usage: run_cases.exe <minilib_root> <fixture.txt> [-v] [-ds] [name filter]
+#   -ds: the root is Dead Souls 3.9's mudlib, booted (as ref_cases.pike -ds
+#        does) only as far as its simul_efun object -- DS3.9's mudos.cfg
+#        names, no master
 # Prints one FAIL line per mismatch (every case with -v) and a summary;
 # exits 0 when every case matched.
 #
@@ -85,16 +88,34 @@ fn main() -> i32:
         println("usage: run_cases <minilib_root> <fixture.txt> [-v] [filter]")
         return 2
     let mut verbose = false
+    let mut ds = false
     let mut filter = ""
     for i in 3..cli.len():
         if cli[i] == "-v":
             verbose = true
+        elif cli[i] == "-ds":
+            ds = true
         else:
             filter = cli[i]
     let mut m = vm::new_vm(cli[1])
-    m.pp.include_dirs = ["/include"]
-    m.configure("HavokTest", 6699)
-    if !m.boot("/secure/sefun"):
+    let mut booted = false
+    if ds:
+        m.pp.include_dirs = ["/secure/include", "/include"]
+        m.configure("DeadSoulsNew", 6666)
+        m.config.insert("master file", "/secure/daemon/master")
+        m.config.insert("simulated efun file", "/secure/sefun/sefun")
+        m.config.insert("include directories", "/secure/include:/include")
+        m.config.insert("global include file", "<global.h>")
+        booted = m.boot("/secure/sefun/sefun", "")
+    else:
+        m.pp.include_dirs = ["/include"]
+        m.configure("HavokTest", 6699)
+        m.config.insert("master file", "/secure/master")
+        m.config.insert("simulated efun file", "/secure/sefun")
+        m.config.insert("include directories", "/include")
+        m.config.insert("global include file", "<global.h>")
+        booted = m.boot("/secure/sefun", "/secure/master")
+    if !booted:
         for i in 0..m.log.len():
             println(m.log[i])
         println("boot failed")

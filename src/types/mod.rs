@@ -847,20 +847,37 @@ fn builtin_structs() -> Vec<StructDef> {
 /// user-defined function table. Returns `None` for anything that isn't a
 /// recognized builtin name, so ordinary user functions/methods fall through
 /// to the normal lookup unaffected.
+/// Result type of the float math builtins (`sqrt`, `pow`, `sin`, `log`,
+/// ...): `F64` when any argument is `f64`, `Float` otherwise. Every one of
+/// them used to be `Float` unconditionally, lowered through the `.f32` LLVM
+/// intrinsics, so an `f64` argument was silently narrowed to single
+/// precision on the way in -- `sqrt(2.0 as f64)` came back accurate to 7
+/// digits instead of 16, with nothing at the call site to say so. Found
+/// while porting the LPC math efuns (`todo.md` HavokOS M4), whose values
+/// are doubles end to end. `Float` and integer arguments keep the old
+/// single-precision behavior unchanged.
+fn math_result_ty(args: &[TypedExpr]) -> Ty {
+    if args.iter().any(|a| matches!(a.clone().into_ty(), Ty::F64)) {
+        Ty::F64
+    } else {
+        Ty::Float
+    }
+}
+
 fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
     match name {
         // No return value; `Ty::Named("unknown")` is the established
         // convention codegen already treats as a `void` call (see
         // `crate::codegen::Codegen::emit_expr`'s `TypedExpr::Call` arm).
         "print" | "println" => Some(Ty::Named("unknown".into())),
-        "sqrt" | "pow" | "floor" | "ceil" => Some(Ty::Float),
         // `todo.md` #6 "Fill out math builtins as needed": trig, exponential,
-        // and logarithm functions. Always `Float`, like `sqrt`/`pow`/`floor`/
-        // `ceil` above -- unlike `abs`/`min`/`max`, none of these preserve an
-        // integer argument's type (there's no meaningful integer `sin`).
-        "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2" | "exp" | "exp2" | "log" | "log2" | "log10" => {
-            Some(Ty::Float)
-        }
+        // and logarithm functions alongside `sqrt`/`pow`/`floor`/`ceil`.
+        // Unlike `abs`/`min`/`max`, none of these preserve an *integer*
+        // argument's type (there's no meaningful integer `sin`): the result
+        // is `Float`, or `F64` when any argument is `f64` -- see
+        // `math_result_ty` for why an `f64` argument must not be narrowed.
+        "sqrt" | "pow" | "floor" | "ceil" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2" | "exp"
+        | "exp2" | "log" | "log2" | "log10" => Some(math_result_ty(args)),
         // `abs`/`min`/`max` preserve the numeric type (Int or Float) of
         // their first argument rather than always widening to Float.
         "abs" | "min" | "max" => Some(args.first().map(|a| a.clone().into_ty()).unwrap_or(Ty::Float)),
@@ -941,6 +958,15 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         // see `crate::codegen::dialog`. `""` means "the user canceled",
         // same convention as `file_read`/`tcp_recv`.
         "open_file_dialog" => Some(Ty::Str),
+        // Filesystem and calendar builtins -- see `crate::codegen::fs`.
+        // A missing path is `path_kind` 0 / `file_size`/`file_mtime` -1;
+        // `local_time` is `[sec, min, hour, mday, mon, year, wday, yday,
+        // isdst, gmtoff]`, empty if the C runtime rejects the time.
+        "dir_list" => Some(Ty::List(Box::new(Ty::Str))),
+        "path_kind" => Some(Ty::Int),
+        "file_size" | "file_mtime" => Some(Ty::I64),
+        "dir_create" | "dir_remove" | "file_remove" | "file_rename" => Some(Ty::Bool),
+        "local_time" => Some(Ty::List(Box::new(Ty::I64))),
         // Minimal OS surface (todo.md #2) -- see `crate::codegen::list::emit_args`
         // and `crate::codegen::os`. `args()` includes `argv[0]` (the program
         // path/name), same convention the underlying OS argv itself uses.
@@ -1498,6 +1524,8 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     "CreateDIBSection", "TextOutA", "AddFontResourceExA", "RemoveFontResourceExA",
     "SDL_CreateTexture", "SDL_UpdateTexture", "SDL_SetTextureBlendMode",
     "SDL_SetTextureColorMod", "SDL_SetTextureAlphaMod", "SDL_RenderCopy", "SDL_DestroyTexture",
+    // `crate::codegen::fs`
+    "_findfirst64", "_findnext64", "_findclose", "_stat64", "_mkdir", "_rmdir", "MoveFileExA", "_localtime64_s", "_mkgmtime64", "opendir", "readdir", "closedir", "stat", "mkdir", "rmdir", "rename", "localtime_r", "remove",
 ];
 
 /// The error type for type checking.

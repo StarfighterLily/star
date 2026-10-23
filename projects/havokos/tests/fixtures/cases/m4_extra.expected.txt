@@ -1,0 +1,204 @@
+sprintf basic	return sprintf("%s|%d|%c|%%|%i", "ab", 12, 65, -7);	"%s|%d|%c|%%|%i"
+sprintf width justify	return sprintf("[%5s][%-5s][%05d][%-5d][%+d][% d][%5d]", "ab", "cd", 42, 42, 42, 42, -42);	"[   ab][cd   ][00042][42   ][+42][ 42][  -42]"
+sprintf string longer than width	return sprintf("[%3s][%-3s]", "abcdef", "abcdef");	"[abcdef][abcdef]"
+sprintf precision string	return sprintf("[%.2s][%5.2s][%-5.2s]", "abcdef", "abcdef", "abcdef");	"[ab][   ab][ab   ]"
+sprintf float forms	return sprintf("[%f][%.2f][%8.3f][%-8.1f][%e][%g][%g][%g]", 1.5, 3.14159, 2.5, 2.25, 12345.678, 0.0001, 1234567.0, 2.5);	"[1.500][3.14][   2.500][2.3     ][1.235e+004][0.0001][1.23e+006][2.5]"
+sprintf float zero pad	return sprintf("[%08.2f][%+.1f][%.0f][%.0f]", -3.5, 2.0, 2.5, 3.5);	"[-0003.50][+2.0][3][4]"
+sprintf hex octal	return sprintf("[%x][%X][%o][%4x][%04X][%x]", 255, 255, 8, 10, 171, -1);	"[ff][FF][10][   a][00AB][-1]"
+sprintf binary	return sprintf("[%b][%8b]", 5, 5);	"[101][     101]"
+sprintf star width	return sprintf("[%*d][%-*s][%.*f]", 5, 3, 4, "x", 2, 1.23456);	"[    3][x   ][1.23]"
+sprintf colon width	return sprintf("[%:5s][%:-5s][%:2s][%:-3d][%:3d]", "ab", "ab", "abcdef", 7, 12345);	"[   ab][ab   ][ab][7  ][12345]"
+sprintf column wrap	return sprintf("%-=10s|", "the quick brown fox jumps over the lazy dog");	"the quick \nbrown fox \njumps over\nthe lazy  \ndog       |"
+sprintf column wrap right	return sprintf("%=12s|", "the quick brown fox jumps");	"   the quick\n   brown fox\n       jumps|"
+sprintf column wrap long word	return sprintf("%-=5s|", "abcdefghij kl");	"abcde\nfghij\nkl   |"
+sprintf column wrap newline	return sprintf("%-=8s|", "ab cd\\nef gh ij");	"ab cd   \nef gh ij|"
+sprintf center	return sprintf("[%|9s][%|8s][%|3s][%|6d]", "abc", "abc", "abcdef", 42);	"[   abc   ][  abc   ][abcdef][  42  ]"
+sprintf pad string	return sprintf("[%'.'10s][%'-='10s][%-'*'6d][%'0'5s]", "ab", "cd", 12, "x");	"[........ab][-=-=-=-=cd][12****][0000x]"
+sprintf char forms	return sprintf("[%c][%2c][%-2c][%1c][%c]", 97, 0x4142, 0x4142, 0x4142, 233);	"[a][AB][BA][B][\xe9]"
+sprintf O scalars	return sprintf("%O %O %O %O", 12, "a\\"b\\nc", 1.5, -3);	"12 \"a\\\"b\\n\"\n\"c\" 1.5 -3"
+sprintf O empty array	return sprintf("%O", ({}));	"({ })"
+sprintf O array	return sprintf("%O", ({ 1, "two", 3.5 }));	"({ /* 3 elements */\n    1,\n    \"two\",\n    3.5\n})"
+sprintf O nested	return sprintf("%O", ({ 1, ({ 2, 3 }), ([ ]) }));	"({ /* 3 elements */\n    1,\n    ({ /* 2 elements */\n        2,\n        3\n    }),\n    ([ ])\n})"
+sprintf O mapping	return sprintf("%O", ([ "a": 1 ]));	"([ /* 1 element */\n  \"a\": 1\n])"
+sprintf O mapping two	return sprintf("%O", ([ 1: "x", 2: ({ }) ]));	"([ /* 2 elements */\n  1: \"x\",\n  2: ({ })\n])"
+sprintf O object	return sprintf("%O", this_object()) == "\\"" + file_name(this_object()) + "\\"";	1
+sprintf s object	return sprintf("%s", this_object()) == file_name(this_object());	1
+sprintf O zero undefined	mapping m = ([]); return sprintf("%O %O", 0, m["x"]);	"0 0"
+sprintf O width	return sprintf("[%10O][%-6O]", "ab", 5);	"[      \"ab\"][5     ]"
+sprintf s of int	return sprintf("%s", 5);	"%s"
+sprintf s of float	return sprintf("%s", 1.5);	"%s"
+sprintf s of array	return sprintf("%s|", ({ 1 }));	"%s|"
+sprintf d of string	return sprintf("%d|", "12");	"%d|"
+sprintf d of float	return sprintf("%d|", 3.7);	"%d|"
+sprintf f of int	return sprintf("%f|%.1f", 3, 2);	"%f|%.1f"
+sprintf too few args	return sprintf("%s and %s", "one");	"%s and %s"
+sprintf too many args	return sprintf("%s", "one", "two");	"one"
+sprintf unknown conversion	return sprintf("%y|", 1);	"%y|"
+sprintf trailing percent	return sprintf("abc%");	"abc%"
+sprintf plain	return sprintf("no conversions");	"no conversions"
+sprintf many	return sprintf("%-20s %5d %s", "name", 12, "end");	"name                    12 end"
+sprintf zero flag string	return sprintf("[%05s][%-05d]", "ab", 3);	"[000ab][00003]"
+sprintf space plus string	return sprintf("[% s][%+s]", "ab", "ab");	"[ ab][+ab]"
+sprintf negative zero pad	return sprintf("[%05d][%+05d][% 05d]", -42, 42, 42);	"[-0042][+0042][ 0042]"
+sprintf big int	return sprintf("%d %x", 1 << 40, 1 << 40);	"1099511627776 10000000000"
+sprintf percent width	return sprintf("[%5%]");	"[%]"
+sprintf multiline string width	return sprintf("[%-6s]", "ab\\ncd");	"[ab\ncd ]"
+sprintf column two	return sprintf("%-=6s %-=6s|", "aa bb cc", "dd ee ff gg");	"aa bb  dd ee \ncc     ff gg |"
+sprintf O class	class P { int x; } @@ class P p = new(class P); p->x = 3; return sprintf("%O", p) != "";	1
+sprintf O function	return stringp(sprintf("%O", (: 1 :)));	1
+printf returns	return sprintf("%-3s|%3s", "", "");	"   |   "
+sscanf d s	string a; int b; int n = sscanf("12abc", "%d%s", b, a); return ({ n, b, a });	({2,12,"abc"})
+sscanf leading space d	int b; int n = sscanf("  42", "%d", b); return ({ n, b });	({1,42})
+sscanf signs	int a; int b; int n = sscanf("-5,+7", "%d,%d", a, b); return ({ n, a, b });	({2,-5,7})
+sscanf s before literal	string a; string b; int n = sscanf("abc.def", "%s.%s", a, b); return ({ n, a, b });	({2,"abc","def"})
+sscanf s first literal	string a; string b; int n = sscanf("a.b.c", "%s.%s", a, b); return ({ n, a, b });	({2,"a","b.c"})
+sscanf s s space	string a; string b; int n = sscanf("one two three", "%s %s", a, b); return ({ n, a, b });	({2,"one","two three"})
+sscanf literal mismatch	string a; int n = sscanf("abc", "x%s", a); return ({ n, a });	({0,0})
+sscanf d no digits	int b = 9; int n = sscanf("abc", "%d", b); return ({ n, b });	({0,9})
+sscanf hex	int a; int b; int n = sscanf("ff 1A", "%x %x", a, b); return ({ n, a, b });	({2,255,26})
+sscanf octal	int a; int n = sscanf("17", "%o", a); return ({ n, a });	({1,15})
+sscanf float	float f; int n = sscanf("3.25x", "%f", f); return ({ n, f });	({1,F3.25})
+sscanf float int text	float f; int n = sscanf("7", "%f", f); return ({ n, f });	({1,F7.0})
+sscanf float exp	float f; int n = sscanf("1.5e2", "%f", f); return ({ n, f });	({1,F150.0})
+sscanf char	int c; string r; int n = sscanf("abc", "%c%s", c, r); return ({ n, c, r });	({2,97,"bc"})
+sscanf set	string a; string b; int n = sscanf("abc123", "%[a-z]%s", a, b); return ({ n, a, b });	({2,"abc","123"})
+sscanf negated set	string a; string b; int n = sscanf("abc,def", "%[^,],%s", a, b); return ({ n, a, b });	({2,"abc","def"})
+sscanf width d	int a; int b; int n = sscanf("123456", "%2d%d", a, b); return ({ n, a, b });	({2,12,3456})
+sscanf width s	string a; string b; int n = sscanf("abcdef", "%3s%s", a, b); return ({ n, a, b });	({2,"abc","def"})
+sscanf s then d	string a; int b; int n = sscanf("abc 12", "%s%d", a, b); return ({ n, a, b });	({2,"abc ",12})
+sscanf s d glued	string a; int b; int n = sscanf("abc12", "%s%d", a, b); return ({ n, a, b });	({2,"abc",12})
+sscanf empty input	string a; int n = sscanf("", "%s", a); return ({ n, a });	({1,""})
+sscanf empty input d	int a = 3; int n = sscanf("", "%d", a); return ({ n, a });	({0,3})
+sscanf literal only	return sscanf("abc", "abc");	0
+sscanf literal prefix extra	return sscanf("abcd", "abc");	0
+sscanf too many vars	string a; string b; string c; int n = sscanf("x y", "%s %s", a, b, c); return ({ n, a, b, c });	({2,"x","y",0})
+sscanf fewer vars	string a; int n = sscanf("x y", "%s %s", a); return ({ n, a });	({2,"x"})
+sscanf percent literal	int a; int n = sscanf("50%", "%d%%", a); return ({ n, a });	({1,50})
+sscanf into array elements	mixed *v = allocate(2); int n = sscanf("a:b", "%s:%s", v[0], v[1]); return ({ n, v });	({2,({"a","b"})})
+sscanf into mapping	mapping m = ([]); int n = sscanf("k=v", "%s=%s", m["k"], m["v"]); return ({ n, m["k"], m["v"] });	({2,"k","v"})
+sscanf skip then var	string a; int n = sscanf("x y z", "%*s %s", a); return ({ n, a });	({2,"y z"})
+sscanf trailing literal	string a; int n = sscanf("abc!", "%s!", a); return ({ n, a });	({1,"abc"})
+sscanf trailing literal missing	string a; int n = sscanf("abc", "%s!", a); return ({ n, a });	({0,0})
+sscanf whitespace in format	string a; int n = sscanf("x   y", "x %s", a); return ({ n, a });	({1,"  y"})
+sscanf d trailing text	int a; string r; int n = sscanf("12 apples", "%d %s", a, r); return ({ n, a, r });	({2,12,"apples"})
+sscanf bad arg	return sscanf(0, "%d");	ERR "Bad argument 1 to sscanf()\n"
+sscanf i	int a; int n = sscanf("0x1f", "%i", a); return ({ n, a });	({1,31})
+sscanf d big	int a; int n = sscanf("123456789012", "%d", a); return ({ n, a });	({1,123456789012})
+sscanf s at end empty	string a; string b; int n = sscanf("abc:", "%s:%s", a, b); return ({ n, a, b });	({2,"abc",""})
+sscanf two literals	string a; int n = sscanf("[x]", "[%s]", a); return ({ n, a });	({1,"x"})
+sscanf compound lvalue	int *a = ({ 0 }); sscanf("5", "%d", a[0]); return a;	({5})
+sscanf global	string g; @@ sscanf("hi there", "%s %*s", g); return g;	"hi"
+capitalize forms	return ({ capitalize("abc"), capitalize(""), capitalize("1x"), capitalize("Abc"), capitalize(0) });	({"Abc","","1x","Abc",0})
+strsrch forms	return ({ strsrch("hello", "l"), strsrch("hello", "l", -1), strsrch("hello", "z"), strsrch("hello", 'e'), strsrch("hello", ""), strsrch("aaa", "aa", -1), strsrch("hello", "lo", 1) });	({2,3,-1,1,-1,1,3})
+replace_string max	return ({ replace_string("a.b.c.d", ".", "/", 2), replace_string("a.b.c.d", ".", "/", 2, 3), replace_string("abc", "", "x"), replace_string("abc", "b", 0), replace_string("aaa", "a", "aa") });	({"a/b/c.d","a.b/c/d","abc","ac","aaaaaa"})
+repeat_string forms	return ({ repeat_string("ab", 3), repeat_string("ab", 0), repeat_string("ab", -1) });	({"ababab","",""})
+strcmp forms	return ({ strcmp("a", "b"), strcmp("b", "a"), strcmp("a", "a"), strcmp("ab", "a") });	({-1,1,0,1})
+lower upper	return ({ lower_case("AbC1"), upper_case("aBc1"), lower_case(5) });	({"abc1","ABC1",5})
+strlen strwidth	return ({ strlen("abc"), strlen(0), strwidth("abcd"), strwidth(0) });	({3,0,4,0})
+explode forms	return ({ explode("a,b,,c", ","), explode(",,a", ","), explode("a,,", ","), explode("abc", ""), explode("abc", "abc"), explode("xx", "x"), explode("a::b", "::") });	({({"a","b","","c"}),({"","a"}),({"a",""}),({"a","b","c"}),({}),({""}),({"a","b"})})
+implode forms	return ({ implode(({ "a", "b" }), ""), implode(({}), ","), implode(({ 1, 2 }), ","), implode(({ 1, 2, 3 }), (: $1 + $2 :)) });	({"ab","","",6})
+string_difference	return ({ string_difference("a", "a"), string_difference("a", "b") });	({"","b"})
+to_int forms	return ({ to_int("12abc"), to_int(" 7"), to_int("x"), to_int("-3"), to_int(2.9), to_int(-2.9), to_int(0), to_int("0x10"), to_int("") });	({12,7,0,-3,2,-2,0,0,0})
+to_float forms	return ({ to_float("1.5e2"), to_float("2"), to_float("x"), to_float(3), to_float(" 2.5") });	({F150.0,F2.0,F0.0,F3.0,F2.5})
+crc32 forms	return ({ crc32("hello"), crc32(""), crc32("The quick brown fox jumps over the lazy dog") });	({907060870,0,1095738169})
+crypt with md5 salt	return crypt("password", "$1$saltsalt$");	"$1$saltsalt$qjXMvbEw8oaL.CzflDtaK/"
+crypt with plain salt	return crypt("password", "ab");	"$1$ab$oKsM6dtDD2L1bKowOBX.7."
+crypt long salt	return crypt("pw", "abcdefghijk");	"$1$abcdefgh$IQtUouv7y7Q9dRWkQEPCc."
+crypt empty pw	return crypt("", "$1$abc$");	"$1$abc$Or2rbeUYTvt12aiVzMuS/."
+crypt long pw	return crypt("this is a much longer password with spaces 1234567890", "$1$xyz$");	"$1$xyz$3FZ/X3XRWFfnzPdcGX6pF."
+crypt check	string h = crypt("secret", "$1$q1w2e3r4$"); return ({ crypt("secret", h) == h, crypt("Secret", h) == h, sizeof(h) });	({1,0,34})
+oldcrypt	return oldcrypt("pw", "$1$aa$") == crypt("pw", "$1$aa$");	1
+regexp string	return ({ regexp("hello", "l+"), regexp("hello", "^h"), regexp("hello", "x"), regexp("hello", "o$"), regexp("Hello", "^[A-Z][a-z]+$") });	({1,1,0,1,1})
+regexp array	return regexp(({ "apple", "banana", "cherry", 5, "avocado" }), "^a");	({"apple","avocado"})
+regexp array flags	return ({ regexp(({ "apple", "banana", "avocado" }), "^a", 1), regexp(({ "apple", "banana", "avocado" }), "^a", 2), regexp(({ "apple", "banana", "avocado" }), "^a", 3) });	({({"apple",1,"avocado",3}),({"banana"}),({"banana",2})})
+regexp classes	return ({ regexp("a1", "\\\\d"), regexp("ab", "\\\\d"), regexp("a b", "\\\\s"), regexp("_", "\\\\w"), regexp("abc", "a.c"), regexp("ac", "ab?c"), regexp("abbc", "ab{2}c"), regexp("abbbc", "ab{2}c") });	({1,0,1,1,1,1,1,0})
+regexp alternation	return ({ regexp("cat", "^(cat|dog)$"), regexp("dog", "^(cat|dog)$"), regexp("cow", "^(cat|dog)$"), regexp("x", "a|x") });	({1,1,0,1})
+regexp word anchors	return ({ regexp("the cat sat", "\\\\<cat\\\\>"), regexp("concatenate", "\\\\<cat\\\\>") });	({1,0})
+regexp brackets	return ({ regexp("a-b", "[-x]"), regexp("]", "[]]"), regexp("abc", "[^abc]"), regexp("abcd", "[^abc]"), regexp("A", "[a-z]") });	({1,1,0,1,0})
+regexp escapes	return ({ regexp("a.b", "a\\\\.b"), regexp("axb", "a\\\\.b"), regexp("a+b", "a\\\\+b"), regexp("(x)", "\\\\(x\\\\)") });	({1,0,1,1})
+regexp star greedy	return ({ regexp("", "a*"), regexp("b", "^a*b$"), regexp("aaab", "^a*b$"), regexp("ab", "^a+?b$") });	({1,1,1,1})
+reg_assoc basic	return reg_assoc("abc123def", ({ "[0-9]+" }), ({ 1 }));	({({"abc","123","def"}),({0,1,0})})
+reg_assoc two	return reg_assoc("a1b22c", ({ "[0-9]", "[a-z]" }), ({ "D", "L" }), 0);	({({"","a","","1","","b","","2","","2","","c",""}),({0,"L",0,"D",0,"L",0,"D",0,"D",0,"L",0})})
+reg_assoc default	return reg_assoc("xx", ({ "y" }), ({ 1 }), -1);	({({"xx"}),({-1})})
+pluralize forms	return ({ pluralize("fly"), pluralize("day"), pluralize("box"), pluralize("rose"), pluralize("a sword"), pluralize("an apple"), pluralize("bag of gold"), pluralize("Child"), pluralize("sheep"), pluralize("knife"), pluralize("man"), pluralize("gas"), pluralize("HAS"), pluralize("are") });	({"flies","days","boxes","roses","swords","apples","bags of gold","Children","sheep","knives","men","gasses","HASes","is"})
+pluralize empty	return pluralize("");	0
+allocate_mapping forms	return ({ allocate_mapping(5), allocate_mapping(({ "a", "b" }), 0), allocate_mapping(({ "a", "b" }), ({ 1, 2 })), allocate_mapping(({ 1, 2 }), (: $1 * 10 :)) });	({([]),(["a":0,"b":0]),(["a":1,"b":2]),([1:10,2:20])})
+unique_array forms	return ({ unique_array(({ 1, 2, 3, 4, 5 }), (: $1 % 2 :)), unique_array(({ "a", "bb", "c" }), (: sizeof($1) :)), unique_array(({ 1, 2, 3 }), (: $1 % 2 :), 0) });	({({({1,3,5}),({2,4})}),({({"a","c"}),({"bb"})}),({({1,3})})})
+unique_mapping forms	mapping m = unique_mapping(({ 1, 2, 3, 4 }), (: $1 % 2 :)); return m;	([0:({2,4}),1:({1,3})])
+map_delete forms	mapping m = ([ "a": 1, "b": 2 ]); mapping r = map_delete(m, "a"); map_delete(m, "zz"); return ({ m, r == m });	({(["b":2]),1})
+copy deep	mixed *a = ({ 1, ({ 2 }), ([ "k": ({ 3 }) ]) }); mixed *b = copy(a); b[1][0] = 9; b[2]["k"][0] = 8; return ({ a, b, copy(5), copy("s") });	({({1,({2}),(["k":({3})])}),({1,({9}),(["k":({8})])}),5,"s"})
+copy mapping	mapping m = ([ "x": ({ 1 }) ]); mapping c = copy(m); c["x"] += ({ 2 }); c["y"] = 1; return ({ m, c });	({(["x":({1})]),(["x":({1,2}),"y":1])})
+copy class	class P { int x; mixed *l; } @@ class P p = new(class P); p->x = 1; p->l = ({ 1 }); class P q = copy(p); q->x = 2; q->l[0] = 5; return ({ p->x, p->l, q->x, q->l });	({1,({1}),2,({5})})
+match_path forms	mapping m = ([ "/": "root", "/a/": "A", "/a/b/": "B", "/c": "C" ]); return ({ match_path(m, "/a/b/c"), match_path(m, "/a/x"), match_path(m, "/z"), match_path(m, "/"), match_path(m, "/c"), match_path(([ "/a/": 1 ]), "/b") });	({"B","A","root","root","C",0})
+element_of member	mixed *a = ({ 4, 5, 6 }); int ok = 1; for (int i = 0; i < 20; i++) if (member_array(element_of(a), a) < 0) ok = 0; return ok;	1
+element_of empty	return element_of(({}));	ERR "Bad argument 1 to element_of()\n"
+shuffle keeps elements	mixed *a = ({ 1, 2, 3, 4, 5, 6 }); mixed *b = shuffle(a); return ({ sort_array(b, 1), a, b != a });	({({1,2,3,4,5,6}),({1,2,3,4,5,6}),1})
+max min	return ({ max(({ 3, 9, 2 })), min(({ 3, 9, 2 })), max(({ 3, 9, 2 }), 1), min(({ 3, 9, 2 }), 1), max(({})), max(({ "b", "c", "a" })), min(({ 1.5, 0.5 })) });	({9,2,1,2,0,"c",F0.5})
+member_array start	return ({ member_array(1, ({ 1, 2, 1 }), 1), member_array("b", ({ "a", "b" })), member_array('c', "abc"), member_array(5, 0), member_array(1, ({})), member_array(({}), ({ ({}) })) });	({2,1,2,-1,-1,0})
+sort_array forms	return ({ sort_array(({ 3, 1, 2 }), 1), sort_array(({ 3, 1, 2 }), -1), sort_array(({ "b", "a", "c" }), 1), sort_array(({ 2.5, 1, 1.5 }), 1), sort_array(({ 3, 1, 2 }), 0), sort_array(({ 3, 1, 2 }), (: $2 - $1 :)) });	({({1,2,3}),({3,2,1}),({"a","b","c"}),({1,F1.5,F2.5}),({1,2,3}),({3,2,1})})
+sort_array strings mixed case	return sort_array(({ "b", "B", "a", "A", "_" }), 1);	({"A","B","_","a","b"})
+filter map forms	return ({ filter(({ 1, 2, 3, 4 }), (: $1 % 2 :)), map(({ 1, 2 }), (: $1 * $2 :), 3), filter(([ 1: 2, 3: 4 ]), (: $1 > 1 :)), map(([ 1: 2 ]), (: $2 + 1 :)) });	({({1,3}),({3,6}),([3:4]),([1:3])})
+keys values match	mapping m = ([ "a": 1, "b": 2, "c": 3 ]); mixed *k = keys(m); mixed *v = values(m); int ok = 1; for (int i = 0; i < sizeof(k); i++) if (m[k[i]] != v[i]) ok = 0; return ({ ok, sort_array(k, 1) });	({1,({"a","b","c"})})
+sizeof forms	return ({ sizeof(({ 1, 2 })), sizeof(([ 1: 1 ])), sizeof("abc"), sizeof(0), sizeof(5) });	({2,1,3,0,0})
+allocate forms	return ({ allocate(3), allocate(2, "x"), allocate(3, (: $1 * $1 :)), allocate(0) });	({({0,0,0}),({"x","x"}),({0,1,4}),({})})
+abs forms	return ({ abs(-3), abs(3), abs(-2.5), abs(0) });	({3,3,F2.5,0})
+random range	int ok = 1; for (int i = 0; i < 50; i++) { int r = random(5); if (r < 0 || r > 4) ok = 0; } return ({ ok, random(0), random(-3), random(1) });	({1,0,0,0})
+sqrt pow	return ({ sqrt(16), sqrt(2.0), pow(2, 10), pow(2.0, 0.5), pow(10, -1) });	({F4.0,F1.41421,F1024.0,F1.41421,F0.1})
+exp log	return ({ exp(0), exp(1), log(1), log(10), log10(1000), log2(8) });	({F1.0,F2.71828,F0.0,F2.30259,F3.0,F3.0})
+trig	return ({ sin(0), cos(0), tan(0), asin(1), acos(1), atan(1) });	({F0.0,F1.0,F0.0,F1.5708,F0.0,F0.785398})
+floor ceil round	return ({ floor(2.7), floor(-2.3), ceil(2.1), ceil(-2.7), round(2.5), round(-2.5), round(2.4), floor(3) });	({F2.0,F-3.0,F3.0,F-2.0,F3.0,F-2.0,F2.0,F3.0})
+time is now	return time() > 1700000000 && intp(time());	1
+ctime epoch	return ctime(0);	"Wed Dec 31 18:00:00 1969"
+ctime value	return ctime(1000000000);	"Sat Sep 08 20:46:40 2001"
+ctime no arg	return sizeof(ctime());	24
+localtime value	return localtime(1000000000);	({40,46,20,8,8,2001,6,250,-18000,"DST",1})
+localtime size	return sizeof(localtime(time()));	11
+uptime int	return intp(uptime()) && uptime() >= 0;	1
+real_time	return real_time() >= time() - 1;	1
+save_variable forms	return ({ save_variable(5), save_variable(-3), save_variable("a\\"b\\\\c\\nd"), save_variable(1.5), save_variable(({ 1, ({}) })), save_variable(([ "k": 1 ])), save_variable(0), save_variable(this_object()), save_variable(({ this_object(), 1 })) });	({"5","-3","\"a\\\"b\\\\c\rd\"","1.500000","({1,({}),})","([\"k\":1,])","0","0","({0,1,})"})
+save_variable float	return ({ save_variable(0.1), save_variable(-2.0), save_variable(1e10), save_variable(2.5e-3) });	({"0.100000","-2.000000","10000000000.000000","0.002500"})
+save_variable class	class P { int x; string s; } @@ class P p = new(class P); p->x = 3; p->s = "a"; return save_variable(p);	"(/3,\"a\",/)"
+restore_variable forms	return ({ restore_variable("5"), restore_variable("-3"), restore_variable("\\"a\\\\\\"b\\""), restore_variable("1.500000"), restore_variable("({1,2,})"), restore_variable("([\\"a\\":({}),])"), restore_variable("1e3") });	({5,-3,"a\"b",F1.5,({1,2}),(["a":({})]),F1000.0})
+restore_variable newline	return restore_variable("\\"a\\rb\\"");	"a\nb"
+restore_variable empty slot	return restore_variable("({1,,2,})");	({1,0,2})
+restore_variable bad	return restore_variable("@");	ERR "Bad saved value at \"@\"\n"
+restore_variable class	class P { int x; string s; } @@ mixed v = restore_variable("(/3,\\"a\\",/)"); return ({ classp(v), v->x, v->s });	({1,3,"a"})
+save restore roundtrip	mixed v = ([ "a": ({ 1, 2.5, "s\\nt", ([ 3: 4 ]) }), 7: "seven" ]); return restore_variable(save_variable(v));	(["a":({1,F2.5,"s\nt",([3:4])}),7:"seven"])
+int overflow survives	int x = 1 << 62; int y = x + x; int z = x * 4; int w = -x - x - x; return 1;	1
+int overflow in parse survives	int a; sscanf("99999999999999999999", "%d", a); return intp(to_int("99999999999999999999")) && intp(a);	1
+shift past width	return ({ (1 << 70) >= 0, 5 >> 80, 1 << 0 });	({1,0,1})
+read_file forms	write_file("/m4_rf.txt", "a\\nb\\nc\\n", 1); return ({ read_file("/m4_rf.txt"), read_file("/m4_rf.txt", 2), read_file("/m4_rf.txt", 2, 1), read_file("/m4_rf.txt", 5), read_file("/m4_rf.txt", 0, 2), read_file("/m4_rf.txt", 3, 5), read_file("/m4_nonexistent"), rm("/m4_rf.txt") });	({"a\nb\nc\n","b\nc\n","b\n",0,"a\nb\n","c\n",0,1})
+read_file crlf	write_file("/m4_crlf.txt", "a\\r\\nb\\r\\n", 1); return ({ read_file("/m4_crlf.txt"), file_length("/m4_crlf.txt"), rm("/m4_crlf.txt") });	({"a\nb\n",2,1})
+read_file bad arg	mixed x = 5; return read_file(x);	ERR "Bad argument 1 to read_file()\n"
+write_file append	mixed five = 5; mixed nothing = 0; write_file("/m4_wa.txt", "a", 1); write_file("/m4_wa.txt", "b"); write_file("/m4_wa.txt", five); write_file("/m4_wa.txt", nothing); return ({ read_file("/m4_wa.txt"), write_file("/m4_wa.txt", "z", 1), read_file("/m4_wa.txt"), rm("/m4_wa.txt") });	({"ab5",1,"z",1})
+write_file missing dir	return ({ write_file("/m4_nodir/x.txt", "a"), file_size("/m4_nodir") });	({0,-1})
+write_file bad arg	return write_file(0, "a");	ERR "Bad argument 1 to write_file()\n"
+file_size forms	mixed five = 5; return ({ file_size("/test"), file_size("/test/"), file_size("/m4_nope"), file_size(five), file_size("/test/base_a.c") > 0, file_size("/test/base_a.c") == sizeof(read_file("/test/base_a.c")) });	({-2,-2,-1,-1,1,1})
+file_length forms	write_file("/m4_fl.txt", "x\\ny", 1); write_file("/m4_fl2.txt", "x\\ny\\n", 1); write_file("/m4_fl3.txt", "", 1); return ({ file_length("/m4_fl.txt"), file_length("/m4_fl2.txt"), file_length("/m4_fl3.txt"), file_length("/m4_none"), rm("/m4_fl.txt"), rm("/m4_fl2.txt"), rm("/m4_fl3.txt") });	({2,2,1,-1,1,1,1})
+read_bytes forms	write_file("/m4_rb.txt", "abcdef", 1); return ({ read_bytes("/m4_rb.txt"), read_bytes("/m4_rb.txt", 1, 2), read_bytes("/m4_rb.txt", -2), read_bytes("/m4_rb.txt", 2, 0), read_bytes("/m4_rb.txt", 4, 10), read_bytes("/m4_none"), rm("/m4_rb.txt") });	({"abcdef","bc","ef","cdef","ef",0,1})
+write_bytes forms	write_file("/m4_wb.txt", "abcdef", 1); return ({ write_bytes("/m4_wb.txt", 1, "XY"), read_file("/m4_wb.txt"), write_bytes("/m4_wb.txt", 5, "123"), read_file("/m4_wb.txt"), write_bytes("/m4_wb.txt", 20, "q"), write_bytes("/m4_wb.txt", -1, "Z"), read_file("/m4_wb.txt"), rm("/m4_wb.txt") });	({1,"aXYdef",1,"aXYde123",0,1,"aXYde12Z",1})
+mkdir rmdir rm	return ({ mkdir("/m4_d"), mkdir("/m4_d"), write_file("/m4_d/f", "x"), rmdir("/m4_d"), rm("/m4_d"), rm("/m4_d/f"), rm("/m4_d/f"), rmdir("/m4_d"), rmdir("/m4_d"), file_size("/m4_d") });	({1,0,1,0,0,1,0,1,0,-1})
+get_dir forms	mkdir("/m4_g"); write_file("/m4_g/a.c", "1"); write_file("/m4_g/b.c", "22"); write_file("/m4_g/c.h", "333"); mkdir("/m4_g/sub"); mixed r = ({ get_dir("/m4_g/"), get_dir("/m4_g/*.c"), get_dir("/m4_g/?.h"), get_dir("/m4_g"), get_dir("/m4_g/b.c"), get_dir("/m4_g/zz*"), get_dir("/m4_nodir/x"), get_dir("/m4_g/nothere"), map(get_dir("/m4_g/", -1), (: ({ $1[0], $1[1] }) :)) }); rm("/m4_g/a.c"); rm("/m4_g/b.c"); rm("/m4_g/c.h"); rmdir("/m4_g/sub"); rmdir("/m4_g"); return r;	({({"a.c","b.c","c.h","sub"}),({"a.c","b.c"}),({"c.h"}),({"m4_g"}),({"b.c"}),({}),({}),({}),({({"a.c",1}),({"b.c",2}),({"c.h",3}),({"sub",-2})})})
+get_dir mtime	mkdir("/m4_gm"); write_file("/m4_gm/a", "1"); mixed *e = get_dir("/m4_gm/", -1)[0]; mixed r = ({ sizeof(e), e[2] > 1700000000, e[2] <= time() + 5 }); rm("/m4_gm/a"); rmdir("/m4_gm"); return r;	({3,1,1})
+rename forms	write_file("/m4_r1", "one", 1); write_file("/m4_r2", "two", 1); return ({ rename("/m4_r1", "/m4_r2"), read_file("/m4_r2"), file_size("/m4_r1"), rename("/m4_r1", "/m4_r3"), rm("/m4_r2") });	({0,"one",-1,1,1})
+cp forms	write_file("/m4_c1", "data", 1); mkdir("/m4_cd"); return ({ cp("/m4_c1", "/m4_c2"), read_file("/m4_c2"), cp("/m4_none", "/m4_c3"), cp("/m4_c1", "/m4_cd"), read_file("/m4_cd/m4_c1"), cp("/m4_c1", "/m4_nodir/x"), rm("/m4_c1"), rm("/m4_c2"), rm("/m4_cd/m4_c1"), rmdir("/m4_cd") });	({1,"data",-1,1,"data",-1,1,1,1,1})
+stat forms	write_file("/m4_st", "abc", 1); mixed *s = stat("/m4_st"); mixed *d = stat("/test"); mixed r = ({ sizeof(s), s[0], s[1] > 1700000000, s[2], sizeof(d), d[0], d[2], stat("/m4_none") }); rm("/m4_st"); return r;	({3,3,1,0,3,-2,0,({})})
+link forms	write_file("/m4_l1", "x", 1); return ({ link("/m4_l1", "/m4_l2"), read_file("/m4_l2"), link("/m4_none", "/m4_l3"), rm("/m4_l1"), rm("/m4_l2") });	({0,"x",-1,1,1})
+denied writes	return ({ mkdir("/secret/d"), rmdir("/secret/d"), rm("/secret/x"), rename("/m4_x", "/secret/y"), write_bytes("/secret/x", 0, "a"), get_dir("/secret/") });	({0,0,0,1,0,0})
+save_object text	int a = 5; nosave int b = 6; static int c = 7; string s = "x\\ny"; mapping m = ([ 1: 2 ]); float f = 1.5; mixed z; int zero; @@ save_object("/m4_sv"); string t = read_file("/m4_sv.o"); rm("/m4_sv.o"); return t;	"#/test/__case_saveobjecttext.c\na 5\nf 1.500000\nm ([1:2,])\ns \"x\ry\"\n"
+save_object zeros	int a; string s; mixed *arr = ({}); @@ save_object("/m4_sz", 1); string t = read_file("/m4_sz.o"); rm("/m4_sz.o"); return t;	"#/test/__case_saveobjectzeros.c\na 0\narr ({})\ns 0\n"
+save_object suffix	int a = 1; @@ return ({ save_object("/m4_sx.o"), file_size("/m4_sx.o") > 0, file_size("/m4_sx.o.o"), rm("/m4_sx.o") });	({1,1,-1,1})
+save_object missing dir	int a = 1; @@ return save_object("/m4_nodir/x");	0
+save_object bad arg	mixed five = 5; return save_object(five);	ERR "Bad argument 1 to save_object()\n"
+save_object denied	int a = 1; @@ return save_object("/secret/x");	ERR "Denied write permission in save_object().\n"
+restore_object clears	int a = 1; int b = 2; string s = "keep"; @@ write_file("/m4_ro.o", "#/x.c\\na 10\\n", 1); int r = restore_object("/m4_ro"); mixed v1 = ({ a, b, s }); a = 1; b = 2; s = "keep"; int r2 = restore_object("/m4_ro", 1); rm("/m4_ro.o"); return ({ r, v1, r2, a, b, s });	({1,({10,0,0}),1,10,2,"keep"})
+restore_object missing	int a = 3; @@ return ({ restore_object("/m4_none"), a });	({0,3})
+restore_object nosave untouched	int a = 1; nosave int b = 2; @@ write_file("/m4_rn.o", "#/x.c\\na 7\\nb 9\\n", 1); restore_object("/m4_rn"); rm("/m4_rn.o"); return ({ a, b });	({7,2})
+restore_object types	mixed a; mixed b; mixed c; mixed d; @@ write_file("/m4_rt.o", "#/x.c\\na ({1,\\"two\\",3.500000,([\\"k\\":({}),]),})\\nb \\"line\\rtwo\\"\\nc -12\\nd 2.250000\\n", 1); restore_object("/m4_rt"); rm("/m4_rt.o"); return ({ a, b, c, d });	({({1,"two",F3.5,(["k":({})])}),"line\ntwo",-12,F2.25})
+restore_object bad value	int a; @@ write_file("/m4_rb.o", "#/x.c\\na @@@\\n", 1); mixed e = catch(restore_object("/m4_rb")); rm("/m4_rb.o"); return e;	"*Error restoring variable a: Bad saved value at \"@@@\"\n"
+restore_object unknown var	int a; @@ write_file("/m4_ru.o", "#/x.c\\nzzz 5\\na 4\\n", 1); restore_object("/m4_ru"); rm("/m4_ru.o"); return a;	4
+restore_object denied	int a; @@ return restore_object("/secret/x");	ERR "Denied read permission in restore_object().\n"
+save restore inherit	inherit "/test/base_a"; int mine = 4; @@ save_object("/m4_si"); string t = read_file("/m4_si.o"); rm("/m4_si.o"); return t;	"#/test/__case_saverestoreinherit.c\na_var 1\nmine 4\nsecret 42\n"
+terminal_colour golden cases	return load_object("/test/tc_runner")->run();	({({"plain","plain text","</>"}),({"empty","","</>"}),({"code","<r>x</>","</>"}),({"unknown token","aNOPEb","</>"}),({"lowercase token","aredb","</>"}),({"only delimiters","","</>"}),({"only delimiters x2","","</>"}),({"lone delimiter","","</>"}),({"empty piece","ab","</>"}),({"leading code","<r>abc","</>"}),({"unterminated code","abc<r>","</>"}),({"trailing delimiter","abc","</>"}),({"adjacent codes","<r><B>x","</>"}),({"percent signs","100% sure  yes","</>"}),({"percent caret text","50 off <r>now","</>"}),({"non-string value","aREDb","\x1b[49;49m\x1b[0;10m"}),({"empty value","ab","\x1b[49;49m\x1b[0;10m"}),({"no reset key, codes","<r>x","\x1b[49;49m\x1b[0;10m"}),({"no reset key, no codes","plain",0}),({"non-string reset","<r>x\x1b[49;49m\x1b[0;10m","\x1b[49;49m\x1b[0;10m"}),({"empty map","aREDb","\x1b[49;49m\x1b[0;10m"}),({"replace apply code","<r>x","</>"}),({"replace apply text","ahellob","</>"}),({"replace apply non-string","aNUMb","</>"}),({"newline no wrap","abc\ndef<r>\n","</>"}),({"wrap zero","plain text","</>"}),({"wrap zero codes","<r>aaa bbb ccc","</>"}),({"wrap basic","aaa bbb</>\n  ccc","</>"}),({"wrap 3 args","aaa bbb</>\nccc","</>"}),({"wrap no codes","hello</>\nworld</>\nfoo","</>"}),({"wrap fits","short","</>"}),({"wrap exact width","aaaa bbbb","</>"}),({"wrap at width","aaaa</>\nbbbb","</>"}),({"wrap space at width+1","abcd</>\nefgh","</>"}),({"wrap word ends at width","aaaaaaa</>\nbbb","</>"}),({"wrap long word","abcd</>\nefgh</>\nij","</>"}),({"wrap long word indent","aaa</>\n  bbbb</>\n  bbbb</>\n  bbbb</>\n  b","</>"}),({"wrap two spaces","aaa </>\nbbb</>\nccc","</>"}),({"wrap many spaces","aaa  </>\nbbb","</>"}),({"wrap spaces after break","aaa</>\nbbb","</>"}),({"wrap leading spaces","  aaa</>\nbbb","</>"}),({"wrap trailing space","aaaa</>\n","</>"}),({"wrap trailing spaces","aa</>\nbb  </>\n","</>"}),({"wrap newline","abc</>\ndef","</>"}),({"wrap newline indent","abc</>\n  def","</>"}),({"wrap trailing newline","abc</>\n","</>"}),({"wrap trailing newline indent","abc</>\n","</>"}),({"wrap double newline","a</>\n  </>\n  b","</>"}),({"wrap newline at width","abcd</>\nef","</>"}),({"wrap newline then spaces","abc</>\n    def","</>"}),({"wrap colour newline","<r>abc</>\n<r>def</>","</>"}),({"wrap colour across break","<r>aaa bbb</>\n<r>ccc</>","</>"}),({"wrap colour in word","aaa <r>bbb</></>\nccc","</>"}),({"wrap colour at space","aaa<r></>\n<r>bbb</>\n<r>ccc","</>"}),({"wrap colours accumulate","<r><B>aaa</>\n<r><B>bbb","</>"}),({"wrap colour reset mid","<r>aa</></>\nbb</>\ncc","</>"}),({"wrap reset by value","<r>aa </>bb</>\ncc","</>"}),({"wrap long word colour","<r>abcd</>\n<r>efgh</>\n<r>ij","</>"}),({"wrap default reset","<r>aaa bbb\x1b[49;49m\x1b[0;10m\n<r>ccc","\x1b[49;49m\x1b[0;10m"}),({"wrap no reset key, no codes","aaa bbb\x1b[49;49m\x1b[0;10m\nccc","\x1b[49;49m\x1b[0;10m"}),({"wrap code only","<r>","</>"}),({"wrap unknown token","aaa</>\nNOPE</>\nbbb","</>"}),({"wrap replace apply","aaa bbb</>\nccc","</>"}),({"wrap tab","a\tb","</>"}),({"wrap tab mid","abc\tdef</>\nghi","</>"}),({"wrap tab near width","aaaaaaa</>\nbbb","</>"}),({"wrap tabs","a\tb</>\nc\td e f","</>"}),({"wrap tab after break","aaa</>\n  bbb\tccc","</>"}),({"fillout basic","aaa bbb</>\nccc","</>"}),({"fillout newline","abc</>       \ndef","</>"}),({"fillout long word","abcd</>\nefgh</>\nij","</>"}),({"fillout indent","aaa bbb</>\n  ccc</>  \n  ddd","</>"}),({"fillout colour","<r>aaa bbb</></>\nccc","</>"}),({"fillout trailing newline","abc</>   \n","</>"}),({"wrap 1","ab</>\ncd","</>"}),({"wrap -1","ab</>\ncd","</>"}),({"wrap 2","ab</>\nc</>\nde","</>"}),({"indent too big","aaa bbb</>\n     cc</>\n     c</>\n     dd</>\n     d","</>"}),({"indent huge","aaa bbb</>\n     cc</>\n     c</>\n     dd</>\n     d","</>"}),({"indent negative","aaa bbb</>\n     cc</>\n     c</>\n     dd</>\n     d","</>"}),({"indent wrap-2","aaa bbb</>\n     cc</>\n     c</>\n     dd</>\n     d","</>"}),({"wrap empty string","","</>"}),({"only delimiters no reset","",0}),({"empty reset value","<r>x\x1b[49;49m\x1b[0;10m","\x1b[49;49m\x1b[0;10m"}),({"wrap blanks after break indent","aaa   </>\n  bbbb</>\n  bbbb</>\n  bb","</>"}),({"wrap only blanks after break","aaaa</>\n  ","</>"}),({"wrap tabs after break","aaaa\t\tbbb","</>"}),({"wrap newline after break","aaaa</>\n</>\nbbb","</>"}),({"wrap code at hard break","abcd<r></>\n<r>efgh","</>"}),({"wrap code after break space","abc</>\n<r>defg","</>"}),({"wrap colour cap","0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789aaa</>\n0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789bbb","</>"}),({"fillout tab","a\tb</>  \nc","</>"}),({"fillout hard break colour","<r>abcde</>\n<r> fgh</>\n<r> ij","</>"}),({"wrap dropped blank break point","aaaa</>\n </>\n  bbbbb","</>"}),({"wrap dropped blank break point 2","aaaaa</>\n </>\n  bbbbbbb cc","</>"}),({"wrap dropped blank break point nl","aaaa</>\n </>\n  bbbbb</>\n  cc","</>"}),({"ds message","<B><b>Tim says:</> Hello there, this is</>\na fairly long line of text</>\nthat should wrap around.</></>\n> ","</>"}),({"ds message indent","<r>The orc hits you</>\n<r>    hard in the</>\n<r>    chest.</> You feel</>\n    weaker. <B>Ouch!</></>\n","</>"}),({"ds room","<B>Village Road</></>\nThis is a long and</>\nwinding road through the</>\nvillage.</>\n<b>Obvious exits: north,</>\n<b>south</></>\n","</>"})})
+terminal_colour bad args	mixed x = 5; mixed e1 = catch(terminal_colour(x, ([]))); mixed e2 = catch(terminal_colour("a", x)); return ({ e1, e2 });	({"*Bad argument 1 to terminal_colour()\n","*Bad argument 2 to terminal_colour()\n"})
+terminal_colour writes default reset	mapping m = ([ "RED": "<r>" ]); string r = terminal_colour("%^RED%^x", m); return ({ r, sizeof(m), m["RESET"] });	({"<r>x",2,"\x1b[49;49m\x1b[0;10m"})

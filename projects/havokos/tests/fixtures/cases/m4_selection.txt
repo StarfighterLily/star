@@ -1,0 +1,30 @@
+# M4 (efuns) exit criterion, part 1: the efun-library cases of HavokOS
+# pike/tests/run_tests.pike's case table. The language-semantics cases are
+# M3's (m3_selection.txt); object-model ones (call_outs, environments,
+# destruct, privs -- "efun defaults when omitted" and "efun undefined arg is
+# not omitted" lean on call_out/query_privs/environment) are M5's.
+#
+# --- sscanf
+sscanf basic
+sscanf partial
+sscanf skip
+sscanf counts skips
+sscanf leftover to next var
+clone name
+# --- strings
+explode sane
+explode empty
+implode skips nonstrings
+strsrch
+replace_string
+pluralize
+crypt roundtrip
+# --- arrays, mappings, types
+member_array
+keys sorted count
+typeof
+match_path
+# --- save format and files
+save/restore variable
+save_object roundtrip
+file efuns on a denied path

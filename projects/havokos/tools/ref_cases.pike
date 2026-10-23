@@ -12,6 +12,7 @@
 //
 //   pike ref_cases.pike <havokos_pike_dir> <selection.txt>  > m3.expected.txt
 //   pike ref_cases.pike <havokos_pike_dir> -extra <cases.txt> > m3_extra.expected.txt
+//   pike ref_cases.pike <havokos_pike_dir> -ds <ds_lib_dir> <cases.txt> > m4_ds.expected.txt
 //
 // selection.txt names one case per line (blank lines and `#` comments
 // skipped); a line `error <name>` selects one of run_tests.pike's
@@ -25,6 +26,12 @@
 // (closures sharing locals, nested lvalues, varargs, switch fallthrough,
 // ...). There is no expected column to check them against: the live
 // reference's result *is* the expectation.
+//
+// With -ds, the same kind of case file runs on the Dead Souls 3.9 mudlib
+// instead (todo.md HavokOS M4): the driver is configured from DS3.9's own
+// mudos.cfg and boots only as far as its first step, the simul_efun object
+// (no master, no preloads -- the Star side boots the same way), so cases
+// can call the mudlib's own simul_efuns, real LPC built on the efun library.
 
 string esc_body(string s) {
     return replace(s, ({ "\\", "\n", "\t", "\r" }), ({ "\\\\", "\\n", "\\t", "\\r" }));
@@ -104,8 +111,14 @@ int main(int argc, array(string) argv) {
 
     object runner = compile_string(src, combine_path(tests, "run_tests.pike"))();
     runner->here = tests;
-    string root = combine_path(tests, "minilib");
-    mapping cfg = ([
+    int ds = argv[2] == "-ds";
+    string root = ds ? argv[3] : combine_path(tests, "minilib");
+    mapping cfg = ds ? ([
+        // E:/ds3.9/bin/mudos.cfg
+        "name": "DeadSoulsNew", "master file": "/secure/daemon/master",
+        "simulated efun file": "/secure/sefun/sefun", "include directories": "/secure/include:/include",
+        "global include file": "<global.h>", "port": "6666",
+    ]) : ([
         "name": "HavokTest", "master file": "/secure/master",
         "simulated efun file": "/secure/sefun", "include directories": "/include",
         "global include file": "<global.h>", "port": "6699",
@@ -113,11 +126,15 @@ int main(int argc, array(string) argv) {
     object drv = compile_file(combine_path(pike_dir, "havok/driver.pike"))(root, cfg);
     drv->debug_level = 0;
     drv->compiler->cache_dir = combine_path(pike_dir, "runtime/test_cache");
-    if (!drv->boot()) { werror("boot failed\n"); return 1; }
+    if (ds) {
+        // boot()'s first step only (driver.pike boot_steps())
+        drv->sefun_ob = drv->load_object(drv->compiler->sefun_path);
+        drv->refresh_sefuns();
+    } else if (!drv->boot()) { werror("boot failed\n"); return 1; }
     runner->drv = drv;
 
-    if (argv[2] == "-extra") {
-        foreach (Stdio.read_file(argv[3]) / "\n", string line) {
+    if (argv[2] == "-extra" || ds) {
+        foreach (Stdio.read_file(argv[ds ? 4 : 3]) / "\n", string line) {
             line = replace(line, "\r", "");
             if (line == "" || line[0] == '#') continue;
             [string name, string ebody] = line / "\t";

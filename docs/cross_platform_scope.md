@@ -137,6 +137,23 @@ sequence is byte-identical under `Target::LinuxGnu` and the default
 lines — see `platform.rs` above — are filtered out), not just assumed
 identical because nothing in `sdl.rs` mentions `Target`.
 
+## Seamed, not yet devbox-verified
+
+`codegen/fs.rs` — `dir_list`/`path_kind`/`file_size`/`file_mtime`/
+`dir_create`/`dir_remove`/`file_remove`/`file_rename`/`local_time` (added
+2026-10-23 for `projects/havokos`, `todo.md` HavokOS M4). The Windows arm
+(`_findfirst64`, `_stat64`, `_mkdir`/`_rmdir`, `MoveFileExA`,
+`_localtime64_s` + `_mkgmtime64`) is run by `tests/frontend_fs.rs`, with
+struct offsets measured by `offsetof` on this toolchain. The
+`Target::LinuxGnu` arm (`opendir`/`readdir`/`closedir`, `stat`,
+`mkdir(path, 0777)`, `rmdir`, `rename`, `localtime_r` with `tm_gmtoff`,
+glibc x86_64 offsets: `st_mode` 24, `st_size` 48, `st_mtim` 88,
+`d_name` 19, `tm_gmtoff` 40) has only been checked as far as
+`star emit llvm --target=linux` producing IR that `clang -target
+x86_64-unknown-linux-gnu -c` compiles to an object: the devbox wasn't
+reachable that day (`localhost:2222` refused, no `wsl` on `PATH`). It
+moves to "Already seamed" once linked and run there.
+
 ## Hard, deliberately unstarted: text rendering (`codegen/system_font.rs`)
 
 Unchanged from this module's own doc comment: GDI's font engine

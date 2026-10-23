@@ -2671,6 +2671,25 @@ impl Checker {
                     self.error(format!("`file_exists` expects a `str` argument, found `{:?}`", arg_tys[0]), span);
                 }
             }
+            "dir_list" | "path_kind" | "file_size" | "file_mtime" | "dir_create" | "dir_remove" | "file_remove" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Str) {
+                    self.error(format!("`{}` expects a `str` argument, found `{:?}`", name, arg_tys[0]), span);
+                }
+            }
+            "file_rename" => {
+                if arity_ok(2, self) {
+                    for (i, t) in arg_tys.iter().enumerate() {
+                        if !tys_eq(t, &Ty::Str) {
+                            self.error(format!("`file_rename` argument {} expected `str`, found `{:?}`", i + 1, t), span);
+                        }
+                    }
+                }
+            }
+            "local_time" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::I64) {
+                    self.error(format!("`local_time` expects an `i64` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
             "open_file_dialog" => {
                 if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Str) {
                     self.error(format!("`open_file_dialog` expects a `str` argument, found `{:?}`", arg_tys[0]), span);
