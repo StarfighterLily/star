@@ -1,0 +1,89 @@
+# M3 (bytecode compiler + VM core) exit criterion: the language-semantics
+# cases of HavokOS pike/tests/run_tests.pike's case table. Efun-library
+# cases (sscanf, explode/implode edge cases, save/restore, crypt, ...) are
+# M4 and object-model cases (destruct, environment, call_outs, ...) are M5;
+# they're left out here, not failed.
+#
+# --- syntax / grammar quirks
+assign binds to lvalue
+assign after &&
+vars and funcs separate
+keyword as name
+status as variable
+string array decl
+char literal
+adjacent strings
+hex number
+ternary nested
+switch ranges
+switch duplicate case
+switch strings
+for with decl
+do while
+# --- values
+undefined local
+defined zero
+missing mapping key undefined
+string index at end is 0
+index from end
+range from end
+open ranges
+range assignment
+array subtraction
+mapping add
+string + int
+int division
+float into int: += -= *= /=
+float into int: truncates toward zero
+float into int: mixed, global, mapping, array slots
+float into int: x = x + f stays float
+float into int: float slots stay float
+float into int: plain = and params don't convert untyped values
+float into int: calls, closures and strings on the right
+float into int: side effects in index run once
+float into int: value of the expression
+float to string: cast matches concatenation
+float into int: missing mapping key and zero
+cast int from string
+cast string from int
+cast array is noop
+sizeof zero
+# --- classes
+class new and members
+class new with inits
+class member +=
+classp
+# --- function pointers
+functional with $1
+$() takes the value when made
+bound args
+efun pointer map
+anonymous function
+filter with functional
+sort_array function
+functionp flags
+# --- control and errors
+catch string
+catch throw value
+catch none
+foreach mapping keys
+foreach k,v
+foreach string chars
+# --- objects: inherits, :: calls, call_other
+sefun call
+sefun previous_object
+this_object name
+load and call
+clone create args
+inherit ::f first match
+inherit labels
+later inherit wins
+static not via call_other
+static via self call_other
+private var inherited
+previous_object
+call_other on string
+call_other missing fn
+# --- run_tests.pike check_error() cases
+error call_other on 0
+error index of zero

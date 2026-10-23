@@ -1,0 +1,76 @@
+assign binds to lvalue	int x; if (!x = 5) return -1; return x;	5
+assign after &&	int a = 1, b; a && b = 7; return b;	7
+vars and funcs separate	int sizeof_ = 3; mapping map = ([1:2]); return sizeof(map);	1
+keyword as name	int program = 4, this = 5; return program + this;	9
+status as variable	int status = 2; status = status + 1; return status;	3
+string array decl	string array a = ({ "x", "y" }); return sizeof(a);	2
+char literal	return 'a' + 1;	98
+adjacent strings	return "ab" "cd";	"abcd"
+hex number	return 0x1F;	31
+ternary nested	int x = 2; return x == 1 ? "one" : x == 2 ? "two" : "many";	"two"
+switch ranges	int x = 7; switch (x) { case 1..5: return "low"; case 6..10: return "mid"; } return "none";	"mid"
+switch duplicate case	switch (2) { case 2: return "first"; case 2: return "dup"; } return 0;	"first"
+switch strings	switch ("b") { case "a": return 1; case "b": return 2; default: return 3; }	2
+for with decl	int t; for (int i = 0; i < 4; i++) t += i; return t;	6
+do while	int i; do { i++; } while (i < 3); return i;	3
+undefined local	int x; return undefinedp(x);	1
+defined zero	int x = 0; return undefinedp(x);	0
+missing mapping key undefined	mapping m = ([]); return undefinedp(m["q"]);	1
+string index at end is 0	string s = "ab"; return s[2];	0
+index from end	return ({ 1, 2, 3 })[<1];	3
+range from end	return "abcdef"[1..<2];	"bcde"
+open ranges	return ({ "abc"[1..], "abc"[..1] });	({"bc","ab"})
+range assignment	string s = "hello"; s[1..3] = "ipp"; return s;	"hippo"
+array subtraction	return ({ 1, 2, 3, 2 }) - ({ 2 });	({1,3})
+mapping add	mapping m = ([ 1: 2 ]); m += ([ 3: 4 ]); return sizeof(m);	2
+string + int	return "a" + 5;	"a5"
+int division	return 7 / 2;	3
+float into int: += -= *= /=	int a = 10, b = 10, c = 10, d = 10; a += 1.5; b -= 1.5; c *= 1.5; d /= 4.0; return ({ a, b, c, d });	({11,8,15,2})
+float into int: truncates toward zero	int a = 10, b = -10, c = -7, d = -7, e = 10; a += -0.4; b += 0.4; c /= 2.0; d *= 0.5; e += 1.99999; return ({ a, b, c, d, e });	({9,-9,-3,-3,11})
+float into int: mixed, global, mapping, array slots	int gi = 10; mapping gm = ([ "h": 10 ]); @@ mixed m = 10; int *ia = ({ 10 }); mapping mp = ([ "h": 10 ]); m += 1.5; gi += 1.5; gm["h"] += 1.5; ia[0] += 1.5; mp["h"] -= 0.5; return ({ m, gi, gm["h"], ia[0], mp["h"] });	({11,11,11,11,9})
+float into int: x = x + f stays float	mapping mp = ([ "h": 10 ]); mp["h"] = mp["h"] + 1.5; return mp["h"];	F11.5
+float into int: float slots stay float	mixed a = 1.5, b = 1.5; mapping m = ([ "h": 1.5 ]); a += 1; b++; m["h"] += 1; return ({ a, b, m["h"] });	({F2.5,F2.5,F2.5})
+float into int: plain = and params don't convert untyped values	int ri() { return 2.7; } int pi(int x) { return x; } @@ int b, c; mixed m = 2.7; b = m; c = ri(); return ({ b, c, pi(2.7) });	({F2.7,F2.7,F2.7})
+float into int: calls, closures and strings on the right	float f() { return 1.5; } @@ int a = 10, b = 10; mixed s = "x"; mixed arr = ({ 1 }); a += f(); b += evaluate((: 2.5 :)); s += "y"; arr += ({ 2 }); return ({ a, b, s, arr });	({11,12,"xy",({1,2})})
+float into int: side effects in index run once	int n; int idx() { n++; return 0; } @@ mapping m = ([ 0: 10 ]); int *a = ({ 10 }); m[idx()] += 1.5; a[idx()] += 2; return ({ n, a[0] });	({2,12})
+float into int: value of the expression	mapping l = ([ "h": 5 ]); mixed x = -9.5; if ((l["h"] += x) < 1) l["h"] = 0; return ({ l["h"], (l["h"] += 2.5) });	({0,2})
+float to string: cast matches concatenation	float f = 2.7, g = 476.0; return ({ (string)f, "" + f, (string)g, "" + g });	({"2.7","2.7","476.0","476.0"})
+float into int: missing mapping key and zero	mapping m = ([]); mixed z = 0; m["new"] += 1.5; z += 1.5; return ({ m["new"], z });	({1,1})
+cast int from string	return (int)"42abc";	42
+cast string from int	return (string)42;	"42"
+cast array is noop	return (string)({ 1 });	({1})
+sizeof zero	return sizeof(0);	0
+class new and members	class pt { int x; int y; } @@ class pt p = new(class pt); p->x = 3; p->y = 4; return p->x * 10 + p->y;	34
+class new with inits	class pt { int x; int y; } @@ class pt p = new(class pt, y: 9); return p->y;	9
+class member +=	class c { int n; } @@ class c v = new(class c); v->n = 1; v->n += 5; return v->n;	6
+classp	class c { int n; } @@ return ({ classp(new(class c)), classp(5) });	({1,0})
+functional with $1	function f = (: $1 * $2 :); return evaluate(f, 6, 7);	42
+$() takes the value when made	int x = 1; function f = (: $(x) + 10 :); x = 5; return evaluate(f);	11
+bound args	function f = (: explode, "a,b" :); return evaluate(f, ",");	({"a","b"})
+efun pointer map	return map(({ "a", "b" }), (: upper_case :));	({"A","B"})
+anonymous function	function f = function(int x) { return x + 1; }; return f(1);	2
+filter with functional	return filter(({ 1, 2, 3, 4 }), (: $1 % 2 :));	({1,3})
+sort_array function	return sort_array(({ 3, 1, 2 }), (: $1 - $2 :));	({1,2,3})
+functionp flags	return functionp((: write :)) & 0xf;	3
+catch string	mixed e = catch(error("boom\\n")); return e;	"*boom\n"
+catch throw value	mixed e = catch(throw(([ "x": 1 ]))); return e;	(["x":1])
+catch none	return catch(1 + 1);	0
+foreach mapping keys	int t; foreach (int k in ([ 1: 0, 2: 0 ])) t += k; return t;	3
+foreach k,v	int t; foreach (int k, int v in ([ 1: 10, 2: 20 ])) t += k * v; return t;	50
+foreach string chars	int n; foreach (int c in "ab") n += c; return n;	195
+sefun call	return sefun_hello("bob");	"hello bob"
+sefun previous_object	return sefun_prev() == this_object();	1
+this_object name	return file_name(this_object())[0..11];	"/test/__case"
+load and call	return load_object("/test/base_b")->who();	"b"
+clone create args	object o = new("/test/child", 5); return ({ o->get_create_args(), o->get_counter() });	({5,1})
+inherit ::f first match	return load_object("/test/child")->first_who();	"a"
+inherit labels	object o = load_object("/test/child"); return ({ o->a_who(), o->b_who() });	({"a","b"})
+later inherit wins	return load_object("/test/child")->who();	"b"
+static not via call_other	return load_object("/test/child")->hidden();	0
+static via self call_other	return load_object("/test/child")->self_call_hidden();	"hidden_a"
+private var inherited	return load_object("/test/child")->get_secret();	42
+previous_object	return load_object("/test/child")->prev() == this_object();	1
+call_other on string	return call_other("/test/base_b", "only_b");	"only_b"
+call_other missing fn	return load_object("/test/base_b")->nope();	0
+error call_other on 0	object o; return o->f();	ERR "Bad argument 1 to call_other()\n"
+error index of zero	mapping m; return m["x"];	ERR "Cannot index the NULL value with \"x\".\n"

@@ -64,12 +64,46 @@ mudlib before it's marked done.
       `tests/frontend_spill_slot_conditional_release.rs`. Full suite
       re-run: 2093 pass, and the only failures are the 5 pre-existing
       `@fgetc` ones below.
-- [ ] **HavokOS P0 #3 (M3): bytecode compiler + VM core.** Expressions,
-      statements, functions, inherits, `::` calls, closures/function
-      pointers, `catch`/`throw`, call_other. Value model as planned in
-      NOTES.md: handle-based arrays and mappings, since Star `List` is
-      copy-on-write. Exit criterion: the language-semantics cases of
-      `pike/tests/run_tests.pike`'s case table. Depends on #2.
+- [x] **HavokOS P0 #3 (M3): bytecode compiler + VM core.** Done.
+      `projects/havokos/compiler.star` (AST -> stack-machine bytecode,
+      `program.star`) + `vm.star` (interpreter, programs, objects,
+      loading/cloning, call_other, the driver object stack) + `efuns.star`
+      (the M3 subset). The value model is handle-based, as planned
+      (`value.star`). Checked against the live Pike driver three ways:
+      - All 76 language-semantics cases of the reference's own
+        `pike/tests/run_tests.pike` table give the reference's results,
+        including its two check_error cases (`tests/run_cases_test.ps1`,
+        selection `tests/fixtures/cases/m3_selection.txt`). The fixture is
+        what the live driver returned, cross-checked against the table's
+        expected column. Efun-library cases are M4's, object-model ones
+        M5's.
+      - 92 edge cases of this port's own (`m3_extra_cases.txt`: closures
+        sharing locals by reference, nested lvalue chains, varargs/spreads,
+        switch fallthrough/ranges, catch in loops, dispatch rules, float
+        printing) match the reference's results too. They turned up two
+        Pike semantics the table never shows: `3 == 3.0` is false, and the
+        empty array is one shared object.
+      - Compile sweep of all 2378 DS3.9 files against the reference's
+        `transpile()` (`tests/run_compile_sweep_test.ps1`, about 21 s): the
+        same 2373 compile, with identical inheritance tables (hashed
+        `all_funcs`/`all_vars`), and the same 5 fail on missing files.
+        Doing this found that the reference driver predefines
+        config-derived macros (`MUD_NAME`, `__HAVOKOS__`, ...), which M1's
+        front-end comparison never saw. `Vm.configure()` adds them now.
+      Speed is already comparable with the reference: `fib(25)` plus a 1M
+      loop take 0.48 s including boot, against 1.28 s.
+      Found and fixed a genuine Star **compiler** bug along the way: an
+      `extern "C" fn` reached through a diamond import (a file imported
+      along two paths) wasn't deduplicated, so the checker rejected it as
+      "declared more than once". Fix in `src/modules.rs`, regression test
+      `tests/frontend_extern_diamond_import.rs` (its positive tests fail
+      without the fix).
+      Deliberately left for later milestones (NOTES.md "2026-10-23: M3"):
+      runtime line numbers in errors, the eval cost limit, GC, destruct
+      (M5); `sscanf`/`parse_command` lvalue arguments (M4). Four new
+      deliberate deviations are documented in NOTES.md (#3-#6: double
+      floats, negative-constant switch, per-declaration closure cells,
+      64-bit int wrap).
 - [ ] **HavokOS P1 #1 (M4): efuns.** Strings (`sprintf`/`sscanf`/...),
       arrays, mappings, math, files, time, the save/restore format.
 - [ ] **HavokOS P1 #2 (M5): object model.** Master/sefun loading, load/
@@ -103,7 +137,9 @@ mudlib before it's marked done.
       Found 2026-10-22 during the HavokOS M1 full-suite run and confirmed
       to fail identically with that round's changes stashed. Not
       investigated further. The other 2089 tests pass. Same 5 still
-      failing on 2026-10-23 after the M2 compiler fix (2093 others pass).
+      failing on 2026-10-23 after the M2 compiler fix (2093 others pass),
+      and again after the M3 `src/modules.rs` fix (2097 others pass,
+      including M3's 4 new tests).
 
 ## Previous focus: porting NoBASIC to Star
 
@@ -348,3 +384,19 @@ reconciled to match whichever of the two Python sources looks more
     fix has a test that fails without it).
   The `star` on `PATH` here is a stale Sep 8 debug build, so the HavokOS
   tools are built with `target/release/star.exe`.
+- 2026-10-23: HavokOS P0 #3 (M3, bytecode compiler + VM core) is done. See
+  its entry above and `projects/havokos/NOTES.md` ("2026-10-23: M3
+  compiler + VM core", deviations #3-#6, Star compiler bug #5), which also
+  covers:
+  - why LPC calls push frames on one interpreter loop instead of
+    recursing in Star, and how errors unwind without exceptions;
+  - the closure design: captured locals are boxed into cells, found by
+    compiling a capturing function twice;
+  - the three verification layers: the reference's case table, 92 edge
+    cases recorded from the live driver, and a full-mudlib compile sweep
+    comparing inheritance tables;
+  - the `extern "C"` diamond-import bug found and fixed
+    (`tests/frontend_extern_diamond_import.rs`).
+  The editor's language server keeps `target/debug/star.exe` locked on
+  this machine, so this round ran the Star test suite with
+  `CARGO_TARGET_DIR=target/alt`.

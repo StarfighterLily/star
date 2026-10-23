@@ -86,6 +86,9 @@ struct Pp:
     mut depth: i32 = 0
     mut had_error: bool = false
     mut error: str = ""
+    # preprocess_string(): the main file's text, instead of reading it
+    mut use_source: bool = false
+    mut source: Bytes = Bytes()
 
 fn new_pp(root: str) -> Pp:
     let mut pp = Pp(root = root, ops = lx::op_table(), include_dirs = ["/secure/include", "/include"])
@@ -601,7 +604,11 @@ impl Pp:
         let dir_slash = if str_ends_with(dir, "/"): dir else: concat(dir, "/")
         self.define("__FILE__", concat(concat("\"", vpath), "\""))
         self.define("__DIR__", concat(concat("\"", dir_slash), "\""))
-        let main = self.lex_vpath(vpath, false)
+        let mut main = Option<List<tk::Token>>::None
+        if self.use_source:
+            main = Option<List<tk::Token>>::Some(lx::lex_file(self.source, fid, self.ops))
+        else:
+            main = self.lex_vpath(vpath, false)
         if let Option::None = main:
             self.had_error = true
             self.error = f"Cannot read {vpath}"
@@ -620,6 +627,16 @@ impl Pp:
             self.run_tokens(toks)
             last = toks[toks.len() - 1].line
         self.out.push(tk::Token(kind = tk::Tk::Eof, line = last, file = fid))
+
+    # Preprocess source text as if it were the file `vpath` (the
+    # reference's preprocess_string(), which its runtime tests use to
+    # compile snippets that exist only in memory).
+    fn preprocess_string(mut self, vpath: str, src: str):
+        self.use_source = true
+        self.source = bytes_from_str(src)
+        self.preprocess(vpath)
+        self.use_source = false
+        self.source = Bytes()
 
 # `#if` expression evaluator over already-expanded tokens; any identifier
 # still standing is 0, as in C.

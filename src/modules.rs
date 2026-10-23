@@ -367,6 +367,23 @@ fn resolve_inner(
                         );
                         Some((path.to_path_buf(), synthetic, this_call_id))
                     }
+                    // An `extern "C" fn` declares no mangled top-level name
+                    // either (`collect_names` deliberately leaves the real C
+                    // symbol alone), so without an identity of its own a
+                    // file reached through two import edges contributed its
+                    // `extern` declarations twice and the checker rejected
+                    // the second copy as "declared more than once" -- e.g.
+                    // `main` importing both `vm.star` and `efuns.star`, where
+                    // `efuns.star` itself imports `vm.star` (found by the
+                    // HavokOS port, todo.md HavokOS M3). Same span-keyed
+                    // synthetic identity as an impl block, for the same
+                    // reason: a diamond re-visit re-parses the same text, so
+                    // the span matches, while two genuinely separate
+                    // declarations of one symbol (still an error) don't.
+                    (Item::ExternFn(e), Some(path)) => {
+                        let synthetic = format!("extern#{}#{}..{}", e.sig.name, e.span.start, e.span.end);
+                        Some((path.to_path_buf(), synthetic, this_call_id))
+                    }
                     _ => match (item_top_level_name(&other), own_path) {
                         (Some(name), Some(path)) => Some((path.to_path_buf(), name.to_string(), this_call_id)),
                         _ => None,

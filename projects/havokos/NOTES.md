@@ -35,10 +35,10 @@ virtual machine**:
 | Pike `cpp()` + `lpc/preprocess.pike` workarounds | `preprocess.star`: a from-scratch token-level C preprocessor with the LPC extensions (`@MARK` text blocks, raw newlines in strings, `efun_defined()`) built in |
 | `lpc/lexer.pike` | `lexer.star` (works on `Bytes`, see below) |
 | `lpc/parser.pike` | `parser.star` → AST |
-| `lpc/emitter.pike` → Pike source → Pike compiler | `compiler.star`: AST → bytecode |
+| `lpc/emitter.pike` → Pike source → Pike compiler | `compiler.star`: AST → bytecode (`program.star` format) |
 | Pike runtime executing the generated program | `vm.star`: bytecode interpreter |
-| `havok/driver.pike` object table, call stack, call_outs, heart beats | `driver.star` + VM state |
-| `havok/efuns.pike` | `efuns_*.star`, split by area |
+| `havok/driver.pike` object table, call stack, call_outs, heart beats | `vm.star` for now: programs, objects, loading, call_other and the object stack (M3). Call_outs and heart beats join it in M5 |
+| `havok/efuns.pike` | `efuns.star` (the M3 subset); M4 adds more files, split by area |
 | `havok/net.pike` (telnet), `sockets.pike`, `http.pike`, `tls.pike` | later phases (see roadmap) |
 
 Up to and including the parser, the port can follow the Pike code closely.
@@ -94,27 +94,37 @@ assumed:
    `src/codegen/net.rs`, following that file's existing Winsock/POSIX
    seam pattern.
 
-## Value representation (planned for the VM phase)
+## Value representation (M3, `value.star`)
 
 ```
 enum Value:
-    Undef            # FluffOS-style "undefined" zero (undefinedp() is true; behaves as int 0)
+    Undef            # FluffOS "undefined" zero: undefinedp() true, otherwise int 0
     Int(v: i64)
     Real(v: f64)
     Str(s: str)
-    Arr(h: i32)      # handle into Vm.arrays
-    Map(h: i32)      # handle into Vm.mappings
-    Obj(h: i32, gen: i32)   # object slot + generation, so a destructed object reads as 0
-    Fn(h: i32)       # function pointer / closure table
-    Buf(h: i32)      # buffer
-    Cls(h: i32)      # class instance
+    Arr(h: i32)      # handle into Vm.arrs
+    Map(h: i32)      # handle into Vm.maps
+    Obj(h: i32, gen: i32)   # object slot + generation (slot reuse after destruct, M5)
+    Fn(h: i32)       # Vm.fns: efun/simul_efun/prototype pointers, local function refs, closures
+    Cls(h: i32)      # Vm.clss: positional class instance
 ```
 
-Garbage: arrays, mappings, closures, buffers and class instances are
-reclaimed by a mark-and-sweep pass that runs only *between* top-level
-evaluations, when the VM stack is empty. At that point the roots are
-object variables, pending call_outs and a few driver-held values, so no
-stack maps are needed.
+- A mapping is insertion-ordered key/value columns plus a `Map<MKey, i32>`
+  index, `MKey` being a hashable flattening of the key `Value`.
+- Every empty array is one shared object (handle 0), because it is in
+  Pike: `({}) == ({})` and `({}) == allocate(0)` are true in the reference,
+  but two non-empty arrays never compare equal. Nothing may grow handle 0
+  in place.
+- A local captured by a closure is "boxed" into a cell (`Vm.cells`), and
+  both the function and its closures go through the cell, since Pike
+  lambdas capture by reference. `$(expr)` values become cells too.
+- No buffers yet. DS3.9 doesn't need them for the MVP.
+
+Garbage: the heap tables only grow in M3. The plan stands: a mark-and-sweep
+that runs only *between* top-level evaluations, when the VM stack is empty.
+The roots are then object variables, pending call_outs and a few
+driver-held values, so no stack maps are needed. It arrives with the
+object model (M5), which is when long-running evaluation starts.
 
 ## Roadmap
 
@@ -136,7 +146,8 @@ Pike driver before it's marked done.
   functions, inherits, `::` calls, closures/function pointers,
   `catch`/`throw`, and the call_other dispatch. Exit criterion: the
   language-semantics part of `pike/tests/run_tests.pike`'s case table
-  (114+ `({ name, body, expected })` cases) runs under the Star VM.
+  (114+ `({ name, body, expected })` cases) runs under the Star VM. Done
+  2026-10-23, see the log.
 - **M4: efuns.** Strings (`sprintf`/`sscanf`/`explode`/`implode`/...),
   arrays, mappings, math, files, time, save/restore format.
 - **M5: object model.** Master and simul_efun loading, load/clone/
@@ -165,6 +176,19 @@ Pike driver before it's marked done.
 | `tools/ref_astdump.pike` | reference side: `preprocess.pike` → `lexer.pike` → `parser.pike`, every mapping printed with sorted keys |
 | `tests/run_astdump_test.ps1` | M2 regression: all 2378 DS3.9 files' ASTs against a frozen reference fixture |
 | `tests/run_ast_cases_test.ps1` | grammar DS3.9 never uses (`tests/fixtures/astlib/ast_cases.c`) plus 12 one-mistake files, against frozen reference output |
+| `value.star` | `Value` and the heap slot types (arrays, mappings, function pointers, classes) |
+| `program.star` | bytecode opcodes, `Program`/`FnDef`/`DispEntry` |
+| `compiler.star` | `Compiler`: one program's AST → `Program`, using the emitter's resolution rules |
+| `vm.star` | `Vm`: heap, operators, interpreter loop, calls, call_other, loading/cloning, the object stack |
+| `efuns.star` | the M3 efun subset |
+| `efun_table.star` | the efun dispatch codes the VM implements |
+| `efun_names.star` | generated: the reference's implemented efuns and every FluffOS efun name |
+| `tools/ref_efun_names.pike` | generates `efun_names.star` from the live reference |
+| `tools/run_cases.star` | Star side of the M3 case comparison |
+| `tools/ref_cases.pike` | reference side: runs run_tests.pike cases (and `-extra` edge cases) through the live driver |
+| `tests/run_cases_test.ps1` | M3 regression: `fixtures/cases/m3.expected.txt` (76 table cases) and `m3_extra.expected.txt` (92 edge cases) |
+| `tools/compile_sweep.star`, `tools/ref_compile_sweep.pike` | M3 compile sweep over DS3.9, both sides: which files compile, and their inheritance tables |
+| `tests/run_compile_sweep_test.ps1` | M3 regression: all 2378 DS3.9 files' compile results and table hashes against `fixtures/ds39_compile.expected.txt` (frozen reference output), about 21 s |
 
 Build the tools with the **release** compiler (`target/release/star.exe
 build ...`). The `star` on `PATH` on this machine was a stale Sep 8
@@ -186,6 +210,27 @@ Each is also documented at the point in the code where it happens.
    reports a `Bad` token, and the preprocessor only treats it as an error
    if it survives into live output. No DS3.9 file depends on this either
    way.
+
+3. **Floats are doubles** (`value.star`). The reference's Pike on this
+   machine is a 32-bit-float build (`float_size` 32). That's an accident of
+   the build rather than LPC semantics: FluffOS uses doubles. Both print 6
+   significant digits (`%g`), so results only differ past the 7th digit.
+   Float *printing* does match the reference, MSVC's 3-digit exponents
+   included (`1e+010`).
+4. **A `switch` on a negative constant compiles** (`switch (-2) { case -2:
+   ... }`). The reference rejects it: Pike narrows the type of a constant
+   switch value, and the emitter's `__D->sw()` workaround for that only
+   covers a bare or parenthesised literal, not `-2`. That's a transpile
+   artifact, so the edge-case fixture tests negative labels through a
+   variable.
+5. **Closure variables are made per declaration** (`compiler.star`). A
+   fresh cell is made each time a captured local's declaration runs, so
+   closures made in different iterations of a loop see different copies of
+   a variable declared inside the loop body. Pike shares one variable
+   between every closure made in the same call. No DS3.9 code is known to
+   depend on either behavior.
+6. **Integer overflow wraps** at 64 bits, as in FluffOS. Pike promotes to
+   bignums.
 
 ## Star compiler bugs found
 
@@ -214,6 +259,24 @@ Each is also documented at the point in the code where it happens.
    that skips the spill can't re-release the previous one's value).
    Regression test `tests/frontend_spill_slot_conditional_release.rs`;
    each half of the fix has a test that fails without it.
+5. **`extern "C"` declarations duplicated by a diamond import** (fixed,
+   M3). `crate::modules::dedupe_by_origin` collapses items a diamond import
+   resolves twice (a file reached through two import edges), keyed on the
+   item's name. An `extern "C" fn` has no mangled name, so it got no
+   identity, both copies survived, and the checker rejected the second as
+   "declared more than once". It surfaced as soon as `tools/run_cases.star`
+   imported both `vm.star` and `efuns.star`: `efuns.star` imports
+   `vm.star`, whose own imports declare `atof` and `clock`. Fixed in
+   `src/modules.rs` by giving an extern the same span-keyed synthetic
+   identity an `impl` block gets. Regression test
+   `tests/frontend_extern_diamond_import.rs`: its two positive tests fail
+   without the fix, and two more check that a real duplicate is still
+   reported.
+
+Not a bug, but visible: building the VM prints "internal compiler notice:
+suspicious LLVM IR ... block `match_end_N` ... is unreachable" for a few
+functions whose every `match` arm returns. It's the compiler's own IR
+self-check noticing a dead join block, and the generated code is correct.
 
 ## Log
 
@@ -286,3 +349,77 @@ it was, the parser segfaulted on the very first file, a one-line
 `int x;`.
 
 **Next: M3, bytecode compiler + VM core.**
+
+### 2026-10-23: M3 compiler + VM core
+
+**M3 done.** `compiler.star` compiles each program's AST to stack-machine
+bytecode (`program.star`), and `vm.star` runs it. It's checked three ways,
+all against the live Pike driver:
+- **The reference's own case table.** The 76 language-semantics cases of
+  `pike/tests/run_tests.pike` all give the reference's results
+  (`tests/run_cases_test.ps1`). The selection is
+  `tests/fixtures/cases/m3_selection.txt`: syntax quirks, values, the
+  int/float assignment rules, classes, function pointers, catch/throw,
+  foreach, simul_efuns, inherits, `::`, call_other, plus the table's two
+  check_error cases. The fixture records what the live driver actually
+  returned, not the table's expected column, and `tools/ref_cases.pike`
+  reports any case where the two disagree. None do. The efun-library cases
+  (sscanf, explode/implode edge cases, save/restore, ...) belong to M4, and
+  the object-model ones (destruct, environments, call_outs, ...) to M5.
+- **92 edge cases of this port's own** (`m3_extra_cases.txt`), whose
+  expected values are whatever the reference returns. They cover closures
+  sharing locals by reference, nested lvalue chains, string index
+  assignment through an array, varargs and spreads, switch fallthrough and
+  ranges, catch inside loops, Pike's operator semantics, private/static
+  dispatch, prototypes and float printing. Writing them turned up two
+  semantics the table never shows: in Pike `3 == 3.0` is false, and the
+  empty array is a single shared object (`({}) == ({})` is true).
+- **A compile sweep of all 2378 DS3.9 files** (`tools/compile_sweep.star`
+  against `tools/ref_compile_sweep.pike`, which drives the reference's own
+  `transpile()`). All 2378 lines match: the same 2373 files compile, with
+  identical inheritance tables (hashes of the `all_funcs` and `all_vars`
+  meta), and the same 5 fail on files missing from the mudlib
+  (`tests/run_compile_sweep_test.ps1`, about 21 s; the reference takes
+  about 6 min). Both sides compile the simul_efun program first and
+  resolve against its names, as a boot would. Without that, the
+  reference's own Pike compile rejects 3 player files (a DS simul_efun
+  shadows the `query_charmode` efun, whose arity Pike checks). The sweep also showed that the reference driver adds
+  config-derived predefined macros (`MUD_NAME`, `__HAVOKOS__`, ...) that
+  M1's front-end comparison never saw, because that comparison drove
+  `preprocess.pike` directly. `Vm.configure()` adds them now.
+
+The design decisions, each explained at its point in the code:
+- **Frames on one loop.** LPC-to-LPC calls (local, virtual, `::`,
+  call_other, simul_efun, function pointers) push a frame on the
+  interpreter loop rather than recursing in Star. Only an efun calling back
+  into LPC runs a nested loop, so LPC recursion depth isn't bounded by the
+  native stack.
+- **Errors without exceptions.** An error sets a flag and unwinds to the
+  innermost `catch` handler of the current loop. Failing that, it unwinds
+  out of the loop, so the efun that started a nested loop sees the flag
+  and returns.
+- **Dispatch tables per program.** `vt` (call_other and virtual calls) and
+  `anyt` (the reference's `__lpc_fn`, for prototype calls and self
+  call_other) are built at compile time from the inherits' tables.
+  Inherited code addresses variables relative to its own block, so it runs
+  unchanged in any inheriting object.
+- **Lvalue chains.** `a[i][j] op= v` evaluates each container and key
+  once. The innermost store is done in place, and only a changed string is
+  written back outwards.
+- **Functions with captures compile twice.** The first pass finds the
+  captured declarations, and the second boxes them.
+
+Speed is already comparable with the reference's compiled Pike: `fib(25)`
+plus a million-iteration loop take 0.48 s including boot, against the
+reference's 1.28 s (about 1 s of which is its boot).
+
+Not in M3, by plan: line numbers in runtime error messages, the
+evaluation cost limit, garbage collection, destruct and the rest of the
+object model (M5), and the efun library beyond `efuns.star`'s subset (M4).
+`sscanf`/`parse_command` compile today as plain efun calls with rvalue
+arguments, which raise the reference's "not implemented" error. M4
+compiles their lvalue arguments properly.
+
+Getting there found one Star compiler bug, now fixed (#5 above).
+
+**Next: M4, efuns.**
