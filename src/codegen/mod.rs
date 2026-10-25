@@ -16,6 +16,7 @@ mod array;
 mod audio;
 mod bitfield;
 mod builtins;
+mod clock;
 mod closure;
 mod dialog;
 mod eq;
@@ -627,6 +628,8 @@ impl Codegen {
         // Filesystem/calendar builtins (`dir_list`, `path_kind`, `local_time`,
         // ...) -- see `crate::codegen::fs::declare_fs_externs`.
         self.declare_fs_externs();
+        // `clock_ms` builtin -- see `crate::codegen::clock`.
+        self.declare_clock_externs();
         // `tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close`/
         // `tcp_set_nonblocking` builtins -- see
         // `crate::codegen::net`, declared for whichever `Target` this
@@ -2057,6 +2060,19 @@ impl Codegen {
     /// as `i1 %r` or `i32 %r`, discarding the leading type tag.
     fn reg_of(&self, s: &str) -> String {
         s.split_whitespace().next_back().unwrap_or(s).to_string()
+    }
+
+    /// A `match` arm's trailing value when the match itself produces none
+    /// (its arms' types can't share a `phi` -- see `Checker::infer_expr`'s
+    /// `Expr::Match` arm): released like a bare statement expression's
+    /// result, since nothing else will ever hold that reference.
+    fn discard_arm_value(&mut self, val: Option<String>, ty: &Ty) {
+        if let Some(v) = val {
+            if v != "%undef" && self.contains_rc(ty) {
+                let clean = self.untag(&v, ty);
+                self.emit_release_bare(&clean, ty);
+            }
+        }
     }
 
     /// Turn a match arm's `emit_stmts_value` result into the operand a `phi`

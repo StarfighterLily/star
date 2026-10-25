@@ -89,6 +89,11 @@ struct FnSlot:
     # true for the reference's `LPCFn` (functionp() flags), false for a plain
     # Pike function (functionp() == 1)
     mut lpcfn: bool = false
+    # bind() of a local function or closure (M5): the owner the driver sees
+    # (call_out ownership, function_owner()), pushed as current object around
+    # each call; the code still runs in `owner`. -1 when not rebound.
+    mut bound_owner: i32 = -1
+    mut bound_gen: i32 = 0
 
 # An LPC class (struct) instance: positional, like FluffOS; member names
 # are resolved to positions at compile time.

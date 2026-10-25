@@ -147,9 +147,7 @@ impl vm::Vm:
                         pos += 2
                         if kind == 123:
                             return DV(v = self.new_arr(items), pos = pos)
-                        let h = self.clss.len()
-                        self.clss.push(val::ClsSlot(name = "", vals = items))
-                        return DV(v = val::Value::Cls(h), pos = pos)
+                        return DV(v = self.new_cls(val::ClsSlot(name = "", vals = items)), pos = pos)
                     let r = self.dec_value(s, pos)
                     if self.err:
                         return r

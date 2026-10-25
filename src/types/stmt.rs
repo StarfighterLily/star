@@ -203,7 +203,12 @@ impl Checker {
                 }
                 TypedStmt::Return { value: value_typed, span: *span }
             }
-            Stmt::Expr(expr) => TypedStmt::Expr(self.infer_expr(expr, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())))),
+            Stmt::Expr(expr) => {
+                self.match_is_stmt = matches!(expr, Expr::Match { .. });
+                let e = self.infer_expr(expr, vars);
+                self.match_is_stmt = false;
+                TypedStmt::Expr(e.unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into()))))
+            }
             Stmt::If { cond, then_block, else_block, span } => {
                 let cond_typed = self.infer_expr(cond, vars).unwrap_or_else(|_| TypedExpr::Error(Ty::Named("infer_error".into())));
                 if !matches!(cond_typed.clone().into_ty(), Ty::Bool) {

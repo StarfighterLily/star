@@ -209,6 +209,74 @@ fn mutually_recursive_functions_do_not_hang() {
     assert!(start.elapsed().as_secs() < 5, "mutual-recursion call-graph traversal should terminate promptly, took {:?}", start.elapsed());
 }
 
+/// A layered call graph of diamonds (every function calls both functions of
+/// the next layer) has 2^30 distinct call paths: the old path-tracking DFS
+/// walked each one and never finished. It must check promptly, and still
+/// find the heaviest chain exactly: one 40,000-byte function per layer over
+/// 30 layers on top of `main`'s own 100,000 bytes.
+#[test]
+fn many_call_paths_check_promptly_with_the_exact_heaviest_chain() {
+    let layers = 30;
+    let mut src = String::new();
+    for l in 0..layers {
+        for side in ["a", "b"] {
+            src.push_str(&format!("fn f{l}{side}():\n    let x: [u8; 40000] = [0 as u8; 40000]\n    println(f\"{{x[0]}}\")\n"));
+            if l + 1 < layers {
+                src.push_str(&format!("    f{n}a()\n    f{n}b()\n", n = l + 1));
+            }
+            src.push('\n');
+        }
+    }
+    src.push_str("fn main():\n    let m: [u8; 100000] = [0 as u8; 100000]\n    f0a()\n    f0b()\n    println(f\"{m[0]}\")\n");
+    let start = std::time::Instant::now();
+    let (_typed, warnings) = typecheck_with_warnings(&src);
+    assert!(start.elapsed().as_secs() < 5, "a call graph with many paths should check promptly, took {:?}", start.elapsed());
+    let total = 100_000 + 40_000 * layers;
+    let at_main: Vec<_> = warnings.iter().filter(|w| w.message.starts_with("`main`")).collect();
+    assert_eq!(at_main.len(), 1, "{:?}", warnings.iter().map(|w| &w.message).collect::<Vec<_>>());
+    assert!(at_main[0].message.contains(&total.to_string()), "the heaviest chain is main + one function per layer = {}: {}", total, at_main[0].message);
+}
+
+/// Twenty functions that all call one another form one recursive group
+/// with astronomically many simple paths; checking must still be prompt.
+#[test]
+fn densely_mutually_recursive_functions_check_promptly() {
+    let n = 20;
+    let mut src = String::new();
+    for i in 0..n {
+        src.push_str(&format!("fn g{i}(k: i32):\n    let x: [u8; 1000] = [0 as u8; 1000]\n    println(f\"{{x[0]}}\")\n    if k > 0:\n"));
+        for j in 0..n {
+            if j != i {
+                src.push_str(&format!("        g{j}(k - 1)\n"));
+            }
+        }
+        src.push('\n');
+    }
+    src.push_str("fn main():\n    g0(3)\n");
+    let start = std::time::Instant::now();
+    let (_typed, _warnings) = typecheck_with_warnings(&src);
+    assert!(start.elapsed().as_secs() < 5, "a densely recursive call graph should check promptly, took {:?}", start.elapsed());
+}
+
+/// Two mutually recursive functions can both be on the stack at once, so a
+/// pair whose locals only cross the budget together is warned about at each.
+#[test]
+fn mutually_recursive_pair_counts_both_members_locals() {
+    let n = 600_000;
+    assert!(2 * n >= ONE_MIB && n < ONE_MIB);
+    let src = format!(
+        "fn a(k: i32):\n    let x: [u8; {n}] = [0 as u8; {n}]\n    println(f\"{{x[0]}}\")\n    if k > 0:\n        b(k - 1)\n\n\
+         fn b(k: i32):\n    let y: [u8; {n}] = [0 as u8; {n}]\n    println(f\"{{y[0]}}\")\n    if k > 0:\n        a(k - 1)\n\n\
+         fn main():\n    a(3)\n",
+        n = n
+    );
+    let (_typed, warnings) = typecheck_with_warnings(&src);
+    let msgs: Vec<_> = warnings.iter().map(|w| w.message.clone()).collect();
+    assert_eq!(warnings.len(), 2, "expected one warning at each of `a` and `b`: {:?}", msgs);
+    assert!(msgs.iter().any(|m| m.starts_with("`a`")) && msgs.iter().any(|m| m.starts_with("`b`")), "{:?}", msgs);
+    assert!(msgs.iter().all(|m| m.contains(&(2 * n).to_string())), "{:?}", msgs);
+}
+
 /// A warning is a `Diagnostic::warning` (not `error`) severity, and must
 /// never turn a clean module into a failing check -- `typecheck_with_warnings`
 /// itself already `.expect()`s a successful `Checker::check`, but this test

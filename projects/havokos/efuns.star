@@ -3,8 +3,9 @@
 # function-pointer efuns, error/throw, the object-loading core of
 # call_other); todo.md HavokOS M4 added the rest of the library in one file
 # per area (`efuns_str.star`, `efuns_arr.star`, `efuns_file.star`, ...),
-# reached by efun_table.star's code ranges. Efuns of later milestones (the
-# object model, M5; networking, M6) still raise the reference's own "not
+# reached by efun_table.star's code ranges, and M5 the object model's
+# (`efuns_obj.star`). Efuns of later milestones (networking, M6; the verb
+# parser, ed and sockets, M7) still raise the reference's own "not
 # implemented" error: the compiler already resolves their names as efuns.
 #
 # Every efun gets the calling object (`self_ob`, the reference's `self`) --
@@ -18,6 +19,7 @@ import "efuns_arr.star" as earr
 import "saveformat.star" as sav
 import "efuns_file.star" as efile
 import "tcolour.star" as tcol
+import "efuns_obj.star" as eobj
 
 impl vm::Vm:
     fn arg(self, args: List<val::Value>, i: i32) -> val::Value:
@@ -35,6 +37,8 @@ impl vm::Vm:
             return self.efun_arr(code, name, args, self_ob)
         if code >= 110 and code < 142:
             return self.efun_file(code, name, args, self_ob)
+        if code >= 200:
+            return self.efun_obj(code, name, args, self_ob)
         if code == et::E_MASTER:
             return self.obj_value(self.master_ob)
         if code == et::E_GET_CONFIG:
@@ -97,7 +101,8 @@ impl vm::Vm:
                 val::Value::Fn(h) ->
                     let s = self.fns[h]
                     if !s.lpcfn:
-                        return val::Value::Int(1 as i64)
+                        # a function of a destructed object reads as 0 (Pike)
+                        return val::Value::Int(if self.fn_dead(h): 0 as i64 else: 1 as i64)
                     let mut f = 5
                     if s.kind == val::FK_EFUN:
                         f = 3
@@ -107,6 +112,10 @@ impl vm::Vm:
                         f = 2
                     if s.bound.len() > 0:
                         f = f | 16
+                    # FP_OWNER_DESTED: the owner was destructed
+                    let ow = if s.bound_owner >= 0: s.bound_owner else: s.owner
+                    if ow > 0 and self.fn_owner(self.arg(args, 0)) < 0:
+                        f = f | 32
                     return val::Value::Int(f as i64)
                 _ ->
                     return val::Value::Int(0 as i64)
@@ -203,7 +212,7 @@ impl vm::Vm:
         if code == et::E_TYPEOF:
             return val::Value::Str(self.type_name(self.arg(args, 0)))
         if code == et::E_WRITE:
-            print(self.to_str(self.arg(args, 0)))
+            self.do_write(self.arg(args, 0))
             return val::Value::Int(0 as i64)
         if code == et::E_ALLOCATE:
             let n = val::int_of(self.arg(args, 0))

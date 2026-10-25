@@ -125,6 +125,49 @@ int main(int argc, array(string) argv) {
     ]);
     object drv = compile_file(combine_path(pike_dir, "havok/driver.pike"))(root, cfg);
     drv->debug_level = 0;
+    // The driver hooks the Star side has as efuns (efun_table.star
+    // test_efun_codes(), todo.md HavokOS M5): a subclass of the reference's
+    // own efun table adding them, installed before anything compiles, since
+    // transpiled code binds __E at compile time. Each drives the driver the
+    // way run_tests.pike's own Pike-level tests do.
+    add_constant("__HavokEfunsBase", compile_file(combine_path(pike_dir, "havok/efuns.pike")));
+    program test_efuns = compile_string(#"
+        inherit __HavokEfunsBase;
+        int test_hb(object self, int n) { for (int k = 0; k < n; k++) drv->heart_beat_tick(); return 0; }
+        array test_hb_round(object self) {
+            for (int k = 0; k < predef::sizeof(drv->hb_slots); k++) drv->heart_beat_slot_tick();
+            predef::remove_call_out(drv->heart_beat_slot_tick);
+            return predef::map(drv->hb_slots, predef::sizeof);
+        }
+        int test_callouts(object self) {
+            int n;
+            foreach (drv->pending_call_outs(), object c) if (drv->callouts[c->handle]) { drv->run_call_out(c->handle); n++; }
+            return n;
+        }
+        int test_reset_cfg(object self, int r, int c, int lazy) {
+            drv->reset_interval = r; drv->cleanup_interval = c; drv->lazy_resets = lazy; drv->now_sec = predef::time();
+            return 0;
+        }
+        int test_set_reset_time(object self, object ob, int t) { if (drv->info[ob]) drv->info[ob]->reset_time = t; return 0; }
+        int test_set_last_used(object self, object ob, int t) { if (drv->info[ob]) drv->info[ob]->last_used = t; return 0; }
+        int test_reset_time(object self, object ob) { return drv->info[ob] ? drv->info[ob]->reset_time : 0; }
+        int test_no_clean_up(object self, object ob) { return drv->info[ob] ? drv->info[ob]->no_clean_up : 0; }
+        int test_sweep(object self) { drv->reset_sweep_once(); return 0; }
+        mixed test_limited(object self, string fn, int usec) {
+            drv->max_cost = usec;
+            drv->begin_eval();
+            mixed r;
+            mixed err = catch { r = drv->call_other(self, self, fn, ({})); };
+            drv->end_eval();
+            drv->max_cost = 0;
+            if (err) predef::throw(err);
+            return r;
+        }
+        array test_eval_state(object self) { return ({ drv->eval_nest, drv->outoftime, !!drv->eval_deadline }); }
+    ");
+    drv->efuns = test_efuns(drv);
+    add_constant("__E", drv->efuns);
+    drv->compiler->set_efuns(drv->efuns->implemented());
     drv->compiler->cache_dir = combine_path(pike_dir, "runtime/test_cache");
     if (ds) {
         // boot()'s first step only (driver.pike boot_steps())

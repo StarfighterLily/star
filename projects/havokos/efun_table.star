@@ -14,6 +14,8 @@
 # is how `efuns.star` dispatches: 40-69 strings (`efuns_str.star`), 70-109
 # arrays/mappings/math (`efuns_arr.star`), 110-141 time/files/save_object
 # (`efuns_file.star`), 142-143 save_variable/restore_variable, 160+ misc.
+# M5 added 200-299, the object model (`efuns_obj.star`), and 900-999, the
+# test hooks (`test_efun_codes()`, below).
 
 const E_UNDEFINEDP: i32 = 1
 const E_SIZEOF: i32 = 2
@@ -132,6 +134,109 @@ const E_RESTORE_VARIABLE: i32 = 143
 # --- M4: misc (160..)
 const E_MASTER: i32 = 160
 const E_GET_CONFIG: i32 = 161
+# --- M5: the object model (200..)
+const E_DESTRUCT: i32 = 200
+const E_ENVIRONMENT: i32 = 201
+const E_ALL_INVENTORY: i32 = 202
+const E_DEEP_INVENTORY: i32 = 203
+const E_FIRST_INVENTORY: i32 = 204
+const E_NEXT_INVENTORY: i32 = 205
+const E_PRESENT: i32 = 206
+const E_MOVE_OBJECT: i32 = 207
+const E_BASE_NAME: i32 = 208
+const E_CLONEP: i32 = 209
+const E_VIRTUALP: i32 = 210
+const E_CHILDREN: i32 = 211
+const E_INHERITORS: i32 = 212
+const E_OBJECTS: i32 = 213
+const E_INHERITS: i32 = 214
+const E_INHERIT_LIST: i32 = 215
+const E_DEEP_INHERIT_LIST: i32 = 216
+const E_FUNCTION_EXISTS: i32 = 217
+const E_FUNCTIONS: i32 = 218
+const E_VARIABLES: i32 = 219
+const E_FETCH_VARIABLE: i32 = 220
+const E_STORE_VARIABLE: i32 = 221
+const E_QUERY_PRIVS: i32 = 222
+const E_SET_PRIVS: i32 = 223
+const E_SHADOW: i32 = 224
+const E_QUERY_SHADOWING: i32 = 225
+const E_REMOVE_SHADOW: i32 = 226
+const E_ORIGIN: i32 = 227
+const E_CALL_STACK: i32 = 228
+const E_ALL_PREVIOUS_OBJECTS: i32 = 229
+const E_THIS_PLAYER: i32 = 230
+const E_THIS_INTERACTIVE: i32 = 231
+const E_BIND: i32 = 232
+const E_FUNCTION_OWNER: i32 = 233
+const E_REPLACE_PROGRAM: i32 = 234
+const E_QUERY_REPLACED_PROGRAM: i32 = 235
+const E_REPLACEABLE: i32 = 236
+const E_RELOAD_OBJECT: i32 = 237
+const E_REFS: i32 = 238
+const E_SET_AUTHOR: i32 = 239
+const E_AUTHOR_STATS: i32 = 240
+const E_GET_GARBAGE: i32 = 241
+const E_RECLAIM_OBJECTS: i32 = 242
+const E_ENABLE_COMMANDS: i32 = 243
+const E_DISABLE_COMMANDS: i32 = 244
+const E_LIVING: i32 = 245
+const E_LIVINGS: i32 = 246
+const E_NAMED_LIVINGS: i32 = 247
+const E_SET_LIVING_NAME: i32 = 248
+const E_FIND_LIVING: i32 = 249
+const E_FIND_PLAYER: i32 = 250
+const E_ADD_ACTION: i32 = 251
+const E_REMOVE_ACTION: i32 = 252
+const E_COMMANDS: i32 = 253
+const E_QUERY_VERB: i32 = 254
+const E_NOTIFY_FAIL: i32 = 255
+const E_QUERY_NOTIFY_FAIL: i32 = 256
+const E_COMMAND: i32 = 257
+const E_SET_HIDE: i32 = 258
+const E_TELL_OBJECT: i32 = 259
+const E_RECEIVE: i32 = 260
+const E_SAY: i32 = 261
+const E_TELL_ROOM: i32 = 262
+const E_SHOUT: i32 = 263
+const E_MESSAGE: i32 = 264
+const E_FLUSH_MESSAGES: i32 = 265
+const E_CALL_OUT: i32 = 266
+const E_REMOVE_CALL_OUT: i32 = 267
+const E_FIND_CALL_OUT: i32 = 268
+const E_CALL_OUT_INFO: i32 = 269
+const E_SET_HEART_BEAT: i32 = 270
+const E_QUERY_HEART_BEAT: i32 = 271
+const E_HEART_BEATS: i32 = 272
+const E_SET_RESET: i32 = 273
+const E_EVAL_COST: i32 = 274
+const E_MAX_EVAL_COST: i32 = 275
+const E_RESET_EVAL_COST: i32 = 276
+const E_SET_EVAL_LIMIT: i32 = 277
+const E_SHUTDOWN: i32 = 278
+const E_MUD_STATUS: i32 = 279
+const E_MEMORY_INFO: i32 = 280
+const E_DEBUG_INFO: i32 = 281
+const E_DEBUG_MESSAGE: i32 = 282
+const E_QUERY_LOAD_AVERAGE: i32 = 283
+const E_USERS: i32 = 284
+const E_INTERACTIVE: i32 = 285
+const E_USERP: i32 = 286
+const E_RUSAGE: i32 = 287
+const E_OPCPROF: i32 = 288
+const E_DUMPALLOBJ: i32 = 289
+# --- M5: test hooks (900..), see test_efun_codes()
+const E_TEST_HB: i32 = 900
+const E_TEST_HB_ROUND: i32 = 901
+const E_TEST_CALLOUTS: i32 = 902
+const E_TEST_RESET_CFG: i32 = 903
+const E_TEST_SET_RESET_TIME: i32 = 904
+const E_TEST_SET_LAST_USED: i32 = 905
+const E_TEST_RESET_TIME: i32 = 906
+const E_TEST_NO_CLEAN_UP: i32 = 907
+const E_TEST_SWEEP: i32 = 908
+const E_TEST_LIMITED: i32 = 909
+const E_TEST_EVAL_STATE: i32 = 910
 
 fn efun_codes() -> Map<str, i32>:
     let mut m: Map<str, i32> = Map<str, i32>()
@@ -253,4 +358,118 @@ fn efun_codes() -> Map<str, i32>:
     m.insert("restore_object", E_RESTORE_OBJECT)
     m.insert("save_variable", E_SAVE_VARIABLE)
     m.insert("restore_variable", E_RESTORE_VARIABLE)
+    m.insert("destruct", E_DESTRUCT)
+    m.insert("environment", E_ENVIRONMENT)
+    m.insert("all_inventory", E_ALL_INVENTORY)
+    m.insert("deep_inventory", E_DEEP_INVENTORY)
+    m.insert("first_inventory", E_FIRST_INVENTORY)
+    m.insert("next_inventory", E_NEXT_INVENTORY)
+    m.insert("present", E_PRESENT)
+    m.insert("move_object", E_MOVE_OBJECT)
+    m.insert("base_name", E_BASE_NAME)
+    m.insert("clonep", E_CLONEP)
+    m.insert("virtualp", E_VIRTUALP)
+    m.insert("children", E_CHILDREN)
+    m.insert("inheritors", E_INHERITORS)
+    m.insert("objects", E_OBJECTS)
+    m.insert("inherits", E_INHERITS)
+    m.insert("inherit_list", E_INHERIT_LIST)
+    m.insert("deep_inherit_list", E_DEEP_INHERIT_LIST)
+    m.insert("function_exists", E_FUNCTION_EXISTS)
+    m.insert("functions", E_FUNCTIONS)
+    m.insert("variables", E_VARIABLES)
+    m.insert("fetch_variable", E_FETCH_VARIABLE)
+    m.insert("store_variable", E_STORE_VARIABLE)
+    m.insert("query_privs", E_QUERY_PRIVS)
+    m.insert("set_privs", E_SET_PRIVS)
+    m.insert("shadow", E_SHADOW)
+    m.insert("query_shadowing", E_QUERY_SHADOWING)
+    m.insert("remove_shadow", E_REMOVE_SHADOW)
+    m.insert("origin", E_ORIGIN)
+    m.insert("call_stack", E_CALL_STACK)
+    m.insert("all_previous_objects", E_ALL_PREVIOUS_OBJECTS)
+    m.insert("this_player", E_THIS_PLAYER)
+    m.insert("this_interactive", E_THIS_INTERACTIVE)
+    m.insert("bind", E_BIND)
+    m.insert("function_owner", E_FUNCTION_OWNER)
+    m.insert("replace_program", E_REPLACE_PROGRAM)
+    m.insert("query_replaced_program", E_QUERY_REPLACED_PROGRAM)
+    m.insert("replaceable", E_REPLACEABLE)
+    m.insert("reload_object", E_RELOAD_OBJECT)
+    m.insert("refs", E_REFS)
+    m.insert("set_author", E_SET_AUTHOR)
+    m.insert("author_stats", E_AUTHOR_STATS)
+    m.insert("get_garbage", E_GET_GARBAGE)
+    m.insert("reclaim_objects", E_RECLAIM_OBJECTS)
+    m.insert("enable_commands", E_ENABLE_COMMANDS)
+    m.insert("disable_commands", E_DISABLE_COMMANDS)
+    m.insert("living", E_LIVING)
+    m.insert("livings", E_LIVINGS)
+    m.insert("named_livings", E_NAMED_LIVINGS)
+    m.insert("set_living_name", E_SET_LIVING_NAME)
+    m.insert("find_living", E_FIND_LIVING)
+    m.insert("find_player", E_FIND_PLAYER)
+    m.insert("add_action", E_ADD_ACTION)
+    m.insert("remove_action", E_REMOVE_ACTION)
+    m.insert("commands", E_COMMANDS)
+    m.insert("query_verb", E_QUERY_VERB)
+    m.insert("notify_fail", E_NOTIFY_FAIL)
+    m.insert("query_notify_fail", E_QUERY_NOTIFY_FAIL)
+    m.insert("command", E_COMMAND)
+    m.insert("set_hide", E_SET_HIDE)
+    m.insert("tell_object", E_TELL_OBJECT)
+    m.insert("receive", E_RECEIVE)
+    m.insert("say", E_SAY)
+    m.insert("tell_room", E_TELL_ROOM)
+    m.insert("shout", E_SHOUT)
+    m.insert("message", E_MESSAGE)
+    m.insert("flush_messages", E_FLUSH_MESSAGES)
+    m.insert("call_out", E_CALL_OUT)
+    m.insert("remove_call_out", E_REMOVE_CALL_OUT)
+    m.insert("find_call_out", E_FIND_CALL_OUT)
+    m.insert("call_out_info", E_CALL_OUT_INFO)
+    m.insert("set_heart_beat", E_SET_HEART_BEAT)
+    m.insert("query_heart_beat", E_QUERY_HEART_BEAT)
+    m.insert("heart_beats", E_HEART_BEATS)
+    m.insert("set_reset", E_SET_RESET)
+    m.insert("eval_cost", E_EVAL_COST)
+    m.insert("max_eval_cost", E_MAX_EVAL_COST)
+    m.insert("reset_eval_cost", E_RESET_EVAL_COST)
+    m.insert("set_eval_limit", E_SET_EVAL_LIMIT)
+    m.insert("shutdown", E_SHUTDOWN)
+    m.insert("mud_status", E_MUD_STATUS)
+    m.insert("memory_info", E_MEMORY_INFO)
+    m.insert("debug_info", E_DEBUG_INFO)
+    m.insert("debug_message", E_DEBUG_MESSAGE)
+    m.insert("query_load_average", E_QUERY_LOAD_AVERAGE)
+    m.insert("users", E_USERS)
+    m.insert("interactive", E_INTERACTIVE)
+    m.insert("userp", E_USERP)
+    m.insert("rusage", E_RUSAGE)
+    m.insert("opcprof", E_OPCPROF)
+    m.insert("dumpallobj", E_DUMPALLOBJ)
+    m.insert("shallow_inherit_list", E_INHERIT_LIST)
+    m.insert("this_user", E_THIS_PLAYER)
+    m.insert("get_eval_cost", E_EVAL_COST)
+    m.insert("domain_stats", E_AUTHOR_STATS)
+    m
+
+# Driver hooks for the case runner (`tools/run_cases.star` with `-hooks`,
+# `tools/ref_cases.pike` gives the reference the same efuns): they drive
+# what a running driver does by itself -- heart beats, call_outs, the reset
+# sweep, an evaluation limit -- from inside an LPC case, so both drivers can
+# be stepped identically. Never registered by a real boot.
+fn test_efun_codes() -> Map<str, i32>:
+    let mut m: Map<str, i32> = Map<str, i32>()
+    m.insert("test_hb", E_TEST_HB)
+    m.insert("test_hb_round", E_TEST_HB_ROUND)
+    m.insert("test_callouts", E_TEST_CALLOUTS)
+    m.insert("test_reset_cfg", E_TEST_RESET_CFG)
+    m.insert("test_set_reset_time", E_TEST_SET_RESET_TIME)
+    m.insert("test_set_last_used", E_TEST_SET_LAST_USED)
+    m.insert("test_reset_time", E_TEST_RESET_TIME)
+    m.insert("test_no_clean_up", E_TEST_NO_CLEAN_UP)
+    m.insert("test_sweep", E_TEST_SWEEP)
+    m.insert("test_limited", E_TEST_LIMITED)
+    m.insert("test_eval_state", E_TEST_EVAL_STATE)
     m

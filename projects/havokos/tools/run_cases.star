@@ -6,18 +6,26 @@
 # instantiate it, call eval() with the object on the driver stack, and
 # compare the result in the canonical form both sides print.
 #
-# Usage: run_cases.exe <minilib_root> <fixture.txt> [-v] [-ds] [name filter]
+# Usage: run_cases.exe <minilib_root> <fixture.txt> [-v] [-ds] [-nogc] [name filter]
 #   -ds: the root is Dead Souls 3.9's mudlib, booted (as ref_cases.pike -ds
 #        does) only as far as its simul_efun object -- DS3.9's mudos.cfg
 #        names, no master
+#   -nogc: don't collect garbage between cases (M5). By default a
+#        collection runs after every case, so every fixture also checks
+#        that the collector frees nothing still in use.
 # Prints one FAIL line per mismatch (every case with -v) and a summary;
 # exits 0 when every case matched.
+#
+# The driver hooks (efun_table.star test_efun_codes(): test_hb(),
+# test_callouts(), ...) are always available to cases; ref_cases.pike gives
+# the reference the same ones.
 #
 # Build: star build projects/havokos/tools/run_cases.star -o projects/havokos/tools/run_cases.exe
 
 import "../vm.star" as vm
 import "../efuns.star" as ef
 import "../value.star" as val
+import "../gc.star" as gc
 
 fn unescape(s: str) -> str:
     let b = bytes_from_str(s)
@@ -65,21 +73,30 @@ impl vm::Vm:
         let pid = self.compile_source(path, src)
         if pid < 0:
             return concat("COMPILE ", self.compile_error)
+        # as run_tests.pike's run_lpc(): instantiate and register (no
+        # create()), call eval() with the object pushed, then destruct it
         let o = self.new_object(pid, path, false)
         let mut out = ""
         if o >= 0:
-            self.ostack.push(o)
+            self.opush(o, "")
             let e = self.any_fn(o, "eval")
             let r = self.call_direct(e.prog, e.fnidx, e.var_off, o, List<val::Value>())
             if !self.err:
                 out = self.render(r)
+            let failed = self.err
+            let msg = self.errmsg
+            self.clear_err()
             self.truncate_ostack(0)
-            self.objs[o].alive = false
-            self.obj_by_name.remove(path)
+            self.truncate_stack(0)
+            self.destruct_object(-1, o)
+            self.clear_err()
+            if failed:
+                out = concat("ERR ", vm::esc_quoted(msg))
         if self.err:
             out = concat("ERR ", vm::esc_quoted(self.errmsg))
             self.clear_err()
         self.truncate_stack(0)
+        self.truncate_ostack(0)
         out
 
 fn main() -> i32:
@@ -89,15 +106,19 @@ fn main() -> i32:
         return 2
     let mut verbose = false
     let mut ds = false
+    let mut use_gc = true
     let mut filter = ""
     for i in 3..cli.len():
         if cli[i] == "-v":
             verbose = true
         elif cli[i] == "-ds":
             ds = true
+        elif cli[i] == "-nogc":
+            use_gc = false
         else:
             filter = cli[i]
     let mut m = vm::new_vm(cli[1])
+    m.add_test_efuns()
     let mut booted = false
     if ds:
         m.pp.include_dirs = ["/secure/include", "/include"]
@@ -141,6 +162,8 @@ fn main() -> i32:
         if filter != "" and !str_contains(name, filter):
             continue
         let got = m.run_case(name, unescape(cols[1]))
+        if use_gc:
+            m.collect_garbage()
         let want = cols[2]
         if got == want:
             passed += 1

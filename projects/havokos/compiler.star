@@ -92,6 +92,8 @@ struct Ctx:
     mut upvals: List<Upval> = List<Upval>()
     mut loops: List<Loop> = List<Loop>()
     mut catch_depth: i32 = 0
+    # the line table being built (pg::FnDef.lines)
+    mut lines: List<i32> = List<i32>()
 
 struct CaseRec:
     node: i32
@@ -902,7 +904,7 @@ impl Compiler:
                 self.emit(pg::OP_RET)
                 let c = self.end_ctx()
                 let is_st = has_mod(mods, "static") or has_mod(mods, "protected")
-                pg::FnDef(name = name, typ = typ, nparams = params.len(), varargs = self.is_varargs(params), nlocals = c.nslots, code = c.code, cell_params = cells, is_static = is_st, is_private = has_mod(mods, "private"))
+                pg::FnDef(name = name, typ = typ, nparams = params.len(), varargs = self.is_varargs(params), nlocals = c.nslots, code = c.code, cell_params = cells, is_static = is_st, is_private = has_mod(mods, "private"), lines = c.lines)
             _ -> pg::FnDef(name = "?")
 
     fn compile_init(mut self, decls: List<i32>) -> pg::FnDef:
@@ -920,6 +922,7 @@ impl Compiler:
                 match self.nodes[decls[i]].kind:
                     ast::NodeKind::Decl(name, typ, init) ->
                         if init >= 0:
+                            self.mark_line(decls[i])
                             self.emit_assigned(init, typ)
                             if let Option::Some(g) = self.own_vars.get(name):
                                 self.emit2(pg::OP_STORE_GLOBAL, g)
@@ -927,13 +930,30 @@ impl Compiler:
             self.emit2(pg::OP_PUSH_INT, 0)
             self.emit(pg::OP_RET)
             let c = self.end_ctx()
-            d = pg::FnDef(name = "__INIT", nlocals = c.nslots, code = c.code)
+            d = pg::FnDef(name = "__INIT", nlocals = c.nslots, code = c.code, lines = c.lines)
             if !self.need_recompile:
                 break
             pass += 1
         d
 
     # --- statements -------------------------------------------------------------
+
+    # Note in the line table that code from here on comes from node n's line.
+    fn mark_line(mut self, n: i32):
+        let t = self.ctxs.len() - 1
+        let node = self.nodes[n]
+        let k = self.ctxs[t].lines.len()
+        if k >= 3 and self.ctxs[t].lines[k - 2] == node.line and self.ctxs[t].lines[k - 1] == node.file:
+            return
+        let p = self.ctxs[t].code.len()
+        if k >= 3 and self.ctxs[t].lines[k - 3] == p:
+            # nothing was emitted for the previous mark: replace it
+            self.ctxs[t].lines[k - 2] = node.line
+            self.ctxs[t].lines[k - 1] = node.file
+            return
+        self.ctxs[t].lines.push(p)
+        self.ctxs[t].lines.push(node.line)
+        self.ctxs[t].lines.push(node.file)
 
     fn block_body(mut self, b: i32):
         match self.nodes[b].kind:
@@ -981,6 +1001,7 @@ impl Compiler:
     fn stmt(mut self, s: i32):
         if self.had_error:
             return
+        self.mark_line(s)
         match self.nodes[s].kind:
             ast::NodeKind::Block(stmts) -> self.block_body(s)
             ast::NodeKind::Empty -> 0
@@ -1428,7 +1449,7 @@ impl Compiler:
                     self.emit2(pg::OP_PUSH_UPVAL_REF, u.src)
                 else:
                     self.emit2(pg::OP_LOAD_LOCAL, u.src)
-        self.fns[fi] = pg::FnDef(name = "(closure)", nparams = nparams, varargs = varargs, nlocals = c.nslots, code = c.code, cell_params = cells, upval_kinds = kinds)
+        self.fns[fi] = pg::FnDef(name = "(closure)", nparams = nparams, varargs = varargs, nlocals = c.nslots, code = c.code, cell_params = cells, upval_kinds = kinds, lines = c.lines)
         self.emit(pg::OP_MKCLOSURE)
         self.emit3(fi, ndv, nref)
 
@@ -1439,6 +1460,7 @@ impl Compiler:
         self.begin_ctx(true, true)
         for i in 0..maxd:
             self.new_slot()
+        self.mark_line(e)
         self.expr(e)
         self.emit(pg::OP_RET)
         let c = self.end_ctx()

@@ -97,9 +97,7 @@ impl vm::Vm:
                 let mut out: List<val::Value> = List<val::Value>()
                 for i in 0..vals.len():
                     out.push(self.deep_copy(vals[i]))
-                let c = self.clss.len()
-                self.clss.push(val::ClsSlot(name = self.clss[h].name, vals = out))
-                return val::Value::Cls(c)
+                return self.new_cls(val::ClsSlot(name = self.clss[h].name, vals = out))
             _ ->
                 return v
 

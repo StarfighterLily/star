@@ -787,6 +787,7 @@ impl Codegen {
                     Some("file_remove") => self.emit_fs_path_op(args, "file_remove"),
                     Some("file_rename") => self.emit_file_rename(args),
                     Some("local_time") => self.emit_local_time(args),
+                    Some("clock_ms") => self.emit_clock_ms(),
                     Some("open_file_dialog") => self.emit_open_file_dialog(args),
                     Some("args") => self.emit_args(),
                     Some("env_get") => self.emit_env_get(args),
@@ -963,7 +964,9 @@ impl Codegen {
                 // (every `Ty::Named` is rendered as `%name`, including this
                 // one, so comparing the rendered string against `"void"`
                 // would never match).
-                let produces_value = !matches!(ty, Ty::Named(n) if n == "unknown");
+                // `void` is a match whose arms' values can't share one join
+                // (`Checker::infer_expr`'s `Expr::Match` arm): no value either.
+                let produces_value = !matches!(ty, Ty::Named(n) if n == "unknown" || n == "void");
                 // One (value, predecessor-label) pair per arm that falls
                 // through to `end_label` (an arm that terminates on its own
                 // contributes no value, and control never reaches the join
@@ -1053,6 +1056,8 @@ impl Codegen {
                                 if produces_value {
                                     let reg = self.arm_phi_reg(val);
                                     arm_values.push((reg, self.current_label.clone()));
+                                } else {
+                                    self.discard_arm_value(val, &arm.ty);
                                 }
                                 self.line(&format!("  br label %{}", end_label));
                             }
@@ -1073,6 +1078,8 @@ impl Codegen {
                                 if produces_value {
                                     let reg = self.arm_phi_reg(val);
                                     arm_values.push((reg, self.current_label.clone()));
+                                } else {
+                                    self.discard_arm_value(val, &arm.ty);
                                 }
                                 self.line(&format!("  br label %{}", end_label));
                             }
@@ -1128,6 +1135,8 @@ impl Codegen {
                                     // comment; same fix as `TypedExpr::If`'s
                                     // phi merge just below).
                                     arm_values.push((reg, self.current_label.clone()));
+                                } else {
+                                    self.discard_arm_value(val, &arm.ty);
                                 }
                                 self.line(&format!("  br label %{}", end_label));
                             }
@@ -1183,6 +1192,8 @@ impl Codegen {
                                 if produces_value {
                                     let reg = self.arm_phi_reg(val);
                                     arm_values.push((reg, self.current_label.clone()));
+                                } else {
+                                    self.discard_arm_value(val, &arm.ty);
                                 }
                                 self.line(&format!("  br label %{}", end_label));
                             }
@@ -1227,6 +1238,8 @@ impl Codegen {
                                     // value (see `Codegen::current_label`'s
                                     // doc comment).
                                     arm_values.push((reg, self.current_label.clone()));
+                                } else {
+                                    self.discard_arm_value(val, &arm.ty);
                                 }
                                 self.line(&format!("  br label %{}", end_label));
                             }
@@ -1255,6 +1268,8 @@ impl Codegen {
                                 if produces_value {
                                     let reg = self.arm_phi_reg(val);
                                     arm_values.push((reg, self.current_label.clone()));
+                                } else {
+                                    self.discard_arm_value(val, &arm.ty);
                                 }
                                 self.line(&format!("  br label %{}", end_label));
                             }
@@ -1301,6 +1316,8 @@ impl Codegen {
                                 if produces_value {
                                     let reg = self.arm_phi_reg(val);
                                     arm_values.push((reg, self.current_label.clone()));
+                                } else {
+                                    self.discard_arm_value(val, &arm.ty);
                                 }
                                 self.line(&format!("  br label %{}", end_label));
                             }

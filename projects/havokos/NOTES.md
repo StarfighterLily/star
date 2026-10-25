@@ -37,8 +37,9 @@ virtual machine**:
 | `lpc/parser.pike` | `parser.star` → AST |
 | `lpc/emitter.pike` → Pike source → Pike compiler | `compiler.star`: AST → bytecode (`program.star` format) |
 | Pike runtime executing the generated program | `vm.star`: bytecode interpreter |
-| `havok/driver.pike` object table, call stack, call_outs, heart beats | `vm.star` for now: programs, objects, loading, call_other and the object stack (M3). Call_outs and heart beats join it in M5 |
-| `havok/efuns.pike` | `efuns.star` (dispatch + the M3 subset) and one file per area since M4: `efuns_str.star`, `efuns_arr.star`, `efuns_file.star`, `sprintf.star`, `sscanf.star`, `regex.star`, `md5.star`, `tcolour.star`, `numfmt.star` |
+| `havok/driver.pike` object table, call stack, call_outs, heart beats | `vm.star` (programs, objects, loading, call_other, the object stack; M3) and `objects.star` (applies, top-level evaluations, destruct, environments, commands, call_outs, heart beats, resets; M5) |
+| Pike's garbage collector | `gc.star`: a mark-and-sweep of the VM's value tables between top-level evaluations (M5) |
+| `havok/efuns.pike` | `efuns.star` (dispatch + the M3 subset) and one file per area since M4: `efuns_str.star`, `efuns_arr.star`, `efuns_file.star`, `sprintf.star`, `sscanf.star`, `regex.star`, `md5.star`, `tcolour.star`, `numfmt.star`, and `efuns_obj.star` (the object model, M5) |
 | `havok/saveformat.pike` | `saveformat.star` (plus the emitter's `__lpc_save`/`__lpc_restore` variable walk) |
 | `havok/net.pike` (telnet), `sockets.pike`, `http.pike`, `tls.pike` | later phases (see roadmap) |
 
@@ -123,6 +124,21 @@ Found during M4 (2026-10-23), each probed with a throwaway program:
 13. **Math builtins narrowed `f64` to `f32`** (fixed in M4, Star compiler
     bug #6 below).
 
+Found during M5 (2026-10-25):
+
+14. **No clock that lasts a MUD's uptime.** msvcrt's `clock()` returns
+    `(clock_t)-1` for good once its millisecond count passes 2^31, after
+    about 24.8 days (and on glibc it's CPU time); `_time64` has whole
+    seconds only; `GetTickCount64` can't be declared (#7) and
+    `clock_gettime` answers through a struct (#9). M5 added a `clock_ms()`
+    builtin to the compiler (`src/codegen/clock.rs`,
+    `tests/frontend_clock.rs`) for call_outs, heart beats and the
+    evaluation limit.
+15. **A densely connected program could hang `star check`** (Star compiler
+    bug #7 below), and **a statement `match` whose arms have different
+    value types built malformed IR** (bug #8). Both surfaced compiling the
+    M5 VM.
+
 ## Value representation (M3, `value.star`)
 
 ```
@@ -156,11 +172,17 @@ enum Value:
   holds the array needs reference tracking the VM doesn't have yet; it fits
   with the garbage collector (M5). DS3.9's `+=` loops are over small arrays.
 
-Garbage: the heap tables only grow in M3. The plan stands: a mark-and-sweep
-that runs only *between* top-level evaluations, when the VM stack is empty.
-The roots are then object variables, pending call_outs and a few
-driver-held values, so no stack maps are needed. It arrives with the
-object model (M5), which is when long-running evaluation starts.
+Garbage (M5, `gc.star`): a mark-and-sweep that runs only *between*
+top-level evaluations, when the VM stack is empty, so the roots are object
+variables, pending call_outs, add_action sentences and a few driver-held
+values, and no stack maps are needed. Freed handles go on per-table free
+lists the allocators take from first; a destructed object's slot is reused
+one generation on, so stale object values still read as destructed. The
+driver's timer step (`objects.star` driver_tick()) collects when the heap
+has doubled since the last collection, or when reclaim_objects() asked.
+Every case fixture runs with a collection after each case, and `boot_ds.exe
+-run 60 -gcevery` collects on every tick of a booted Dead Souls (about 3700
+collections a minute) and ends in the same state as without.
 
 ## Roadmap
 
@@ -189,7 +211,8 @@ Pike driver before it's marked done.
   2026-10-23, see the log.
 - **M5: object model.** Master and simul_efun loading, load/clone/
   destruct, environment/move, add_action and command dispatch,
-  call_outs, heart beats, reset and clean_up.
+  call_outs, heart beats, reset and clean_up. Done 2026-10-25, see the
+  log.
 - **M6: network + boot (MVP).** Star compiler `tcp_listen`/`tcp_accept`
   builtins, the telnet layer, login. DS3.9 boots and a player can log in.
 - **M7+: the rest.** Verb parser efuns, `ed`, socket efuns, HTTP/TLS,
@@ -233,10 +256,15 @@ Pike driver before it's marked done.
 | `tools/ref_efun_names.pike` | generates `efun_names.star` from the live reference |
 | `tools/run_cases.star` | Star side of the M3 case comparison |
 | `tools/ref_cases.pike` | reference side: runs run_tests.pike cases (and `-extra` edge cases) through the live driver |
-| `tests/run_cases_test.ps1` | M3 + M4 regression: every `fixtures/cases/*.expected.txt` (see the M4 log for what each holds) |
+| `tests/run_cases_test.ps1` | M3 + M4 + M5 regression: every `fixtures/cases/*.expected.txt` (see the M4 and M5 logs for what each holds) |
 | `tools/gen_contrib_cases.py` | generates `m4_contrib_cases.txt` from the reference's `tests/contrib_golden.txt` |
 | `tools/compile_sweep.star`, `tools/ref_compile_sweep.pike` | M3 compile sweep over DS3.9, both sides: which files compile, and their inheritance tables |
 | `tests/run_compile_sweep_test.ps1` | M3 regression: all 2378 DS3.9 files' compile results and table hashes against `fixtures/ds39_compile.expected.txt` (frozen reference output), about 21 s |
+| `objects.star` | the object model's machinery: applies, top-level evaluations and the evaluation limit, error_handler() reports, destruct, environments and init(), livings, shadows, add_action dispatch, messages, call_outs, heart beats, reset/clean_up, replace_program(), get_garbage(), the driver's timer step |
+| `efuns_obj.star` | the object-model efuns (codes 200-299) and the case runner's test_* driver hooks (900-999) |
+| `gc.star` | the garbage collector, and the marking get_garbage() uses |
+| `tools/boot_ds.star`, `tools/ref_boot.pike` | M5 boot comparison, both sides: boot a mudlib from its mudos.cfg through every preload and print the live objects (privs, environment, heart beat, living) and counts; `boot_ds.exe -unimplemented` lists the efuns the reference side stubs, `-run N` soaks the booted driver |
+| `tests/run_boot_test.ps1` | M5 regression: DS3.9's boot on a scratch copy of the mudlib against `fixtures/ds39_boot.expected.txt` (frozen reference output, made with `fixtures/ds39_boot_stubs.txt`), about 3 s |
 
 Build the tools with the **release** compiler (`target/release/star.exe
 build ...`). The `star` on `PATH` on this machine was a stale Sep 8
@@ -300,6 +328,29 @@ Each is also documented at the point in the code where it happens.
    shield" }))` is "a sword and a shield" here and "a shield and a sword" in
    the reference. %O output sorts its keys, so that one matches.
 
+10. **replace_program() really switches the program** (`objects.star`).
+    FluffOS swaps the object's program for the inherited one when the
+    evaluation ends. The reference can't change a Pike object's program, so
+    it looks functions up through a view of the inherited program, and code
+    inside that program still reaches functions the replaced program
+    overrode. Here the object switches, keeping the inherited program's
+    variables. Dead Souls only replaces programs that define nothing but
+    create(), where the two can't differ.
+11. **functionp() reports FP_OWNER_DESTED** (0x20) for an efun, simul_efun
+    or bound function pointer whose owner was destructed, as FluffOS does.
+    The reference never sets it: its check is `owner && ...`, and a
+    destructed Pike object reads as false. Dead Souls tests the flag before
+    calling stored function pointers (guard.c, seasons.c, access.c, the
+    master), so the FluffOS answer is what it expects. A plain local
+    function or closure of a destructed object reads as 0 on both, as in
+    Pike.
+12. **Inheritance queries follow the object's own program** (inherits(),
+    inherit_list(), deep_inherit_list(), function_exists()). The reference
+    reads the *latest* compile of each inherited path, so an old clone
+    whose parent was since recompiled reports the new parent's inherits;
+    here it reports the program it actually runs, as FluffOS does. The
+    table's own cases, which only query fresh objects, agree.
+
 Not in M4: `sprintf`'s table mode (`#`) and its `$ ~ @ / ^` modifiers
 (errors, so the format comes back; DS3.9 uses none), the reference's
 asynchronous save writer and SQLite save store (save_object() writes
@@ -358,7 +409,39 @@ extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
    test `tests/frontend_math_f64.rs`; its four positive tests fail without
    the fix.
 
-New compiler surface, not a bug: the filesystem and calendar builtins of
+7. **`star check` could run forever on a densely connected program**
+   (fixed, M5). The stack-budget warning (`src/types/stack_budget.rs`)
+   measured each function's heaviest static call chain with a DFS that
+   tracked only the current path, so a function called from two places was
+   explored again down each one: a walk over every simple path of the call
+   graph, exponential in it. The M5 VM's interpreter loop, efun dispatch and
+   driver applies all reach one another, and checking it never finished
+   (gdb showed a stack of nothing but `cumulative_footprint`). Fixed by
+   computing the chains on the graph's strongly connected components
+   (Tarjan, iteratively), in linear time: on an acyclic graph the same
+   totals as before; a recursive group counts all its members' locals, an
+   upper bound on the old answer. Regression tests in
+   `tests/frontend_stack_budget_warning.rs`: a 30-layer graph of diamonds
+   (2^30 paths, with the exact expected total), a 20-function recursive
+   clique, and a recursive pair whose summed locals cross the budget.
+8. **A statement `match` with arms of different value types built
+   malformed IR** (fixed, M5). The checker typed every match after its
+   first value-producing arm, so `match v: Str(f) -> self.safe_master_apply(..)
+   _ -> 0` (in `Vm.boot`) became a match producing a `Value` whose join
+   `phi` had an `int` flowing in, which the IR verifier refused. Now such a
+   match produces no value (`void`): fine as a statement, its arms'
+   discarded values released like any statement expression's, and a type
+   error when used as a value or returned. Integer-shaped arms still share
+   the first arm's type (an integer literal is valid in any integer `phi`,
+   and code relies on `-> x as i64` beside `_ -> 0`). Fix in
+   `src/types/expr.rs` (the `Expr::Match` arm), `src/types/stmt.rs` and
+   `src/codegen/expr.rs`; regression tests in
+   `tests/frontend_match_arm_types.rs`.
+
+New compiler surface, not a bug: the `clock_ms()` builtin of constraint
+#14 (`src/codegen/clock.rs`, `tests/frontend_clock.rs`; its Linux arm is
+IR/object-verified only, like the filesystem builtins). Also the filesystem
+and calendar builtins of
 constraint #9 (`src/codegen/fs.rs`, tested by `tests/frontend_fs.rs`).
 Their Linux arm emits IR that compiles to an object for
 `x86_64-unknown-linux-gnu`, but hasn't been linked and run on the devbox,
@@ -568,3 +651,77 @@ spot, inherited from M3: `a += ({ x })` 20k times, 3.3 s (see "Value
 representation").
 
 **Next: M5, the object model.**
+
+### 2026-10-25: M5 object model
+
+**M5 done.** The object model (`objects.star`, `efuns_obj.star`, `gc.star`,
+plus the per-object state, loading and boot in `vm.star`) is checked against
+the live Pike driver three ways:
+- **The reference's own case table:** the 20 object-model cases the M3 and
+  M4 selections left out (`m5_selection.txt`): inherits loaded as objects,
+  inherits()/deep_inherit_list() through rebuilt and destructed chains,
+  destruct of the master and the simul_efun object (each reloads first),
+  code running on after its object destructs itself, call_stack(), origin(),
+  move_object(), efun argument defaults, get_garbage() (with virtual
+  objects), this_player() destructed mid-command and kept across create().
+- **42 cases of this port's own** (`m5_cases.txt`), whose expected values
+  are whatever the reference returns. They port run_tests.pike's Pike-level
+  driver tests (call_out ownership and find/remove, find_living, lazy
+  resets, clean_up and its inherited flag, heart beat intervals and slots,
+  the evaluation limit) through `test_*` driver hooks both runners provide
+  as efuns (ref_cases.pike installs them in a subclass of the reference's
+  efun table), and cover init() order on moves, the three add_action flags,
+  catch-all verbs and notify_fail, remove_action/commands(), present()
+  (including Pike sscanf's "red sword 2"), inventories, destruct moving
+  inventory out through move_or_destruct(), shadows, every message efun,
+  call_out order with arguments and errors, origin() in a call_out,
+  replace_program(), bind(), privs, children(), fetch_variable() and
+  references to destructed objects. Helper objects are written to
+  `/test/tmp_m5_*.c` by the first case and removed by the last.
+- **The real mudlib:** Dead Souls 3.9 boots all the way on both drivers
+  (simul_efun, master, epilog() and all 43 preloads; `tools/boot_ds.star`,
+  `tools/ref_boot.pike`, `tests/run_boot_test.ps1`): the same 162 live
+  objects with the same privs, environments, heart beats and living flags,
+  the same 42 pending call_outs, and the same files written into the
+  mudlib, whose contents differ only in mapping order (deviation #9) and
+  one boot timestamp. The reference stubs the 80 efuns the Star VM doesn't
+  have yet (the verb parser, ed, sockets, the network; `boot_ds.exe
+  -unimplemented`) with its own "not implemented" error, so both fail the
+  same preloads (`/daemon/soul`, `/lib/player` and a few others call
+  parse_init()). The Star boot takes about 2 s, the reference's 8 s.
+
+Every earlier fixture still passes, now with a garbage collection after each
+case, and the M1-M3 token, AST and compile sweeps still match. A 60-second
+soak of the booted mudlib (`boot_ds.exe -run 60`) runs its call_outs and heart
+beats (162 objects grow to 327 as daemons load things) with no runtime
+errors but the 6 socket efuns M6/M7 bring; with `-gcevery` it collects on
+every tick and ends in the same state.
+
+Design decisions, each explained at its point in the code:
+- **Applies run nested interpreter loops**, like an efun calling back into
+  LPC, and a top-level evaluation is a wrapper that reports an error to the
+  master's error_handler() and restores the stacks. Frames a driver call
+  entered are marked, so origin() only calls a call "local" between two LPC
+  frames.
+- **Destructed objects keep their slot** until a collection, so code still
+  running in one goes on; values referring to it read as 0 (Pike's rule,
+  `o == 0` but not `intp(o)`), as do plain function values of it, which
+  can't run any more. The DESTRUCTED placeholder (slot 0) stands for a
+  this_player() destructed mid-command.
+- **Driver-side references that outlive an object** (call_out owners,
+  add_action owners, bind()'s owner) carry the slot's generation.
+- **Runtime errors carry source lines:** the compiler records a (pc, line,
+  file) table per function, and an error snapshots the frames when it first
+  reaches an interpreter loop. Dead Souls' error_handler() logs the right
+  lines.
+- **The evaluation limit** ticks on function entry and loop back edges
+  (including a loop that jumps to itself, `for (;;);`), against the new
+  `clock_ms()`.
+
+Getting there found two Star compiler bugs, both fixed (#7, #8), and needed
+one new builtin (constraint #14). Three new deliberate deviations (#10-#12).
+Not in M5: connections (M6; users() and interactive() see none,
+tell_user() has nowhere to send), and the slow `a += ({ x })` loop from M3,
+which needs reference counts the collector doesn't keep.
+
+**Next: M6, network + boot (MVP).**

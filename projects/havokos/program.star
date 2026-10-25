@@ -155,6 +155,10 @@ struct FnDef:
     mut is_private: bool = false
     # closures only
     mut upval_kinds: List<i32> = List<i32>()
+    # source lines (M5, for runtime error traces): (pc, line, file id)
+    # triples in pc order, one per statement where the line changes; the
+    # file id indexes the preprocessor's file list (`Pp.files`)
+    mut lines: List<i32> = List<i32>()
 
 # How a name reaches a function: the defining program and function, and the
 # offset of that program's variable block inside the program the entry

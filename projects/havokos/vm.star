@@ -21,12 +21,18 @@
 # that called the efun carries on unwinding). A caught error becomes the
 # reference's catch value: the thrown value, or `"*message\n"` for an error.
 #
-# Not here yet (later milestones, NOTES.md roadmap): destruct and the
-# "destructed object reads as 0" rule, shadows, reset/clean_up, the
-# evaluation cost limit, and the garbage collector for the heap tables --
-# M3's heap only grows, which a test run and the booted MVP can afford for
-# now; a mark-and-sweep between top-level evaluations is planned (NOTES.md
-# "Value representation").
+# The object model (todo.md HavokOS M5) hangs off this file's structures but
+# lives in its own files: `objects.star` (applies, top-level evaluations and
+# error reporting, destruct, environments and init(), livings, shadows,
+# commands, messages, call_outs, heart beats, reset/clean_up,
+# replace_program) and `gc.star` (the collector the allocators below take
+# freed handles from). What this file does for it: the per-object driver
+# state in ObjSlot, the "destructed object reads as 0" rule (dead_obj(),
+# fn_dead()), call_other's lazy reset and shadow routing, the evaluation
+# limit's ticks on function entry and loop back edges, the entry names on
+# the driver stack that origin() reads, error traces with line numbers
+# (err_frames, the compiler's line tables), and loading with privs, virtual
+# objects and the full boot.
 
 import "value.star" as val
 import "program.star" as pg
@@ -62,6 +68,10 @@ struct Frame:
     cells: List<i32>
     # driver object stack depth to restore when this frame returns
     ostack_before: i32
+    # entered by the driver or an efun (a nested interpreter loop: an
+    # apply, a call_out, map()'s callback), not by an LPC call -- origin()
+    # only calls a call "local" between two LPC frames
+    mut driver: bool = false
 
 struct Handler:
     fr_index: i32
@@ -78,6 +88,67 @@ struct ObjSlot:
     mut clone: bool
     # time() when created (stat()'s third element)
     mut load_time: i64 = 0 as i64
+    # --- the object model (M5), driver.pike's ObInfo ---
+    # the program it was made from (ObInfo->prog): what clones of it are
+    # named after, unchanged by replace_program() or a virtual rename
+    mut base_prog: str = ""
+    # clone number (the n of "/path#n"); 0 for a blueprint
+    mut clone_no: i32 = 0
+    # made by the master's compile_object(): not clonep(), never garbage
+    mut is_virtual: bool = false
+    mut env: i32 = -1
+    # inventory, most recently arrived first
+    mut inv: List<i32> = List<i32>()
+    # enable_commands()
+    mut living: bool = false
+    mut living_name: str = ""
+    # heart beat interval in beats (0 = off), and beats left to the next one
+    mut hb: i32 = 0
+    mut hb_ticks: i32 = 0
+    # FluffOS privs: a string, or 0
+    mut privs: val::Value = val::Value::Int(0 as i64)
+    # the object this one shadows, and the outermost shadow of this one
+    mut shadowing: i32 = -1
+    mut shadowed_by: i32 = -1
+    # add_action sentences on a living, newest first
+    mut actions: List<Action> = List<Action>()
+    mut hidden: bool = false
+    # time() of the next reset (0 = none), of the last use (clean_up), and
+    # whether clean_up() stopped asking (returned 0 or isn't defined)
+    mut reset_time: i64 = 0 as i64
+    mut last_used: i64 = 0 as i64
+    mut no_clean_up: bool = false
+    mut notify_fail: val::Value = val::Value::Int(0 as i64)
+    # set by the network layer (M6) when a connection is attached
+    mut once_interactive: bool = false
+    # replace_program(): the program to switch to when the evaluation ends,
+    # and the one switched to (query_replaced_program())
+    mut replace_to: str = ""
+    mut replaced: str = ""
+
+# One add_action() sentence: who defined it (an object value, so a slot
+# reused after a destruct can't inherit it), the verb, the function (a name
+# or a function pointer) and the FluffOS flag (1 prefix, 2 prefix with the
+# rest as argument).
+struct Action:
+    owner: val::Value
+    verb: str
+    fun: val::Value
+    flag: i32
+
+# A pending call_out (driver.pike CallOut). `when` is call_out_clock()
+# centiseconds; `ob` called call_out(), `owner` is ob for a named function,
+# else the function pointer's owner (FluffOS), 0 for none; `tp` is
+# this_player() when it was made. Objects are values for the same reason
+# as Action.owner.
+struct CallOut:
+    handle: i32
+    ob: val::Value
+    owner: val::Value
+    fun: val::Value
+    args: List<val::Value>
+    when: i64
+    tp: val::Value
 
 struct Vm:
     root: str
@@ -115,8 +186,10 @@ struct Vm:
     mut efun_codes: Map<str, i32> = Map<str, i32>()
     mut ref_efuns: Set<str> = Set<str>()
     mut known_efuns: Set<str> = Set<str>()
-    # compile errors and other driver messages (the reference's werror())
+    # compile errors and other driver messages (the reference's werror()),
+    # also printed as they happen when `echo_log` is set
     mut log: List<str> = List<str>()
+    mut echo_log: bool = false
     # the driver config (mudos.cfg keys, e.g. "name", "port"), for
     # get_config() and the predefined macros
     mut config: Map<str, str> = Map<str, str>()
@@ -128,14 +201,111 @@ struct Vm:
     # the save format), appended to in place -- buf.star says why
     mut dsc: bf::Buf = bf::Buf()
     mut enc: bf::Buf = bf::Buf()
+    # --- the object model (M5; objects.star) ---
+    # function each driver-stack entry was entered by ("" when unknown), for
+    # origin() -- driver.pike stack_fn, kept parallel with `ostack`
+    mut ostack_fn: List<str> = List<str>()
+    # this_player() / this_interactive() (object handles, -1 none,
+    # DESTRUCTED_OB for one destructed mid-command) and query_verb()
+    mut cur_player: i32 = -1
+    mut cur_interactive: i32 = -1
+    mut cur_verb: val::Value = val::Value::Int(0 as i64)
+    # the master finished its first create() (driver master_established)
+    mut master_established: bool = false
+    mut in_error_handler: bool = false
+    # livings by living name, most recently named (or found) first
+    mut living_names: Map<str, List<i32>> = Map<str, List<i32>>()
+    # pending call_outs, kept sorted by (when, handle): due ones are first
+    mut callouts: List<CallOut> = List<CallOut>()
+    mut callout_seq: i32 = 0
+    # clock_ms() at boot: call_out_clock() counts centiseconds from here
+    mut clock_epoch: i64 = 0 as i64
+    # heart beat slots (driver.pike hb_slots) and the slot run next
+    mut hb_slots: List<List<i32>> = List<List<i32>>()
+    mut hb_cur: i32 = 0
+    # seconds between heart beats ("heart beat interval" is FluffOS's
+    # microseconds; the reference beats every 2 s)
+    mut hb_interval_ms: i64 = 2000 as i64
+    # clock_ms() when the next heart beat slot and reset sweep are due (the
+    # driver_tick() schedule; 0 until it first runs)
+    mut next_hb_ms: i64 = 0 as i64
+    mut next_sweep_ms: i64 = 0 as i64
+    # evaluation limit: microseconds per top-level evaluation (0 = none),
+    # the clock_ms() deadline of the running one, its nesting, and whether
+    # it ran out (every later tick raises again, so catch() can't swallow it)
+    mut max_cost: i64 = 0 as i64
+    mut eval_deadline: i64 = 0 as i64
+    mut eval_nest: i32 = 0
+    mut outoftime: bool = false
+    mut ticks: i32 = 0
+    # resets and clean_up (driver.pike configure_resets()); seconds, 0 = off
+    mut reset_interval: i64 = 0 as i64
+    mut cleanup_interval: i64 = 0 as i64
+    mut lazy_resets: bool = true
+    # time() at the start of the running evaluation
+    mut now_sec: i64 = 0 as i64
+    # objects with a replace_program() waiting for the evaluation to end
+    mut pending_replace: List<i32> = List<i32>()
+    # the frames an error was raised in (for the master's error_handler()
+    # trace), taken when the error first reaches an interpreter loop
+    mut err_frames: List<Frame> = List<Frame>()
+    mut err_need_trace: bool = false
+    # efuns this VM can't run that were already reported in the log
+    mut undefined_reported: Set<str> = Set<str>()
+    # the reference's efun names (opcprof()'s list)
+    mut ref_efun_list: List<str> = List<str>()
+    # reclaim_objects() asked for a collection after this evaluation, and
+    # shutdown() for the driver to stop (with this exit code)
+    mut gc_requested: bool = false
+    mut shutdown_requested: bool = false
+    mut shutdown_code: i32 = 0
+    # --- garbage collection (gc.star) ---
+    # per table: which handles are free, and the free handles to reuse
+    mut arr_free: List<bool> = List<bool>()
+    mut map_free: List<bool> = List<bool>()
+    mut fn_free: List<bool> = List<bool>()
+    mut cls_free: List<bool> = List<bool>()
+    mut cell_free: List<bool> = List<bool>()
+    mut obj_free: List<bool> = List<bool>()
+    mut arr_free_list: List<i32> = List<i32>()
+    mut map_free_list: List<i32> = List<i32>()
+    mut fn_free_list: List<i32> = List<i32>()
+    mut cls_free_list: List<i32> = List<i32>()
+    mut cell_free_list: List<i32> = List<i32>()
+    mut obj_free_list: List<i32> = List<i32>()
+    # mark bits of the collection or get_garbage() pass running, and its
+    # work list
+    mut gc_arr: List<bool> = List<bool>()
+    mut gc_map: List<bool> = List<bool>()
+    mut gc_fn: List<bool> = List<bool>()
+    mut gc_cls: List<bool> = List<bool>()
+    mut gc_cell: List<bool> = List<bool>()
+    mut gc_obj: List<bool> = List<bool>()
+    mut gc_work: List<val::Value> = List<val::Value>()
+    mut gc_runs: i32 = 0
+    mut gc_live_at_last: i32 = 0
+
+# Object slot 0 is never a live object. It stands for a this_player() that
+# was destructed mid-command (the reference's DESTRUCTED placeholder):
+# FluffOS leaves the command giver pointing at it, so this_player() is still
+# true while objectp() is false and calls to it quietly return 0.
+const DESTRUCTED_OB: i32 = 0
 
 fn new_vm(root: str) -> Vm:
     let mut v = Vm(root = root, pp = pre::new_pp(root))
     v.boot_time = epoch_now()
+    v.now_sec = v.boot_time
+    v.clock_epoch = clock_ms()
+    v.objs.push(ObjSlot(prog = -1, gen = 0, name = "<destructed>", alive = false, vars = List<val::Value>(), clone = false))
+    v.obj_free.push(false)
+    for i in 0..4:
+        v.hb_slots.push(List<i32>())
     # handle 0: Pike's one shared empty array (see new_arr)
     v.arrs.push(val::ArrSlot(items = List<val::Value>()))
+    v.arr_free.push(false)
     v.efun_codes = et::efun_codes()
     let r = en::reference_efuns()
+    v.ref_efun_list = r
     for i in 0..r.len():
         v.ref_efuns.insert(r[i])
         v.pp.efun_names.insert(r[i])
@@ -361,6 +531,7 @@ impl Vm:
         self.err_thrown = false
         self.errmsg = msg
         self.errv = val::Value::Str(msg)
+        self.err_need_trace = true
 
     fn throw_value(mut self, v: val::Value):
         if self.err:
@@ -369,6 +540,7 @@ impl Vm:
         self.err_thrown = true
         self.errv = v
         self.errmsg = "thrown value"
+        self.err_need_trace = true
 
     # the reference's catch_result(): the thrown value, or "*message\n"
     fn catch_value(self) -> val::Value:
@@ -386,6 +558,7 @@ impl Vm:
         self.err_thrown = false
         self.errv = val::Value::Undef
         self.errmsg = ""
+        self.err_need_trace = false
 
     # --- heap -------------------------------------------------------------------
 
@@ -395,13 +568,31 @@ impl Vm:
     fn new_arr(mut self, items: List<val::Value>) -> val::Value:
         if items.len() == 0:
             return val::Value::Arr(0)
+        # a handle gc.star freed, else a new one
+        let nf = self.arr_free_list.len()
+        if nf > 0:
+            let h = self.arr_free_list[nf - 1]
+            self.arr_free_list.pop()
+            self.arr_free[h] = false
+            self.arrs[h] = val::ArrSlot(items = items)
+            return val::Value::Arr(h)
         let h = self.arrs.len()
         self.arrs.push(val::ArrSlot(items = items))
+        self.arr_free.push(false)
         val::Value::Arr(h)
 
     fn new_map(mut self) -> i32:
+        let slot = val::MapSlot(keys = List<val::Value>(), vals = List<val::Value>(), idx = Map<val::MKey, i32>())
+        let nf = self.map_free_list.len()
+        if nf > 0:
+            let h = self.map_free_list[nf - 1]
+            self.map_free_list.pop()
+            self.map_free[h] = false
+            self.maps[h] = slot
+            return h
         let h = self.maps.len()
-        self.maps.push(val::MapSlot(keys = List<val::Value>(), vals = List<val::Value>(), idx = Map<val::MKey, i32>()))
+        self.maps.push(slot)
+        self.map_free.push(false)
         h
 
     fn map_find(self, h: i32, k: val::Value) -> i32:
@@ -443,14 +634,43 @@ impl Vm:
         self.maps[h].vals.pop()
 
     fn new_cell(mut self, v: val::Value) -> i32:
+        let nf = self.cell_free_list.len()
+        if nf > 0:
+            let c = self.cell_free_list[nf - 1]
+            self.cell_free_list.pop()
+            self.cell_free[c] = false
+            self.cells[c] = v
+            return c
         let c = self.cells.len()
         self.cells.push(v)
+        self.cell_free.push(false)
         c
 
     fn new_fn(mut self, f: val::FnSlot) -> val::Value:
+        let nf = self.fn_free_list.len()
+        if nf > 0:
+            let h = self.fn_free_list[nf - 1]
+            self.fn_free_list.pop()
+            self.fn_free[h] = false
+            self.fns[h] = f
+            return val::Value::Fn(h)
         let h = self.fns.len()
         self.fns.push(f)
+        self.fn_free.push(false)
         val::Value::Fn(h)
+
+    fn new_cls(mut self, c: val::ClsSlot) -> val::Value:
+        let nf = self.cls_free_list.len()
+        if nf > 0:
+            let h = self.cls_free_list[nf - 1]
+            self.cls_free_list.pop()
+            self.cls_free[h] = false
+            self.clss[h] = c
+            return val::Value::Cls(h)
+        let h = self.clss.len()
+        self.clss.push(c)
+        self.cls_free.push(false)
+        val::Value::Cls(h)
 
     fn obj_value(self, o: i32) -> val::Value:
         if o < 0:
@@ -538,10 +758,37 @@ impl Vm:
         match v:
             val::Value::Undef -> false
             val::Value::Int(x) -> x != (0 as i64)
-            val::Value::Obj(h, g) -> self.objs[h].alive and self.objs[h].gen == g
+            val::Value::Obj(h, g) -> (self.objs[h].alive and self.objs[h].gen == g) or h == DESTRUCTED_OB
+            val::Value::Fn(h) -> self.fns[h].lpcfn or !self.fn_dead(h)
             _ -> true
 
+    # a reference to a destructed object (not the DESTRUCTED placeholder),
+    # which Pike reads as 0
+    fn dead_obj(self, v: val::Value) -> bool:
+        match v:
+            val::Value::Obj(h, g) -> h != DESTRUCTED_OB and !(self.objs[h].alive and self.objs[h].gen == g)
+            _ -> false
+
+    # A plain function value (a local function reference or a closure, not
+    # the reference's LPCFn wrapper) whose object was destructed: Pike reads
+    # it as 0 too, and it must never run (its slot may hold another object
+    # by now, gc.star).
+    fn fn_dead(self, h: i32) -> bool:
+        let s = self.fns[h]
+        if s.kind != val::FK_DIRECT and s.kind != val::FK_CLOSURE:
+            return false
+        !(s.owner > 0 and self.objs[s.owner].alive and self.objs[s.owner].gen == s.owner_gen)
+
+    fn dead_ref(self, v: val::Value) -> bool:
+        match v:
+            val::Value::Fn(h) -> !self.fns[h].lpcfn and self.fn_dead(h)
+            _ -> self.dead_obj(v)
+
     fn lpc_eq(self, a: val::Value, b: val::Value) -> bool:
+        if self.dead_ref(a):
+            return val::is_zero(b) or self.dead_ref(b)
+        if self.dead_ref(b):
+            return val::is_zero(a)
         match a:
             # Pike's `==`: an int never equals a float, even 3 == 3.0
             val::Value::Undef ->
@@ -1217,11 +1464,14 @@ impl Vm:
 
     # --- driver object stack ----------------------------------------------------
 
-    fn opush(mut self, o: i32):
+    # `fname`: the function the frame is entered by, "" when unknown (what
+    # origin() compares against; driver push())
+    fn opush(mut self, o: i32, fname: str):
         if self.ostack.len() >= 1000:
             self.fail("Too deep recursion.\n")
             return
         self.ostack.push(o)
+        self.ostack_fn.push(fname)
 
     fn ensure_top(mut self, o: i32):
         if o < 0:
@@ -1229,11 +1479,12 @@ impl Vm:
         let n = self.ostack.len()
         if n > 0 and self.ostack[n - 1] == o:
             return
-        self.opush(o)
+        self.opush(o, "")
 
     fn truncate_ostack(mut self, n: i32):
         while self.ostack.len() > n:
             self.ostack.pop()
+            self.ostack_fn.pop()
 
     # previous_object(n) as seen from `self_ob` (driver previous())
     fn previous(mut self, self_ob: i32, n: i32) -> val::Value:
@@ -1280,6 +1531,11 @@ impl Vm:
         if self.frames.len() >= 20000:
             self.fail("Too deep recursion.\n")
             return
+        self.ticks += 1
+        if self.ticks >= 256:
+            self.eval_tick()
+            if self.err:
+                return
         let f = self.progs[prog].fns[fnidx]
         let mut n = argc
         if f.varargs:
@@ -1358,8 +1614,8 @@ impl Vm:
                     if self.err:
                         return false
             _ -> 0
-        let ob = self.obj_of(target)
-        if ob < 0:
+        let tob = self.obj_of(target)
+        if tob < 0:
             match target:
                 val::Value::Obj(h, g) ->
                     self.stack.push(val::Value::Undef)
@@ -1376,6 +1632,28 @@ impl Vm:
         if !is_str:
             self.fail("Bad argument 2 to call_other()\n")
             return false
+        if caller != tob:
+            # in use (clean_up), and a lazy reset when one is due
+            self.objs[tob].last_used = self.now_sec
+            let rt = self.objs[tob].reset_time
+            if rt != (0 as i64) and rt <= self.now_sec:
+                self.run_reset(tob)
+                if self.err:
+                    return false
+                if !self.objs[tob].alive:
+                    self.stack.push(val::Value::Undef)
+                    return false
+        # shadows: outermost to innermost, the first defining the function,
+        # unless the call comes from one of the object's own shadows
+        let mut ob = tob
+        let sb = self.objs[tob].shadowed_by
+        if sb >= 0 and !(caller >= 0 and self.objs[caller].shadowing == tob):
+            let mut s = sb
+            while s >= 0 and s != tob:
+                if self.public_fn(s, name).prog >= 0:
+                    ob = s
+                    break
+                s = self.objs[s].shadowing
         let mut e = self.public_fn(ob, name)
         if e.prog < 0 and caller == ob:
             e = self.any_fn(ob, name)
@@ -1384,7 +1662,7 @@ impl Vm:
             return false
         let before = self.ostack.len()
         self.ensure_top(caller)
-        self.opush(ob)
+        self.opush(ob, name)
         if self.err:
             return false
         self.push_all(args)
@@ -1398,6 +1676,7 @@ impl Vm:
         if self.err:
             return val::Value::Undef
         if entered:
+            self.frames[depth].driver = true
             self.execute(depth)
             if self.err:
                 return val::Value::Undef
@@ -1405,15 +1684,24 @@ impl Vm:
 
     fn sefun_start(mut self, self_ob: i32, name: str, args: List<val::Value>) -> bool:
         if self.sefun_ob < 0 or !self.objs[self.sefun_ob].alive:
-            self.fail("Unable to load the simul_efun object\n")
-            return false
+            # mid-(re)load: its own initializers can reach sefuns before it
+            # is installed, and those calls return 0 (driver sefun())
+            if self.loading.contains(self.sefun_path):
+                self.stack.push(val::Value::Int(0 as i64))
+                return false
+            self.load_object(self.sefun_path, -1)
+            if self.err:
+                return false
+            if self.sefun_ob < 0 or !self.objs[self.sefun_ob].alive:
+                self.fail("Unable to load the simul_efun object\n")
+                return false
         let e = self.public_fn(self.sefun_ob, name)
         if e.prog < 0:
             self.fail(f"Undefined simul_efun {name}()\n")
             return false
         let before = self.ostack.len()
         self.ensure_top(self_ob)
-        self.opush(self.sefun_ob)
+        self.opush(self.sefun_ob, name)
         if self.err:
             return false
         self.push_all(args)
@@ -1433,8 +1721,14 @@ impl Vm:
                         all.push(args_in[i])
                     args = all
                 if s.kind == val::FK_DIRECT or s.kind == val::FK_CLOSURE:
+                    if self.fn_dead(h):
+                        self.fail("Function pointer is 0\n")
+                        return false
                     let before = self.ostack.len()
-                    if s.lpcfn:
+                    if s.bound_owner >= 0:
+                        if self.objs[s.bound_owner].alive and self.objs[s.bound_owner].gen == s.bound_gen:
+                            self.ensure_top(s.bound_owner)
+                    elif s.lpcfn:
                         self.ensure_top(s.owner)
                     self.push_all(args)
                     self.enter(s.prog, s.fnidx, s.var_base, s.owner, args.len(), s.cells, before)
@@ -1470,6 +1764,7 @@ impl Vm:
         if self.err:
             return val::Value::Undef
         if entered:
+            self.frames[depth].driver = true
             self.execute(depth)
             if self.err:
                 return val::Value::Undef
@@ -1482,6 +1777,7 @@ impl Vm:
         self.enter(prog, fnidx, var_base, obj, args.len(), List<i32>(), self.ostack.len())
         if self.err:
             return val::Value::Undef
+        self.frames[depth].driver = true
         self.execute(depth)
         if self.err:
             return val::Value::Undef
@@ -1549,6 +1845,11 @@ impl Vm:
     fn execute(mut self, stop: i32):
         while self.frames.len() > stop:
             if self.err:
+                if self.err_need_trace:
+                    # the frames the error was raised in, for error_handler()
+                    # (a List copy is a refcount until something changes it)
+                    self.err_frames = self.frames
+                    self.err_need_trace = false
                 if !self.unwind(stop):
                     return
                 continue
@@ -1593,11 +1894,27 @@ impl Vm:
                 elif op == pg::OP_JNZ:
                     let v = self.pop()
                     if self.truthy(v):
-                        pc = code[pc + 1]
+                        let to = code[pc + 1]
+                        if to <= pc:
+                            # a do-while's back edge
+                            self.ticks += 1
+                            if self.ticks >= 256:
+                                self.eval_tick()
+                                if self.err:
+                                    running = false
+                        pc = to
                     else:
                         pc += 2
                 elif op == pg::OP_JMP:
-                    pc = code[pc + 1]
+                    let to = code[pc + 1]
+                    if to <= pc:
+                        # a loop's back edge: the evaluation limit's other tick
+                        self.ticks += 1
+                        if self.ticks >= 256:
+                            self.eval_tick()
+                            if self.err:
+                                running = false
+                    pc = to
                 elif op == pg::OP_POP:
                     self.stack.pop()
                     pc += 1
@@ -2017,9 +2334,8 @@ impl Vm:
                         slots.push(val::Value::Int(0 as i64))
                     for i in 0..n:
                         slots[code[pc + 4 + i]] = vals[i]
-                    let h = self.clss.len()
-                    self.clss.push(val::ClsSlot(name = name, vals = slots))
-                    self.stack.push(val::Value::Cls(h))
+                    let cv = self.new_cls(val::ClsSlot(name = name, vals = slots))
+                    self.stack.push(cv)
                     pc += 4 + n
                 elif op == pg::OP_EVAL_DEFAULT:
                     let v = self.pop()
@@ -2202,29 +2518,70 @@ impl Vm:
     # A new object of program `pid`: variables initialised, then registered
     # under `name` (the reference instantiates, then register_object()s).
     fn new_object(mut self, pid: i32, name: str, clone: bool) -> i32:
-        let o = self.objs.len()
         let mut vars: List<val::Value> = List<val::Value>()
         for i in 0..self.progs[pid].nvars:
             vars.push(val::Value::Undef)
-        self.objs.push(ObjSlot(prog = pid, gen = 0, name = name, alive = true, vars = vars, clone = clone, load_time = epoch_now()))
+        let slot = ObjSlot(prog = pid, gen = 0, name = name, alive = true, vars = vars, clone = clone, load_time = epoch_now(), base_prog = self.progs[pid].path)
+        # a destructed object's slot gc.star freed, one generation on (stale
+        # values of the old object still read as destructed), else a new one
+        let mut o = self.objs.len()
+        let nf = self.obj_free_list.len()
+        if nf > 0:
+            o = self.obj_free_list[nf - 1]
+            self.obj_free_list.pop()
+            self.obj_free[o] = false
+            let g = self.objs[o].gen
+            self.objs[o] = slot
+            self.objs[o].gen = g + 1
+        else:
+            self.objs.push(slot)
+            self.obj_free.push(false)
         self.run_inits(o, pid, 0)
         if self.err:
             self.objs[o].alive = false
             return -1
-        self.obj_by_name.insert(name, o)
+        self.register_object(o)
         o
 
+    # driver register_object(): the name table, the reset schedule and the
+    # initial privs (FluffOS PRIVS: master->privs_file(name)).
+    fn register_object(mut self, o: i32):
+        let name = self.objs[o].name
+        self.obj_by_name.insert(name, o)
+        self.objs[o].last_used = epoch_now()
+        if self.reset_interval > (0 as i64):
+            self.objs[o].reset_time = wadd(epoch_now(), self.reset_delay())
+        if self.master_ob >= 0 and o != self.master_ob and self.objs[self.master_ob].alive:
+            let p = self.master_apply("privs_file", [val::Value::Str(name)], -1)
+            if self.err:
+                self.log_msg(f"privs_file({name}) failed: {self.errmsg}")
+                self.clear_err()
+            else:
+                match p:
+                    val::Value::Str(s) ->
+                        self.objs[o].privs = p
+                    _ -> 0
+
+    # create() with `caller` as previous_object(). FluffOS saves and restores
+    # the command giver around it: an NPC whose create() calls
+    # enable_commands() must not become the caller's this_player(). Errors
+    # propagate (the object stays loaded, as in the reference).
     fn call_create(mut self, o: i32, caller: i32, args: List<val::Value>):
         let e = self.any_fn(o, "create")
         if e.prog < 0:
             return
+        let saved_tp = self.cur_player
         let before = self.ostack.len()
         self.ensure_top(caller)
-        self.opush(o)
+        self.opush(o, "create")
         if self.err:
             return
         self.call_direct(e.prog, e.fnidx, e.var_off, o, args)
         self.truncate_ostack(before)
+        if saved_tp >= 0 and saved_tp != DESTRUCTED_OB and !self.objs[saved_tp].alive:
+            self.cur_player = DESTRUCTED_OB
+        else:
+            self.cur_player = saved_tp
 
     # The simul_efun names programs compile against: every name in the
     # simul_efun program's function table (driver refresh_sefuns(), which
@@ -2246,8 +2603,6 @@ impl Vm:
         self.set_sefuns_from(self.objs[self.sefun_ob].prog)
 
     # The driver's config-derived predefined macros (driver create()).
-    # `__NO_RESETS__`/`__LAZY_RESETS__` follow the reset settings, which
-    # arrive with resets themselves (M5).
     fn configure(mut self, mud_name: str, port: i32):
         self.config.insert("name", mud_name)
         self.config.insert("port", f"{port}")
@@ -2258,7 +2613,7 @@ impl Vm:
         self.pp.predefine("__CACHE_STATS__", "")
 
     # driver load_object()
-    fn load_object(mut self, path_in: str, caller: i32) -> val::Value:
+    fn load_object(mut self, path_in: str, caller_in: i32) -> val::Value:
         let path = self.normalize(path_in, "")
         if str_contains(path, "#"):
             return self.obj_value(self.find_object(path))
@@ -2268,15 +2623,22 @@ impl Vm:
         if self.loading.contains(path):
             self.fail(f"Recursive load of {path}\n")
             return val::Value::Undef
+        let caller = if caller_in >= 0: caller_in else: self.cur_obj()
         if !file_exists(concat(self.root, concat(path, ".c"))):
-            return val::Value::Int(0 as i64)
+            return self.load_virtual(path)
         self.loading.insert(path)
         let pid = self.compile_program(path)
         if pid < 0:
             self.loading.remove(path)
-            self.log.push(self.compile_error)
+            let msg = self.compile_error
+            self.log_msg(msg)
+            self.master_apply("log_error", [val::Value::Str(concat(path, ".c")), val::Value::Str(concat(msg, "\n"))], -1)
+            self.clear_err()
             self.fail(f"*Error in loading object '{path}'\n")
             return val::Value::Undef
+        # FluffOS loads every inherited file as an object of its own (its
+        # create() runs) before the inheriting object exists; a parent that
+        # fails to load fails this load too
         let inh = self.progs[pid].inherits
         for i in 0..inh.len():
             if self.find_object(inh[i].path) < 0:
@@ -2292,10 +2654,56 @@ impl Vm:
             self.sefun_ob = o
             self.refresh_sefuns()
         self.call_create(o, caller, List<val::Value>())
+        if !self.err and path == self.master_path and self.master_ob != o and self.objs[o].alive:
+            # a reloaded master replaces the old one
+            self.master_ob = o
+            self.objs[o].privs = val::Value::Str("SECURE")
         self.loading.remove(path)
         if self.err:
             return val::Value::Undef
         self.obj_value(o)
+
+    # FluffOS virtual objects (driver load_object()): no file, so the master's
+    # compile_object(path) may make one, which is renamed to `path`, stops
+    # being a clone and gets privs for its new name.
+    fn load_virtual(mut self, path: str) -> val::Value:
+        if self.master_ob < 0 or !self.objs[self.master_ob].alive:
+            return val::Value::Int(0 as i64)
+        self.loading.insert(path)
+        let r = self.master_apply("compile_object", [val::Value::Str(path), val::Value::Int(0 as i64)], -1)
+        self.loading.remove(path)
+        if self.err:
+            return val::Value::Undef
+        let vo = self.obj_of(r)
+        if vo < 0:
+            return val::Value::Int(0 as i64)
+        let existing = self.find_object(path)
+        if existing >= 0 and existing != vo:
+            self.destruct_object(-1, vo)
+            if self.err:
+                return val::Value::Undef
+            self.fail("Virtual object name duplicates an existing object name.\n")
+            return val::Value::Undef
+        let old = self.objs[vo].name
+        if let Option::Some(x) = self.obj_by_name.get(old):
+            if x == vo:
+                self.obj_by_name.remove(old)
+        self.objs[vo].name = path
+        self.objs[vo].clone = false
+        self.objs[vo].clone_no = 0
+        self.objs[vo].is_virtual = true
+        self.objs[vo].load_time = epoch_now()
+        self.obj_by_name.insert(path, vo)
+        let p = self.master_apply("privs_file", [val::Value::Str(path)], -1)
+        if self.err:
+            self.clear_err()
+        else:
+            match p:
+                val::Value::Str(s) ->
+                    self.objs[vo].privs = p
+                _ ->
+                    self.objs[vo].privs = val::Value::Int(0 as i64)
+        self.obj_value(vo)
 
     # driver clone_object()
     fn clone_object(mut self, path_in: str, args: List<val::Value>, caller: i32) -> val::Value:
@@ -2308,38 +2716,83 @@ impl Vm:
             self.fail(f"*Unable to load {path} for cloning\n")
             return val::Value::Undef
         self.clone_count += 1
-        let name = f"{path}#{self.clone_count}"
+        # named after the blueprint's program (a virtual object's clones
+        # are clones of the program compile_object() cloned)
+        let base = self.progs[self.objs[m].prog].path
+        let name = f"{base}#{self.clone_count}"
         let o = self.new_object(self.objs[m].prog, name, true)
         if o < 0:
             return val::Value::Undef
+        self.objs[o].clone_no = self.clone_count
         self.call_create(o, caller, args)
         if self.err:
             return val::Value::Undef
+        if !self.objs[o].alive:
+            return val::Value::Int(0 as i64)
         self.obj_value(o)
 
-    # Boot (driver boot()): the simul_efun object first, so every later
+    # Boot (driver boot_steps()): the simul_efun object first, so every later
     # program compiles against its function names, then the master. As in
     # FluffOS, master applies made while the master's own create() runs are
-    # skipped: master_ob is only set once it has returned. The master's
-    # other boot duties (privs, epilog/preload) come with the object model
-    # (M5); M4 needs it for the file efuns' valid_read/valid_write.
+    # skipped: master_ob is only set once it has returned, and the master's
+    # inherits aren't loaded as objects of their own. Then the master's
+    # epilog() names the files to preload(), each its own top-level
+    # evaluation. With an empty `master_path` boot stops after the
+    # simul_efun object (what the M4 `-ds` cases need).
     fn boot(mut self, sefun_path: str, master_path: str) -> bool:
+        self.configure_resets()
         self.sefun_path = sefun_path
         self.load_object(sefun_path, -1)
         if self.err:
             self.log.push(f"boot: {self.errmsg}")
             return false
+        if self.sefun_ob < 0:
+            self.log.push(f"boot: simul_efun {sefun_path} not found")
+            return false
         if master_path == "":
             return true
         self.master_path = self.normalize(master_path, "")
-        let m = self.load_object(self.master_path, -1)
+        let pid = self.compile_program(self.master_path)
+        if pid < 0:
+            self.log.push(f"boot: master: {self.compile_error}")
+            return false
+        let m = self.new_object(pid, self.master_path, false)
+        if m < 0:
+            self.log.push(f"boot: master: {self.errmsg}")
+            return false
+        self.objs[m].privs = val::Value::Str("SECURE")
+        self.call_create(m, -1, List<val::Value>())
         if self.err:
             self.log.push(f"boot: master: {self.errmsg}")
             return false
-        self.master_ob = self.obj_of(m)
-        if self.master_ob < 0:
-            self.log.push(f"boot: master {self.master_path} not found")
+        self.master_ob = m
+        self.master_established = true
+        let sp = self.master_apply("privs_file", [val::Value::Str(self.objs[self.sefun_ob].name)], -1)
+        if self.err:
+            self.log.push(f"boot: master: {self.errmsg}")
             return false
+        self.objs[self.sefun_ob].privs = if self.truthy(sp): sp else: val::Value::Str("SECURE")
+        # privs for the objects loaded before the master existed
+        for o in 1..self.objs.len():
+            if self.objs[o].alive and o != m and val::is_zero(self.objs[o].privs):
+                let p = self.master_apply("privs_file", [val::Value::Str(self.objs[o].name)], -1)
+                if self.err:
+                    self.clear_err()
+                else:
+                    match p:
+                        val::Value::Str(s) ->
+                            self.objs[o].privs = p
+                        _ -> 0
+        self.max_cost = val::int_of(self.cfg_int("maximum evaluation cost", 0 as i64))
+        self.configure_hb_slots(val::int_of(self.cfg_int("havok heart beat slots", 4 as i64)) as i32)
+        let pre = self.safe_master_apply("epilog", [val::Value::Int(0 as i64)], "epilog")
+        let files = self.arr_items(pre)
+        self.log_msg(f"Preloading {files.len()} objects")
+        for i in 0..files.len():
+            match files[i]:
+                val::Value::Str(f) ->
+                    self.safe_master_apply("preload", [files[i]], concat("preload ", f))
+                _ -> 0
         true
 
     # --- rendering (tools/run_cases.star; ref_cases.pike's render()) ---------------

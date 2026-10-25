@@ -120,6 +120,10 @@ impl Pp:
         let m = self.object_macro(value)
         self.predefines.insert(name, m)
 
+    # The driver drops `__NO_RESETS__` when resets are on (driver create()).
+    fn undefine(mut self, name: str):
+        self.predefines.remove(name)
+
     # The reference `preprocess.pike::create()` table, value for value.
     fn init_predefines(mut self):
         let empty: List<str> = ["MUDOS", "FLUFFOS", "__FLUFFOS__", "__DSLIB__",

@@ -1,0 +1,32 @@
+# M5 (object model) exit criterion, part 1: the object-model cases of HavokOS
+# pike/tests/run_tests.pike's case table -- every case of the table the M3
+# (m3_selection.txt) and M4 (m4_selection.txt) selections left out:
+# inheritance as objects, destruct (vital objects included), environments,
+# privs, call_outs, livings and this_player(), get_garbage(), origin() and
+# call_stack().
+#
+# --- loading, inheritance and destruct
+inherit loads the parent object
+inherits efun
+inherits deep levels and rebuilt chain
+inherits survives destructed blueprints
+deep_inherit_list is a copy
+function_exists
+destruct
+reload recompiles source
+code runs on after self-destruct
+master survives destruct
+sefun survives update
+# --- the call stack
+call_stack frames
+origin(): local only for calls from the same object
+# --- environments, efun defaults, privs, call_outs
+move and environment
+efun defaults when omitted
+efun undefined arg is not omitted
+# --- garbage
+get_garbage
+get_garbage skips virtual objects
+# --- this_player()
+this_player destructed mid-command
+create() enable_commands keeps this_player

@@ -35,12 +35,24 @@
 //!   own `let`s nor for calls inside it): it compiles to its own separate
 //!   function (see `crate::codegen::closure`), with its own independent
 //!   stack frame, not this function's.
-//! - Recursion (direct or mutual) is capped by tracking the current DFS
-//!   path: revisiting a function already on it contributes no further
-//!   footprint through that edge, rather than looping forever. This means a
-//!   deeply recursive function's *own* per-call frame cost is not what this
-//!   pass measures (a different, well-known problem); it only measures one
-//!   static traversal of the call graph.
+//! - Recursion (direct or mutual) is handled on the call graph's condensation
+//!   into strongly connected components: a group of functions that can all
+//!   reach one another (a recursive cycle) counts as one node whose own
+//!   footprint is the sum of its members' -- every member can be on the
+//!   stack at once -- plus the heaviest chain leaving the group. A deeply
+//!   recursive function's *repeated* per-call frame cost is still not what
+//!   this pass measures (a different, well-known problem); it measures each
+//!   function's frame once. On an acyclic call graph this is exactly "own
+//!   footprint plus the heaviest callee chain".
+//!
+//!   It used to be a DFS that tracked only the current path, so a function
+//!   called from two branches was re-explored down each one. That is a walk
+//!   over every simple path of the call graph, exponential in a densely
+//!   connected one: the `projects/havokos` LPMUD driver's interpreter loop,
+//!   efun dispatch and driver applies all call one another (`todo.md`
+//!   HavokOS M5), and `star check` on it never finished. The condensation
+//!   costs time linear in the graph, and for a cycle it is an upper bound
+//!   on the old answer, never below it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -115,6 +127,7 @@ impl Checker {
             }
         }
 
+        let totals = cumulative_footprints(&fn_infos);
         // Sorted purely so warnings come out in a stable, reproducible
         // order across runs -- `fn_infos` is a `HashMap`, whose iteration
         // order isn't otherwise guaranteed.
@@ -133,8 +146,7 @@ impl Checker {
             if info.own_footprint == 0 {
                 continue;
             }
-            let mut path = HashSet::new();
-            let cumulative = cumulative_footprint(name, &fn_infos, &mut path);
+            let cumulative = totals[name.as_str()];
             if cumulative >= STACK_BUDGET_WARN_BYTES {
                 self.warning(
                     format!(
@@ -158,21 +170,99 @@ fn fn_info_of(body: &TypedBlock, span: Span, structs: &HashMap<String, Vec<Ty>>,
 }
 
 /// The static call-graph traversal `Checker::check_stack_budget` runs after
-/// `fn_infos` is built: `own_footprint` plus whichever direct callee's own
-/// `cumulative_footprint` is largest, recursively -- i.e. the heaviest single
-/// static call path reachable from `name`. `path` tracks the current DFS
-/// path (not a global visited set) so a function called from two unrelated
-/// branches is still measured independently down each one; a function
-/// already on the current path (direct or mutual recursion) contributes no
-/// further footprint through that edge -- see this module's doc comment.
-fn cumulative_footprint(name: &str, fn_infos: &HashMap<String, FnInfo>, path: &mut HashSet<String>) -> u64 {
-    let Some(info) = fn_infos.get(name) else { return 0 };
-    if !path.insert(name.to_string()) {
-        return 0;
+/// `fn_infos` is built: for every function, its own footprint plus the
+/// heaviest static call chain reachable from it, computed on the graph's
+/// strongly connected components (see this module's doc comment). Tarjan's
+/// algorithm, iteratively (the call graph of a large program is deep enough
+/// that native recursion here could itself overflow), emits each component
+/// only after every component reachable from it, so one pass in emission
+/// order can sum each from its already-final successors. Callees that aren't
+/// in `fn_infos` (builtins, externs) contribute nothing, as before.
+fn cumulative_footprints(fn_infos: &HashMap<String, FnInfo>) -> HashMap<&str, u64> {
+    // Dense ids, in sorted name order so the traversal is deterministic.
+    let mut names: Vec<&str> = fn_infos.keys().map(|s| s.as_str()).collect();
+    names.sort();
+    let id_of: HashMap<&str, usize> = names.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+    let edges: Vec<Vec<usize>> = names
+        .iter()
+        .map(|n| {
+            let mut out: Vec<usize> = fn_infos[*n].callees.iter().filter_map(|c| id_of.get(c.as_str()).copied()).collect();
+            out.sort_unstable();
+            out.dedup();
+            out
+        })
+        .collect();
+    let n = names.len();
+
+    const UNSEEN: usize = usize::MAX;
+    let mut index = vec![UNSEEN; n];
+    let mut low = vec![0usize; n];
+    let mut on_stack = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut comp_of = vec![UNSEEN; n];
+    let mut comp_total: Vec<u64> = Vec::new();
+    let mut next_index = 0usize;
+    // DFS frames: (node, position in its edge list)
+    let mut dfs: Vec<(usize, usize)> = Vec::new();
+    for root in 0..n {
+        if index[root] != UNSEEN {
+            continue;
+        }
+        dfs.push((root, 0));
+        index[root] = next_index;
+        low[root] = next_index;
+        next_index += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        while let Some(top) = dfs.last_mut() {
+            let v = top.0;
+            if top.1 < edges[v].len() {
+                let w = edges[v][top.1];
+                top.1 += 1;
+                if index[w] == UNSEEN {
+                    index[w] = next_index;
+                    low[w] = next_index;
+                    next_index += 1;
+                    stack.push(w);
+                    on_stack[w] = true;
+                    dfs.push((w, 0));
+                } else if on_stack[w] {
+                    low[v] = low[v].min(index[w]);
+                }
+                continue;
+            }
+            dfs.pop();
+            if let Some(&(parent, _)) = dfs.last() {
+                low[parent] = low[parent].min(low[v]);
+            }
+            if low[v] != index[v] {
+                continue;
+            }
+            // v roots a component: pop it, then total it from its (already
+            // totalled) successors outside it.
+            let c = comp_total.len();
+            let mut members = Vec::new();
+            loop {
+                let w = stack.pop().expect("Tarjan stack holds the component");
+                on_stack[w] = false;
+                comp_of[w] = c;
+                members.push(w);
+                if w == v {
+                    break;
+                }
+            }
+            let own: u64 = members.iter().map(|&m| fn_infos[names[m]].own_footprint).fold(0u64, |a, b| a.saturating_add(b));
+            let deepest = members
+                .iter()
+                .flat_map(|&m| edges[m].iter())
+                .filter(|&&w| comp_of[w] != c)
+                .map(|&w| comp_total[comp_of[w]])
+                .max()
+                .unwrap_or(0);
+            comp_total.push(own.saturating_add(deepest));
+        }
     }
-    let deepest_callee = info.callees.iter().map(|c| cumulative_footprint(c, fn_infos, path)).max().unwrap_or(0);
-    path.remove(name);
-    info.own_footprint + deepest_callee
+    names.iter().enumerate().map(|(i, name)| (*name, comp_total[comp_of[i]])).collect()
 }
 
 /// Sum of `approx_stack_size` over every `let` directly inside `block`,

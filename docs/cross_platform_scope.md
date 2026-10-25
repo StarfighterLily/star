@@ -154,6 +154,17 @@ x86_64-unknown-linux-gnu -c` compiles to an object: the devbox wasn't
 reachable that day (`localhost:2222` refused, no `wsl` on `PATH`). It
 moves to "Already seamed" once linked and run there.
 
+`codegen/clock.rs` — `clock_ms` (added 2026-10-25 for `projects/havokos`,
+`todo.md` HavokOS M5: call_outs, heart beats and the evaluation limit need
+a monotonic clock that outlives msvcrt `clock()`'s 24.8 days). The Windows
+arm (`GetTickCount64`) is run by `tests/frontend_clock.rs`. The
+`Target::LinuxGnu` arm (`clock_gettime(CLOCK_MONOTONIC = 1, &timespec)`,
+two `i64`s) is checked the same way as `fs.rs`'s: `star emit llvm
+--target=linux` IR that `clang -target x86_64-unknown-linux-gnu -c`
+compiles to an object importing only `clock_gettime`, plus
+`tests/frontend_clock.rs`'s IR-shape test. Not yet linked and run on the
+devbox.
+
 ## Hard, deliberately unstarted: text rendering (`codegen/system_font.rs`)
 
 Unchanged from this module's own doc comment: GDI's font engine

@@ -142,9 +142,52 @@ mudlib before it's marked done.
       Four new deliberate deviations are documented in NOTES.md (#7 no NUL
       bytes in strings, #8 map/filter over strings work, #9 insertion-order
       mappings, plus #3's float-printing note).
-- [ ] **HavokOS P1 #2 (M5): object model.** Master/sefun loading, load/
-      clone/destruct, environment/move, add_action/commands, call_outs,
-      heart beats, reset/clean_up.
+- [x] **HavokOS P1 #2 (M5): object model.** Done. `objects.star` (applies,
+      top-level evaluations with the evaluation limit and error_handler()
+      reports, destruct including the vital master/simul_efun objects,
+      environments and init(), livings, shadows, add_action dispatch,
+      messages, call_outs, heart beats, reset/clean_up, replace_program(),
+      get_garbage(), the driver's timer step), `efuns_obj.star` (~90 efuns),
+      `gc.star` (a mark-and-sweep between top-level evaluations, with free
+      lists and object slot reuse), and per-object state, privs, virtual
+      objects and the full boot in `vm.star`. Runtime errors now carry
+      source lines (a per-function line table from the compiler). Checked
+      against the live Pike driver three ways:
+      - The reference table's 20 remaining (object-model) cases
+        (`m5_selection.txt`), the two "efun defaults" cases M4 deferred
+        among them.
+      - 42 edge cases of this port's own (`m5_cases.txt`), including ports
+        of run_tests.pike's Pike-level call_out, living, reset/clean_up,
+        heart beat and evaluation-limit tests through `test_*` driver hooks
+        both case runners provide.
+      - Dead Souls 3.9 boots all the way on both drivers (all 43 preloads):
+        the same 162 live objects with the same privs, environments, heart
+        beats and living flags, the same 42 pending call_outs and the same
+        files written (contents differing only in mapping order and a
+        timestamp; `tests/run_boot_test.ps1`). The 80 efuns of M6/M7 are
+        stubbed identically on the reference side.
+      All 520 cases (M3-M5) pass with a garbage collection after every
+      case; the M1-M3 sweeps still pass. A 60 s soak of the booted mudlib
+      (`boot_ds.exe -run 60`, also with a collection every tick) runs clean
+      apart from the socket efuns M7 brings.
+      Found and fixed two genuine Star **compiler** bugs along the way:
+      - `star check` never finished on the M5 VM: the stack-budget warning
+        walked every simple path of the call graph. Now linear, on its
+        strongly connected components (`src/types/stack_budget.rs`); 3 new
+        tests in `tests/frontend_stack_budget_warning.rs`.
+      - A statement `match` whose arms have different value types built
+        malformed IR (a `Value` phi with an `int` incoming). Such a match now
+        produces no value: fine as a statement, a type error as a value
+        (`src/types/expr.rs`, `stmt.rs`, `src/codegen/expr.rs`); new test
+        file `tests/frontend_match_arm_types.rs` (5 tests).
+      New Star compiler surface: `clock_ms()`, a monotonic millisecond clock
+      (`src/codegen/clock.rs`, `tests/frontend_clock.rs`), since nothing
+      reachable from Star lasts a MUD's uptime (msvcrt `clock()` stops after
+      24.8 days); Linux arm IR/object-verified only
+      (`docs/cross_platform_scope.md`). Three new deliberate deviations in
+      NOTES.md (#10 replace_program() switches the program, #11 functionp()
+      sets FP_OWNER_DESTED, #12 inheritance queries follow the object's own
+      program).
 - [ ] **HavokOS P1 #3 (M6): network + boot (MVP).** Needs new Star
       `tcp_listen`/`tcp_accept` builtins in `src/codegen/net.rs`, since
       today only client sockets exist and FFI can't build a `sockaddr_in`.
@@ -185,7 +228,10 @@ mudlib before it's marked done.
       and again after the M3 `src/modules.rs` fix (2097 others pass,
       including M3's 4 new tests), and after M4's compiler changes (2111
       others pass, including M4's 14 new tests in `frontend_math_f64.rs`
-      and `frontend_fs.rs`).
+      and `frontend_fs.rs`), and after M5's (2125 others pass, including
+      M5's 14 new tests in `frontend_clock.rs`, `frontend_match_arm_types.rs`
+      and `frontend_stack_budget_warning.rs`; the suite needs
+      `--no-fail-fast` to get past these five).
 
 ## Previous focus: porting NoBASIC to Star
 
@@ -460,3 +506,21 @@ reconciled to match whichever of the two Python sources looks more
   - running real Dead Souls 3.9 simul_efuns on both drivers (`-ds`).
   Filed the single-precision float literal issue as HavokOS P2 #3. Known
   slow spot left for M5: `a += ({ x })` in a long loop.
+- 2026-10-25: HavokOS P1 #2 (M5, object model) is done. See its entry above
+  and `projects/havokos/NOTES.md` ("2026-10-25: M5 object model",
+  constraints #14-#15, deviations #10-#12, Star compiler bugs #7-#8), which
+  also covers:
+  - driving the reference's own Pike-level driver tests from LPC: `test_*`
+    hooks the Star case runner registers as efuns and `tools/ref_cases.pike`
+    installs in a subclass of the reference's efun table;
+  - the Dead Souls boot comparison (`tools/boot_ds.star`,
+    `tools/ref_boot.pike`), which stubs the efuns of later milestones on
+    the reference side so both drivers fail the same calls;
+  - the garbage collector and why it only runs between top-level
+    evaluations;
+  - the two Star compiler bugs found and fixed (`star check` hanging on a
+    densely connected call graph, found with gdb; malformed IR from a
+    statement `match` with mismatched arm types) and the new `clock_ms()`
+    builtin.
+  The release compiler builds the HavokOS tools; the Star suite ran with
+  `CARGO_TARGET_DIR=target/alt` as before.

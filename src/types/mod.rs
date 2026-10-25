@@ -967,6 +967,8 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "file_size" | "file_mtime" => Some(Ty::I64),
         "dir_create" | "dir_remove" | "file_remove" | "file_rename" => Some(Ty::Bool),
         "local_time" => Some(Ty::List(Box::new(Ty::I64))),
+        // Monotonic milliseconds -- see `crate::codegen::clock`.
+        "clock_ms" => Some(Ty::I64),
         // Minimal OS surface (todo.md #2) -- see `crate::codegen::list::emit_args`
         // and `crate::codegen::os`. `args()` includes `argv[0]` (the program
         // path/name), same convention the underlying OS argv itself uses.
@@ -1526,6 +1528,8 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     "SDL_SetTextureColorMod", "SDL_SetTextureAlphaMod", "SDL_RenderCopy", "SDL_DestroyTexture",
     // `crate::codegen::fs`
     "_findfirst64", "_findnext64", "_findclose", "_stat64", "_mkdir", "_rmdir", "MoveFileExA", "_localtime64_s", "_mkgmtime64", "opendir", "readdir", "closedir", "stat", "mkdir", "rmdir", "rename", "localtime_r", "remove",
+    // `clock_ms` builtin -- see `crate::codegen::clock`.
+    "GetTickCount64", "clock_gettime",
 ];
 
 /// The error type for type checking.
@@ -1655,6 +1659,11 @@ pub struct Checker {
     /// `check_block` (mirrors `vars`' own per-function reset), since `mut`
     /// is a property of one specific binding, never global.
     mut_vars: HashSet<String>,
+    /// Set by `check_stmt` just before inferring a statement that is itself
+    /// a `match` (and taken by that match's `Expr::Match` arm): such a match
+    /// may have arms of incompatible value types, since nothing uses its
+    /// value. Anywhere else that's an error.
+    match_is_stmt: bool,
     /// Names of every free function/method whose body -- directly, or
     /// transitively through any call it makes -- contains a `spawn`,
     /// `despawn`, or `frame:` statement. Computed once, up front, from the
@@ -1773,6 +1782,7 @@ impl Checker {
             errors: Vec::new(),
             loop_depth: 0,
             mut_vars: HashSet::new(),
+            match_is_stmt: false,
             unsafe_par_fns: HashSet::new(),
             systems: HashMap::new(),
             current_ret_ty: None,

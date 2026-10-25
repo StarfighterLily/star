@@ -291,7 +291,8 @@ impl vm::Vm:
                 rest.push(args[i])
             let r = self.lpc_sprintf(fmt, rest)
             if code == et::E_PRINTF:
-                print(r)
+                # printf() is write(sprintf()): to this_player() (M5)
+                self.do_write(val::Value::Str(r))
                 return val::Value::Int(0 as i64)
             return val::Value::Str(r)
         if code == et::E_SSCANF:

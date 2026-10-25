@@ -560,6 +560,7 @@ impl Checker {
                 Ok(TypedExpr::Unary { op: *op, operand: Box::new(operand_expr), ty, span: *span })
             }
             Expr::Match { scrutinee, arms, span } => {
+                let is_stmt = std::mem::replace(&mut self.match_is_stmt, false);
                 let scrutinee_expr = self.infer_expr(scrutinee, vars)?;
                 // Each arm gets its own scoped copy of `vars`: a payload
                 // pattern's bindings (see `check_match_arm`) must not leak
@@ -584,10 +585,44 @@ impl Checker {
                 // arm below), so its `unknown` placeholder (see
                 // `check_match_arm`) must not shadow a real type reported by
                 // a later, value-producing arm.
-                let ty = arm_tys.iter()
+                let value_tys: Vec<Ty> = arm_tys.iter()
                     .map(|a| a.ty.clone())
-                    .find(|t| !matches!(t, Ty::Named(n) if n == "unknown"))
-                    .unwrap_or(Ty::Named("unknown".into()));
+                    .filter(|t| !matches!(t, Ty::Named(n) if n == "unknown"))
+                    .collect();
+                // Arms whose values can't share one join `phi` (a payload
+                // enum in one arm, an `int` in another, as in a statement
+                // `match v: A -> f()  _ -> 0` used only for its effects) make
+                // a match with no value at all (`void`), rather than one typed after
+                // its first arm: that used to hand codegen a `phi` of the
+                // first arm's type with another arm's incompatible value
+                // flowing in -- malformed IR the build refused (found
+                // porting the LPMUD driver in `projects/havokos`, `todo.md`
+                // HavokOS M5). As a statement that's exactly right; using
+                // such a match as a value is now a type error where it used
+                // to be broken IR. Integer-shaped arms still take the first
+                // arm's type, as before: an integer literal is a valid
+                // incoming value for any integer `phi`, which existing code
+                // relies on (`-> x as i64` beside `_ -> 0`).
+                let compatible = |a: &Ty, b: &Ty| a == b || (a.int_shape().is_some() && b.int_shape().is_some());
+                let ty = match value_tys.first() {
+                    Some(first) => match value_tys.iter().find(|t| !compatible(first, t)) {
+                        None => first.clone(),
+                        Some(other) => {
+                            if !is_stmt {
+                                self.error(
+                                    format!("`match` arms produce values of incompatible types `{:?}` and `{:?}`; it can only be used as a statement", first, other),
+                                    *span,
+                                );
+                            }
+                            // `void`, not the `unknown` placeholder: that one
+                            // is accepted wherever any type is expected, so a
+                            // function returning this match as its trailing
+                            // value would type-check and return garbage
+                            Ty::Named("void".into())
+                        }
+                    },
+                    None => Ty::Named("unknown".into()),
+                };
                 Ok(TypedExpr::Match { scrutinee: Box::new(scrutinee_expr), arms: arm_tys, ty, span: *span })
             }
             Expr::StructLit { name, type_args, args, arg_names, span } => {
@@ -2684,6 +2719,9 @@ impl Checker {
                         }
                     }
                 }
+            }
+            "clock_ms" => {
+                arity_ok(0, self);
             }
             "local_time" => {
                 if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::I64) {

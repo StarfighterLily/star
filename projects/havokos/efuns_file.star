@@ -31,6 +31,7 @@ import "efun_table.star" as et
 import "paths.star" as paths
 import "saveformat.star" as sav
 import "buf.star" as bf
+import "objects.star" as objm
 
 fn day_name(d: i64) -> str:
     let n = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -108,16 +109,12 @@ impl vm::Vm:
     fn is_dir_path(self, abs: str) -> bool:
         path_kind(concat(self.root, strip_slash(abs))) == 2
 
-    fn master_apply(mut self, fname: str, args: List<val::Value>, caller: i32) -> val::Value:
-        if self.master_ob < 0 or !self.objs[self.master_ob].alive:
-            return val::Value::Undef
-        let e = self.public_fn(self.master_ob, fname)
-        if e.prog < 0:
-            return val::Value::Undef
-        self.call_other_value(caller, self.obj_value(self.master_ob), val::Value::Str(fname), args)
-
     fn check_read(mut self, self_ob: i32, file: str, fun: str) -> bool:
         if self.master_ob < 0:
+            return true
+        # while the simul_efun object (re)loads, its trusted initializers run
+        # before it has privs (efuns.pike check_read())
+        if self.loading.contains(self.sefun_path):
             return true
         let r = self.master_apply("valid_read", [val::Value::Str(self.mud_abs(file)), self.obj_value(self_ob), val::Value::Str(fun)], self_ob)
         if self.err:
