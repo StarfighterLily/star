@@ -9,14 +9,43 @@ OBJ /daemon/soul MUDLIBPRIV -
 OBJ /daemon/stats MUDLIBPRIV -
 OBJ /daemon/types MUDLIBPRIV -
 OBJ /daemon/verbs MUDLIBPRIV -
+OBJ /domains/campus/armor/bluedress Campus -
+OBJ /domains/campus/armor/bluedress# Campus /domains/campus/npc/jennybot#
+OBJ /domains/campus/armor/necklace Campus -
+OBJ /domains/campus/armor/necklace# Campus /domains/campus/npc/jennybot#
+OBJ /domains/campus/armor/pillbox_hat Campus -
+OBJ /domains/campus/armor/pillbox_hat# Campus /domains/campus/npc/jennybot#
+OBJ /domains/campus/armor/wglove_l Campus -
+OBJ /domains/campus/armor/wglove_l# Campus /domains/campus/npc/jennybot#
+OBJ /domains/campus/armor/wglove_r Campus -
+OBJ /domains/campus/armor/wglove_r# Campus /domains/campus/npc/jennybot#
+OBJ /domains/campus/doors/plain_door Campus -
+OBJ /domains/campus/npc/jennybot Campus - HB LIVING
+OBJ /domains/campus/npc/jennybot# Campus /domains/campus/room/start HB LIVING
+OBJ /domains/campus/npc/turret Campus - HB LIVING
+OBJ /domains/campus/npc/turret# Campus /domains/campus/room/hazlab HB LIVING
+OBJ /domains/campus/obj/bbucket Campus -
+OBJ /domains/campus/obj/bbucket# Campus /domains/campus/room/start
+OBJ /domains/campus/obj/workbench Campus -
+OBJ /domains/campus/obj/workbench# Campus /domains/campus/room/hazlab
 OBJ /domains/campus/room/hazlab Campus -
-OBJ /domains/campus/room/start Campus -
+OBJ /domains/campus/room/start Campus - HB
+OBJ /domains/default/armor/pscoutsuit Default - HB
+OBJ /domains/default/armor/pscoutsuit# Default /domains/campus/room/hazlab HB
+OBJ /domains/default/npc/tree Default - HB LIVING
+OBJ /domains/default/npc/tree# Default /domains/default/room/wiz_hall HB LIVING
+OBJ /domains/default/obj/chest Default -
+OBJ /domains/default/obj/chest# Default /domains/default/room/wiz_hall
 OBJ /domains/default/room/furnace Default - HB
 OBJ /domains/default/room/pod Default -
-OBJ /domains/default/room/wiz_hall Default -
+OBJ /domains/default/room/wiz_hall Default - HB
+OBJ /domains/default/virtual/void Default -
+OBJ /domains/town/doors/pressure_door Town -
 OBJ /domains/town/room/wtunnel3 Town -
 OBJ /lib/bboard GENERAL -
+OBJ /lib/bboard# GENERAL /domains/default/room/wiz_hall
 OBJ /lib/body GENERAL -
+OBJ /lib/bot GENERAL - HB LIVING
 OBJ /lib/cedit GENERAL -
 OBJ /lib/chario GENERAL -
 OBJ /lib/chat GENERAL -
@@ -28,6 +57,7 @@ OBJ /lib/comp/container GENERAL -
 OBJ /lib/comp/holder GENERAL -
 OBJ /lib/comp/object GENERAL -
 OBJ /lib/comp/seal GENERAL -
+OBJ /lib/comp/surface GENERAL -
 OBJ /lib/comp/weapon GENERAL -
 OBJ /lib/currency GENERAL -
 OBJ /lib/detect GENERAL -
@@ -35,6 +65,7 @@ OBJ /lib/domesticate GENERAL -
 OBJ /lib/door GENERAL -
 OBJ /lib/editor GENERAL -
 OBJ /lib/enter GENERAL -
+OBJ /lib/events/activate GENERAL -
 OBJ /lib/events/bury GENERAL -
 OBJ /lib/events/close GENERAL -
 OBJ /lib/events/crawl GENERAL -
@@ -56,6 +87,7 @@ OBJ /lib/events/look_in GENERAL -
 OBJ /lib/events/poison GENERAL -
 OBJ /lib/events/put GENERAL -
 OBJ /lib/events/read GENERAL -
+OBJ /lib/events/roll GENERAL -
 OBJ /lib/events/scratch GENERAL -
 OBJ /lib/events/search GENERAL -
 OBJ /lib/events/sell GENERAL -
@@ -67,6 +99,8 @@ OBJ /lib/events/smell GENERAL -
 OBJ /lib/events/stop GENERAL -
 OBJ /lib/events/swim GENERAL -
 OBJ /lib/events/touch GENERAL -
+OBJ /lib/events/turn GENERAL -
+OBJ /lib/events/wear GENERAL -
 OBJ /lib/events/wield GENERAL -
 OBJ /lib/exits GENERAL -
 OBJ /lib/files GENERAL -
@@ -88,9 +122,10 @@ OBJ /lib/messages GENERAL -
 OBJ /lib/money GENERAL -
 OBJ /lib/mount GENERAL -
 OBJ /lib/nmsh GENERAL -
-OBJ /lib/npc GENERAL -
+OBJ /lib/npc GENERAL - HB LIVING
 OBJ /lib/pager GENERAL -
 OBJ /lib/persist GENERAL -
+OBJ /lib/player GENERAL -
 OBJ /lib/props/addstuff GENERAL -
 OBJ /lib/props/ambiance GENERAL -
 OBJ /lib/props/body_mass GENERAL -
@@ -111,20 +146,48 @@ OBJ /lib/props/uniqueness GENERAL -
 OBJ /lib/props/value GENERAL -
 OBJ /lib/quest GENERAL -
 OBJ /lib/race GENERAL -
+OBJ /lib/sentient GENERAL - HB LIVING
 OBJ /lib/shadow_hook GENERAL -
+OBJ /lib/std/armor GENERAL -
+OBJ /lib/std/bane GENERAL -
+OBJ /lib/std/base_armor GENERAL -
 OBJ /lib/std/base_dummy GENERAL -
 OBJ /lib/std/base_storage GENERAL -
+OBJ /lib/std/bed GENERAL -
 OBJ /lib/std/daemon GENERAL -
 OBJ /lib/std/dummy GENERAL -
+OBJ /lib/std/dummy# GENERAL /domains/campus/room/start
+OBJ /lib/std/dummy# GENERAL /domains/default/room/wiz_hall
+OBJ /lib/std/dummy# GENERAL /domains/town/room/wtunnel3
+OBJ /lib/std/dummy# GENERAL /domains/town/room/wtunnel3
+OBJ /lib/std/dummy# GENERAL /domains/town/room/wtunnel3
+OBJ /lib/std/dummy# GENERAL /domains/town/room/wtunnel3
+OBJ /lib/std/dummy# GENERAL /domains/town/room/wtunnel3
+OBJ /lib/std/dummy# GENERAL /domains/town/room/wtunnel3
+OBJ /lib/std/dummy# GENERAL /domains/town/room/wtunnel3
+OBJ /lib/std/dummy# GENERAL /secure/room/arch
+OBJ /lib/std/dummy# GENERAL /secure/room/arch
+OBJ /lib/std/dummy# GENERAL /secure/room/arch
+OBJ /lib/std/dummy# GENERAL /secure/room/arch
+OBJ /lib/std/dummy# GENERAL /secure/room/arch
+OBJ /lib/std/dummy# GENERAL /secure/room/arch
+OBJ /lib/std/dummy# GENERAL /secure/room/arch
+OBJ /lib/std/dummy# GENERAL /secure/room/arch
+OBJ /lib/std/dummy# GENERAL /secure/room/arch
+OBJ /lib/std/dummy# GENERAL /secure/room/arch
 OBJ /lib/std/furnace GENERAL -
 OBJ /lib/std/item GENERAL -
 OBJ /lib/std/room GENERAL -
 OBJ /lib/std/storage GENERAL -
+OBJ /lib/std/table GENERAL -
+OBJ /lib/std/worn_storage GENERAL -
 OBJ /lib/steal GENERAL -
 OBJ /lib/talk GENERAL -
 OBJ /lib/teach GENERAL -
 OBJ /lib/undead GENERAL -
 OBJ /lib/user/autosave GENERAL -
+OBJ /lib/virtual/virt_land GENERAL -
+OBJ /lib/virtual/virtual GENERAL -
 OBJ /secure/daemon/autoexec SECURE -
 OBJ /secure/daemon/bboard SECURE -
 OBJ /secure/daemon/chat SECURE -
@@ -135,6 +198,7 @@ OBJ /secure/daemon/folders SECURE -
 OBJ /secure/daemon/function SECURE -
 OBJ /secure/daemon/imc2 SECURE - HB
 OBJ /secure/daemon/inet SECURE - HB
+OBJ /secure/daemon/instances SECURE - HB
 OBJ /secure/daemon/letters SECURE -
 OBJ /secure/daemon/localpost SECURE -
 OBJ /secure/daemon/log SECURE -
@@ -147,20 +211,29 @@ OBJ /secure/daemon/reaper SECURE - HB
 OBJ /secure/daemon/reload SECURE - HB
 OBJ /secure/daemon/remotepost SECURE - HB
 OBJ /secure/daemon/resolv SECURE -
+OBJ /secure/daemon/rooms SECURE - HB
 OBJ /secure/daemon/secrets SECURE -
 OBJ /secure/daemon/snoop SECURE - HB
 OBJ /secure/daemon/update SECURE -
+OBJ /secure/lib/bboard SECURE -
 OBJ /secure/lib/net/client SECURE -
 OBJ /secure/lib/net/server SECURE -
 OBJ /secure/lib/net/server# SECURE -
 OBJ /secure/lib/net/server# SECURE -
 OBJ /secure/lib/net/server# SECURE -
 OBJ /secure/lib/net/server# SECURE -
+OBJ /secure/obj/arch_board SECURE -
+OBJ /secure/obj/arch_board# SECURE /secure/room/arch
+OBJ /secure/obj/portal_blue SECURE -
+OBJ /secure/obj/portal_blue# SECURE /domains/campus/room/hazlab
+OBJ /secure/obj/portal_blue# SECURE /domains/campus/room/hazlab
 OBJ /secure/obj/portal_orange SECURE -
+OBJ /secure/obj/portal_orange# SECURE /domains/town/room/wtunnel3
+OBJ /secure/obj/portal_orange# SECURE /domains/town/room/wtunnel3
 OBJ /secure/room/arch SECURE -
 OBJ /secure/room/network SECURE -
 OBJ /secure/sefun/sefun SECURE -
-COUNT objects 162
-COUNT clones 4
-COUNT call_outs 42
-COUNT heart_beats 10
+COUNT objects 235
+COUNT clones 41
+COUNT call_outs 70
+COUNT heart_beats 25

@@ -1,0 +1,188 @@
+< ~ff~fd~18~ff~fd~1f~ff~fd'~ff~fbF~ff~fb~c9~ff~fbE~ff~fbZ~ff~fb]~ff~fb[~ff~fb~19~ff~fb*Connected to DeadSoulsNew, an LP mud running on Microsoft Windows NT.~0d~0a
+< ~0d~0a
+<                 The Dead Souls Object Library version 3~0d~0a
+< ~0d~0a
+<              This software is copyrighted and it is not GPL. ~0d~0a
+< ~0d~0a
+<                  For more info: http://dead-souls.net~0d~0a
+< ~0d~0a
+<            Driver: HavokOS 0.2               Mudlib: Dead Souls 3.9            ~0d~0a
+< ~0d~0a
+< What name do you wish?
+> alice
+<  ~ff~f9Do you really wish to be known as Alice? (y/n)
+> y
+<  ~0d~0a
+< ~ff~f9~0d~0a
+< Are you 13 years of age or older? (y/n)
+> y
+<  ~0d~0a
+< ~ff~f9~0d~0a
+< Do you use a screen reader for the visually impaired? (y/n)
+> n
+< ~0d~0a
+< ~ff~f9Ok, allowing default overhead map behavior.~0d~0a
+< ~0d~0a
+< Create a password of at least 5 letters:
+> secret12
+<  ~0d~0a
+< ~ff~fb~01~ff~f9~ff~fc~01~0d~0a
+< ~0d~0a
+< Please confirm your password:
+> secret12
+<  ~ff~fb~01~ff~f9~ff~fc~01~0d~0a
+< ~0d~0a
+< ~0d~0a
+< Please choose an interesting gender (male, female, neutral, or none):
+> male
+<  ~0d~0a
+< ~ff~f9~0d~0a
+< For security reasons, DeadSoulsNew requires a valid email.~0d~0a
+< Email:
+> me@x.org
+<  ~0d~0a
+< ~ff~f9~0d~0a
+< ~0d~0a
+< You must now pick a race.~0d~0a
+< Picking a race influences what physical traits your character will have.~0d~0a
+< ~0d~0a
+< You may issue the following commands:~0d~0a
+< ~09list - lists all races from which you can choose~0d~0a
+< ~09help - get help on what races mean~0d~0a
+< ~09help RACE - (e.g. "help human") gives you information on a race~0d~0a
+< ~09pick RACE - pick a particular race for yourself~0d~0a
+< ~0d~0a
+< ~09Valid races: dwarf elf half-elf half-orc halfling human orc poleepkwa~0d~0a
+< ~0d~0a
+< Race:
+> list
+<  ~0d~0a
+< ~ff~f9dwarf          elf            half-elf       half-orc       halfling       ~0d~0a
+< human          orc            poleepkwa      ~0d~0a
+< ~0d~0a
+< Race:
+> pick human
+<  ~0d~0a
+< ~ff~f9~1b[0m~0d~0a
+< ~1b[31mGeneral news:~1b[0m~1b[0m~0d~0a
+< ~09~09~09     General news~1b[0m~0d~0a
+< ~09~09~09    /news/general~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+< * To enable colored text, type: ~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+< terminal ansi~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+< * New characters have the new Players Handbook. It's not that~1b[0m~0d~0a
+< long, and it's super helpful. To get started, type:~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+< read chapter 1 in handbook~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+< ~1b[0m~1b[0m~0d~0a
+< Press <return> to continue: ~1b[0mYou wear a pair of blue jeans.~1b[0m~1b[0m~0d~0a
+< You wear a white t-shirt.
+> 
+< ~1b[0m~1b[0m~0d~0a
+< ~ff~f9~1b[0m~0d~0a
+< ~1b[31mNewbie news:~1b[0m~1b[0m~0d~0a
+< ~09~09~09     Newbie news~1b[0m~0d~0a
+< ~09~09~09     /news/newbie~1b[0m~0d~0a
+< ~1b[0m~1b[0m~0d~0a
+< Press <return> to continue:
+> 
+<  ~1b[0m~ff~f9The start room~1b[0m~0d~0a
+< ---------~1b[0m~0d~0a
+< |       |~1b[0m~0d~0a
+< |       |~1b[0m~0d~0a
+< |   *   |~1b[0m~0d~0a
+< |   |   |~1b[0m~0d~0a
+< |   #   |~1b[0m~0d~0a
+< ---------~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+< Welcome! To enter the main area, type: ~1b[32menter town~1b[0m~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+<   ~1b[0m~1b[0m~0d~0a
+< Obvious exits: south, enter town~1b[0m~1b[0m~0d~0a
+< ~1b[35mA cheat book~1b[0m~1b[35m is here.~1b[0m~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+< ~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp:
+> look
+<  ~1b[0m399/399 > ~1b[0m~ff~f9The start room~1b[0m~0d~0a
+< ---------~1b[0m~0d~0a
+< |       |~1b[0m~0d~0a
+< |       |~1b[0m~0d~0a
+< |   *   |~1b[0m~0d~0a
+< |   |   |~1b[0m~0d~0a
+< |   #   |~1b[0m~0d~0a
+< ---------~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+< Welcome! To enter the main area, type: ~1b[32menter town~1b[0m~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+<   ~1b[0m~1b[0m~0d~0a
+< Obvious exits: south, enter town~1b[0m~1b[0m~0d~0a
+< ~1b[35mA cheat book~1b[0m~1b[35m is here.~1b[0m~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+< ~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp:
+> inventory
+<  ~1b[0m399/399 > ~1b[0m~ff~f9You are carrying the following items:~1b[0m~0d~0a
+< A Player's Handbook~1b[0m~0d~0a
+< A white t-shirt (~1b[32mworn~1b[0m)~1b[0m~0d~0a
+< A pair of blue jeans (~1b[32mworn~1b[0m)~1b[0m~0d~0a
+< ~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp:
+> who
+<  ~1b[0m399/399 > ~1b[0m~ff~f9                                 DeadSoulsNew                                  ~1b[0m~0d~0a
+< *=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*~1b[0m~0d~0a
+< [1]:  Alice the unaccomplished~1b[0m~1b[0m~1b[0m~0d~0a
+< *=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*~1b[0m~0d~0a
+<                      There is one member of our reality.~1b[0m~0d~0a
+<                       ~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp:
+> get book
+<  ~1b[0m399/399 > ~1b[0m~ff~f9You get a cheat book.~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp:
+> read chapter 1 in handbook
+<  ~1b[0m399/399 > ~1b[0m~ff~f9You can't read chapter 1 in that.~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp:
+> say hello there
+<  ~1b[0m399/399 > ~1b[0m~ff~f9You say in Common, "~1b[1m~1b[36mHello there.~1b[0m"~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp:
+> score
+<  ~1b[0m399/399 > ~1b[0m~ff~f9You are Alice the unaccomplished~1b[0m (neutral).~1b[0m~0d~0a
+< You are a level 1 Human Explorer.~1b[0m~0d~0a
+< Your native town is Town, and you are agnostic in faith.~1b[0m~0d~0a
+< You have solved zero quests, and have zero titles. (0 Quest Points)~1b[0m~0d~0a
+< You were born on the 4th day of Aenterki, year 206. (18 years old)~1b[0m~0d~0a
+< Training points await you at level 2.~1b[0m~0d~0a
+< You are feeling brave.~1b[0m~0d~0a
+< You are quite full.~1b[0m~0d~0a
+< You are unthirsty and sober.~1b[0m~0d~0a
+< You require 450 more experience points to advance.~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+< You have 15 customization points left. Type: help customize~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp:
+> smile
+<  ~1b[0m399/399 > ~1b[0m~ff~f9You smile happily.~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp:
+> xyzzy
+<  ~1b[0m399/399 > ~1b[0m~ff~f9Nothing happens.~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp:
+> south
+<  ~1b[0m399/399 > ~1b[0m~ff~f9Creator staff only, sorry.~1b[0m~1b[0m~0d~0a
+< You remain where you are.~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp:
+> north
+<  ~1b[0m399/399 > ~1b[0m~ff~f9You go nowhere at all.~1b[0m~0d~0a
+< ~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp:
+> drop handbook
+<  ~1b[0m399/399 > ~1b[0m~ff~f9You drop a Player's Handbook.~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp:
+> get handbook
+<  ~1b[0m399/399 > ~1b[0m~ff~f9You get a Player's Handbook.~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp:
+> quit
+<  ~1b[0m399/399 > ~1b[0m~ff~f9Please come back another time!~1b[0m~1b[0m~0d~0a
+< You remove a white t-shirt.~1b[0m~1b[0m~0d~0a
+< You remove a pair of blue jeans.~1b[0m~1b[0m~0d~0a

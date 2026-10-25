@@ -16,11 +16,16 @@
 #            that many seconds, a soak test with nothing to compare against,
 #            reported as RUN lines; -gcevery collects garbage on every tick
 #            (a collector stress test on a real mudlib's heap)
+#        boot_ds.exe <mudos.cfg> [<mudlib dir>] [-wait <seconds>] -eval <file.lpc>
+#            boot, run the timers for that long, then run the file as the body
+#            of `mixed eval()` in a SECURE object, as the reference's
+#            havok/eval.pike -f does (tools/ref_eval.pike is the reference
+#            side); prints `EVAL <result>` and the driver's log
 #        boot_ds.exe -unimplemented                    the reference's efuns
 #            this VM can't run yet, one per line (ref_boot.pike stubs the
 #            same ones, so both drivers fail the same calls)
 #
-# Build: star build projects/havokos/tools/boot_ds.star -o projects/havokos/tools/boot_ds.exe
+# Build: star build projects/havokos/tools/boot_ds.star -o projects/havokos/tools/boot_ds.exe -l ws2_32
 
 import "../vm.star" as vm
 import "../efuns.star" as ef
@@ -29,18 +34,10 @@ import "../efun_table.star" as et
 import "../efun_names.star" as en
 import "../gc.star" as gc
 import "../objects.star" as objm
+import "../config.star" as cfgm
+import "../net.star" as net
 
 extern "C" fn _sleep(ms: i32)
-
-fn trim(s: str) -> str:
-    let b = bytes_from_str(s)
-    let mut a = 0
-    let mut e = b.len()
-    while a < e and ((b[a] as i32) == 32 or (b[a] as i32) == 9 or (b[a] as i32) == 13):
-        a += 1
-    while e > a and ((b[e - 1] as i32) == 32 or (b[e - 1] as i32) == 9 or (b[e - 1] as i32) == 13):
-        e -= 1
-    vm::substr(s, a, e)
 
 fn sort_strs(a_in: List<str>) -> List<str>:
     let mut a = a_in
@@ -61,12 +58,33 @@ fn no_clone_no(n: str) -> str:
         return n
     concat(vm::substr(n, 0, h), "#")
 
-# a .c path from the config, as driver normalize_cfg_path()
-fn cfg_path(p: str) -> str:
-    let t = trim(p)
-    if str_ends_with(t, ".c"):
-        return vm::substr(t, 0, len(t) - 2)
-    t
+impl vm::Vm:
+    # havok/eval.pike's snippet run: compile, instantiate with SECURE privs,
+    # call eval() with the object pushed, destruct it.
+    fn run_eval(mut self, body: str) -> str:
+        let path = "/tmp/__havok_eval_0"
+        let src = concat(concat("#include <lib.h>\n#include <daemons.h>\nmixed eval() {\n", body), "\n}\n")
+        let pid = self.compile_source(path, src)
+        if pid < 0:
+            return concat("COMPILE ", self.compile_error)
+        let o = self.new_object(pid, path, false)
+        if o < 0:
+            return "NO OBJECT"
+        self.objs[o].privs = val::Value::Str("SECURE")
+        self.opush(o, "")
+        let e = self.any_fn(o, "eval")
+        let r = self.call_direct(e.prog, e.fnidx, e.var_off, o, List<val::Value>())
+        let mut out = ""
+        if self.err:
+            out = concat("ERR ", self.errmsg)
+            self.clear_err()
+        else:
+            out = self.render(r)
+        self.truncate_ostack(0)
+        self.truncate_stack(0)
+        self.destruct_object(-1, o)
+        self.clear_err()
+        out
 
 fn main() -> i32:
     let cli = args()
@@ -84,31 +102,27 @@ fn main() -> i32:
     if cli.len() < 2:
         println("usage: boot_ds <mudos.cfg> [<mudlib dir>] | -unimplemented")
         return 2
-    let f = file_open(cli[1], "rb")
-    if is_null(f):
+    let cfg = cfgm::read_config(cli[1])
+    if !cfg.ok:
         println("cannot read config")
         return 2
-    let text = str_from_bytes(file_read_bytes(f))
-    file_close(f)
-    let mut cfg: Map<str, str> = Map<str, str>()
-    let lines = str_split(str_replace(text, "\r", ""), "\n")
-    for i in 0..lines.len():
-        let l = lines[i]
-        if l == "" or str_starts_with(l, "#"):
-            continue
-        let c = str_index_of(l, ":")
-        if c < 0:
-            continue
-        cfg.insert(trim(vm::substr(l, 0, c)), trim(vm::substr(l, c + 1, len(l))))
     let mut root = ""
     let mut run_s = 0
     let mut gc_every = false
+    let mut wait_s = 0
+    let mut eval_file = ""
     let mut pos: List<str> = List<str>()
     let mut k = 1
     while k < cli.len():
         if cli[k] == "-gcevery":
             gc_every = true
             k += 1
+        elif cli[k] == "-wait" and k + 1 < cli.len():
+            wait_s = vm::parse_int_prefix(cli[k + 1]) as i32
+            k += 2
+        elif cli[k] == "-eval" and k + 1 < cli.len():
+            eval_file = cli[k + 1]
+            k += 2
         elif cli[k] == "-run" and k + 1 < cli.len():
             run_s = vm::parse_int_prefix(cli[k + 1]) as i32
             k += 2
@@ -122,35 +136,30 @@ fn main() -> i32:
         let k = str_index_of(root, "/bin/")
         if k >= 0:
             root = concat(vm::substr(root, 0, k), "/lib")
-    let mut m = vm::new_vm(root)
-    let mut name = "HavokOS"
-    if let Option::Some(x) = cfg.get("name"):
-        name = x
-    let mut port = 6666
-    if let Option::Some(x) = cfg.get("external_port_1"):
-        let parts = str_split(x, " ")
-        port = vm::parse_int_prefix(parts[parts.len() - 1]) as i32
-    let keys = ["master file", "simulated efun file", "include directories", "global include file", "time to reset", "time to clean up", "maximum evaluation cost", "log directory", "default fail message", "default error message", "mudlib directory", "binary directory", "address server ip", "address server port", "save binaries directory", "swap file", "debug log file"]
-    for i in 0..keys.len():
-        if let Option::Some(x) = cfg.get(keys[i]):
-            m.config.insert(keys[i], x)
-    m.configure(name, port)
-    if let Option::Some(x) = cfg.get("include directories"):
-        m.pp.include_dirs = str_split(x, ":")
-    if let Option::Some(x) = cfg.get("global include file"):
-        m.pp.global_include = str_replace(str_replace(str_replace(x, "<", ""), ">", ""), "\"", "")
-    let mut sefun = "/secure/sefun/sefun"
-    if let Option::Some(x) = cfg.get("simulated efun file"):
-        sefun = cfg_path(x)
-    let mut master = "/secure/daemon/master"
-    if let Option::Some(x) = cfg.get("master file"):
-        master = cfg_path(x)
+    let mut m = cfgm::setup_vm(cfg, root, cfgm::telnet_ports(cfg)[0])
+    let sefun = cfgm::sefun_path(cfg)
+    let master = cfgm::master_path(cfg)
     let t0 = clock_ms()
     let ok = m.boot(sefun, master)
     let took = clock_ms() - t0
     m.collect_garbage()
     if !ok:
         println("BOOT FAILED")
+    if eval_file != "":
+        let end = clock_ms() + (wait_s as i64) * (1000 as i64)
+        while clock_ms() < end:
+            m.net_poll(m.next_timer_ms())
+            m.driver_tick()
+        let f = file_open(eval_file, "rb")
+        if is_null(f):
+            println(f"cannot read {eval_file}")
+            return 2
+        let body = str_from_bytes(file_read_bytes(f))
+        file_close(f)
+        println(concat("EVAL ", m.run_eval(body)))
+        for i in 0..m.log.len():
+            println(concat("LOG ", str_replace(m.log[i], "\n", "\\n")))
+        return 0
     if run_s > 0:
         let heap0 = m.heap_live()
         let gc0 = m.gc_runs

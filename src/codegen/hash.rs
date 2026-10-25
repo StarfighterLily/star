@@ -63,6 +63,7 @@ impl Codegen {
 
         let llvm = self.llvm_ty(ty);
         let saved_ir = std::mem::take(&mut self.ir);
+        let saved_ir_label = self.current_label.clone();
         self.line(&format!("define i64 @{}({} %v) {{", name, llvm));
         self.open_block("entry");
         let acc_ptr = self.tmp_name();
@@ -75,6 +76,7 @@ impl Codegen {
         self.line("}");
         self.line("");
         let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
+        self.current_label = saved_ir_label;
         self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir));
         name
     }

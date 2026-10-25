@@ -1,0 +1,19 @@
+# M6 login comparison, part 2 (tests/run_login_test.ps1): the player made by
+# ds39_login_new.script comes back: a wrong password first, then the right
+# one, a few commands, quit.
+expect What name do you wish?
+send alice
+expect Password:
+send wrongpass
+expect Invalid password.
+expect Password:
+send secret12
+expect sp: 
+send look
+expect sp: 
+send inventory
+expect sp: 
+send who
+expect sp: 
+send quit
+drain 3000

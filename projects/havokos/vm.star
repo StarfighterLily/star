@@ -45,6 +45,8 @@ import "paths.star" as paths
 import "efun_table.star" as et
 import "efun_names.star" as en
 import "buf.star" as bf
+import "conn.star" as cn
+import "vpdata.star" as vpd
 
 
 extern "C" fn clock() -> i32
@@ -121,6 +123,19 @@ struct ObjSlot:
     mut notify_fail: val::Value = val::Value::Int(0 as i64)
     # set by the network layer (M6) when a connection is attached
     mut once_interactive: bool = false
+    # the attached connection (an index into Vm.conns), -1 when not
+    # interactive (net.star)
+    mut conn: i32 = -1
+    # the verb parser (verbparse.star): called parse_init(); its cached
+    # information must be fetched again; it registered a rule; and its
+    # livings_are_remote() answer
+    mut vp_known: bool = false
+    mut vp_stale: bool = true
+    mut vp_handler: bool = false
+    mut vp_remote: bool = false
+    # its cached parser information (an index into Vm.vp_infos), -1 until
+    # first fetched
+    mut vp_info: i32 = -1
     # replace_program(): the program to switch to when the evaluation ends,
     # and the one switched to (query_replaced_program())
     mut replace_to: str = ""
@@ -190,6 +205,8 @@ struct Vm:
     # also printed as they happen when `echo_log` is set
     mut log: List<str> = List<str>()
     mut echo_log: bool = false
+    # the driver (boot.star) only prints its messages: a MUD runs for months
+    mut keep_log: bool = true
     # the driver config (mudos.cfg keys, e.g. "name", "port"), for
     # get_config() and the predefined macros
     mut config: Map<str, str> = Map<str, str>()
@@ -284,6 +301,35 @@ struct Vm:
     mut gc_work: List<val::Value> = List<val::Value>()
     mut gc_runs: i32 = 0
     mut gc_live_at_last: i32 = 0
+    # --- the network (M6; net.star) ---
+    # connections (closed slots are reused, see conn.star) and the sequence
+    # number of the latest one
+    mut conns: List<cn::Conn> = List<cn::Conn>()
+    mut conn_seq: i32 = 0
+    # listening sockets and their ports
+    mut listeners: List<ptr> = List<ptr>()
+    mut listener_ports: List<i32> = List<i32>()
+    # network_stats(): per user port, packets and bytes in and out
+    mut traffic_ports: List<i32> = List<i32>()
+    mut traffic: List<i64> = List<i64>()
+    # --- the verb parser's registry (M6; verbparse.star) ---
+    # verbs, by name through vp_verb_idx; the master's literal list once
+    # fetched; the next rule's sequence number
+    mut vp_verbs: List<vpd::VpVerb> = List<vpd::VpVerb>()
+    mut vp_verb_idx: Map<str, i32> = Map<str, i32>()
+    mut vp_literals: Set<str> = Set<str>()
+    mut vp_literals_ok: bool = false
+    mut vp_next_seq: i32 = 0
+    # the matching engine: object information (free slots reused), the
+    # parses and interpretations being evaluated (stacks: an apply can parse
+    # again), and the verbs by their first word (rebuilt when a verb is
+    # added)
+    mut vp_infos: List<vpd::VpInfo> = List<vpd::VpInfo>()
+    mut vp_info_free: List<i32> = List<i32>()
+    mut vp_ps: List<vpd::VpParse> = List<vpd::VpParse>()
+    mut vp_its: List<vpd::VpInterp> = List<vpd::VpInterp>()
+    mut vp_vidx: Map<str, List<i32>> = Map<str, List<i32>>()
+    mut vp_vidx_ok: bool = false
 
 # Object slot 0 is never a live object. It stands for a this_player() that
 # was destructed mid-command (the reference's DESTRUCTED placeholder):
@@ -2350,11 +2396,13 @@ impl Vm:
                                 self.stack.push(r)
                         _ -> self.stack.push(v)
                 elif op == pg::OP_TIME_BEGIN:
-                    self.stack[base + code[pc + 1]] = val::Value::Int(clock() as i64)
+                    # time_expression: elapsed microseconds (clock_us(), M6;
+                    # M5's msvcrt clock() ticked in 15.6 ms steps)
+                    self.stack[base + code[pc + 1]] = val::Value::Int(clock_us())
                     pc += 2
                 elif op == pg::OP_TIME_END:
                     let t0 = val::int_of(self.stack[base + code[pc + 1]])
-                    self.stack.push(val::Value::Int(((clock() as i64) - t0) * (1000 as i64)))
+                    self.stack.push(val::Value::Int(clock_us() - t0))
                     pc += 2
                 else:
                     self.fail(f"bad opcode {op} at {pc}")

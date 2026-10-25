@@ -163,7 +163,24 @@ two `i64`s) is checked the same way as `fs.rs`'s: `star emit llvm
 --target=linux` IR that `clang -target x86_64-unknown-linux-gnu -c`
 compiles to an object importing only `clock_gettime`, plus
 `tests/frontend_clock.rs`'s IR-shape test. Not yet linked and run on the
-devbox.
+devbox. `clock_us` (2026-10-25, HavokOS M6: LPC `time_expression`) is the
+same shape: `QueryPerformanceCounter`/`QueryPerformanceFrequency` on
+Windows (run by `tests/frontend_clock.rs`), `clock_gettime(CLOCK_MONOTONIC)`
+in microseconds on Linux (IR-shape test only).
+
+`codegen/net_server.rs` — `tcp_listen`/`tcp_accept`/`tcp_wait`/
+`tcp_recv_bytes`/`tcp_send_bytes`/`tcp_peer_ip`/`tcp_local_port`/`host_name`
+(2026-10-25, `projects/havokos` HavokOS M6: the telnet listener). The
+Windows arm (Winsock `bind`/`listen`/`accept`/`WSAPoll`/`getpeername`/
+`gethostname`) is run end to end by `tests/frontend_net_server.rs` against a
+Rust client, and by the HavokOS login test. The `Target::LinuxGnu` arm
+(glibc x86-64: `int` fds, an 8-byte `pollfd`, `POLLIN` 1, `SO_REUSEADDR`
+before `bind`, `MSG_NOSIGNAL` on `send` so a reset connection can't
+`SIGPIPE` the server) passes the internal IR verifier and `clang -c
+--target=x86_64-unknown-linux-gnu` compiles it to an object, both in
+`tests/frontend_net_server.rs`; not yet linked and run on the devbox.
+These externs are declared only by programs that use the builtins, since
+`bind`/`listen`/`accept`/`poll` are common Star function names.
 
 ## Hard, deliberately unstarted: text rendering (`codegen/system_font.rs`)
 

@@ -344,6 +344,7 @@ impl Codegen {
         let zero = self.zero_value(field_ty);
 
         let saved_ir = std::mem::take(&mut self.ir);
+        let saved_ir_label = self.current_label.clone();
         self.line(&format!("define {} @{}(%{}* %s, i8* %name) {{", llvm, name, struct_name));
         self.open_block("entry");
         for (idx, fname) in &fields {
@@ -367,6 +368,7 @@ impl Codegen {
         self.line("}");
         self.line("");
         let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
+        self.current_label = saved_ir_label;
         self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir));
         name
     }
@@ -393,6 +395,7 @@ impl Codegen {
         let fields = self.reflect_decorated_fields_of_ty(struct_name, field_ty, true);
 
         let saved_ir = std::mem::take(&mut self.ir);
+        let saved_ir_label = self.current_label.clone();
         self.line(&format!("define void @{}(%{}* %s, i8* %name, {} %val) {{", name, struct_name, llvm));
         self.open_block("entry");
         for (idx, fname) in &fields {
@@ -415,6 +418,7 @@ impl Codegen {
         self.line("}");
         self.line("");
         let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
+        self.current_label = saved_ir_label;
         self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir));
         name
     }
@@ -434,6 +438,7 @@ impl Codegen {
         let fields = self.reflect_all_decorated_field_names(struct_name);
 
         let saved_ir = std::mem::take(&mut self.ir);
+        let saved_ir_label = self.current_label.clone();
         self.line(&format!("define i1 @{}(i8* %name) {{", name));
         self.open_block("entry");
         for fname in &fields {
@@ -453,6 +458,7 @@ impl Codegen {
         self.line("}");
         self.line("");
         let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
+        self.current_label = saved_ir_label;
         self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir));
         name
     }

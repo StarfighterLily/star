@@ -123,6 +123,9 @@ int main(int argc, array(string) argv) {
         "simulated efun file": "/secure/sefun", "include directories": "/include",
         "global include file": "<global.h>", "port": "6699",
     ]);
+    // the Star driver never offers MCCP (NOTES.md deviation #13), which is
+    // the reference with `havok mccp : 0`
+    cfg["havok mccp"] = "0";
     object drv = compile_file(combine_path(pike_dir, "havok/driver.pike"))(root, cfg);
     drv->debug_level = 0;
     // The driver hooks the Star side has as efuns (efun_table.star
@@ -164,6 +167,91 @@ int main(int argc, array(string) argv) {
             return r;
         }
         array test_eval_state(object self) { return ({ drv->eval_nest, drv->outoftime, !!drv->eval_deadline }); }
+        // telnet hooks (todo.md HavokOS M6, efuns_net.star's header): the
+        // reference's own Connection on a loopback socket, the client end
+        // kept here, as run_tests.pike's fake_user() does; bytes cross in
+        // the ~xx printable form
+        Stdio.Port tel_port;
+        int tel_portnum;
+        mapping(int:array) tel = ([]);
+        int tel_seq;
+        string tel_dec(string s) {
+            String.Buffer b = String.Buffer();
+            string hex = \"0123456789abcdef\";
+            for (int i = 0; i < predef::sizeof(s); i++) {
+                int hi = i + 2 < predef::sizeof(s) ? predef::search(hex, s[i + 1..i + 1]) : -1;
+                int lo = i + 2 < predef::sizeof(s) ? predef::search(hex, s[i + 2..i + 2]) : -1;
+                if (s[i] == '~' && hi >= 0 && lo >= 0) {
+                    b->putchar(hi * 16 + lo);
+                    i += 2;
+                } else b->putchar(s[i]);
+            }
+            return b->get();
+        }
+        string tel_enc(string s) {
+            String.Buffer b = String.Buffer();
+            foreach (s; ; int c) {
+                if (c >= 32 && c < 127 && c != '~') b->putchar(c);
+                else b->add(predef::sprintf(\"~%02x\", c & 255));
+            }
+            return b->get();
+        }
+        void tel_pump() { for (int i = 0; i < 10; i++) Pike.DefaultBackend(0.02); }
+        array tel_link() {
+            if (!tel_port) {
+                tel_port = Stdio.Port(0, 0, \"127.0.0.1\");
+                tel_portnum = (int)((tel_port->query_address() / \" \")[1]);
+            }
+            Stdio.File cli = Stdio.File();
+            cli->connect(\"127.0.0.1\", tel_portnum);
+            Stdio.File srv = tel_port->accept();
+            cli->set_nonblocking();
+            return ({ cli, srv });
+        }
+        string tel_read(Stdio.File cli) {
+            tel_pump();
+            string got = \"\";
+            for (;;) {
+                string d = cli->read(65536, 1);
+                if (!d || !predef::sizeof(d)) break;
+                got += d;
+            }
+            return got;
+        }
+        int test_tel_open(object self, object u) {
+            if (!drv->lpc_objectp(u)) return 0;
+            [Stdio.File cli, Stdio.File srv] = tel_link();
+            object c = drv->net->Connection(srv, tel_portnum);
+            drv->net->connections[c] = 1;
+            c->user = u;
+            drv->info[u]->conn = c;
+            tel[++tel_seq] = ({ c, cli });
+            return tel_seq;
+        }
+        int test_tel_connect(object self) {
+            [Stdio.File cli, Stdio.File srv] = tel_link();
+            object c = drv->net->Connection(srv, tel_portnum);
+            tel[++tel_seq] = ({ c, cli });
+            drv->net->start_session(c);
+            return tel_seq;
+        }
+        object test_tel_user(object self, int id) {
+            object c = tel[id] && tel[id][0];
+            return c && !c->closed && drv->lpc_objectp(c->user) ? c->user : 0;
+        }
+        string test_tel_say(object self, int id, string s) {
+            if (!tel[id]) return 0;
+            tel[id][1]->write(tel_dec(s));
+            return tel_enc(tel_read(tel[id][1]));
+        }
+        string test_tel_drain(object self, int id) { return tel[id] ? tel_enc(tel_read(tel[id][1])) : 0; }
+        int test_tel_hangup(object self, int id) {
+            if (!tel[id]) return 0;
+            tel[id][1]->close();
+            tel_pump();
+            return 0;
+        }
+        int test_tel_tp(object self, mixed ob) { drv->cur_player = drv->lpc_objectp(ob) ? ob : 0; return 0; }
     ");
     drv->efuns = test_efuns(drv);
     add_constant("__E", drv->efuns);

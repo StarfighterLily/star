@@ -33,6 +33,7 @@ mod hashtable;
 mod list;
 mod map;
 mod net;
+mod net_server;
 mod os;
 mod par_pool;
 mod platform;
@@ -330,6 +331,16 @@ pub struct Codegen {
     /// place every basic block in this codegen is opened) so those two call
     /// sites can ask "what block are we actually in right now" instead of
     /// assuming it never changed.
+    ///
+    /// Every helper that emits a whole function out of line in the middle of
+    /// an expression (a list/map/set release thunk, an eq/hash helper, a
+    /// closure body, a reflect or table helper, the par/audio pools) swaps
+    /// `ir` out, opens that function's own `entry:` block, and swaps `ir`
+    /// back. Each one saves and restores this field alongside `ir`: until
+    /// `todo.md` HavokOS M6 none did, so the first `[1, 2]` of an element
+    /// type inside an `if` arm left this field reading `entry`, and the
+    /// arm's `phi` named the wrong predecessor (`let x = if c: [1, 2] else:
+    /// [3]` didn't compile; `tests/frontend_out_of_line_current_label.rs`).
     current_label: String,
     /// Which native OS/ABI this `Codegen` emits IR for -- see
     /// `crate::codegen::platform::Target`'s own doc comment. Defaults to

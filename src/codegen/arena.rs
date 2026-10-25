@@ -111,6 +111,7 @@ impl Codegen {
 
         // --- worker function: walks [start, end) over the arena's backing array ---
         let saved_ir = std::mem::take(&mut self.ir);
+        let saved_ir_label = self.current_label.clone();
         let saved_symbols = std::mem::take(&mut self.symbols);
         let saved_in_frame = self.in_frame;
         self.in_frame = false; // the frame bump allocator's offset is a single shared global, not thread-safe
@@ -228,6 +229,7 @@ impl Codegen {
         self.line("");
 
         let worker_ir = std::mem::replace(&mut self.ir, saved_ir);
+        self.current_label = saved_ir_label;
         self.pending_top.push(Self::hoist_allocas_to_entry(&worker_ir));
         self.symbols = saved_symbols;
         self.in_frame = saved_in_frame;

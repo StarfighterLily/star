@@ -7,7 +7,8 @@
 # *between* top-level evaluations, when no LPC code is running: then the
 # value stack and the frames are empty, and every live value is reachable
 # from a short list of roots -- the variables of live objects, pending
-# call_outs, add_action() sentences and a few driver-held values. No stack
+# call_outs, add_action() sentences, what connections hold (M6: a pending
+# input_to()'s function and arguments) and a few driver-held values. No stack
 # maps are needed, and no handle can be hiding in a Star local of some efun
 # halfway through its work. Unreachable slots go on a free list that the
 # allocators (vm.star new_arr/new_map/new_fn/new_cell/new_cls) take from
@@ -124,8 +125,10 @@ impl vm::Vm:
             if s.shadowed_by > 0:
                 self.gc_obj[s.shadowed_by] = true
             # a living is held by the living table, a named one by the name
-            # table (FluffOS counts both)
-            if s.living or s.living_name != "":
+            # table (FluffOS counts both); the verb parser holds every object
+            # that called parse_init() or registered a rule (the reference's
+            # parser tables keep a reference: such a clone is never garbage)
+            if s.living or s.living_name != "" or s.vp_known or s.vp_handler:
                 self.gc_obj[o] = true
         for i in 0..self.callouts.len():
             let c = self.callouts[i]
@@ -134,6 +137,17 @@ impl vm::Vm:
             self.gc_root(c.fun)
             self.gc_root(c.tp)
             self.gc_root_all(c.args)
+        # a connection holds its user, its snooper and a pending input_to()
+        for i in 0..self.conns.len():
+            let c = self.conns[i]
+            if !c.alive or c.closed:
+                continue
+            if c.user > 0 and self.objs[c.user].alive:
+                self.gc_obj[c.user] = true
+            self.gc_root(c.snooped_by)
+            self.gc_root(c.input_fn)
+            self.gc_root(c.input_owner)
+            self.gc_root_all(c.input_args)
         self.gc_root(self.cur_verb)
         self.gc_root(self.errv)
         if self.cur_player > 0 and self.objs[self.cur_player].alive:

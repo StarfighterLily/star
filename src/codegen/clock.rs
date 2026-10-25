@@ -26,6 +26,23 @@
 //! 10-16 ms on Windows by default, which is fine for scheduling and for a
 //! multi-second evaluation limit, not for benchmarking short spans.
 //!
+//! ## `clock_us() -> i64`
+//! Microseconds on the same kind of clock, added in `todo.md` HavokOS M6 for
+//! LPC's `time_expression { ... }`, which reports elapsed microseconds and
+//! which the M5 VM had measured with msvcrt `clock()`: millisecond units
+//! that in practice advance one 15.6 ms timer tick at a time, so a short
+//! block timed either 0 or 15625, and dead after 24.8 days of uptime like
+//! everything else built on `clock()`. Dead Souls rates the driver by timing
+//! a 1000-iteration loop that way at boot and every few minutes, and uses
+//! the rating (`GetPerfOK()`). The reference uses Pike's `gethrtime()`.
+//!
+//! `QueryPerformanceCounter`/`QueryPerformanceFrequency` on Windows
+//! (kernel32; sub-microsecond, monotonic), converted as `(c / f) * 10^6 +
+//! (c % f) * 10^6 / f` so the multiplication can't overflow however long
+//! the machine has been up (`c * 10^6` would, after about ten days at a
+//! 10 MHz counter); `clock_gettime(CLOCK_MONOTONIC)` as `tv_sec * 10^6 +
+//! tv_nsec / 1000` on Linux.
+//!
 //! ## `Target::LinuxGnu`: seamed, not yet devbox-verified
 //! Like `crate::codegen::fs`'s Linux arm, it emits IR that compiles to an
 //! object for `x86_64-unknown-linux-gnu`, but hasn't been linked and run
@@ -39,9 +56,71 @@ impl Codegen {
     /// `crate::codegen::fs::declare_fs_externs`.
     pub(super) fn declare_clock_externs(&mut self) {
         match self.target {
-            Target::WindowsGnu => self.line("declare i64 @GetTickCount64()"),
+            Target::WindowsGnu => {
+                self.line("declare i64 @GetTickCount64()");
+                self.line("declare i32 @QueryPerformanceCounter(i64*)");
+                self.line("declare i32 @QueryPerformanceFrequency(i64*)");
+            }
             Target::LinuxGnu => self.line("declare i32 @clock_gettime(i32, i8*)"),
         }
+    }
+
+    /// `clock_us() -> i64`; see the module doc comment.
+    pub(super) fn emit_clock_us(&mut self) -> String {
+        let r = self.tmp_name();
+        match self.target {
+            Target::WindowsGnu => {
+                let cp = self.tmp_name();
+                self.line(&format!("  {} = alloca i64, align 8", cp));
+                let fp = self.tmp_name();
+                self.line(&format!("  {} = alloca i64, align 8", fp));
+                self.line(&format!("  call i32 @QueryPerformanceCounter(i64* {})", cp));
+                self.line(&format!("  call i32 @QueryPerformanceFrequency(i64* {})", fp));
+                let c = self.tmp_name();
+                self.line(&format!("  {} = load i64, i64* {}", c, cp));
+                let f0 = self.tmp_name();
+                self.line(&format!("  {} = load i64, i64* {}", f0, fp));
+                // a zero frequency can't happen on XP or later; guard the
+                // division anyway
+                let fz = self.tmp_name();
+                self.line(&format!("  {} = icmp sle i64 {}, 0", fz, f0));
+                let f = self.tmp_name();
+                self.line(&format!("  {} = select i1 {}, i64 1, i64 {}", f, fz, f0));
+                let q = self.tmp_name();
+                self.line(&format!("  {} = sdiv i64 {}, {}", q, c, f));
+                let rem = self.tmp_name();
+                self.line(&format!("  {} = srem i64 {}, {}", rem, c, f));
+                let whole = self.tmp_name();
+                self.line(&format!("  {} = mul i64 {}, 1000000", whole, q));
+                let fr = self.tmp_name();
+                self.line(&format!("  {} = mul i64 {}, 1000000", fr, rem));
+                let frac = self.tmp_name();
+                self.line(&format!("  {} = sdiv i64 {}, {}", frac, fr, f));
+                self.line(&format!("  {} = add i64 {}, {}", r, whole, frac));
+            }
+            Target::LinuxGnu => {
+                let ts = self.tmp_name();
+                self.line(&format!("  {} = alloca [2 x i64], align 8", ts));
+                let p = self.tmp_name();
+                self.line(&format!("  {} = bitcast [2 x i64]* {} to i8*", p, ts));
+                let rc = self.tmp_name();
+                self.line(&format!("  {} = call i32 @clock_gettime(i32 1, i8* {})", rc, p));
+                let sp = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds [2 x i64], [2 x i64]* {}, i64 0, i64 0", sp, ts));
+                let sec = self.tmp_name();
+                self.line(&format!("  {} = load i64, i64* {}", sec, sp));
+                let np = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds [2 x i64], [2 x i64]* {}, i64 0, i64 1", np, ts));
+                let nsec = self.tmp_name();
+                self.line(&format!("  {} = load i64, i64* {}", nsec, np));
+                let us = self.tmp_name();
+                self.line(&format!("  {} = mul i64 {}, 1000000", us, sec));
+                let frac = self.tmp_name();
+                self.line(&format!("  {} = sdiv i64 {}, 1000", frac, nsec));
+                self.line(&format!("  {} = add i64 {}, {}", r, us, frac));
+            }
+        }
+        format!("i64 {}", r)
     }
 
     /// `clock_ms() -> i64`; see the module doc comment.

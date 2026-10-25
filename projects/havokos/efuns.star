@@ -4,9 +4,12 @@
 # call_other); todo.md HavokOS M4 added the rest of the library in one file
 # per area (`efuns_str.star`, `efuns_arr.star`, `efuns_file.star`, ...),
 # reached by efun_table.star's code ranges, and M5 the object model's
-# (`efuns_obj.star`). Efuns of later milestones (networking, M6; the verb
-# parser, ed and sockets, M7) still raise the reference's own "not
+# (`efuns_obj.star`), M6 connections and telnet (`efuns_net.star`) and the
+# verb parser (`verbparse.star`, `verbmatch.star`). Efuns of later
+# milestones (ed, sockets, M7) still raise the reference's own "not
 # implemented" error: the compiler already resolves their names as efuns.
+# A program that includes this file uses the compiler's socket builtins,
+# so it is built with `-l ws2_32`.
 #
 # Every efun gets the calling object (`self_ob`, the reference's `self`) --
 # the frame's object for a direct call, the owner for an efun pointer.
@@ -20,6 +23,9 @@ import "saveformat.star" as sav
 import "efuns_file.star" as efile
 import "tcolour.star" as tcol
 import "efuns_obj.star" as eobj
+import "efuns_net.star" as enet
+import "verbparse.star" as vp
+import "verbmatch.star" as vpm
 
 impl vm::Vm:
     fn arg(self, args: List<val::Value>, i: i32) -> val::Value:
@@ -37,6 +43,10 @@ impl vm::Vm:
             return self.efun_arr(code, name, args, self_ob)
         if code >= 110 and code < 142:
             return self.efun_file(code, name, args, self_ob)
+        if code >= 300 and code < 350:
+            return self.efun_net(code, name, args, self_ob)
+        if code >= 350 and code < 370:
+            return self.efun_parse(code, name, args, self_ob)
         if code >= 200:
             return self.efun_obj(code, name, args, self_ob)
         if code == et::E_MASTER:

@@ -82,6 +82,7 @@ impl Codegen {
         let payload_ty = self.table_payload_llvm_ty(struct_name);
 
         let saved_ir = std::mem::take(&mut self.ir);
+        let saved_ir_label = self.current_label.clone();
         self.line(&format!("define void @{}(i8* %objp) {{", name));
         self.open_block("entry");
         let payload = self.tmp_name();
@@ -132,6 +133,7 @@ impl Codegen {
         self.line("}");
         self.line("");
         let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
+        self.current_label = saved_ir_label;
         self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir));
 
         let reg = self.tmp_name();

@@ -32,13 +32,17 @@
 #   owners, add_action owners) are object values carrying the slot's
 #   generation, so a slot reused after a destruct can't inherit them.
 #
-# Not here (M6): connections. interactive() and users() see none yet, and
-# tell_user() (what a message to an object without catch_tell() becomes)
-# has nowhere to send its text.
+# Connections (M6) are `net.star`'s: tell_user() writes to one, an
+# interactive object hears messages like a living, and destructing one
+# closes its connection.
 
 import "value.star" as val
 import "vm.star" as vm
 import "program.star" as pg
+
+# the driver's log goes to stdout as it happens, so a log redirected to a
+# file must not sit in the C runtime's buffer (boot.star runs for months)
+extern "C" fn fflush(f: ptr) -> i32
 
 fn without(items: List<i32>, x: i32) -> List<i32>:
     let mut out: List<i32> = List<i32>()
@@ -55,9 +59,11 @@ fn has_i32(items: List<i32>, x: i32) -> bool:
 
 impl vm::Vm:
     fn log_msg(mut self, s: str):
-        self.log.push(s)
+        if self.keep_log:
+            self.log.push(s)
         if self.echo_log:
             println(s)
+            fflush(null_ptr())
 
     fn alive(self, o: i32) -> bool:
         o > 0 and o < self.objs.len() and self.objs[o].alive
@@ -326,10 +332,12 @@ impl vm::Vm:
             self.ticks = 256
         self.in_error_handler = false
 
-    # Text straight to a user's connection, bypassing catch_tell(). There
-    # are no connections before M6, so it goes nowhere.
+    # Text straight to a user's connection, bypassing catch_tell(); nothing
+    # for an object that isn't interactive.
     fn tell_user(mut self, ob: i32, msg: str):
-        0
+        let ci = self.user_conn(ob)
+        if ci >= 0:
+            self.conn_send(ci, msg)
 
     # --- destruct ---------------------------------------------------------------
 
@@ -392,9 +400,16 @@ impl vm::Vm:
         if env >= 0:
             self.objs[env].inv = without(self.objs[env].inv, ob)
             self.remove_actions_between(ob, env)
+        # interactive: its connection closes
+        let ci = self.objs[ob].conn
+        if ci >= 0:
+            self.objs[ob].conn = -1
+            if ci < self.conns.len() and self.conns[ci].alive and self.conns[ci].user == ob:
+                self.conn_destructed(ci)
         self.remove_heart_beat(ob)
         self.remove_call_outs_for(ob)
         self.remove_living_name(ob)
+        self.vp_forget(ob)
         let name = self.objs[ob].name
         if let Option::Some(x) = self.obj_by_name.get(name):
             if x == ob:
@@ -766,7 +781,7 @@ impl vm::Vm:
 
     # Is `o` someone messages are for: living or interactive.
     fn hears(self, o: i32) -> bool:
-        self.alive(o) and self.objs[o].living
+        self.alive(o) and (self.objs[o].living or self.is_interactive(o))
 
     fn say_to(mut self, self_ob: i32, msg: str, avoid: List<val::Value>):
         let tp = self.cur_player
@@ -1198,7 +1213,7 @@ impl vm::Vm:
             if !self.objs[o].alive:
                 continue
             let s = self.objs[o]
-            if self.cleanup_interval > (0 as i64) and !s.no_clean_up and t - s.last_used >= self.cleanup_interval and o != self.master_ob and o != self.sefun_ob:
+            if self.cleanup_interval > (0 as i64) and !s.no_clean_up and t - s.last_used >= self.cleanup_interval and !self.is_interactive(o) and o != self.master_ob and o != self.sefun_ob:
                 clean.push(o)
             elif !self.lazy_resets and s.reset_time != (0 as i64) and s.reset_time <= t:
                 resets.push(o)
@@ -1274,7 +1289,7 @@ impl vm::Vm:
     # --- the driver's timers --------------------------------------------------------------------
 
     # One pass of the driver's timers, for the main loop to call between
-    # input events (M6 adds the sockets): every due call_out, the heart beat
+    # input events (`net.star` net_poll() does the sockets): every due call_out, the heart beat
     # slot whose turn has come (the reference schedules one slot every
     # interval / slots, so a beat stays one per interval), the reset sweep
     # when resets or clean_up are on, and a garbage collection when the

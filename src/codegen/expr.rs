@@ -788,6 +788,7 @@ impl Codegen {
                     Some("file_rename") => self.emit_file_rename(args),
                     Some("local_time") => self.emit_local_time(args),
                     Some("clock_ms") => self.emit_clock_ms(),
+                    Some("clock_us") => self.emit_clock_us(),
                     Some("open_file_dialog") => self.emit_open_file_dialog(args),
                     Some("args") => self.emit_args(),
                     Some("env_get") => self.emit_env_get(args),
@@ -797,6 +798,15 @@ impl Codegen {
                     Some("tcp_recv") => self.emit_tcp_recv(args),
                     Some("tcp_close") => { self.emit_tcp_close(args); "%undef".into() }
                     Some("tcp_set_nonblocking") => self.emit_tcp_set_nonblocking(args),
+                    // Server sockets -- see `crate::codegen::net_server`.
+                    Some("tcp_listen") => self.emit_tcp_listen(args),
+                    Some("tcp_accept") => self.emit_tcp_accept(args),
+                    Some("tcp_wait") => self.emit_tcp_wait(args),
+                    Some("tcp_recv_bytes") => self.emit_tcp_recv_bytes(args),
+                    Some("tcp_send_bytes") => self.emit_tcp_send_bytes(args),
+                    Some("tcp_peer_ip") => self.emit_tcp_peer_ip(args),
+                    Some("tcp_local_port") => self.emit_tcp_local_port(args),
+                    Some("host_name") => self.emit_host_name(),
                     // `docs/design.md`'s "Math and geometry" section -- see
                     // `crate::codegen::geometry`.
                     Some("quat_identity") => self.emit_quat_identity(),

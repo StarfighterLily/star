@@ -152,7 +152,7 @@ impl Codegen {
     /// `handle`'s stashed bit pattern via `socket_handle_to_fd`) -- shared by
     /// `emit_tcp_connect`'s own cleanup paths and `emit_tcp_close`, so the
     /// fd-packing scheme only needs writing once.
-    fn emit_close_socket(&mut self, handle: &str) {
+    pub(super) fn emit_close_socket(&mut self, handle: &str) {
         match self.target {
             Target::WindowsGnu => {
                 self.line(&format!("  call i32 @closesocket(i8* {})", handle));
@@ -168,7 +168,7 @@ impl Codegen {
     /// packed into `handle` (an `i8*`-shaped Star `ptr` value) via
     /// `ptrtoint`/`trunc` -- the inverse of that packing step. Linux-only;
     /// every call site is itself inside a `Target::LinuxGnu` match arm.
-    fn socket_handle_to_fd(&mut self, handle: &str) -> String {
+    pub(super) fn socket_handle_to_fd(&mut self, handle: &str) -> String {
         let as_i64 = self.tmp_name();
         self.line(&format!("  {} = ptrtoint i8* {} to i64", as_i64, handle));
         let fd = self.tmp_name();
@@ -179,7 +179,7 @@ impl Codegen {
     /// with socket-specific wording) if `handle` is a null `ptr`. Used by
     /// every builtin here except `tcp_connect`, which has no handle to
     /// misuse yet.
-    fn abort_if_null_socket(&mut self, handle: &str, builtin_name: &str) {
+    pub(super) fn abort_if_null_socket(&mut self, handle: &str, builtin_name: &str) {
         let is_null = self.tmp_name();
         self.line(&format!("  {} = icmp eq i8* {}, null", is_null, handle));
         let fail_label = self.block_label("tcp_null_handle");

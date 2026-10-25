@@ -137,6 +137,7 @@ impl Codegen {
         self.audio_pool_emitted = true;
 
         let saved_ir = std::mem::take(&mut self.ir);
+        let saved_ir_label = self.current_label.clone();
 
         self.line("@star.audio.device = global i32 0");
         self.line(&format!("@star.audio.chan_base = global [{} x i8*] zeroinitializer", NUM_CHANNELS));
@@ -286,6 +287,7 @@ impl Codegen {
         self.line("");
 
         let pool_ir = std::mem::replace(&mut self.ir, saved_ir);
+        self.current_label = saved_ir_label;
         self.pending_top.push(Self::hoist_allocas_to_entry(&pool_ir));
     }
 

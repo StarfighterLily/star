@@ -1,0 +1,82 @@
+// Verb-parser golden transcript on the real Dead Souls lib.
+//
+//   pike havokos/pike/havok/eval.pike bin/mudos.cfg -q -wait 5 -f havokos/pike/tests/ds_parser_golden.lpc
+//
+// An NPC that records every message it is sent runs a fixed list of
+// commands in a lit room with stock items; the transcript (messages and
+// inventory after each command) is written to /tmp/havok_vp_transcript.txt in
+// the lib.  Compare a run against havokos/pike/tests/ds_parser_golden.txt.
+// Run eval.pike with -wait 5 first: the lib finishes setting up in call_outs.
+// NPCs see only "What?" for parser errors, so the tester also records what
+// the lib passes to SetCommandFail() as "(fail) ...".
+string out = "";
+object room, t, bob, pile;
+// run() uses command(), skipping process_input (aliases, the commands per
+// second limit)
+string src =
+    "#include <lib.h>\n"
+    "inherit LIB_NPC;\n"
+    "string *got = ({});\n"
+    "varargs int eventPrint(string msg, mixed a2, mixed a3) { got += ({ msg }); return 1; }\n"
+    "void receive_message(string cl, string msg) { got += ({ \"[\" + cl + \"] \" + msg }); }\n"
+    "string *flush() { string *r = got; got = ({}); return r; }\n"
+    "string SetCommandFail(string s) { if (s) got += ({ \"(fail) \" + s }); return ::SetCommandFail(s); }\n"
+    "int run(string c) { return command(c); }\n";
+string *cmds = ({
+    "look", "get sword", "get dagger", "get second dagger", "drop all",
+    "get daggers", "drop daggers", "get all", "i", "get xyzzy", "get the 3rd dagger",
+    "put dagger in bag", "put daggers in bag", "look in bag", "get dagger from bag",
+    "get all from bag", "put sword in xyzzy", "put xyzzy in bag",
+    "give sword to bob", "give daggers to bob", "give shirt to torch",
+    "wield dagger", "unwield dagger", "wear shirt", "remove shirt", "drop shirt",
+    "look at bob", "look at me", "look at the small bag", "look at 2nd dagger",
+    "smile", "smile at bob", "smile at shirt", "smile happily",
+    "get 10 gold", "drop 5 gold", "get gold", "light torch", "light torch with xyzzy",
+    "jump around", "get", "drop", "get bag", "put sword in bag", "close bag",
+    "get sword from bag", "open bag", "get sword from bag", "drop bag", "get all of the daggers",
+});
+
+write_file("/tmp/havok_vp_tester.c", src, 1);
+room = new(LIB_ROOM);
+room->SetShort("a test room");
+room->SetLong("A bare test room.");
+room->SetAmbientLight(30);
+t = new("/tmp/havok_vp_tester");
+t->SetKeyName("tester");
+t->SetId(({ "tester" }));
+t->SetShort("a tester");
+t->SetRace("human");
+t->SetGender("male");
+t->SetLevel(5);
+t->eventMove(room);
+bob = new(LIB_NPC);
+bob->SetKeyName("bob");
+bob->SetId(({ "bob" }));
+bob->SetShort("Bob");
+bob->SetRace("human");
+bob->SetGender("male");
+bob->SetLevel(5);
+bob->eventMove(room);
+foreach (string f in ({ "/domains/town/weap/sword", "/domains/town/weap/dagger",
+                        "/domains/town/weap/dagger", "/domains/town/obj/bag",
+                        "/domains/town/obj/torch", "/domains/town/armor/shirt" }))
+    new(f)->eventMove(room);
+pile = new(LIB_PILE);
+pile->SetPile("gold", 50);
+pile->eventMove(room);
+t->flush();
+
+foreach (string c in cmds) {
+    string *inv = ({});
+    out += "> " + c + "\n";
+    t->run(c);
+    foreach (string m in t->flush()) out += m + (m[<1..<1] == "\n" ? "" : "\n");
+    foreach (object o in all_inventory(t)) inv += ({ o->GetShort() || "?" });
+    out += "  [inv: " + implode(inv, ", ") + "]\n";
+}
+
+foreach (object o in deep_inventory(room)) if (o) destruct(o);
+destruct(room);
+rm("/tmp/havok_vp_tester.c");
+write_file("/tmp/havok_vp_transcript.txt", out, 1);
+return sizeof(cmds);

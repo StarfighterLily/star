@@ -1,0 +1,58 @@
+# M6 login comparison, part 1 (tests/run_login_test.ps1): a new player
+# connects to Dead Souls 3.9, creates a character, plays a few commands and
+# quits. tools/telnet_script.exe plays it; see that file for the commands.
+expect What name do you wish?
+send alice
+expect (y/n)
+send y
+expect 13 years of age or older? (y/n)
+send y
+expect visually impaired? (y/n)
+send n
+expect Create a password of at least 5 letters:
+send secret12
+expect Please confirm your password:
+send secret12
+expect (male, female, neutral, or none):
+send male
+expect Email:
+send me@x.org
+expect Race:
+send list
+expect Race:
+send pick human
+expect You wear a white t-shirt.
+send
+expect Press <return> to continue:
+send
+expect sp:
+send look
+expect sp:
+send inventory
+expect sp:
+send who
+expect sp:
+send get book
+expect sp:
+send read chapter 1 in handbook
+expect sp:
+pause 1100
+send say hello there
+expect sp:
+send score
+expect sp:
+send smile
+expect sp:
+send xyzzy
+expect sp:
+send south
+expect sp:
+pause 1100
+send north
+expect sp:
+send drop handbook
+expect sp:
+send get handbook
+expect sp:
+send quit
+drain 3000

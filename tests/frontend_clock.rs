@@ -85,3 +85,54 @@ fn runtime_clock_ms_advances_monotonically_end_to_end() {
     );
     assert_eq!(run_ok("clock_ms_advances", src), "pos:true back:false slept:true\n");
 }
+
+// ===== clock_us() (todo.md HavokOS M6: LPC's time_expression) ==============
+
+/// `clock_us()` is an `i64` and takes no argument.
+#[test]
+fn typecheck_clock_us_is_i64() {
+    assert_eq!(typed_fn_result_ty("fn f() -> i64:\n    clock_us()\n"), Ty::I64);
+    let module = Driver::parse("fn main():\n    let t = clock_us(1)\n").expect("should parse");
+    assert!(Driver::check(&module).is_err());
+}
+
+/// Windows reads QueryPerformanceCounter/Frequency (overflow-safe split); Linux CLOCK_MONOTONIC; both verify.
+#[test]
+fn codegen_clock_us_arms() {
+    let module = Driver::parse("fn main():\n    let t = clock_us()\n").expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let v = Driver::codegen_verified_for_target(&typed, star::codegen::Target::WindowsGnu).expect("should codegen");
+    assert!(v.ir.contains("call i32 @QueryPerformanceCounter(i64* "), "{}", v.ir);
+    assert!(v.ir.contains("call i32 @QueryPerformanceFrequency(i64* "), "{}", v.ir);
+    assert!(v.ir.contains("srem i64"), "the remainder half of the overflow-safe conversion:\n{}", v.ir);
+    assert!(v.errors.is_empty(), "{:?}", v.errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+    let v = Driver::codegen_verified_for_target(&typed, star::codegen::Target::LinuxGnu).expect("should codegen");
+    assert!(v.ir.contains("call i32 @clock_gettime(i32 1, "), "{}", v.ir);
+    assert!(v.ir.contains("sdiv i64") && v.ir.contains(", 1000\n"), "{}", v.ir);
+    assert!(v.errors.is_empty(), "{:?}", v.errors.iter().map(|d| &d.message).collect::<Vec<_>>());
+}
+
+/// At runtime clock_us is monotonic, resolves well below a millisecond, and tracks clock_ms over a 200 ms sleep.
+#[test]
+fn runtime_clock_us_monotonic_fine_and_consistent_end_to_end() {
+    let src = concat!(
+        "extern \"C\" fn _sleep(ms: i32)\n",
+        "fn main() -> i32:\n",
+        "    let mut prev = clock_us()\n",
+        "    let mut back = false\n",
+        "    let mut fine = false\n",
+        "    for i in 0..200000:\n",
+        "        let t = clock_us()\n",
+        "        if t < prev:\n",
+        "            back = true\n",
+        "        if t > prev and t - prev < (500 as i64):\n",
+        "            fine = true\n",
+        "        prev = t\n",
+        "    let a = clock_us()\n",
+        "    _sleep(200)\n",
+        "    let d = clock_us() - a\n",
+        "    println(f\"back:{back} fine:{fine} slept:{d >= (150000 as i64) and d < (2000000 as i64)}\")\n",
+        "    0\n",
+    );
+    assert_eq!(run_ok("clock_us_runtime", src), "back:false fine:true slept:true\n");
+}

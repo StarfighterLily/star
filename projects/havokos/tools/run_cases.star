@@ -20,7 +20,7 @@
 # test_callouts(), ...) are always available to cases; ref_cases.pike gives
 # the reference the same ones.
 #
-# Build: star build projects/havokos/tools/run_cases.star -o projects/havokos/tools/run_cases.exe
+# Build: star build projects/havokos/tools/run_cases.star -o projects/havokos/tools/run_cases.exe -l ws2_32
 
 import "../vm.star" as vm
 import "../efuns.star" as ef

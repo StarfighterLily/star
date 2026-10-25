@@ -15,7 +15,9 @@
 # arrays/mappings/math (`efuns_arr.star`), 110-141 time/files/save_object
 # (`efuns_file.star`), 142-143 save_variable/restore_variable, 160+ misc.
 # M5 added 200-299, the object model (`efuns_obj.star`), and 900-999, the
-# test hooks (`test_efun_codes()`, below).
+# test hooks (`test_efun_codes()`, below). M6 added 300-349, connections and
+# telnet (`efuns_net.star`), and 350-369, the verb parser's registry
+# (`verbparse.star`).
 
 const E_UNDEFINEDP: i32 = 1
 const E_SIZEOF: i32 = 2
@@ -225,6 +227,50 @@ const E_USERP: i32 = 286
 const E_RUSAGE: i32 = 287
 const E_OPCPROF: i32 = 288
 const E_DUMPALLOBJ: i32 = 289
+# --- M6: connections (300..), efuns_net.star
+const E_EXEC: i32 = 300
+const E_QUERY_IP_NUMBER: i32 = 301
+const E_QUERY_IP_NAME: i32 = 302
+const E_QUERY_IP_PORT: i32 = 303
+const E_QUERY_HOST_NAME: i32 = 304
+const E_QUERY_IDLE: i32 = 305
+const E_IN_INPUT: i32 = 306
+const E_REMOVE_INTERACTIVE: i32 = 307
+const E_SNOOP: i32 = 308
+const E_QUERY_SNOOP: i32 = 309
+const E_QUERY_SNOOPING: i32 = 310
+const E_QUERY_CHARMODE: i32 = 311
+const E_REMOVE_CHARMODE: i32 = 312
+const E_REMOVE_GET_CHAR: i32 = 313
+const E_HAS_MXP: i32 = 314
+const E_HAS_ZMP: i32 = 315
+const E_HAS_GMCP: i32 = 316
+const E_HAS_MSDP: i32 = 317
+const E_HAS_MSP: i32 = 318
+const E_SEND_ZMP: i32 = 319
+const E_SEND_GMCP: i32 = 320
+const E_ACT_MXP: i32 = 321
+const E_SEND_MSDP: i32 = 322
+const E_SEND_MSP: i32 = 323
+const E_CLIENT_INFO: i32 = 324
+const E_REQUEST_TERM_TYPE: i32 = 325
+const E_START_REQUEST_TERM_TYPE: i32 = 326
+const E_REQUEST_TERM_SIZE: i32 = 327
+const E_SEND_NULLBYTE: i32 = 328
+const E_NETWORK_STATS: i32 = 329
+const E_INPUT_TO: i32 = 330
+const E_GET_CHAR: i32 = 331
+const E_IN_EDIT: i32 = 332
+const E_QUERY_ED_MODE: i32 = 333
+# --- M6: the verb parser's registry (350..), verbparse.star
+const E_PARSE_INIT: i32 = 350
+const E_PARSE_REFRESH: i32 = 351
+const E_PARSE_ADD_RULE: i32 = 352
+const E_PARSE_ADD_SYNONYM: i32 = 353
+const E_PARSE_REMOVE: i32 = 354
+const E_PARSE_DUMP: i32 = 355
+const E_PARSE_SENTENCE: i32 = 356
+const E_PARSE_MY_RULES: i32 = 357
 # --- M5: test hooks (900..), see test_efun_codes()
 const E_TEST_HB: i32 = 900
 const E_TEST_HB_ROUND: i32 = 901
@@ -237,6 +283,14 @@ const E_TEST_NO_CLEAN_UP: i32 = 907
 const E_TEST_SWEEP: i32 = 908
 const E_TEST_LIMITED: i32 = 909
 const E_TEST_EVAL_STATE: i32 = 910
+# --- M6: telnet test hooks (efuns_net.star)
+const E_TEST_TEL_OPEN: i32 = 911
+const E_TEST_TEL_SAY: i32 = 912
+const E_TEST_TEL_DRAIN: i32 = 913
+const E_TEST_TEL_HANGUP: i32 = 914
+const E_TEST_TEL_TP: i32 = 915
+const E_TEST_TEL_CONNECT: i32 = 916
+const E_TEST_TEL_USER: i32 = 917
 
 fn efun_codes() -> Map<str, i32>:
     let mut m: Map<str, i32> = Map<str, i32>()
@@ -452,6 +506,48 @@ fn efun_codes() -> Map<str, i32>:
     m.insert("this_user", E_THIS_PLAYER)
     m.insert("get_eval_cost", E_EVAL_COST)
     m.insert("domain_stats", E_AUTHOR_STATS)
+    m.insert("exec", E_EXEC)
+    m.insert("query_ip_number", E_QUERY_IP_NUMBER)
+    m.insert("query_ip_name", E_QUERY_IP_NAME)
+    m.insert("query_ip_port", E_QUERY_IP_PORT)
+    m.insert("query_host_name", E_QUERY_HOST_NAME)
+    m.insert("query_idle", E_QUERY_IDLE)
+    m.insert("in_input", E_IN_INPUT)
+    m.insert("remove_interactive", E_REMOVE_INTERACTIVE)
+    m.insert("snoop", E_SNOOP)
+    m.insert("query_snoop", E_QUERY_SNOOP)
+    m.insert("query_snooping", E_QUERY_SNOOPING)
+    m.insert("query_charmode", E_QUERY_CHARMODE)
+    m.insert("remove_charmode", E_REMOVE_CHARMODE)
+    m.insert("remove_get_char", E_REMOVE_GET_CHAR)
+    m.insert("has_mxp", E_HAS_MXP)
+    m.insert("has_zmp", E_HAS_ZMP)
+    m.insert("has_gmcp", E_HAS_GMCP)
+    m.insert("has_msdp", E_HAS_MSDP)
+    m.insert("has_msp", E_HAS_MSP)
+    m.insert("send_zmp", E_SEND_ZMP)
+    m.insert("send_gmcp", E_SEND_GMCP)
+    m.insert("act_mxp", E_ACT_MXP)
+    m.insert("send_msdp", E_SEND_MSDP)
+    m.insert("send_msp", E_SEND_MSP)
+    m.insert("client_info", E_CLIENT_INFO)
+    m.insert("request_term_type", E_REQUEST_TERM_TYPE)
+    m.insert("start_request_term_type", E_START_REQUEST_TERM_TYPE)
+    m.insert("request_term_size", E_REQUEST_TERM_SIZE)
+    m.insert("send_nullbyte", E_SEND_NULLBYTE)
+    m.insert("network_stats", E_NETWORK_STATS)
+    m.insert("input_to", E_INPUT_TO)
+    m.insert("get_char", E_GET_CHAR)
+    m.insert("in_edit", E_IN_EDIT)
+    m.insert("query_ed_mode", E_QUERY_ED_MODE)
+    m.insert("parse_init", E_PARSE_INIT)
+    m.insert("parse_refresh", E_PARSE_REFRESH)
+    m.insert("parse_add_rule", E_PARSE_ADD_RULE)
+    m.insert("parse_add_synonym", E_PARSE_ADD_SYNONYM)
+    m.insert("parse_remove", E_PARSE_REMOVE)
+    m.insert("parse_dump", E_PARSE_DUMP)
+    m.insert("parse_sentence", E_PARSE_SENTENCE)
+    m.insert("parse_my_rules", E_PARSE_MY_RULES)
     m
 
 # Driver hooks for the case runner (`tools/run_cases.star` with `-hooks`,
@@ -472,4 +568,11 @@ fn test_efun_codes() -> Map<str, i32>:
     m.insert("test_sweep", E_TEST_SWEEP)
     m.insert("test_limited", E_TEST_LIMITED)
     m.insert("test_eval_state", E_TEST_EVAL_STATE)
+    m.insert("test_tel_open", E_TEST_TEL_OPEN)
+    m.insert("test_tel_say", E_TEST_TEL_SAY)
+    m.insert("test_tel_drain", E_TEST_TEL_DRAIN)
+    m.insert("test_tel_hangup", E_TEST_TEL_HANGUP)
+    m.insert("test_tel_tp", E_TEST_TEL_TP)
+    m.insert("test_tel_connect", E_TEST_TEL_CONNECT)
+    m.insert("test_tel_user", E_TEST_TEL_USER)
     m

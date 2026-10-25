@@ -2720,7 +2720,7 @@ impl Checker {
                     }
                 }
             }
-            "clock_ms" => {
+            "clock_ms" | "clock_us" => {
                 arity_ok(0, self);
             }
             "local_time" => {
@@ -2796,6 +2796,47 @@ impl Checker {
                     }
                     if !tys_eq(&arg_tys[1], &Ty::Str) {
                         self.error(format!("`tcp_send` argument 2 expected `str`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "tcp_listen" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Int) {
+                        self.error(format!("`tcp_listen` argument 1 expected `int`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Bool) {
+                        self.error(format!("`tcp_listen` argument 2 expected `bool`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "host_name" => {
+                arity_ok(0, self);
+            }
+            "tcp_accept" | "tcp_recv_bytes" | "tcp_peer_ip" | "tcp_local_port" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                    self.error(format!("`{}` expects a `ptr` argument, found `{:?}`", name, arg_tys[0]), span);
+                }
+            }
+            "tcp_wait" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::List(Box::new(Ty::Ptr))) {
+                        self.error(format!("`tcp_wait` argument 1 expected `List<ptr>`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Int) {
+                        self.error(format!("`tcp_wait` argument 2 expected `int`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "tcp_send_bytes" => {
+                if arity_ok(3, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`tcp_send_bytes` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Bytes) {
+                        self.error(format!("`tcp_send_bytes` argument 2 expected `Bytes`, found `{:?}`", arg_tys[1]), span);
+                    }
+                    if !tys_eq(&arg_tys[2], &Ty::Int) {
+                        self.error(format!("`tcp_send_bytes` argument 3 expected `int`, found `{:?}`", arg_tys[2]), span);
                     }
                 }
             }

@@ -76,6 +76,7 @@ impl Codegen {
 
         // --- the closure body, as a deferred top-level function ---
         let saved_ir = std::mem::take(&mut self.ir);
+        let saved_ir_label = self.current_label.clone();
         let saved_symbols = std::mem::take(&mut self.symbols);
         let saved_owned_stack = std::mem::take(&mut self.owned_stack);
         let saved_in_frame = self.in_frame;
@@ -169,6 +170,7 @@ impl Codegen {
         self.line("");
 
         let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
+        self.current_label = saved_ir_label;
         self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir));
         self.symbols = saved_symbols;
         self.owned_stack = saved_owned_stack;
@@ -206,6 +208,7 @@ impl Codegen {
             } else {
                 let release_fn_name = format!("closure_{}_release_env", id);
                 let saved_ir2 = std::mem::take(&mut self.ir);
+                let saved_ir2_label = self.current_label.clone();
                 self.line(&format!("define void @{}(i8* %envp) {{", release_fn_name));
                 self.open_block("entry");
                 let env_ptr2 = self.tmp_name();
@@ -219,6 +222,7 @@ impl Codegen {
                 self.line("}");
                 self.line("");
                 let fn_ir2 = std::mem::replace(&mut self.ir, saved_ir2);
+                self.current_label = saved_ir2_label;
                 self.pending_top.push(Self::hoist_allocas_to_entry(&fn_ir2));
                 let reg = self.tmp_name();
                 self.line(&format!("  {} = bitcast void (i8*)* @{} to i8*", reg, release_fn_name));
@@ -283,6 +287,7 @@ impl Codegen {
             let thunk_name = format!("fnval_{}", name);
 
             let saved_ir = std::mem::take(&mut self.ir);
+            let saved_ir_label = self.current_label.clone();
             let saved_symbols = std::mem::take(&mut self.symbols);
             let saved_in_frame = self.in_frame;
             self.in_frame = false;
@@ -335,6 +340,7 @@ impl Codegen {
             self.line("");
 
             let fn_ir = std::mem::replace(&mut self.ir, saved_ir);
+            self.current_label = saved_ir_label;
             self.pending_top.push(fn_ir);
             self.symbols = saved_symbols;
             self.in_frame = saved_in_frame;

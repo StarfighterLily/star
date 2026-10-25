@@ -1,0 +1,200 @@
+> look
+A test room
+A bare test room.  
+Obvious exit: 
+%^MAGENTA%^An old wooden torch%^RESET%^MAGENTA%^, a pile of 50 gold%^RESET%^MAGENTA%^, a short sword%^RESET%^MAGENTA%^, two wicked-looking daggers%^RESET%^MAGENTA%^, a small cloth bag%^RESET%^MAGENTA%^, and a white t-shirt%^RESET%^MAGENTA%^ are here.%^RESET%^
+%^BOLD%^GREEN%^Bob%^%^RESET%^ is standing here.
+
+  [inv: ]
+> get sword
+You get a short sword.
+  [inv: a short sword]
+> get dagger
+You get a wicked-looking dagger.
+  [inv: a wicked-looking dagger, a short sword]
+> get second dagger
+(fail) There is only one of them.
+[error] What?
+  [inv: a wicked-looking dagger, a short sword]
+> drop all
+You drop a short sword.
+You drop a wicked-looking dagger.
+  [inv: ]
+> get daggers
+You get a wicked-looking dagger.
+You get a wicked-looking dagger.
+  [inv: a wicked-looking dagger, a wicked-looking dagger]
+> drop daggers
+You drop a wicked-looking dagger.
+You drop a wicked-looking dagger.
+  [inv: ]
+> get all
+You get a small cloth bag.
+You get an old wooden torch.
+You get a white t-shirt.
+You get a pile of money.
+You get a short sword.
+You get a wicked-looking dagger.
+You get a wicked-looking dagger.
+  [inv: a wicked-looking dagger, a wicked-looking dagger, a short sword, a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> i
+[error] What?
+  [inv: a wicked-looking dagger, a wicked-looking dagger, a short sword, a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> get xyzzy
+(fail) There is no xyzzy here.
+[error] What?
+  [inv: a wicked-looking dagger, a wicked-looking dagger, a short sword, a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> get the 3rd dagger
+(fail) You're already holding it.
+[error] What?
+  [inv: a wicked-looking dagger, a wicked-looking dagger, a short sword, a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> put dagger in bag
+The wicked-looking dagger stays where it is.
+  [inv: a wicked-looking dagger, a wicked-looking dagger, a short sword, a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> put daggers in bag
+The wicked-looking dagger stays where it is.
+The wicked-looking dagger stays where it is.
+  [inv: a wicked-looking dagger, a wicked-looking dagger, a short sword, a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> look in bag
+The small cloth bag is completely empty.
+  [inv: a wicked-looking dagger, a wicked-looking dagger, a short sword, a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> get dagger from bag
+(fail) You can't get dagger from that.
+[error] What?
+  [inv: a wicked-looking dagger, a wicked-looking dagger, a short sword, a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> get all from bag
+(fail) You can't get all from that.
+[error] What?
+  [inv: a wicked-looking dagger, a wicked-looking dagger, a short sword, a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> put sword in xyzzy
+(fail) There is no xyzzy here.
+[error] What?
+  [inv: a wicked-looking dagger, a wicked-looking dagger, a short sword, a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> put xyzzy in bag
+(fail) There is no xyzzy here.
+[error] What?
+  [inv: a wicked-looking dagger, a wicked-looking dagger, a short sword, a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> give sword to bob
+You give Bob a short sword.
+  [inv: a wicked-looking dagger, a wicked-looking dagger, a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> give daggers to bob
+You give Bob a wicked-looking dagger.
+You give Bob a wicked-looking dagger.
+  [inv: a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> give shirt to torch
+(fail) The torch is not alive.
+[error] What?
+  [inv: a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> wield dagger
+(fail) You don't have that!
+[error] What?
+  [inv: a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> unwield dagger
+(fail) You don't have that!
+[error] What?
+  [inv: a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> wear shirt
+You wear a white t-shirt.
+  [inv: a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> remove shirt
+You remove a white t-shirt.
+  [inv: a pile of money, a white t-shirt, an old wooden torch, a small cloth bag]
+> drop shirt
+You drop a white t-shirt.
+  [inv: a pile of money, an old wooden torch, a small cloth bag]
+> look at bob
+
+The male human is in top condition.
+Bob is carrying:
+A short sword
+Two wicked-looking daggers
+  [inv: a pile of money, an old wooden torch, a small cloth bag]
+> look at me
+
+The male human is in top condition.
+Tester is carrying:
+An old wooden torch
+A pile of money
+A small cloth bag
+Tester looks you over.
+  [inv: a pile of money, an old wooden torch, a small cloth bag]
+> look at the small bag
+It is a simple cloth bag used to hold things. 
+  [inv: a pile of money, an old wooden torch, a small cloth bag]
+> look at 2nd dagger
+(fail) Perhaps "look at sharp dagger on" something?
+[error] What?
+  [inv: a pile of money, an old wooden torch, a small cloth bag]
+> smile
+You smile happily.
+  [inv: a pile of money, an old wooden torch, a small cloth bag]
+> smile at bob
+You smile happily at Bob.
+  [inv: a pile of money, an old wooden torch, a small cloth bag]
+> smile at shirt
+You cannot smile at shirt!
+  [inv: a pile of money, an old wooden torch, a small cloth bag]
+> smile happily
+You smile happily.
+  [inv: a pile of money, an old wooden torch, a small cloth bag]
+> get 10 gold
+(fail) There is no 10 here.
+[error] What?
+  [inv: a pile of money, an old wooden torch, a small cloth bag]
+> drop 5 gold
+You drop 5 gold.
+  [inv: a pile of money, an old wooden torch, a small cloth bag]
+> get gold
+You get a pile of money.
+  [inv: a pile of money, a pile of money, an old wooden torch, a small cloth bag]
+> light torch
+(fail) You can't light that.
+[error] What?
+  [inv: a pile of money, a pile of money, an old wooden torch, a small cloth bag]
+> light torch with xyzzy
+(fail) There is no xyzzy here.
+[error] What?
+  [inv: a pile of money, a pile of money, an old wooden torch, a small cloth bag]
+> jump around
+(fail) Jump from, into, over, on, or through something?
+[error] What?
+  [inv: a pile of money, a pile of money, an old wooden torch, a small cloth bag]
+> get
+(fail) Get what?  Or perhaps get something from somewhere?
+[error] What?
+  [inv: a pile of money, a pile of money, an old wooden torch, a small cloth bag]
+> drop
+(fail) Drop what?
+[error] What?
+  [inv: a pile of money, a pile of money, an old wooden torch, a small cloth bag]
+> get bag
+(fail) You're already holding it.
+[error] What?
+  [inv: a pile of money, a pile of money, an old wooden torch, a small cloth bag]
+> put sword in bag
+(fail) You don't have that.
+[error] What?
+  [inv: a pile of money, a pile of money, an old wooden torch, a small cloth bag]
+> close bag
+(fail) You can't close that.
+[error] What?
+  [inv: a pile of money, a pile of money, an old wooden torch, a small cloth bag]
+> get sword from bag
+(fail) You can't get sword from that.
+[error] What?
+  [inv: a pile of money, a pile of money, an old wooden torch, a small cloth bag]
+> open bag
+(fail) You can't open that.
+[error] What?
+  [inv: a pile of money, a pile of money, an old wooden torch, a small cloth bag]
+> get sword from bag
+(fail) You can't get sword from that.
+[error] What?
+  [inv: a pile of money, a pile of money, an old wooden torch, a small cloth bag]
+> drop bag
+You drop a small cloth bag.
+  [inv: a pile of money, a pile of money, an old wooden torch]
+> get all of the daggers
+(fail) You may need to get closer to it. Perhaps "get sharp dagger from" something?
+[error] What?
+  [inv: a pile of money, a pile of money, an old wooden torch]

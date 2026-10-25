@@ -41,7 +41,10 @@ virtual machine**:
 | Pike's garbage collector | `gc.star`: a mark-and-sweep of the VM's value tables between top-level evaluations (M5) |
 | `havok/efuns.pike` | `efuns.star` (dispatch + the M3 subset) and one file per area since M4: `efuns_str.star`, `efuns_arr.star`, `efuns_file.star`, `sprintf.star`, `sscanf.star`, `regex.star`, `md5.star`, `tcolour.star`, `numfmt.star`, and `efuns_obj.star` (the object model, M5) |
 | `havok/saveformat.pike` | `saveformat.star` (plus the emitter's `__lpc_save`/`__lpc_restore` variable walk) |
-| `havok/net.pike` (telnet), `sockets.pike`, `http.pike`, `tls.pike` | later phases (see roadmap) |
+| `havok/net.pike` (telnet, connections, sessions) | `net.star` (on `conn.star`'s Conn), its efuns `efuns_net.star`; the sockets themselves are compiler builtins (`src/codegen/net_server.rs`, M6) |
+| `havok/parser.pike` (the verb parser) | `verbparse.star` (registry) + `verbmatch.star` (parse_sentence()), data in `vpdata.star` (M6) |
+| `havok/boot.pike` and the Pike backend's event loop | `boot.star` + `config.star`: boot, then an explicit wait/read/timers/write loop (M6) |
+| `sockets.pike`, `http.pike`, `tls.pike`, `ed.pike` | later phases (see roadmap) |
 
 Up to and including the parser, the port can follow the Pike code closely.
 From the compiler on, the Pike files still define the *semantics* (what each
@@ -139,6 +142,31 @@ Found during M5 (2026-10-25):
     value types built malformed IR** (bug #8). Both surfaced compiling the
     M5 VM.
 
+Found during M6 (2026-10-25):
+
+16. **Star functions keep their own names in the IR** (`fn bind(..)` is
+    `@bind`), so a C symbol the compiler declares unconditionally collides
+    with any user function of that name. The server-socket builtins
+    therefore declare `bind`/`listen`/`accept`/`poll` only in programs that
+    use them (`src/codegen/net_server.rs`); the test suite already has a
+    `fn bind`.
+17. **An empty `Bytes` (or `List`) is a null pointer**, so `tcp_recv`'s
+    "null means would-block" signal can't carry over to a binary-safe
+    receive. Readiness comes from `tcp_wait()` instead, which is also the
+    driver's idle wait.
+18. **stdout is fully buffered when redirected to a file**: a driver's log
+    showed nothing until it exited. `log_msg()` flushes (`fflush`).
+19. **msvcrt `clock()` advances in 15.6 ms steps** (and dies after 24.8
+    days, #14), which M5's `time_expression` used: a short block timed 0 or
+    15625 µs, so Dead Souls' boot-time performance rating swung at random.
+    M6 added `clock_us()` (`src/codegen/clock.rs`).
+20. **The machine's host name** (`query_host_name()`) needs `gethostname`
+    after `WSAStartup`, or `GetComputerNameExA`, which can't be declared
+    (#7); `COMPUTERNAME` is upper-cased. M6 added `host_name()`.
+21. **A list literal inside an `if`/`match` arm could break the build**
+    (Star compiler bug #9 below), found as soon as `tcp_wait`'s codegen
+    built its result the same way.
+
 ## Value representation (M3, `value.star`)
 
 ```
@@ -213,10 +241,13 @@ Pike driver before it's marked done.
   destruct, environment/move, add_action and command dispatch,
   call_outs, heart beats, reset and clean_up. Done 2026-10-25, see the
   log.
-- **M6: network + boot (MVP).** Star compiler `tcp_listen`/`tcp_accept`
-  builtins, the telnet layer, login. DS3.9 boots and a player can log in.
-- **M7+: the rest.** Verb parser efuns, `ed`, socket efuns, HTTP/TLS,
-  everything else HavokOS implements.
+- **M6: network + boot (MVP).** Star compiler server-socket builtins, the
+  telnet layer, connections and sessions, the driver's main loop, login.
+  It turned out to need the verb parser too (every Dead Souls object calls
+  parse_init(), and entering the game runs verbs), so the parser moved
+  here from M7. Done 2026-10-25, see the log.
+- **M7+: the rest.** `ed`, the socket efuns, HTTP/TLS, MCCP, and the other
+  efuns the boot test still stubs (`tests/fixtures/ds39_boot_stubs.txt`).
 
 ## Files
 
@@ -256,18 +287,33 @@ Pike driver before it's marked done.
 | `tools/ref_efun_names.pike` | generates `efun_names.star` from the live reference |
 | `tools/run_cases.star` | Star side of the M3 case comparison |
 | `tools/ref_cases.pike` | reference side: runs run_tests.pike cases (and `-extra` edge cases) through the live driver |
-| `tests/run_cases_test.ps1` | M3 + M4 + M5 regression: every `fixtures/cases/*.expected.txt` (see the M4 and M5 logs for what each holds) |
+| `tests/run_cases_test.ps1` | M3-M6 regression: every `fixtures/cases/*.expected.txt` (see the M4, M5 and M6 logs for what each holds) |
 | `tools/gen_contrib_cases.py` | generates `m4_contrib_cases.txt` from the reference's `tests/contrib_golden.txt` |
 | `tools/compile_sweep.star`, `tools/ref_compile_sweep.pike` | M3 compile sweep over DS3.9, both sides: which files compile, and their inheritance tables |
 | `tests/run_compile_sweep_test.ps1` | M3 regression: all 2378 DS3.9 files' compile results and table hashes against `fixtures/ds39_compile.expected.txt` (frozen reference output), about 21 s |
 | `objects.star` | the object model's machinery: applies, top-level evaluations and the evaluation limit, error_handler() reports, destruct, environments and init(), livings, shadows, add_action dispatch, messages, call_outs, heart beats, reset/clean_up, replace_program(), get_garbage(), the driver's timer step |
 | `efuns_obj.star` | the object-model efuns (codes 200-299) and the case runner's test_* driver hooks (900-999) |
 | `gc.star` | the garbage collector, and the marking get_garbage() uses |
-| `tools/boot_ds.star`, `tools/ref_boot.pike` | M5 boot comparison, both sides: boot a mudlib from its mudos.cfg through every preload and print the live objects (privs, environment, heart beat, living) and counts; `boot_ds.exe -unimplemented` lists the efuns the reference side stubs, `-run N` soaks the booted driver |
+| `tools/boot_ds.star`, `tools/ref_boot.pike` | M5 boot comparison, both sides: boot a mudlib from its mudos.cfg through every preload and print the live objects (privs, environment, heart beat, living) and counts; `boot_ds.exe -unimplemented` lists the efuns the reference side stubs, `-run N` soaks the booted driver, `-wait N -eval f.lpc` runs a script on it (M6) |
 | `tests/run_boot_test.ps1` | M5 regression: DS3.9's boot on a scratch copy of the mudlib against `fixtures/ds39_boot.expected.txt` (frozen reference output, made with `fixtures/ds39_boot_stubs.txt`), about 3 s |
+| `conn.star` | `Conn`: one connection's state (telnet options, buffers, pending input_to) |
+| `net.star` | the network layer: telnet negotiation and subnegotiations (TTYPE/MTTS, NAWS, NEW-ENVIRON, MSSP, GMCP, MSDP, MSP, ZMP, MXP, EOR, CHARSET), lines, input_to/get_char, commands and prompts, sessions through the master's connect(), exec, snoop, the main loop's net_poll() |
+| `efuns_net.star` | the efuns of connections (codes 300-349) and the case runner's test_tel_* hooks |
+| `telcodec.star` | the `~xx` printable form telnet bytes cross LPC strings and transcripts in |
+| `vpdata.star`, `verbparse.star`, `verbmatch.star` | the verb parser: its data, the registry efuns (codes 350-355), parse_sentence()/parse_my_rules() |
+| `config.star` | mudos.cfg reading and VM setup, shared by the driver and boot_ds |
+| `boot.star` | **the driver**: `tools/havokos.exe <mudos.cfg> [port]` boots the mudlib and serves telnet |
+| `tools/gen_m6_cases.py` | generates `m6_cases.txt` (telnet, sessions, input_to, exec, snoop, parser registry) |
+| `tools/gen_m6_parser_cases.py` | generates `m6_parser_cases.txt` from the reference's own `pike/tests/parser_cases.txt` |
+| `tools/ref_eval.pike` | reference side of `boot_ds.exe -eval` (havok/eval.pike with the boot test's stubs) |
+| `tests/run_parser_transcript_test.ps1` | M6 regression: the reference's Dead Souls parser script (50 commands) on both drivers, against `fixtures/ds39_parser_transcript.expected.txt` |
+| `tools/telnet_script.star`, `tools/ref_serve.pike` | M6 login comparison: a scripted telnet client whose transcript is anchored by content, and the reference serving telnet with the boot test's stubs and `havok mccp : 0` |
+| `tests/run_login_test.ps1` | M6 regression: a new character and a returning one, over real sockets, against `fixtures/ds39_login_{new,again}.expected.txt` |
 
 Build the tools with the **release** compiler (`target/release/star.exe
-build ...`). The `star` on `PATH` on this machine was a stale Sep 8
+build ...`), and since M6 every tool that imports the efuns or the network
+layer (run_cases, boot_ds, compile_sweep, the driver, telnet_script) with
+`-l ws2_32`. The `star` on `PATH` on this machine was a stale Sep 8
 `target/debug` build during M2, without the `println` fix or the spill-slot
 fix below.
 
@@ -350,6 +396,23 @@ Each is also documented at the point in the code where it happens.
     whose parent was since recompiled reports the new parent's inherits;
     here it reports the program it actually runs, as FluffOS does. The
     table's own cases, which only query fresh objects, agree.
+
+13. **No MCCP** (`net.star`). COMPRESS2 is never offered, and a client's
+    `DO COMPRESS2` is refused (`WONT`), which is the reference with `havok
+    mccp : 0`; Star has no zlib, and compression is an optimisation clients
+    do without. Every M6 comparison runs the reference that way.
+14. **A UTF-8 connection passes text through unchanged** (`net.star`). LPC
+    strings are byte strings here (`value.star`), not Pike's wide strings,
+    so after CHARSET UTF-8 is accepted a client's UTF-8 arrives as its bytes
+    and the mudlib's text goes out as it is; the reference decodes input to
+    wide strings and re-encodes Latin-1 output as UTF-8. The negotiation
+    itself, and `client_info()["utf8"]`, are the reference's.
+
+Reproduced on purpose, though it reads like a slip: the reference sends a
+`\r\n` in text as a bare `\n` (and a lone `\n` as `\r\n`), because its
+`replace(s, ({ "\r\n", "\n" }), ({ "\n", "\r\n" }))` swaps the two where
+its comment says it leaves `\r\n` alone. `net.star` conn_send() does the
+same, and an M6 case pins it.
 
 Not in M4: `sprintf`'s table mode (`#`) and its `$ ~ @ / ^` modifiers
 (errors, so the format comes back; DS3.9 uses none), the reference's
@@ -437,6 +500,26 @@ extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
    `src/types/expr.rs` (the `Expr::Match` arm), `src/types/stmt.rs` and
    `src/codegen/expr.rs`; regression tests in
    `tests/frontend_match_arm_types.rs`.
+
+9. **Out-of-line helpers clobbered `current_label`** (fixed, M6). Every
+   codegen helper that emits a whole function in the middle of an
+   expression -- a list/map/set release thunk, an eq/hash helper, a
+   closure body, reflect/table helpers, the par/audio pools, 16 sites in 11
+   files -- opened that function's `entry:` block through `open_block` and
+   never restored `Codegen::current_label`. So the first `[1, 2]` of an
+   element type, or a closure literal, inside a value-producing `if`/`match`
+   arm left the arm's `phi` naming `entry` as its predecessor, and the IR
+   verifier refused the build: `let x = if c: [1, 2] else: [3]` didn't
+   compile. It surfaced in `tcp_wait`'s codegen, which builds its `Bytes`
+   result the same way. Each site now saves and restores the label beside
+   `ir`; regression tests in `tests/frontend_out_of_line_current_label.rs`
+   (the list and closure cases fail on the old compiler).
+
+New compiler surface in M6, not bugs: the server-socket builtins
+(`tcp_listen`, `tcp_accept`, `tcp_wait`, `tcp_recv_bytes`,
+`tcp_send_bytes`, `tcp_peer_ip`, `tcp_local_port`) and `host_name()` in
+`src/codegen/net_server.rs` (`tests/frontend_net_server.rs`), and
+`clock_us()` in `src/codegen/clock.rs` (constraints #16-#20).
 
 New compiler surface, not a bug: the `clock_ms()` builtin of constraint
 #14 (`src/codegen/clock.rs`, `tests/frontend_clock.rs`; its Linux arm is
@@ -725,3 +808,83 @@ tell_user() has nowhere to send), and the slow `a += ({ x })` loop from M3,
 which needs reference counts the collector doesn't keep.
 
 **Next: M6, network + boot (MVP).**
+
+### 2026-10-25: M6 network, boot and login
+
+**M6 done.** The Star driver (`tools/havokos.exe <mudos.cfg> [port]`,
+`boot.star`) boots Dead Souls 3.9 and serves telnet, and a player can
+create a character, play and come back. Checked against the live Pike
+driver five ways:
+- **Telnet, connections and sessions** (`m6_cases.txt`, 30 cases,
+  generated by `tools/gen_m6_cases.py`): ports of run_tests.pike's telnet
+  table (the offers, TTYPE/MTTS, NAWS with IAC IAC, MSSP from
+  get_mud_stats(), GA/EOR prompts, refused options, telnet_suboption(),
+  GMCP/ZMP/MXP, NEW-ENVIRON, MSDP both ways, MSP, CHARSET, line endings, a
+  noecho input_to), and this port's own: commands split across reads, a
+  whole session through the master's connect() and logon() with an
+  input_to chain and net_dead(), a refused connection, process_input(),
+  notify_fail() (string and function), write_prompt(), exec() and when it's
+  refused, snoop() with its loop check, get_char() and charmode,
+  remove_interactive(), destructing an interactive object, say/shout/
+  message()/tell_room() to interactive non-livings, and the parser
+  registry (rules and their errors, synonyms, parse_remove(), forgetting a
+  destructed handler, get_garbage() of a parse_init()ed clone). They run
+  through `test_tel_*` hooks both case runners provide: socketless
+  connections here, the reference's own Connection over loopback sockets
+  in `ref_cases.pike`, bytes crossing as `~xx`.
+- **The reference's own parser suite** (`pike/tests/parser_cases.txt`, 80
+  cases, `m6_parser_cases.txt`): all match.
+- **The DS3.9 boot** (`run_boot_test.ps1`), with the efuns this milestone
+  added taken off the stub list (80 stubs became 38): the same 235 objects,
+  41 clones, 70 call_outs and 25 heart beats as the reference. Before the
+  parser was in, both drivers failed a SetInventory() loop on
+  parse_sentence() at whichever item their mapping order reached first
+  (deviation #9), so the boot could only match once the parser did.
+- **The reference's Dead Souls parser script** (`run_parser_transcript_test.ps1`):
+  an NPC runs 50 commands (get/drop/put/give/wield/wear/look/smile/light,
+  plurals, ordinals, "all", containers, errors); all 200 transcript lines
+  match, with the items of two mapping-built sentences sorted (#9).
+- **A real login over sockets** (`run_login_test.ps1`): a scripted client
+  (`tools/telnet_script.exe`) creates a character -- the whole dialogue,
+  the news pagers, then look, inventory, who, get, read, say, score, smile,
+  an unknown and a creator-only command, movement, drop/get, quit -- and
+  logs back in after a wrong password. Every byte the driver sends,
+  telnet negotiation included, matches the reference (`tools/ref_serve.pike`)
+  except the random stats in the prompt, the calendar birthday and the
+  inventory list order (#9), which are masked. The client places what it
+  sends by content (where the previous expect matched), so the reference's
+  separate write for each IAC GA can't shift the transcript.
+
+All 630 cases (M3-M6) pass with a collection after each, and the M1-M3
+token, AST and compile sweeps still match. A 60 s soak of the booted mudlib
+with a collection on every tick (3404) has only the socket efuns' 7 errors.
+
+Design decisions, each explained at its point in the code:
+- **The socket layer is the compiler's**, not FFI (#8, #9): server
+  builtins in `src/codegen/net_server.rs`, binary-safe (telnet carries NUL
+  bytes) and with readiness from one `tcp_wait()` over every socket (#17),
+  which is also the main loop's idle wait: the driver sleeps in the kernel
+  until input arrives or its next timer is due (`next_timer_ms()`).
+- **Connections are a table of `Conn` slots** addressed by index from
+  `ObjSlot.conn`, and every operation re-reads the slot after any LPC call,
+  since LPC can exec, close or destruct anything meanwhile. Output is
+  queued and written at the end of each pass (or at once on close); the
+  bytes and their order are the reference's.
+- **The verb parser is in M6**, because logging in needs it: every Dead
+  Souls object calls parse_init(), and entering the game runs verbs. Its
+  per-parse state lives on VM stacks (`vp_ps`, `vp_its`), since an apply it
+  makes can parse again; per-object parser state is ObjSlot flags plus a
+  slot in `vp_infos`, so destructing (or reusing a slot) can't leave stale
+  entries. A parse_init()ed object counts as referenced for get_garbage(),
+  as the reference's parser tables hold it (an M6 case pins this).
+- **in_edit()/query_ed_mode()** answer "no session" (0, -1): the player
+  prompt calls them on every line, and no ed session can exist before M7.
+
+Getting there found one Star compiler bug, fixed (#9), needed three pieces
+of new compiler surface (server sockets, `host_name()`, `clock_us()`;
+constraints #16-#20), and two new deliberate deviations (#13 no MCCP, #14
+UTF-8 passthrough). Not in M6: HTTP and TLS ports, MCCP, `ed`, the socket
+efuns (Dead Souls' intermud daemons fail on socket_create(), as on the
+stubbed reference).
+
+**Next: M7, the rest** (ed, sockets, HTTP/TLS, the remaining stubs).

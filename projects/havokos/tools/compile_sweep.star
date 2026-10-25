@@ -12,7 +12,7 @@
 # Usage: compile_sweep.exe <mudlib_root> <file_list.txt> [-v]
 # (-v adds the compile error after each FAIL)
 #
-# Build: star build projects/havokos/tools/compile_sweep.star -o projects/havokos/tools/compile_sweep.exe
+# Build: star build projects/havokos/tools/compile_sweep.star -o projects/havokos/tools/compile_sweep.exe -l ws2_32
 
 import "../vm.star" as vm
 import "../efuns.star" as ef

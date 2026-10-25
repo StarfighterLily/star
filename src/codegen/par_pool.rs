@@ -93,6 +93,7 @@ impl Codegen {
         self.par_pool_emitted = true;
 
         let saved_ir = std::mem::take(&mut self.ir);
+        let saved_ir_label = self.current_label.clone();
 
         self.line(&format!("@par.pool.job_fn = global [{} x i32 (i8*)*] zeroinitializer", MAX_WORKERS));
         self.line(&format!("@par.pool.job_arg = global [{} x i8*] zeroinitializer", MAX_WORKERS));
@@ -306,6 +307,7 @@ impl Codegen {
         self.line("");
 
         let pool_ir = std::mem::replace(&mut self.ir, saved_ir);
+        self.current_label = saved_ir_label;
         self.pending_top.push(Self::hoist_allocas_to_entry(&pool_ir));
     }
 

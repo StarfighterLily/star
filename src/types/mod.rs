@@ -968,7 +968,7 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "dir_create" | "dir_remove" | "file_remove" | "file_rename" => Some(Ty::Bool),
         "local_time" => Some(Ty::List(Box::new(Ty::I64))),
         // Monotonic milliseconds -- see `crate::codegen::clock`.
-        "clock_ms" => Some(Ty::I64),
+        "clock_ms" | "clock_us" => Some(Ty::I64),
         // Minimal OS surface (todo.md #2) -- see `crate::codegen::list::emit_args`
         // and `crate::codegen::os`. `args()` includes `argv[0]` (the program
         // path/name), same convention the underlying OS argv itself uses.
@@ -993,6 +993,14 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "tcp_recv" => Some(Ty::Str),
         "tcp_close" => Some(Ty::Named("unknown".into())),
         "tcp_set_nonblocking" => Some(Ty::Bool),
+        // Server sockets -- see `crate::codegen::net_server`. `tcp_listen`/
+        // `tcp_accept` are null when there is no socket (a failed listen,
+        // nothing pending); `tcp_wait` gives one readiness byte per handle;
+        // `tcp_send_bytes` returns bytes sent, 0 would-block, -1 broken.
+        "tcp_listen" | "tcp_accept" => Some(Ty::Ptr),
+        "tcp_wait" | "tcp_recv_bytes" => Some(Ty::Bytes),
+        "tcp_send_bytes" | "tcp_local_port" => Some(Ty::Int),
+        "tcp_peer_ip" | "host_name" => Some(Ty::Str),
         // `docs/design.md`'s "Math and geometry" section -- see
         // `crate::codegen::geometry` for each function's lowering.
         // `quat_identity` takes no argument (the identity rotation);
@@ -1529,7 +1537,7 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     // `crate::codegen::fs`
     "_findfirst64", "_findnext64", "_findclose", "_stat64", "_mkdir", "_rmdir", "MoveFileExA", "_localtime64_s", "_mkgmtime64", "opendir", "readdir", "closedir", "stat", "mkdir", "rmdir", "rename", "localtime_r", "remove",
     // `clock_ms` builtin -- see `crate::codegen::clock`.
-    "GetTickCount64", "clock_gettime",
+    "GetTickCount64", "clock_gettime", "QueryPerformanceCounter", "QueryPerformanceFrequency",
 ];
 
 /// The error type for type checking.

@@ -10,7 +10,7 @@
 #
 # Usage: powershell -File projects/havokos/tests/run_boot_test.ps1 [-DsRoot E:\ds3.9]
 # (rebuild tools/boot_ds.exe first if any compiler/VM .star file changed:
-#   target/release/star.exe build projects/havokos/tools/boot_ds.star -o projects/havokos/tools/boot_ds.exe)
+#   target/release/star.exe build projects/havokos/tools/boot_ds.star -o projects/havokos/tools/boot_ds.exe -l ws2_32)
 # Exits 0 when the reports match, 1 otherwise. About 3 s.
 #
 # Regenerating the fixture (only after confirming the *reference's* own

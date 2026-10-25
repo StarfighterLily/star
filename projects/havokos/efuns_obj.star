@@ -9,11 +9,9 @@
 # -- an uninitialised variable, a missed mapping lookup -- is no object,
 # and the efun gives its "no object" result.
 #
-# Efuns of connections (users() and interactive() see none, exec, input_to,
-# snoop, query_ip_*) belong to M6, the verb parser and ed to M7; until then
-# they raise the reference's "not implemented" error, except users(),
-# interactive() and userp(), whose answers without a network are simply
-# empty.
+# users(), interactive() and shout() see the connections of M6
+# (`net.star`); the other efuns of connections (exec, input_to, snoop,
+# query_ip_*, the telnet protocols) are `efuns_net.star`'s.
 
 import "value.star" as val
 import "vm.star" as vm
@@ -606,7 +604,14 @@ impl vm::Vm:
             self.tell_room(room, self.arg(args, 1), avoid)
             return zero
         if code == et::E_SHOUT:
-            # to every user but this_player(): there are none before M6
+            # to every user but this_player()
+            let s = val::Value::Str(self.to_text(self.arg(args, 0)))
+            let us = self.users_list()
+            for i in 0..us.len():
+                if us[i] != self.cur_player:
+                    self.tell_object(us[i], s)
+                    if self.err:
+                        return val::Value::Undef
             return zero
         if code == et::E_MESSAGE:
             let mut scope: List<val::Value> = List<val::Value>()
@@ -730,9 +735,9 @@ impl vm::Vm:
         if code == et::E_QUERY_LOAD_AVERAGE:
             return val::Value::Str("0.00 cmds/s, 0.00 comp lines/s")
         if code == et::E_USERS:
-            return self.new_arr(List<val::Value>())
+            return self.objs_value(self.users_list())
         if code == et::E_INTERACTIVE:
-            return zero
+            return self.bool_v(self.is_interactive(self.obj_arg(args, 0, self_ob)))
         if code == et::E_USERP:
             let o = self.obj_of(self.arg(args, 0))
             return self.bool_v(self.alive(o) and self.objs[o].once_interactive)
@@ -825,6 +830,8 @@ impl vm::Vm:
     # The case runner's driver hooks (efun_table.star test_efun_codes()).
     fn efun_test(mut self, code: i32, args: List<val::Value>, self_ob: i32) -> val::Value:
         let zero = val::Value::Int(0 as i64)
+        if code >= et::E_TEST_TEL_OPEN:
+            return self.efun_tel_test(code, args, self_ob)
         if code == et::E_TEST_HB:
             let n = val::int_of(self.arg(args, 0))
             let mut k = 0 as i64
@@ -890,7 +897,7 @@ impl vm::Vm:
     # real boot).
     fn add_test_efuns(mut self):
         let t = et::test_efun_codes()
-        let names = ["test_hb", "test_hb_round", "test_callouts", "test_reset_cfg", "test_set_reset_time", "test_set_last_used", "test_reset_time", "test_no_clean_up", "test_sweep", "test_limited", "test_eval_state"]
+        let names = ["test_hb", "test_hb_round", "test_callouts", "test_reset_cfg", "test_set_reset_time", "test_set_last_used", "test_reset_time", "test_no_clean_up", "test_sweep", "test_limited", "test_eval_state", "test_tel_open", "test_tel_say", "test_tel_drain", "test_tel_hangup", "test_tel_tp", "test_tel_connect", "test_tel_user"]
         for i in 0..names.len():
             if let Option::Some(c) = t.get(names[i]):
                 self.efun_codes.insert(names[i], c)

@@ -1,0 +1,67 @@
+< ~ff~fd~18~ff~fd~1f~ff~fd'~ff~fbF~ff~fb~c9~ff~fbE~ff~fbZ~ff~fb]~ff~fb[~ff~fb~19~ff~fb*Connected to DeadSoulsNew, an LP mud running on Microsoft Windows NT.~0d~0a
+< ~0d~0a
+<                 The Dead Souls Object Library version 3~0d~0a
+< ~0d~0a
+<              This software is copyrighted and it is not GPL. ~0d~0a
+< ~0d~0a
+<                  For more info: http://dead-souls.net~0d~0a
+< ~0d~0a
+<            Driver: HavokOS 0.2               Mudlib: Dead Souls 3.9            ~0d~0a
+< ~0d~0a
+< What name do you wish?
+> alice
+<  ~ff~f9Password:
+> wrongpass
+<  ~ff~fb~01~ff~f9~ff~fc~01~0d~0a
+< ~0d~0a
+< Invalid password.~0d~0a
+< Password:
+> secret12
+<  ~ff~fb~01~ff~f9~ff~fc~01~0d~0a
+< The start room~1b[0m~0d~0a
+< ---------~1b[0m~0d~0a
+< |       |~1b[0m~0d~0a
+< |       |~1b[0m~0d~0a
+< |   *   |~1b[0m~0d~0a
+< |   |   |~1b[0m~0d~0a
+< |   #   |~1b[0m~0d~0a
+< ---------~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+< Welcome! To enter the main area, type: ~1b[32menter town~1b[0m~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+<   ~1b[0m~1b[0m~0d~0a
+< Obvious exits: south, enter town~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp: 
+> look
+< ~1b[0m399/399 > ~1b[0m~ff~f9The start room~1b[0m~0d~0a
+< ---------~1b[0m~0d~0a
+< |       |~1b[0m~0d~0a
+< |       |~1b[0m~0d~0a
+< |   *   |~1b[0m~0d~0a
+< |   |   |~1b[0m~0d~0a
+< |   #   |~1b[0m~0d~0a
+< ---------~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+< Welcome! To enter the main area, type: ~1b[32menter town~1b[0m~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+<   ~1b[0m~1b[0m~0d~0a
+< Obvious exits: south, enter town~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp: 
+> inventory
+< ~1b[0m399/399 > ~1b[0m~ff~f9You are carrying the following items:~1b[0m~0d~0a
+< A Player's Handbook~1b[0m~0d~0a
+< A white t-shirt~1b[0m~0d~0a
+< A pair of blue jeans~1b[0m~0d~0a
+< A cheat book~1b[0m~0d~0a
+< ~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp: 
+> who
+< ~1b[0m399/399 > ~1b[0m~ff~f9                                 DeadSoulsNew                                  ~1b[0m~0d~0a
+< *=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*~1b[0m~0d~0a
+< [1]:  Alice the unaccomplished~1b[0m~1b[0m~1b[0m~0d~0a
+< *=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*~1b[0m~0d~0a
+<                      There is one member of our reality.~1b[0m~0d~0a
+<                       ~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m390/390  ~1b[34mmp: ~1b[0m660/660  ~1b[32msp: 
+> quit
+< ~1b[0m399/399 > ~1b[0m~ff~f9Please come back another time!~1b[0m~1b[0m~0d~0a
