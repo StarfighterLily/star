@@ -44,7 +44,8 @@ virtual machine**:
 | `havok/net.pike` (telnet, connections, sessions) | `net.star` (on `conn.star`'s Conn), its efuns `efuns_net.star`; the sockets themselves are compiler builtins (`src/codegen/net_server.rs`, M6) |
 | `havok/parser.pike` (the verb parser) | `verbparse.star` (registry) + `verbmatch.star` (parse_sentence()), data in `vpdata.star` (M6) |
 | `havok/boot.pike` and the Pike backend's event loop | `boot.star` + `config.star`: boot, then an explicit wait/read/timers/write loop (M6) |
-| `sockets.pike`, `http.pike`, `tls.pike`, `ed.pike` | later phases (see roadmap) |
+| `havok/ed.pike` (the line editor) and its efun glue | `ed.star` (the engine and efuns, on the Vm), session state in `eddata.star` (M7) |
+| `sockets.pike`, `http.pike`, `tls.pike` | later phases (see roadmap) |
 
 Up to and including the parser, the port can follow the Pike code closely.
 From the compiler on, the Pike files still define the *semantics* (what each
@@ -246,8 +247,9 @@ Pike driver before it's marked done.
   It turned out to need the verb parser too (every Dead Souls object calls
   parse_init(), and entering the game runs verbs), so the parser moved
   here from M7. Done 2026-10-25, see the log.
-- **M7+: the rest.** `ed`, the socket efuns, HTTP/TLS, MCCP, and the other
-  efuns the boot test still stubs (`tests/fixtures/ds39_boot_stubs.txt`).
+- **M7: the rest.** `ed` (done 2026-10-25, see the log), then the socket
+  efuns, HTTP/TLS, MCCP, and the other efuns the boot test still stubs
+  (`tests/fixtures/ds39_boot_stubs.txt`).
 
 ## Files
 
@@ -277,7 +279,7 @@ Pike driver before it's marked done.
 | `efuns_file.star` | time, file and save_object/restore_object efuns, master valid_read/valid_write |
 | `sprintf.star`, `sscanf.star` | Pike's sprintf (with %O) and array_sscanf, as the reference uses them |
 | `numfmt.star` | exact double -> decimal formatting (%f/%e/%g, the save format) |
-| `regex.star` | the PCRE subset behind regexp()/reg_assoc() |
+| `regex.star` | the PCRE subset behind regexp()/reg_assoc(), and with capturing groups (`rx_exec()`) and `\<`/`\>` the line editor's (M7) |
 | `md5.star` | MD5 and MD5-crypt for crypt() |
 | `tcolour.star` | terminal_colour() |
 | `saveformat.star` | save_variable/restore_variable and the .o format |
@@ -287,7 +289,7 @@ Pike driver before it's marked done.
 | `tools/ref_efun_names.pike` | generates `efun_names.star` from the live reference |
 | `tools/run_cases.star` | Star side of the M3 case comparison |
 | `tools/ref_cases.pike` | reference side: runs run_tests.pike cases (and `-extra` edge cases) through the live driver |
-| `tests/run_cases_test.ps1` | M3-M6 regression: every `fixtures/cases/*.expected.txt` (see the M4, M5 and M6 logs for what each holds) |
+| `tests/run_cases_test.ps1` | M3-M7 regression: every `fixtures/cases/*.expected.txt` (see the M4-M7 logs for what each holds) |
 | `tools/gen_contrib_cases.py` | generates `m4_contrib_cases.txt` from the reference's `tests/contrib_golden.txt` |
 | `tools/compile_sweep.star`, `tools/ref_compile_sweep.pike` | M3 compile sweep over DS3.9, both sides: which files compile, and their inheritance tables |
 | `tests/run_compile_sweep_test.ps1` | M3 regression: all 2378 DS3.9 files' compile results and table hashes against `fixtures/ds39_compile.expected.txt` (frozen reference output), about 21 s |
@@ -308,7 +310,10 @@ Pike driver before it's marked done.
 | `tools/ref_eval.pike` | reference side of `boot_ds.exe -eval` (havok/eval.pike with the boot test's stubs) |
 | `tests/run_parser_transcript_test.ps1` | M6 regression: the reference's Dead Souls parser script (50 commands) on both drivers, against `fixtures/ds39_parser_transcript.expected.txt` |
 | `tools/telnet_script.star`, `tools/ref_serve.pike` | M6 login comparison: a scripted telnet client whose transcript is anchored by content, and the reference serving telnet with the boot test's stubs and `havok mccp : 0` |
-| `tests/run_login_test.ps1` | M6 regression: a new character and a returning one, over real sockets, against `fixtures/ds39_login_{new,again}.expected.txt` |
+| `tests/run_login_test.ps1` | M6 regression: a new character and a returning one, over real sockets, against `fixtures/ds39_login_{new,again}.expected.txt`; since M7 also a session in Dead Souls' editor (`ds39_login_edit`) |
+| `eddata.star` | `EdSession`: one line editor session's state (`Vm.eds`, addressed from `ObjSlot.ed`) |
+| `ed.star` | the line editor (M7): `ed.pike`'s engine method for method, EdIO's file access through the master, ed_start()/ed_cmd()/query_ed_mode()/in_edit() (codes 370-379), the buffer rescue on destruct |
+| `tools/gen_m7_cases.py` | generates `m7_cases.txt` (the reference's `ed_tests()` verbatim, and this port's editor edge cases) |
 
 Build the tools with the **release** compiler (`target/release/star.exe
 build ...`), and since M6 every tool that imports the efuns or the network
@@ -407,6 +412,17 @@ Each is also documented at the point in the code where it happens.
     and the mudlib's text goes out as it is; the reference decodes input to
     wide strings and re-encodes Latin-1 output as UTF-8. The negotiation
     itself, and `client_info()["utf8"]`, are the reference's.
+
+15. **The line editor's patterns are regex.star's PCRE subset** (`ed.star`).
+    The reference compiles them with full PCRE; here they go through the
+    same engine as regexp() (M4), extended with capturing groups for `\1`
+    and ed's `\<`/`\>` word anchors, so a backreference, lookaround or
+    inline option is "Bad regular expression" where the reference accepts
+    it. The ed help page only promises `. * + ? [a-z] ^ $ ( ) |`, all of
+    which match. Also: a pattern holding a backslash followed by a raw
+    byte 1 or 2 reads as a word anchor (that is how `\<`/`\>` reach the
+    engine), and numbers in commands are capped rather than bignums, which
+    changes no answer short of a line number past 10^12.
 
 Reproduced on purpose, though it reads like a slip: the reference sends a
 `\r\n` in text as a bare `\n` (and a lone `\n` as `\r\n`), because its
@@ -888,3 +904,63 @@ efuns (Dead Souls' intermud daemons fail on socket_create(), as on the
 stubbed reference).
 
 **Next: M7, the rest** (ed, sockets, HTTP/TLS, the remaining stubs).
+
+### 2026-10-25: M7 part 1, the line editor
+
+**`ed` done.** `ed.star` ports `havok/ed.pike` (the reference's own engine,
+written from POSIX ed(1) and the Dead Souls editor primer) method for
+method, with its efun glue from `efuns.pike`: EdIO's file access as the
+editing object (valid_read/valid_write, make_path_absolute(),
+retrieve_ed_setup()/save_ed_setup()), ed_start(), ed_cmd() (0 with no
+session, the reference's deliberate difference from FluffOS), query_ed_mode()
+and in_edit(), and ed_rescue() on destruct, which writes unsaved changes to
+the master's get_save_file_name() with the editor as this_player(). Every
+message is the reference's word for word. Checked against the live Pike
+driver three ways:
+- **The reference's own `ed_tests()`** (7 cases from run_tests.pike, which
+  sit outside its case table, so their bodies are copied verbatim into
+  `m7_cases.txt`): the recorded results equal the table's expected values.
+- **26 cases of this port's own** (`m7_cases.txt`, generated by
+  `tools/gen_m7_cases.py`, plus a helper object written by a first case and
+  removed by a last): opening messages for every kind of file (empty,
+  CRLF, no final newline, new, directory, denied, relative, nameless),
+  every address form (marks, `/re/` `?re?` with wrap-round and reuse,
+  offsets, `,` `;`, more than two addresses, overflowing numbers), the print
+  forms and options, input modes, d/j/k/m/t with marks following the edits,
+  s/// (nth and `g`, `&`, groups, `\n` splits, `%`, empty matches, word
+  anchors, other delimiters, every error), g/v (commands that change the
+  buffer while it runs, the ones refused inside it), undo/redo, z/Z paging,
+  e/E/r/f/w/W/wq/x/q/Q, restricted sessions, the help pager, efun argument
+  errors, sessions per object, rescue edge cases, and get_garbage() keeping
+  an editing clone (the reference's EdIO holds it; `gc.star` counts
+  `ObjSlot.ed`).
+- **The real mudlib over sockets**: a third login transcript
+  (`ds39_login_edit`) edits through Dead Souls' lib/editor.c as a player
+  (a restricted session): `praise` in input mode, the "Command: " and
+  "Help: " prompts, print, s///, numbering, the pager, a refused `e`, undo,
+  `x` and the command's callback ("Praise reported!!!", which needs the
+  saved file), then `bug -r`, a `!look` from inside the editor, and `!quit`
+  mid-edit through lib/interactive.c's ed_cmd(".")/("x")/("Q"). All 143 lines
+  match byte for byte.
+
+The engine's two reference shapes that don't carry over directly:
+- **EdError**: the reference abandons a command by throwing; here
+  `ed_oops()` writes the message and sets a flag every step checks
+  (`ed_stop()`), which also stops on an LPC error from a master apply, as
+  the reference lets those through.
+- **The session lives in a Vm table** (`Vm.eds`), not an object, because a
+  command calls the master midway and only a `mut self` Vm method can
+  (constraint #2). A destruct during a command ends the session, but its
+  slot isn't reused until the command returns.
+
+`regex.star` gained capturing groups (`rx_exec()`, PCRE's exec() vector,
+undone on backtrack through the same stack) and ed's word anchors, reached
+only through `rx_compile_ed()`; regexp()/reg_assoc() are unchanged (deviation
+#15 for what ed patterns can't do). The boot stubs went from 38 to 36
+(`ed_start`, `ed_cmd`); the reference's DS3.9 boot report is identical with
+the shorter list, since nothing edits at boot. All 665 cases (M3-M7) pass,
+the boot, parser-transcript and compile-sweep tests still match, and a 60 s
+soak collecting on every tick has only the socket efuns' 7 errors.
+
+**Next: the rest of M7** (the socket efuns, HTTP/TLS, MCCP, the remaining 36
+stubs).

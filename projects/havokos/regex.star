@@ -14,11 +14,24 @@
 # Engine: the pattern compiles to a small program with *relative* jumps, so
 # fragments can be concatenated while parsing without relocation, and runs
 # as a backtracking search that explores alternatives in priority order --
-# the first match found is PCRE's (leftmost, greedy-first). Nothing here
-# needs capture groups, only where the whole match starts and ends, so a
-# state is just (instruction, position): states reached at a SPLIT are
-# memoized per start position, which both stops empty loops like `(a*)*`
-# from spinning forever and keeps a failing search from going exponential.
+# the first match found is PCRE's (leftmost, greedy-first). regexp() and
+# reg_assoc() need no capture groups, only where the whole match starts and
+# ends, so a state is just (instruction, position): states reached at a
+# SPLIT are memoized per start position, which both stops empty loops like
+# `(a*)*` from spinning forever and keeps a failing search from going
+# exponential.
+#
+# The line editor (todo.md HavokOS M7, `ed.star`) does need groups: its
+# `s///` puts `\1` and `&` in the replacement, from Pike's PCRE exec()
+# vector. Capturing groups compile to RX_SAVE pairs, which rx_search() steps
+# over and rx_exec() records, undoing them on backtrack through the same
+# stack. The memo stays sound with captures: a state is only ever found
+# visited after it failed (a success returns at once), and without
+# backreferences whether a state can still match doesn't depend on what was
+# captured on the way to it -- so the first match found is still PCRE's,
+# groups included. ed's `\<`/`\>` (the reference: PCRE `\b(?=\w)` and
+# `\b(?<=\w)`) are RX_WSTART/RX_WEND, reached only through rx_compile_ed(),
+# since regexp() turns both into a plain `\b`.
 
 const RX_CHAR: i32 = 1     # c
 const RX_ANY: i32 = 2
@@ -30,6 +43,9 @@ const RX_NWB: i32 = 7
 const RX_JMP: i32 = 8      # off
 const RX_SPLIT: i32 = 9    # a b (try pc+a, then pc+b)
 const RX_MATCH: i32 = 10
+const RX_SAVE: i32 = 11    # slot (2g: group g's start, 2g + 1: its end)
+const RX_WSTART: i32 = 12
+const RX_WEND: i32 = 13
 
 struct Regex:
     mut ok: bool = true
@@ -39,12 +55,18 @@ struct Regex:
     mut nsplit: i32 = 0
     # SPLIT instruction pc -> its memo slot
     mut split_slot: List<i32> = List<i32>()
+    # capturing groups
+    mut ngroups: i32 = 0
 
 struct RxParser:
     p: Bytes
     mut pos: i32 = 0
     mut ok: bool = true
     mut classes: List<Bytes> = List<Bytes>()
+    mut ngroups: i32 = 0
+    # ed's dialect: `\` + byte 1 / byte 2 (what ed_pattern() makes of `\<`
+    # and `\>`) are the word-start and word-end anchors
+    ed: bool = false
 
 fn cat(a: List<i32>, b: List<i32>) -> List<i32>:
     let mut o = a
@@ -301,16 +323,22 @@ impl RxParser:
         let c = self.peek()
         self.pos += 1
         if c == 40:
+            let mut g = 0
             if self.peek() == 63:
                 if self.pos + 1 < self.p.len() and (self.p[self.pos + 1] as i32) == 58:
                     self.pos += 2
                 else:
                     return self.bad()
+            else:
+                self.ngroups += 1
+                g = self.ngroups
             let f = self.parse_alt()
             if self.peek() != 41:
                 return self.bad()
             self.pos += 1
-            return f
+            if g == 0:
+                return f
+            return cat(cat([RX_SAVE, 2 * g], f), [RX_SAVE, 2 * g + 1])
         if c == 41 or c == 42 or c == 43 or c == 63:
             return self.bad()
         if c == 91:
@@ -332,6 +360,10 @@ impl RxParser:
                 return [RX_WB]
             if e == 66:
                 return [RX_NWB]
+            if self.ed and e == 1:
+                return [RX_WSTART]
+            if self.ed and e == 2:
+                return [RX_WEND]
             if e == 120:
                 let h1 = hexv(self.peek())
                 if h1 < 0:
@@ -413,7 +445,14 @@ impl RxParser:
         self.add_class(b)
 
 fn rx_compile(pat: str) -> Regex:
-    let mut ps = RxParser(p = bytes_from_str(pat))
+    rx_compile_opts(pat, false)
+
+# ed.pike compile(): an ed_pattern() result, with ed's word anchors
+fn rx_compile_ed(pat: str) -> Regex:
+    rx_compile_opts(pat, true)
+
+fn rx_compile_opts(pat: str, ed: bool) -> Regex:
+    let mut ps = RxParser(p = bytes_from_str(pat), ed = ed)
     let mut code = ps.parse_alt()
     if ps.pos < ps.p.len():
         ps.ok = false
@@ -424,12 +463,13 @@ fn rx_compile(pat: str) -> Regex:
     code.push(RX_MATCH)
     r.code = code
     r.classes = ps.classes
+    r.ngroups = ps.ngroups
     let mut pc = 0
     while pc < code.len():
         r.split_slot.push(-1)
         let op = code[pc]
         let mut w = 1
-        if op == RX_CHAR or op == RX_CLASS or op == RX_JMP:
+        if op == RX_CHAR or op == RX_CLASS or op == RX_JMP or op == RX_SAVE:
             w = 2
         elif op == RX_SPLIT:
             w = 3
@@ -499,6 +539,13 @@ fn rx_search(r: Regex, s: Bytes) -> List<i32>:
                         alive = false
                 elif op == RX_JMP:
                     pc = pc + r.code[pc + 1]
+                elif op == RX_SAVE:
+                    pc += 2
+                elif op == RX_WSTART or op == RX_WEND:
+                    if word_anchor(s, sp, op):
+                        pc += 1
+                    else:
+                        alive = false
                 elif op == RX_SPLIT:
                     let slot = r.split_slot[pc] * (n + 1) + sp
                     if memo[slot] == stamp:
@@ -511,6 +558,135 @@ fn rx_search(r: Regex, s: Bytes) -> List<i32>:
                 else:
                     return [start, sp]
     List<i32>()
+
+# `\<` (a word starts at sp) or `\>` (one ends there)
+fn word_anchor(s: Bytes, sp: i32, op: i32) -> bool:
+    let before = sp > 0 and is_word(s[sp - 1] as i32)
+    let after = sp < s.len() and is_word(s[sp] as i32)
+    if op == RX_WSTART:
+        return !before and after
+    before and !after
+
+# Pike's Regexp.PCRE exec(s, from), as ed.pike uses it: the leftmost match
+# starting at or after `from` (`^` still means the start of s, and the
+# anchors see the bytes before `from`), as [start, end, g1 start, g1 end,
+# ...] with -1 for a group that took no part, or [] for none. rx_search()'s
+# loop plus the captures: stack entries are triples, and an RX_SAVE pushes a
+# restore entry (tag = its slot) that backtracking pops on its way back to
+# the branch entry (tag -1) before it.
+fn rx_exec(r: Regex, s: Bytes, from: i32) -> List<i32>:
+    let n = s.len()
+    if from > n:
+        return List<i32>()
+    let nc = 2 * (r.ngroups + 1)
+    let mut memo: List<i32> = List<i32>()
+    for i in 0..r.nsplit * (n + 1):
+        memo.push(0)
+    let mut caps: List<i32> = List<i32>()
+    for i in 0..nc:
+        caps.push(-1)
+    let mut stack: List<i32> = List<i32>()
+    for start in from..n + 1:
+        for i in 0..nc:
+            caps[i] = -1
+        stack.push(0)
+        stack.push(start)
+        stack.push(-1)
+        let stamp = start + 1
+        while stack.len() > 0:
+            let tag = stack.pop()
+            let b = stack.pop()
+            let a = stack.pop()
+            if tag >= 0:
+                caps[tag] = a
+                continue
+            let mut pc = a
+            let mut sp = b
+            let mut alive = true
+            while alive:
+                let op = r.code[pc]
+                if op == RX_CHAR:
+                    if sp < n and (s[sp] as i32) == r.code[pc + 1]:
+                        pc += 2
+                        sp += 1
+                    else:
+                        alive = false
+                elif op == RX_ANY:
+                    if sp < n and (s[sp] as i32) != 10:
+                        pc += 1
+                        sp += 1
+                    else:
+                        alive = false
+                elif op == RX_CLASS:
+                    if sp < n and (r.classes[r.code[pc + 1]][s[sp] as i32] as i32) != 0:
+                        pc += 2
+                        sp += 1
+                    else:
+                        alive = false
+                elif op == RX_BOL:
+                    if sp == 0:
+                        pc += 1
+                    else:
+                        alive = false
+                elif op == RX_EOL:
+                    if sp == n or (sp == n - 1 and (s[sp] as i32) == 10):
+                        pc += 1
+                    else:
+                        alive = false
+                elif op == RX_WB or op == RX_NWB:
+                    let before = sp > 0 and is_word(s[sp - 1] as i32)
+                    let after = sp < n and is_word(s[sp] as i32)
+                    let at_b = before != after
+                    if at_b == (op == RX_WB):
+                        pc += 1
+                    else:
+                        alive = false
+                elif op == RX_WSTART or op == RX_WEND:
+                    if word_anchor(s, sp, op):
+                        pc += 1
+                    else:
+                        alive = false
+                elif op == RX_JMP:
+                    pc = pc + r.code[pc + 1]
+                elif op == RX_SAVE:
+                    let slot = r.code[pc + 1]
+                    stack.push(caps[slot])
+                    stack.push(0)
+                    stack.push(slot)
+                    caps[slot] = sp
+                    pc += 2
+                elif op == RX_SPLIT:
+                    let slot = r.split_slot[pc] * (n + 1) + sp
+                    if memo[slot] == stamp:
+                        alive = false
+                    else:
+                        memo[slot] = stamp
+                        stack.push(pc + r.code[pc + 2])
+                        stack.push(sp)
+                        stack.push(-1)
+                        pc = pc + r.code[pc + 1]
+                else:
+                    let mut m: List<i32> = [start, sp]
+                    for i in 2..nc:
+                        m.push(caps[i])
+                    return m
+    List<i32>()
+
+# ed.pike compile()'s translation: `\<` and `\>`, scanned left to right as
+# Pike's replace() does, become the escapes only rx_compile_ed() reads.
+fn ed_pattern(pat: str) -> str:
+    let b = bytes_from_str(pat)
+    let mut o: Bytes = Bytes()
+    let mut i = 0
+    while i < b.len():
+        if (b[i] as i32) == 92 and i + 1 < b.len() and ((b[i + 1] as i32) == 60 or (b[i + 1] as i32) == 62):
+            o.push(92 as u8)
+            o.push(if (b[i + 1] as i32) == 60: 1 as u8 else: 2 as u8)
+            i += 2
+        else:
+            o.push(b[i])
+            i += 1
+    str_from_bytes(o)
 
 # The reference's FluffOS-to-PCRE translation: `\<` and `\>` become `\b`.
 fn spencer_to_pcre(pat: str) -> str:

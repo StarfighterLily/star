@@ -1,4 +1,4 @@
-# M6 end-to-end login test (todo.md HavokOS M6): the Star driver
+# M6/M7 end-to-end login test (todo.md HavokOS M6, M7): the Star driver
 # (tools/havokos.exe) boots Dead Souls 3.9 and serves telnet; a scripted
 # client (tools/telnet_script.exe) connects over a real socket and
 #   1. creates a new character and plays a few commands
@@ -7,6 +7,12 @@
 #      unknown command, a creator-only command, movement, drop/get, quit),
 #   2. logs back in as that character, a wrong password first
 #      (fixtures/ds39_login_again.script),
+#   3. logs in again and edits through Dead Souls' own editor (M7,
+#      fixtures/ds39_login_edit.script): `praise` in input mode, then
+#      command mode, a print, s///, line numbers, the help pager, a
+#      restricted command, undo, x and the command's callback; then
+#      `bug -r`, a `!` mud command from inside the editor, and quitting
+#      mid-edit,
 # and each transcript -- every byte the driver sent, telnet negotiation
 # included -- is compared with what the live Pike driver sent for the same
 # script, frozen in fixtures/ds39_login_{new,again}.expected.txt (recorded
@@ -27,13 +33,16 @@
 # (rebuild the tools first if any .star file changed:
 #   target/release/star.exe build projects/havokos/boot.star -o projects/havokos/tools/havokos.exe -l ws2_32
 #   target/release/star.exe build projects/havokos/tools/telnet_script.star -o projects/havokos/tools/telnet_script.exe -l ws2_32)
-# Exits 0 when both transcripts match, 1 otherwise. About 15 s.
+# Exits 0 when all three transcripts match, 1 otherwise. About 25 s.
 #
 # Regenerating the fixtures (only after confirming the *reference's* own
 # behavior changed), on a fresh copy of the mudlib:
 #   pike tools/ref_serve.pike <havokos>/pike <scratch>/bin/mudos.cfg <scratch>/lib tests/fixtures/ds39_boot_stubs.txt 7801
 #   tools/telnet_script.exe 7801 tests/fixtures/ds39_login_new.script > tests/fixtures/ds39_login_new.expected.txt
 #   tools/telnet_script.exe 7801 tests/fixtures/ds39_login_again.script > tests/fixtures/ds39_login_again.expected.txt
+#   tools/telnet_script.exe 7801 tests/fixtures/ds39_login_edit.script > tests/fixtures/ds39_login_edit.expected.txt
+# (the three in that order, on one server: each needs the character the
+# first one made)
 
 param([string]$DsRoot = "E:\ds3.9")
 
@@ -94,7 +103,7 @@ try {
         Start-Sleep -Milliseconds 200
     }
     $failed = 0
-    foreach ($part in @("new", "again")) {
+    foreach ($part in @("new", "again", "edit")) {
         $got = @(& $client $port (Join-Path $here "fixtures\ds39_login_$part.script"))
         $want = @(Get-Content (Join-Path $here "fixtures\ds39_login_$part.expected.txt"))
         $diff = Compare-Object (Normalize $want) (Normalize $got) -SyncWindow 0
@@ -107,7 +116,7 @@ try {
         }
     }
     if ($failed -eq 0) {
-        Write-Host "PASS: both logins match the reference"
+        Write-Host "PASS: all three logins match the reference"
         exit 0
     }
     exit 1

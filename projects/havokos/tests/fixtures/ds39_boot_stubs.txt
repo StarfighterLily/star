@@ -6,8 +6,6 @@ db_open
 db_query
 dependents
 dump_file_descriptors
-ed_cmd
-ed_start
 find_files
 function_profile
 http_respond

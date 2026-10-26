@@ -1,0 +1,74 @@
+# M7 editor comparison, part 3 (tests/run_login_test.ps1): the player made by
+# ds39_login_new.script edits through Dead Souls' own editor (lib/editor.c,
+# a restricted ed session for a non-creator). `praise` opens it in input
+# mode; the lines go in, then command mode (the "Command: " prompt), a
+# print, a substitution, the help pager ("Help: "), an error, and x saves
+# and runs the command's callback. `bug -r` opens it again, a `!` line runs a
+# mud command from inside the editor, and `!quit` quits mid-edit, which
+# lib/interactive.c handles with ed_cmd("."), ed_cmd("x"), ed_cmd("Q").
+# The pauses keep under Dead Souls' 10-commands-a-second limit.
+expect What name do you wish?
+send alice
+expect Password:
+send secret12
+expect sp:
+pause 250
+send praise
+expect *
+pause 250
+send What a fine mud.
+expect *
+pause 250
+send It edits well.
+expect *
+pause 250
+send .
+expect Command:
+pause 250
+send 1,$p
+expect Command:
+pause 250
+send 1s/fine/grand/p
+expect Command:
+pause 250
+send n
+expect Command:
+pause 250
+send ,p
+expect Command:
+pause 250
+send h
+expect Help:
+pause 250
+send
+expect Command:
+pause 250
+send e /etc/x
+expect Command:
+pause 250
+send 9p
+expect Command:
+pause 250
+send 2d
+expect Command:
+pause 250
+send u
+expect Command:
+pause 250
+send x
+expect sp:
+pause 250
+send bug -r
+expect Enter type:
+pause 250
+send typo
+expect *
+pause 250
+send a lost report
+expect *
+pause 250
+send !look
+expect *
+pause 250
+send !quit
+drain 3000

@@ -17,7 +17,7 @@
 # M5 added 200-299, the object model (`efuns_obj.star`), and 900-999, the
 # test hooks (`test_efun_codes()`, below). M6 added 300-349, connections and
 # telnet (`efuns_net.star`), and 350-369, the verb parser's registry
-# (`verbparse.star`).
+# (`verbparse.star`). M7 added 370-379, the line editor (`ed.star`).
 
 const E_UNDEFINEDP: i32 = 1
 const E_SIZEOF: i32 = 2
@@ -260,8 +260,6 @@ const E_SEND_NULLBYTE: i32 = 328
 const E_NETWORK_STATS: i32 = 329
 const E_INPUT_TO: i32 = 330
 const E_GET_CHAR: i32 = 331
-const E_IN_EDIT: i32 = 332
-const E_QUERY_ED_MODE: i32 = 333
 # --- M6: the verb parser's registry (350..), verbparse.star
 const E_PARSE_INIT: i32 = 350
 const E_PARSE_REFRESH: i32 = 351
@@ -271,6 +269,11 @@ const E_PARSE_REMOVE: i32 = 354
 const E_PARSE_DUMP: i32 = 355
 const E_PARSE_SENTENCE: i32 = 356
 const E_PARSE_MY_RULES: i32 = 357
+# --- M7: the line editor (370..), ed.star
+const E_ED_START: i32 = 370
+const E_ED_CMD: i32 = 371
+const E_IN_EDIT: i32 = 372
+const E_QUERY_ED_MODE: i32 = 373
 # --- M5: test hooks (900..), see test_efun_codes()
 const E_TEST_HB: i32 = 900
 const E_TEST_HB_ROUND: i32 = 901
@@ -538,8 +541,6 @@ fn efun_codes() -> Map<str, i32>:
     m.insert("network_stats", E_NETWORK_STATS)
     m.insert("input_to", E_INPUT_TO)
     m.insert("get_char", E_GET_CHAR)
-    m.insert("in_edit", E_IN_EDIT)
-    m.insert("query_ed_mode", E_QUERY_ED_MODE)
     m.insert("parse_init", E_PARSE_INIT)
     m.insert("parse_refresh", E_PARSE_REFRESH)
     m.insert("parse_add_rule", E_PARSE_ADD_RULE)
@@ -548,6 +549,10 @@ fn efun_codes() -> Map<str, i32>:
     m.insert("parse_dump", E_PARSE_DUMP)
     m.insert("parse_sentence", E_PARSE_SENTENCE)
     m.insert("parse_my_rules", E_PARSE_MY_RULES)
+    m.insert("ed_start", E_ED_START)
+    m.insert("ed_cmd", E_ED_CMD)
+    m.insert("in_edit", E_IN_EDIT)
+    m.insert("query_ed_mode", E_QUERY_ED_MODE)
     m
 
 # Driver hooks for the case runner (`tools/run_cases.star` with `-hooks`,

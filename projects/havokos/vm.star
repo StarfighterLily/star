@@ -47,6 +47,7 @@ import "efun_names.star" as en
 import "buf.star" as bf
 import "conn.star" as cn
 import "vpdata.star" as vpd
+import "eddata.star" as edd
 
 
 extern "C" fn clock() -> i32
@@ -136,6 +137,9 @@ struct ObjSlot:
     # its cached parser information (an index into Vm.vp_infos), -1 until
     # first fetched
     mut vp_info: i32 = -1
+    # its line editor session (an index into Vm.eds, ed.star), -1 when not
+    # editing
+    mut ed: i32 = -1
     # replace_program(): the program to switch to when the evaluation ends,
     # and the one switched to (query_replaced_program())
     mut replace_to: str = ""
@@ -301,6 +305,9 @@ struct Vm:
     mut gc_work: List<val::Value> = List<val::Value>()
     mut gc_runs: i32 = 0
     mut gc_live_at_last: i32 = 0
+    # --- the line editor (M7; ed.star): sessions, a finished one's slot
+    # reused by the next ed_start() ---
+    mut eds: List<edd::EdSession> = List<edd::EdSession>()
     # --- the network (M6; net.star) ---
     # connections (closed slots are reused, see conn.star) and the sequence
     # number of the latest one

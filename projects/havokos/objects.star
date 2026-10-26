@@ -406,6 +406,8 @@ impl vm::Vm:
             self.objs[ob].conn = -1
             if ci < self.conns.len() and self.conns[ci].alive and self.conns[ci].user == ob:
                 self.conn_destructed(ci)
+        # editing: its session ends, unsaved changes rescued (ed.star)
+        self.ed_destructed(ob)
         self.remove_heart_beat(ob)
         self.remove_call_outs_for(ob)
         self.remove_living_name(ob)

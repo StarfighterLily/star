@@ -127,8 +127,9 @@ impl vm::Vm:
             # a living is held by the living table, a named one by the name
             # table (FluffOS counts both); the verb parser holds every object
             # that called parse_init() or registered a rule (the reference's
-            # parser tables keep a reference: such a clone is never garbage)
-            if s.living or s.living_name != "" or s.vp_known or s.vp_handler:
+            # parser tables keep a reference: such a clone is never garbage),
+            # and an ed session its editor (the reference's EdIO holds it)
+            if s.living or s.living_name != "" or s.vp_known or s.vp_handler or s.ed >= 0:
                 self.gc_obj[o] = true
         for i in 0..self.callouts.len():
             let c = self.callouts[i]

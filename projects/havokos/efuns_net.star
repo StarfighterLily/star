@@ -9,11 +9,8 @@
 # while a passed 0 is no object. query_idle(), query_snoop() and the
 # charmode efuns have no default, as in the reference.
 #
-# The line editor's two query efuns are here too, because the player's
-# prompt and command code call them on every line: until ed_start() exists
-# (todo.md HavokOS M7) no object can be editing, so in_edit() is 0 and
-# query_ed_mode() -1, which is what the reference answers for an object
-# without an ed session.
+# The line editor's two query efuns, in_edit() and query_ed_mode(), answered
+# "no session" here until M7 brought the editor; they are `ed.star`'s now.
 #
 # Also here: the case runner's telnet hooks (codes 911-917), which
 # `tools/ref_cases.pike` gives the reference too, so the M6 cases drive
@@ -261,10 +258,6 @@ impl vm::Vm:
             return self.efun_network_stats()
         if code == et::E_INPUT_TO or code == et::E_GET_CHAR:
             return self.efun_input_to(args, self_ob, code == et::E_GET_CHAR)
-        if code == et::E_IN_EDIT:
-            return zero
-        if code == et::E_QUERY_ED_MODE:
-            return val::Value::Int((0 - 1) as i64)
         self.fail(f"Efun {name}() is not implemented by this driver.\n")
         val::Value::Undef
 

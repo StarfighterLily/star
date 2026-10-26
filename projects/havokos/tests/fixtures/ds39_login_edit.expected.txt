@@ -1,0 +1,143 @@
+< ~ff~fd~18~ff~fd~1f~ff~fd'~ff~fbF~ff~fb~c9~ff~fbE~ff~fbZ~ff~fb]~ff~fb[~ff~fb~19~ff~fb*Connected to DeadSoulsNew, an LP mud running on Microsoft Windows NT.~0d~0a
+< ~0d~0a
+<                 The Dead Souls Object Library version 3~0d~0a
+< ~0d~0a
+<              This software is copyrighted and it is not GPL. ~0d~0a
+< ~0d~0a
+<                  For more info: http://dead-souls.net~0d~0a
+< ~0d~0a
+<            Driver: HavokOS 0.2               Mudlib: Dead Souls 3.9            ~0d~0a
+< ~0d~0a
+< What name do you wish?
+> alice
+<  ~ff~f9Password:
+> secret12
+<  ~ff~fb~01~ff~f9~ff~fc~01~0d~0a
+< The start room~1b[0m~0d~0a
+< ---------~1b[0m~0d~0a
+< |       |~1b[0m~0d~0a
+< |       |~1b[0m~0d~0a
+< |   *   |~1b[0m~0d~0a
+< |   |   |~1b[0m~0d~0a
+< |   #   |~1b[0m~0d~0a
+< ---------~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+< Welcome! To enter the main area, type: ~1b[32menter town~1b[0m~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+<   ~1b[0m~1b[0m~0d~0a
+< Obvious exits: south, enter town~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m400/400  ~1b[34mmp: ~1b[0m460/460  ~1b[32msp:
+> praise
+<  ~1b[0m436/436 > ~1b[0m~ff~f9~0d~1b[20;1H*
+> What a fine mud.
+< ~08~1b[0m~ff~f9~0d~1b[20;1H*
+> It edits well.
+< ~08~1b[0m~ff~f9~0d~1b[20;1H*
+> .
+< ~08~1b[0m~ff~f9~0d~1b[20;1H~09Q)uit without saving, save and ex)it, h)elp~0d~0a
+< Command:
+> 1,$p
+<  ~1b[0m~ff~f9What a fine mud.~0d~0a
+< It edits well.~0d~0a
+< ~0d~1b[20;1H~09Q)uit without saving, save and ex)it, h)elp~0d~0a
+< Command:
+> 1s/fine/grand/p
+<  ~1b[0m~ff~f9What a grand mud.~0d~0a
+< ~0d~1b[20;1H~09Q)uit without saving, save and ex)it, h)elp~0d~0a
+< Command:
+> n
+<  ~1b[0m~ff~f9Line numbers on.~0d~0a
+< ~0d~1b[20;1H~09Q)uit without saving, save and ex)it, h)elp~0d~0a
+< Command:
+> ,p
+<  ~1b[0m~ff~f9   1  What a grand mud.~0d~0a
+<    2  It edits well.~0d~0a
+< ~0d~1b[20;1H~09Q)uit without saving, save and ex)it, h)elp~0d~0a
+< Command:
+> h
+<  ~1b[0m~ff~f9Line editor commands.  [range] is a line or two lines separated by~0d~0a
+< a comma: 3   3,7   .   $   .,$   'a   /text/   ?text?   .+2   $-5~0d~0a
+< With no range most commands work on the current line.~0d~0a
+< ~0d~0a
+<   [range]p      print lines           [range]l   print, showing tabs etc.~0d~0a
+<   [range]n      print with numbers    n          line numbers on/off~0d~0a
+<   [line]a       add text after line   [line]i    add text before line~0d~0a
+<   [range]c      replace lines with new text~0d~0a
+<                 (while adding text, a line with just . finishes)~0d~0a
+<   [range]d      delete lines          u          undo the last change~0d~0a
+<   [range]j      join lines into one   [line]kx   mark line as 'x~0d~0a
+<   [range]m line move lines after line [range]t line  copy lines~0d~0a
+<   [range]s/pattern/new/[g][p]   substitute (g: every match on the line;~0d~0a
+<                 & in new is the match, \1 a ( ) group, \n a line break)~0d~0a
+<   [range]g/pattern/cmd   run cmd on matching lines (v: non-matching)~0d~0a
+<   /pattern   ?pattern    find the next/previous matching line~0d~0a
+<   =          show the line number     z, [line]z  show a page of lines~0d~0a
+<   RETURN     show the next line~0d~0a
+< -- RETURN for more, or type a command --~0d~0a
+< ~0d~1b[20;1HHelp:
+> 
+<  ~1b[0m~ff~f9~0d~0a
+<   w [file]   save       W file   append to file     wq  save and exit~0d~0a
+<   x          save (if changed) and exit~0d~0a
+<   q          exit (refused if there are unsaved changes)~0d~0a
+<   Q          exit without saving~0d~0a
+<   e file     edit another file (E discards unsaved changes)~0d~0a
+<   r file     read file in after the line    f [file]  show/set the name~0d~0a
+<   set        show options; set number, set nolist, ... ; set save~0d~0a
+< ~0d~0a
+< Patterns: . any char, * repeat, + one or more, ? optional, [a-z] class,~0d~0a
+< ^ start, $ end, ( ) group, | either.  Put \ before these to match them.~0d~0a
+< ~0d~1b[20;1H~09Q)uit without saving, save and ex)it, h)elp~0d~0a
+< Command:
+> e /etc/x
+<  ~1b[0m~ff~f9That command is not available here.~0d~0a
+< ~0d~1b[20;1H~09Q)uit without saving, save and ex)it, h)elp~0d~0a
+< Command:
+> 9p
+<  ~1b[0m~ff~f9Line out of range.~0d~0a
+< ~0d~1b[20;1H~09Q)uit without saving, save and ex)it, h)elp~0d~0a
+< Command:
+> 2d
+<  ~1b[0m~ff~f9~0d~1b[20;1H~09Q)uit without saving, save and ex)it, h)elp~0d~0a
+< Command:
+> u
+<  ~1b[0m~ff~f9~0d~1b[20;1H~09Q)uit without saving, save and ex)it, h)elp~0d~0a
+< Command:
+> x
+<  ~1b[0m~ff~f9Exit from the editor.~0d~0a
+< Praise reported!!! Thank you!!!~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H~1b[1m~1b[33mhp: ~1b[0m400/400  ~1b[34mmp: ~1b[0m460/460  ~1b[32msp:
+> bug -r
+<  ~1b[0m436/436 > ~1b[0m~ff~f9Choose a bug type from among the following:~1b[0m~0d~0a
+< ~1b[0m~1b[0m~0d~0a
+< ~09idea (some nifty idea to add to the game)~1b[0m~1b[0m~0d~0a
+< ~09typo (misspelling, lexigraphical weirdness)~1b[0m~1b[0m~0d~0a
+< ~09unexplained behaviour (something contrary to how you would expect it)~1b[0m~1b[0m~0d~0a
+< ~09runtime (one of those nasty error messages)~1b[0m~0d~0a
+< ~1b[0m~1b[0m~0d~0a
+< ~09other~1b[0m~0d~0a
+< ~1b[0m~1b[0m~0d~0a
+< Enter type:
+> typo
+<  ~1b[0m~ff~f9Enter in a description of the bug.  When done, enter a period on a line by~1b[0m~0d~0a
+< itself.~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H*
+> a lost report
+< ~08~1b[0m~ff~f9~0d~1b[20;1H*
+> !look
+< ~08~1b[0m~ff~f9The start room~1b[0m~0d~0a
+< ---------~1b[0m~0d~0a
+< |       |~1b[0m~0d~0a
+< |       |~1b[0m~0d~0a
+< |   *
+> !quit
+<    |~1b[0m~0d~0a
+< |   |   |~1b[0m~0d~0a
+< |   #   |~1b[0m~0d~0a
+< ---------~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+< Welcome! To enter the main area, type: ~1b[32menter town~1b[0m~1b[0m~0d~0a
+< ~1b[0m~0d~0a
+<   ~1b[0m~1b[0m~0d~0a
+< Obvious exits: south, enter town~1b[0m~1b[0m~0d~0a
+< ~0d~1b[20;1H*~08~1b[0m~ff~f9Please come back another time!~1b[0m~1b[0m~0d~0a

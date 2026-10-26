@@ -26,6 +26,7 @@ import "efuns_obj.star" as eobj
 import "efuns_net.star" as enet
 import "verbparse.star" as vp
 import "verbmatch.star" as vpm
+import "ed.star" as edm
 
 impl vm::Vm:
     fn arg(self, args: List<val::Value>, i: i32) -> val::Value:
@@ -47,6 +48,8 @@ impl vm::Vm:
             return self.efun_net(code, name, args, self_ob)
         if code >= 350 and code < 370:
             return self.efun_parse(code, name, args, self_ob)
+        if code >= 370 and code < 380:
+            return self.efun_ed(code, args, self_ob)
         if code >= 200:
             return self.efun_obj(code, name, args, self_ob)
         if code == et::E_MASTER:
