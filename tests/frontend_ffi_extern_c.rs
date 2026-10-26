@@ -480,7 +480,10 @@ fn codegen_extern_fn_value_thunk_releases_str_arg() {
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
     let thunk_ir = extract_fn_body(&ir, "define i32 @fnval_atoi(");
-    assert!(thunk_ir.contains("call i32 @atoi(i8* %arg_0)"), "{}", thunk_ir);
+    // the argument reaches `atoi` through the empty-string normalization
+    // (`frontend_ffi_extern_empty_str.rs`), so as a `select` of `%arg_0`
+    assert!(thunk_ir.contains("icmp eq i8* %arg_0, null"), "{}", thunk_ir);
+    assert!(thunk_ir.contains("call i32 @atoi(i8* %t"), "{}", thunk_ir);
     assert!(
         thunk_ir.contains("call void @star_rc_release(i8* %arg_0)"),
         "the thunk must release the str arg after forwarding the call, since the extern declaration itself never does: {}",

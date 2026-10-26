@@ -19,7 +19,8 @@
 # telnet (`efuns_net.star`), and 350-369, the verb parser's registry
 # (`verbparse.star`). M7 added 370-379, the line editor (`ed.star`), then
 # 380-399, the LPC socket efuns and resolve() (`sockets.star`), then 400-419,
-# the reference's HavokOS-only extensions (`json.star`, `ext.star`).
+# the reference's HavokOS-only extensions (`json.star`, `ext.star`), and
+# 420-429 its SQLite databases (`sqldb.star`, P1 #7).
 
 const E_UNDEFINEDP: i32 = 1
 const E_SIZEOF: i32 = 2
@@ -311,6 +312,11 @@ const E_PROFILE_REPORT: i32 = 413
 const E_CACHE_STATS: i32 = 414
 const E_MALLOC_STATUS: i32 = 415
 const E_MEMORY_SUMMARY: i32 = 416
+# --- P1 #7: the reference's SQLite databases (420..): sqldb.star
+const E_DB_OPEN: i32 = 420
+const E_DB_QUERY: i32 = 421
+const E_DB_INFO: i32 = 422
+const E_DB_CLOSE: i32 = 423
 # --- M5: test hooks (900..), see test_efun_codes()
 const E_TEST_HB: i32 = 900
 const E_TEST_HB_ROUND: i32 = 901
@@ -633,6 +639,10 @@ fn efun_codes() -> Map<str, i32>:
     m.insert("cache_stats", E_CACHE_STATS)
     m.insert("malloc_status", E_MALLOC_STATUS)
     m.insert("memory_summary", E_MEMORY_SUMMARY)
+    m.insert("db_open", E_DB_OPEN)
+    m.insert("db_query", E_DB_QUERY)
+    m.insert("db_info", E_DB_INFO)
+    m.insert("db_close", E_DB_CLOSE)
     m
 
 # Driver hooks for the case runner (`tools/run_cases.star` with `-hooks`,

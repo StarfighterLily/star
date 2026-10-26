@@ -47,7 +47,8 @@ virtual machine**:
 | `havok/ed.pike` (the line editor) and its efun glue | `ed.star` (the engine and efuns, on the Vm), session state in `eddata.star` (M7) |
 | `havok/sockets.pike` (LPC sockets) and `efuns.pike` resolve() | `sockets.star` (on `sockdata.star`'s LSock), polled by `net.star` net_poll(); the OS side is the compiler's (`src/codegen/net_sock.rs`, M7) |
 | `havok/efuns.pike`'s HavokOS-only extensions (JSON, astar_path, find_files, watching, quotas, dependencies, profiling, status reports) and their `driver.pike`/`compiler.pike` machinery | `json.star`, and `ext.star` with its rows in `extdata.star` (M7) |
-| `http.pike`, `tls.pike`, `sqldb.pike` | later (see roadmap) |
+| `havok/sqldb.pike` (the SQLite efuns) | `sqldb.star`, over the real SQLite library: `extern "C"` plus the compiler's `sqlite_open()`/`sqlite_prepare()` (`src/codegen/sqlite.rs`, P1 #7) |
+| `http.pike`, `tls.pike` | later (see roadmap) |
 
 Up to and including the parser, the port can follow the Pike code closely.
 From the compiler on, the Pike files still define the *semantics* (what each
@@ -251,10 +252,11 @@ Pike driver before it's marked done.
   here from M7. Done 2026-10-25, see the log.
 - **M7: the rest.** `ed` and the LPC socket efuns (both done 2026-10-25),
   the HavokOS-only extensions that need no outside library (done
-  2026-10-26; see the log), then HTTP/TLS, MCCP, SQLite (`db_*`, the last
-  stubs in `tests/fixtures/ds39_boot_stubs.txt` with `http_respond`), and LPC
-  buffers (`read_buffer()`, which Dead Souls' own HTTP server needs and
-  neither driver has).
+  2026-10-26; see the log), SQLite (`db_*`, done 2026-10-26), then
+  HTTP/TLS (`http_respond`, the last stub in
+  `tests/fixtures/ds39_boot_stubs.txt`), MCCP, and LPC buffers
+  (`read_buffer()`, which Dead Souls' own HTTP server needs and neither
+  driver has).
 
 ## Files
 
@@ -326,11 +328,16 @@ Pike driver before it's marked done.
 | `extdata.star` | the extensions' rows: `PendingFind`, `WatchDir`/`Watcher`, `QuotaUse`/`QuotaLimits`, `DepEntry`, `ProfRec`/`SampleRec` |
 | `ext.star` | the other HavokOS-only extensions (codes 402-416): astar_path(), find_files() (answered from net_poll()), file watching (driver_tick()), resource quotas (hooked into cloning, call_outs and heart beats), stale_programs()/dependents() (stamps and stats recorded by vm.star compile_tokens()), function_profile() and the sampling profiler (frame entry/return and the evaluation-limit tick), cache_stats()/malloc_status()/memory_summary(), and the hooks their cases need (920-927) |
 | `tools/gen_m7_ext_cases.py` | generates `m7_ext_cases.txt` (the reference's own extension tests ported through the hooks, JSON edge cases, larger A* mazes) |
+| `sqldb.star` | the SQLite efuns (codes 420-423, P1 #7): `sqldb.pike` method for method, the handles in `Vm.dbs` (rows: `extdata.star` SqlDb), closing on destruct |
+| `tools/gen_m7_db_cases.py` | generates `m7_db_cases.txt` (the reference's own sqlite_tests() ported, ownership through a helper object, this port's edge cases) |
 
 Build the tools with the **release** compiler (`target/release/star.exe
 build ...`), and since M6 every tool that imports the efuns or the network
 layer (run_cases, boot_ds, compile_sweep, the driver, telnet_script) with
-`-l ws2_32`. The `star` on `PATH` on this machine was a stale Sep 8
+`-l ws2_32`. Since P1 #7 the ones that import the efuns (all but
+telnet_script) also link SQLite, `-L sqlite/lib/x64 -l sqlite3` from the
+repository root, and need `sqlite3.dll` beside them at run time
+(`tools/sqlite3.dll`; see `sqlite/README.md`). The `star` on `PATH` on this machine was a stale Sep 8
 `target/debug` build during M2, without the `println` fix or the spill-slot
 fix below.
 
@@ -499,6 +506,32 @@ extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
     interpreter's frame entry and return do it, so every named function
     called while it is on is profiled and every efun call counted.
 
+22. **SQLite is 3.54.1, and values come back typed** (`sqldb.star`). The
+    reference's Pike 8.0 bundles SQLite 3.6.0 (2008), and its module hands
+    every value over as text, so the reference wraps a SELECT's columns in
+    quote() and parses the literals back; here the same wrapper selects the
+    columns themselves and reads each value's type through the C API. So:
+    SQL 3.6.0 lacks works here (multi-row VALUES, VALUES and WITH as
+    statements, RETURNING, window functions, ...); errors raised while a
+    statement runs carry SQLite's real message ("UNIQUE constraint failed:
+    t.a", "integer overflow") where 3.6.0 says "SQL logic error or missing
+    database", and a statement cut off inside a comment is "incomplete
+    input" rather than "near ...: syntax error"; DELETE without WHERE counts
+    its changes (3.6.0's truncation reported 0); PRAGMA answers are
+    today's (table_info upper-cases declared types and reports notnull as
+    1, not 99; index_list has five columns); an unaliased `'x' || 'y'` is
+    named that, not "x"; an infinity stays one (the reference's quote() of
+    it is "Inf", which it parses as 0.0); and integers past 2^31 bind (the
+    reference's 32-bit Pike makes them bignums it can't bind). Text is bound
+    and read as its bytes (#14): UTF-8 text is stored as in the reference,
+    which encodes its wide strings, but Latin-1 bytes are stored as
+    themselves rather than as UTF-8, and a blob holding a NUL byte reaches
+    LPC cut short at it (#7). The reference's quirks that don't depend on
+    the library are kept: the placeholder renumbering (`select ?, ?3, ?`
+    leaves ?2 unbound), "Trailing query data" refusals, the SELECT wrapper's
+    column names ("a", "a:1") and error positions, and the columns after
+    each kind of statement and error. Dead Souls doesn't call these efuns.
+
 ## Star compiler bugs found
 
 1. **`print`/`println` of a non-f-string `str` used it as the `printf`
@@ -608,6 +641,33 @@ extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
     `%arg.<name>` (`src/codegen/stmt.rs`); regression tests
     `tests/frontend_param_temp_names.rs`, and six existing IR-shape tests
     updated to the new spelling.
+
+12. **A null `str` reached C as a null pointer** (fixed, P1 #7). A `str`
+    holding its zero value (a field never assigned) is a null pointer, and
+    both `extern "C"` call paths (`Codegen::emit_extern_call`, and the
+    `fnval_` thunk for a call through a function value) forwarded it as is,
+    so C saw "no string" where Star reads "": a `strlen`-style callee
+    crashed, and `sqlite3_bind_text` would have bound NULL. Every `str`
+    builtin already normalized such a value to the shared empty string
+    (`emit_str_or_empty`); both extern paths now do too. Regression tests
+    `tests/frontend_ffi_extern_empty_str.rs` (all three fail on the old
+    compiler; a literal "" and `str_from_bytes` of an empty `Bytes` were
+    never null, so only a zero-valued field shows it).
+13. **`file_read_line` called an undeclared `@fgetc`** (fixed, P1 #7
+    round). Not found here, but it failed five tests in every full-suite
+    run since M1 (`todo.md`'s P0): the `declare` had gone missing from
+    `Codegen::emit_builtins` while `RESERVED_RUNTIME_SYMBOLS` still listed
+    `fgetc` as always declared. The five existing tests are its regression
+    tests.
+
+New compiler surface in P1 #7 (the SQLite efuns), not bugs:
+`sqlite_open(path)` and `sqlite_prepare(db, sql)` in `src/codegen/sqlite.rs`,
+the two SQLite calls that answer through an out-parameter (constraint #9);
+the rest of the API is `extern "C"` in `sqldb.star`. Declared on first use,
+so only programs that call them link SQLite. Tested by
+`tests/frontend_sqlite.rs` against the DLL in `sqlite/lib/x64`; the Linux
+IR is verified and compiled to an object, not linked and run
+(`docs/cross_platform_scope.md`).
 
 New compiler surface in P1 #6 (the HavokOS-only extensions), not bugs:
 `file_set_mtime(path, t)` in `src/codegen/fs.rs` (the dependency cases age
@@ -1188,3 +1248,55 @@ parameter names), and needed two new builtins (`file_set_mtime()`,
 `process_memory()`). Four new deliberate deviations (#18-#21).
 
 **Next: the rest of M7** (HTTP/TLS, MCCP, SQLite, LPC buffers).
+
+### 2026-10-26: M7 part 4, the SQLite efuns
+
+**db_open(), db_query(), db_info() and db_close() done** (`sqldb.star`,
+efun codes 420-423), `havok/sqldb.pike` method for method, over a real
+SQLite: the precompiled 3.54.1 DLL now in `sqlite/lib/x64`, with an import
+library made by `llvm-dlltool` (`sqlite/README.md`). The boot's stub list
+is down to http_respond() alone. Checked against the live Pike driver:
+- **Probes first.** About 100 throwaway cases on the reference showed what
+  it really does before any code was written, and the big surprise: its
+  Pike bundles SQLite **3.6.0**, so a third of the probes answered for that
+  library's age rather than the driver's logic (no multi-row VALUES, legacy
+  error texts, DELETE without WHERE counting 0, ...). Those became
+  deviation #22, and the fixture keeps to SQL both libraries answer alike.
+  Run on the Star side, every remaining probe matched.
+- **46 cases** (`m7_db_cases.txt`, generated by `tools/gen_m7_db_cases.py`):
+  the reference's own `sqlite_tests()` (its two Pike-level checks, a handle
+  used by another object and closed by its owner's destruct, through
+  clones of a helper object; two others adjusted, a wide string and a
+  lower-case declared type, see the generator), then trimming, placeholder
+  numbering and its count check, named bindings and every binding error,
+  "Trailing query data", the SELECT wrapper's column names, typed values
+  and affinity, non-SELECT string rows, transactions, db_info() after each
+  kind of statement, handles, paths. Stable over 5 runs on each side.
+- **The DS3.9 boot** with the four off the stub list (5 -> 1): the
+  reference's report is unchanged, and the Star boot matches it. The
+  parser-transcript, login (all three), compile-sweep and token/AST
+  sweeps pass, and a 60 s soak collecting every tick has 0 runtime errors.
+
+Design decisions, each explained at its point in the code:
+- **The reference's query pipeline, the library's values.** A SELECT runs
+  as the reference runs it: `SELECT * FROM (<sql>) LIMIT 0` for the column
+  names (and the errors), then a second wrapper over those columns for the
+  rows. Only the reference's quote() around each column is gone: the
+  values come back through `sqlite3_column_type()`, so nothing goes through
+  text. Running the same SQL means the column names, error positions and
+  placeholder behavior are the reference's by construction.
+- **Two builtins, the rest `extern "C"`.** Only `sqlite3_open_v2` and
+  `sqlite3_prepare_v2` answer through an out-parameter; everything else
+  takes and returns scalars and pointers. `sqlite3_sql()`'s length gives
+  the tail `pzTail` would have (checked: the text runs exactly to it), so
+  the builtin needn't return a pair.
+- **When the columns change** was probed rather than guessed: a statement
+  that fails while running leaves them set to its own (the reference's
+  module only steps when rows are fetched, after sqldb.pike has set them),
+  one that fails to prepare leaves the previous query's.
+
+Getting there found Star compiler bug #12 (a null `str` reaching
+`extern "C"`), fixed, and the round also fixed #13, the five-test `@fgetc`
+P0 failure. One new deliberate deviation (#22).
+
+**Next: the rest of M7** (HTTP/TLS with http_respond(), MCCP, LPC buffers).

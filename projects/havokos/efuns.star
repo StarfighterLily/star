@@ -6,12 +6,14 @@
 # reached by efun_table.star's code ranges, and M5 the object model's
 # (`efuns_obj.star`), M6 connections and telnet (`efuns_net.star`) and the
 # verb parser (`verbparse.star`, `verbmatch.star`), M7 the line editor
-# (`ed.star`), the LPC sockets (`sockets.star`) and the reference's
-# HavokOS-only extensions (`json.star`, `ext.star`). Efuns this VM still
-# lacks raise the reference's own "not implemented" error: the compiler
-# already resolves their names as efuns.
-# A program that includes this file uses the compiler's socket builtins,
-# so it is built with `-l ws2_32`.
+# (`ed.star`), the LPC sockets (`sockets.star`), the reference's
+# HavokOS-only extensions (`json.star`, `ext.star`) and its SQLite
+# databases (`sqldb.star`, P1 #7). Efuns this VM still lacks raise the
+# reference's own "not implemented" error: the compiler already resolves
+# their names as efuns.
+# A program that includes this file uses the compiler's socket builtins and
+# SQLite, so it is built with `-l ws2_32 -L sqlite/lib/x64 -l sqlite3` (from
+# the repository root) and runs with `sqlite3.dll` beside it.
 #
 # Every efun gets the calling object (`self_ob`, the reference's `self`) --
 # the frame's object for a direct call, the owner for an efun pointer.
@@ -32,6 +34,7 @@ import "ed.star" as edm
 import "sockets.star" as sk
 import "json.star" as js
 import "ext.star" as ext
+import "sqldb.star" as sq
 
 impl vm::Vm:
     fn arg(self, args: List<val::Value>, i: i32) -> val::Value:
@@ -61,6 +64,8 @@ impl vm::Vm:
             return self.efun_json(code, args)
         if code >= 400 and code < 420:
             return self.efun_ext(code, name, args, self_ob)
+        if code >= 420 and code < 430:
+            return self.efun_db(code, name, args, self_ob)
         if code >= 200:
             return self.efun_obj(code, name, args, self_ob)
         if code == et::E_MASTER:

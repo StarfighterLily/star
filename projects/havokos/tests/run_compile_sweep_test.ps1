@@ -8,7 +8,7 @@
 #
 # Usage: powershell -File projects/havokos/tests/run_compile_sweep_test.ps1 [-MudlibRoot E:\ds3.9\lib]
 # (rebuild tools/compile_sweep.exe first if any compiler .star file changed:
-#   target/release/star.exe build projects/havokos/tools/compile_sweep.star -o projects/havokos/tools/compile_sweep.exe -l ws2_32)
+#   target/release/star.exe build projects/havokos/tools/compile_sweep.star -o projects/havokos/tools/compile_sweep.exe -l ws2_32 -L sqlite/lib/x64 -l sqlite3)
 # Exits 0 on a full match, 1 otherwise.
 #
 # Regenerating the fixture (only after confirming the *reference's* own

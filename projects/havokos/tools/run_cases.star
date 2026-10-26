@@ -20,7 +20,7 @@
 # test_callouts(), ...) are always available to cases; ref_cases.pike gives
 # the reference the same ones.
 #
-# Build: star build projects/havokos/tools/run_cases.star -o projects/havokos/tools/run_cases.exe -l ws2_32
+# Build: star build projects/havokos/tools/run_cases.star -o projects/havokos/tools/run_cases.exe -l ws2_32 -L sqlite/lib/x64 -l sqlite3
 
 import "../vm.star" as vm
 import "../efuns.star" as ef

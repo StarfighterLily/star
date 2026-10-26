@@ -336,13 +336,21 @@ impl Codegen {
         // of building `call_args`) would free a fresh, non-borrowed `str`
         // argument's buffer (e.g. `my_extern_fn(concat("a", "b"))`) before
         // the extern function ever reads through the pointer it was handed.
+        //
+        // `str`'s zero value (a field never assigned) is a null pointer,
+        // which C reads as "no string": a `strlen`-style callee crashed, and
+        // `sqlite3_bind_text` bound SQL NULL where Star reads "". So C gets
+        // the shared `@str.empty` instead (`emit_str_or_empty`, as every
+        // `str` builtin does), while the release still goes to the value
+        // `emit_raw_str_ptr` handed back.
         let mut str_ptrs: Vec<String> = Vec::new();
         let call_args: Vec<String> = args.iter().map(|a| {
             let ty = self.expr_ty(a);
             if ty == Ty::Str {
                 let raw = self.emit_raw_str_ptr(a);
                 str_ptrs.push(raw.clone());
-                format!("i8* {}", raw)
+                let p = self.emit_str_or_empty(&raw);
+                format!("i8* {}", p)
             } else {
                 let reg = self.emit_expr(a);
                 let ats = self.llvm_ty(&ty);
@@ -820,6 +828,9 @@ impl Codegen {
                     Some("udp_recv_from") => self.emit_udp_recv_from(args),
                     Some("udp_send_to") => self.emit_udp_send_to(args),
                     Some("host_lookup") => self.emit_host_lookup(args),
+                    // SQLite's out-parameter calls -- see `crate::codegen::sqlite`.
+                    Some("sqlite_open") => self.emit_sqlite_open(args),
+                    Some("sqlite_prepare") => self.emit_sqlite_prepare(args),
                     // `docs/design.md`'s "Math and geometry" section -- see
                     // `crate::codegen::geometry`.
                     Some("quat_identity") => self.emit_quat_identity(),

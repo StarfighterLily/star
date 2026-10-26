@@ -1,4 +1,5 @@
-# State of the HavokOS-only extensions -- todo.md HavokOS P1 #6 (M7 part 3).
+# State of the HavokOS-only extensions -- todo.md HavokOS P1 #6 (M7 part 3),
+# and the SQLite handles of P1 #7 (`sqldb.star`).
 # `ext.star` holds the code and says what each piece follows in the
 # reference; this file only holds the rows the Vm keeps for them (Vm fields
 # under "the HavokOS-only extensions"), apart so `vm.star` can name the
@@ -84,3 +85,16 @@ struct SampleRec:
     mut self_us: i64 = 0 as i64
     mut total_us: i64 = 0 as i64
     mut samples: i64 = 0 as i64
+
+# A db_open() handle (sqldb.pike Db, P1 #7): the SQLite connection, the
+# object that opened it (generation-checked, so a destructed owner reads as
+# gone), its mudlib path or ":memory:", and the columns of its last query.
+# The reference numbers handles from a counter that never goes back, so
+# `Vm.dbs` keeps one row per handle ever handed out (handle = index + 1),
+# `open` false once closed.
+struct SqlDb:
+    mut open: bool = true
+    mut conn: ptr = null_ptr()
+    mut owner: val::Value = val::Value::Int(0 as i64)
+    mut file: str = ""
+    mut columns: List<str> = List<str>()

@@ -197,6 +197,41 @@ pub fn assert_no_leak(name: &str, src: &str, growth_cap_bytes: i64) {
     );
 }
 
+/// Like `compile_and_run`, but linked against SQLite (`-L sqlite/lib/x64
+/// -lsqlite3`, the import library `sqlite/README.md` describes) with a copy
+/// of `sqlite3.dll` staged beside the exe, in a directory of its own per
+/// test for the reason `compile_and_run_sdl` gives. Optional C source in
+/// `c_helper` is compiled into the same exe, for tests that need to observe
+/// exactly what a C callee received.
+pub fn compile_and_run_sqlite(name: &str, src: &str, c_helper: Option<&str>) -> std::process::Output {
+    let module = Driver::parse(src).expect("should parse");
+    let typed = Driver::check(&module).expect("should type-check");
+    let ir = Driver::codegen(&typed).expect("should codegen");
+    let dir = std::env::temp_dir().join(format!("star_test_sqlite_{}", name));
+    std::fs::create_dir_all(&dir).expect("failed to create test scratch dir");
+    let exe = dir.join("test.exe");
+    let ll = exe.with_extension("ll");
+    std::fs::write(&ll, &ir).expect("failed to write ll");
+    let lib_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sqlite").join("lib").join("x64");
+    let mut cmd = std::process::Command::new("clang");
+    cmd.args(["-O0", ll.to_str().unwrap(), "-o", exe.to_str().unwrap()]);
+    if let Some(c) = c_helper {
+        let c_path = dir.join("helper.c");
+        std::fs::write(&c_path, c).expect("failed to write C helper");
+        cmd.arg(c_path.to_str().unwrap());
+    }
+    let status = cmd
+        .arg(format!("-L{}", lib_dir.display()))
+        .arg("-lsqlite3")
+        .status()
+        .expect("failed to invoke clang");
+    assert!(status.success(), "clang should compile the generated IR, linked against SQLite");
+    std::fs::copy(lib_dir.join("sqlite3.dll"), dir.join("sqlite3.dll")).expect("failed to stage sqlite3.dll next to the test binary");
+    let output = std::process::Command::new(&exe).current_dir(&dir).output().expect("failed to execute compiled test binary");
+    let _ = std::fs::remove_dir_all(&dir);
+    output
+}
+
 /// Like `compile_and_run_linked`, but also adds `sdl/lib/x64` as a `-L`
 /// search path, stages a copy of `sdl/lib/x64/SDL2.dll` next to the compiled
 /// `.exe` (Windows' DLL search order checks the executable's own directory

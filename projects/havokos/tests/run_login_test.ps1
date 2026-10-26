@@ -31,7 +31,7 @@
 #
 # Usage: powershell -File projects/havokos/tests/run_login_test.ps1 [-DsRoot E:\ds3.9]
 # (rebuild the tools first if any .star file changed:
-#   target/release/star.exe build projects/havokos/boot.star -o projects/havokos/tools/havokos.exe -l ws2_32
+#   target/release/star.exe build projects/havokos/boot.star -o projects/havokos/tools/havokos.exe -l ws2_32 -L sqlite/lib/x64 -l sqlite3
 #   target/release/star.exe build projects/havokos/tools/telnet_script.star -o projects/havokos/tools/telnet_script.exe -l ws2_32)
 # Exits 0 when all three transcripts match, 1 otherwise. About 25 s.
 #

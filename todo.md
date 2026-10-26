@@ -345,15 +345,64 @@ mudlib before it's marked done.
       no recompile and counts every efun call). Found along the way: the
       dependency stats made every compile ~50% slower (compile sweep 23 s
       -> 35 s); a one-second stat memo took it back to 23 s.
-- [ ] **HavokOS P1 #7 (M7, part 4): the rest.** HTTP and TLS ports (the
-      reference's `http.pike`/`tls.pike`, and http_respond(); TLS needs a
-      TLS implementation, and would make the STREAM_TLS socket modes
-      usable, NOTES.md #16), the SQLite efuns (db_open/db_query/db_info/
-      db_close, `sqldb.pike`; needs SQLite, or a compiler builtin over it),
-      MCCP (needs a deflate implementation, #13), and LPC buffers
-      (`read_buffer()`/`write_buffer()`: Dead Souls' own HTTP server calls
-      read_buffer(), which neither driver has -- the reference's bufferp()
-      is always 0 -- so its pages fail on both and there is no oracle).
+- [x] **HavokOS P1 #7 (M7, part 4): the SQLite efuns.** Done.
+      `sqldb.star` ports the reference's `havok/sqldb.pike` method for
+      method with its efun glue (codes 420-423): db_open() (valid_write,
+      ":memory:", the directory and open errors), db_query() (trimming,
+      bare `?` renumbering and its count check, `:name`/`@name`/`$name`
+      mapping bindings, every binding error, "Trailing query data", a
+      SELECT run through the reference's own two wrappers, other
+      statements' rows as strings), db_info(), db_close(), ownership, and
+      closing on destruct. Over a real SQLite: the precompiled 3.54.1 DLL
+      the user supplied, moved to `sqlite/lib/x64/` beside an import
+      library made with `llvm-dlltool` (`sqlite/README.md`), copied to
+      `projects/havokos/tools/sqlite3.dll` for the tools. Checked against
+      the live Pike driver:
+      - ~100 probes on the reference first. Its Pike bundles SQLite
+        **3.6.0**, so about a third answered for that library's age (no
+        multi-row VALUES/WITH/RETURNING, "SQL logic error or missing
+        database" for every run-time error, DELETE without WHERE counting
+        0); those are deviation #22, and every other probe matched on the
+        Star side.
+      - 46 cases (`m7_db_cases.txt`, `tools/gen_m7_db_cases.py`): the
+        reference's own sqlite_tests() ported (its Pike-level ownership
+        checks through clones of a helper object), and edge cases for
+        everything above, keeping to SQL both libraries answer alike.
+        Stable over 5 runs on each side.
+      - The DS3.9 boot with the four off the stub list (5 -> 1, only
+        http_respond left): the reference's report is unchanged and the
+        Star boot matches it.
+      - All 834 cases (M3-M7), the boot, parser-transcript, login (all
+        three over sockets), compile-sweep, token/AST and pp/AST-case
+        sweeps pass; a 60 s soak collecting every tick has 0 runtime
+        errors.
+      Found along the way: the reference's module only runs a non-SELECT
+      statement when its rows are fetched, so an error while it runs
+      leaves db_info()'s columns already set to its own; matched (and a
+      case pins it).
+      New Star compiler surface: `sqlite_open()`/`sqlite_prepare()`
+      (`src/codegen/sqlite.rs`, `tests/frontend_sqlite.rs`, 11 tests), the
+      two SQLite calls that answer through an out-parameter; the rest is
+      `extern "C"`. Declared on first use, so no other program links
+      SQLite; Linux IR/object-verified only (`docs/cross_platform_scope.md`).
+      Found and fixed a genuine Star **compiler** bug: a `str` holding its
+      zero value (a field never assigned) reached `extern "C"` as a null
+      pointer, crashing a `strlen`-style callee (both the direct call and
+      the function-value thunk; fix in `src/codegen/expr.rs` and
+      `closure.rs`, regression tests `tests/frontend_ffi_extern_empty_str.rs`,
+      all three failing on the old compiler; one IR-shape assertion in
+      `frontend_ffi_extern_c.rs` updated). Also fixed the P0 below. Full
+      cargo suite: 2188 pass, 0 fail.
+      Every HavokOS tool that imports the efuns now builds with `-l ws2_32
+      -L sqlite/lib/x64 -l sqlite3` (headers and test scripts updated).
+- [ ] **HavokOS P1 #8 (M7, part 5): the rest.** HTTP and TLS ports (the
+      reference's `http.pike`/`tls.pike`, and http_respond(), the boot's
+      last stub; TLS needs a TLS implementation, and would make the
+      STREAM_TLS socket modes usable, NOTES.md #16), MCCP (needs a deflate
+      implementation, #13), and LPC buffers (`read_buffer()`/
+      `write_buffer()`: Dead Souls' own HTTP server calls read_buffer(),
+      which neither driver has -- the reference's bufferp() is always 0 --
+      so its pages fail on both and there is no oracle).
 - [ ] **HavokOS P2 #1: Star compiler, capitalized `extern "C"` names.**
       `extern "C" fn Sleep(ms: i32)` / `GetTickCount()` fail with
       "undefined type `Sleep`": a capitalized name is resolved as a type,
@@ -373,7 +422,13 @@ mudlib before it's marked done.
       means typing a literal from its `as f64` / `f64` context, the way
       integer literals already get `as i64`.
 
-- [ ] **P0: pre-existing test failures at HEAD `84d14e7`.**
+- [x] **P0: pre-existing test failures at HEAD `84d14e7`.** Done
+      2026-10-26 (during HavokOS P1 #7): `Codegen::emit_builtins` had lost
+      its `declare i32 @fgetc(i8*)` while `RESERVED_RUNTIME_SYMBOLS` still
+      listed `fgetc` as always declared, so every program calling
+      `file_read_line` was malformed IR. Restored beside the other file
+      externs (`src/codegen/mod.rs`); the five tests below pass, and the
+      full suite is 2188 pass, 0 fail. Original report:
       `file_read_line`'s codegen references `@fgetc` without declaring it
       ("internal compiler error: malformed LLVM IR ... undefined global
       `@fgetc`"). Five tests fail, all on that root cause:
@@ -753,3 +808,21 @@ reconciled to match whichever of the two Python sources looks more
   The rest of M7 (HTTP/TLS, SQLite, MCCP, LPC buffers) is now P1 #7.
   Full cargo suite: 2169 pass, the only failures the 5 pre-existing
   `@fgetc` ones (P0); the Star suite ran with `CARGO_TARGET_DIR=target/alt`.
+- 2026-10-26: HavokOS P1 #7 (M7 part 4, the SQLite efuns) is done. See its
+  entry above and `projects/havokos/NOTES.md` ("2026-10-26: M7 part 4, the
+  SQLite efuns", deviation #22, Star compiler bugs #12-#13), which also
+  covers:
+  - why the probes came first, and how they showed the reference's Pike
+    bundles SQLite 3.6.0;
+  - running the reference's own SELECT wrappers so column names, errors and
+    placeholders match by construction, reading typed values instead of
+    its quote() literals;
+  - why two builtins and not a whole SDL-style API (only two calls answer
+    through an out-parameter), and `sqlite3_sql()` standing in for
+    `pzTail`.
+  The SQLite DLL the user supplied now lives in `sqlite/lib/x64/` with a
+  generated import library (`sqlite/README.md`); the source tree
+  `sqlite-src-3540100/` was left where it was, untracked. Also fixed the
+  long-standing `@fgetc` P0. The rest of M7 (HTTP/TLS, MCCP, LPC buffers)
+  is now P1 #8. Full cargo suite: 2188 pass, 0 fail
+  (`CARGO_TARGET_DIR=target/alt`).

@@ -25,7 +25,7 @@
 #            this VM can't run yet, one per line (ref_boot.pike stubs the
 #            same ones, so both drivers fail the same calls)
 #
-# Build: star build projects/havokos/tools/boot_ds.star -o projects/havokos/tools/boot_ds.exe -l ws2_32
+# Build: star build projects/havokos/tools/boot_ds.star -o projects/havokos/tools/boot_ds.exe -l ws2_32 -L sqlite/lib/x64 -l sqlite3
 
 import "../vm.star" as vm
 import "../efuns.star" as ef

@@ -209,6 +209,18 @@ the same pair; `/proc/self/statm`'s resident pages through `fscanf`, times
 --target=x86_64-unknown-linux-gnu` in `tests/frontend_process_memory.rs`;
 not yet linked and run on the devbox.
 
+`codegen/sqlite.rs` — `sqlite_open`/`sqlite_prepare` (2026-10-26,
+`projects/havokos` HavokOS P1 #7: the SQLite efuns). Not OS-facing: they
+call SQLite's own `sqlite3_open_v2`/`sqlite3_prepare_v2`, whose shapes are
+the same on every platform, so there is no `Target` split at all; a program
+links the library itself (`-L sqlite/lib/x64 -l sqlite3` on Windows, see
+`sqlite/README.md`; the system's `libsqlite3` on Linux). The Windows build
+is run end to end by `tests/frontend_sqlite.rs` against that DLL;
+the Linux IR passes the internal IR verifier and `clang -c
+--target=x86_64-unknown-linux-gnu` in the same file, not yet linked and run
+on the devbox. Declared on first use, like `net_server.rs`'s externs, so no
+other program needs the library.
+
 ## Hard, deliberately unstarted: text rendering (`codegen/system_font.rs`)
 
 Unchanged from this module's own doc comment: GDI's font engine

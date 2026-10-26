@@ -419,6 +419,7 @@ impl vm::Vm:
         self.remove_living_name(ob)
         self.vp_forget(ob)
         self.sock_forget(ob)
+        self.db_forget(ob)
         if self.objs[ob].watching:
             self.unwatch(ob, "", true)
         self.quota_uncount_clone(ob)

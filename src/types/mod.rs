@@ -1011,6 +1011,10 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "tcp_wait_io" | "udp_recv_from" => Some(Ty::Bytes),
         "tcp_sock_error" | "tcp_peer_port" | "udp_send_to" => Some(Ty::Int),
         "tcp_local_ip" | "host_lookup" => Some(Ty::Str),
+        // SQLite's two out-parameter calls -- see `crate::codegen::sqlite`.
+        // A connection (null only when SQLite can't allocate one) and a
+        // statement (null on an error or when the text holds none).
+        "sqlite_open" | "sqlite_prepare" => Some(Ty::Ptr),
         // `docs/design.md`'s "Math and geometry" section -- see
         // `crate::codegen::geometry` for each function's lowering.
         // `quat_identity` takes no argument (the identity rotation);

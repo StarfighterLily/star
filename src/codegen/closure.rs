@@ -300,7 +300,18 @@ impl Codegen {
             }
             self.line(") {");
             self.open_block("entry");
-            let fwd_args: Vec<String> = param_llvm.iter().enumerate().map(|(i, ty)| format!("{} %arg_{}", ty, i)).collect();
+            let is_extern_target = self.extern_fns.contains(name);
+            // An extern's null (zero-valued) `str` arguments reach C as
+            // `@str.empty`, as in `emit_extern_call` (see its comment); the
+            // releases below still name the incoming `%arg_N`.
+            let fwd_args: Vec<String> = param_llvm.iter().enumerate().map(|(i, ty)| {
+                if is_extern_target && param_tys[i] == Ty::Str {
+                    let p = self.emit_str_or_empty(&format!("%arg_{}", i));
+                    format!("{} {}", ty, p)
+                } else {
+                    format!("{} %arg_{}", ty, i)
+                }
+            }).collect();
             // The call site that produced this closure value (`emit_closure_call`)
             // retains each `str` argument before the call, on the assumption that
             // whatever gets called owns it and releases it once done -- true for
@@ -313,7 +324,6 @@ impl Codegen {
             // does for a *direct* extern call (see its own doc comment); without
             // this, calling an extern fn through a first-class value (`let g =
             // some_extern_fn`) leaks one reference per `str` argument per call.
-            let is_extern_target = self.extern_fns.contains(name);
             if ret_llvm == "void" {
                 self.line(&format!("  call void @{}({})", name, fwd_args.join(", ")));
                 if is_extern_target {

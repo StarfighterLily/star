@@ -14,7 +14,7 @@
 # write what is queued. HTTP ports (`external_port_N : http <port>`) and
 # TLS are not served yet.
 #
-# Build: star build projects/havokos/boot.star -o projects/havokos/tools/havokos.exe -l ws2_32
+# Build: star build projects/havokos/boot.star -o projects/havokos/tools/havokos.exe -l ws2_32 -L sqlite/lib/x64 -l sqlite3
 
 import "vm.star" as vm
 import "efuns.star" as ef

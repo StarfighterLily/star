@@ -1,5 +1,1 @@
-db_close
-db_info
-db_open
-db_query
 http_respond

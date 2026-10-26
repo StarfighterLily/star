@@ -388,6 +388,9 @@ struct Vm:
     mut sample_count: i64 = 0 as i64
     mut sample_time: i64 = 0 as i64
     mut sample_started: i64 = 0 as i64
+    # --- SQLite databases (P1 #7; sqldb.star): one row per db_open() handle
+    # ever handed out, handle = index + 1 (extdata.star SqlDb) ---
+    mut dbs: List<xd::SqlDb> = List<xd::SqlDb>()
     # --- the network (M6; net.star) ---
     # connections (closed slots are reused, see conn.star) and the sequence
     # number of the latest one

@@ -46,8 +46,9 @@
 #   ask, so malloc_status() estimates each value table's size from what it
 #   holds.
 #
-# Still not here: db_open()/db_query()/db_info()/db_close() (SQLite) and
-# http_respond() (the HTTP ports), which need libraries Star doesn't have.
+# The SQLite efuns (db_open() and the rest) are `sqldb.star`'s (P1 #7). Still
+# not here: http_respond() (the HTTP ports), which needs the HTTP and TLS
+# layers.
 
 import "value.star" as val
 import "vm.star" as vm

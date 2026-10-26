@@ -2837,6 +2837,21 @@ impl Checker {
                     self.error(format!("`host_lookup` expects a `str` argument, found `{:?}`", arg_tys[0]), span);
                 }
             }
+            "sqlite_open" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Str) {
+                    self.error(format!("`sqlite_open` expects a `str` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "sqlite_prepare" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`sqlite_prepare` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Str) {
+                        self.error(format!("`sqlite_prepare` argument 2 expected `str`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
             "tcp_wait_io" => {
                 if arity_ok(3, self) {
                     if !tys_eq(&arg_tys[0], &Ty::List(Box::new(Ty::Ptr))) {
