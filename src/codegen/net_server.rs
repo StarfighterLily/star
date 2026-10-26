@@ -107,7 +107,7 @@ const RECV_CHUNK: u64 = 16384;
 impl Codegen {
     /// `declare` a C symbol the first time a builtin here needs it -- see
     /// the module doc comment's "Declared on first use".
-    fn declare_lazy(&mut self, decl: &str) {
+    pub(super) fn declare_lazy(&mut self, decl: &str) {
         if !self.global_defs.iter().any(|g| g == decl) {
             self.global_defs.push(decl.to_string());
         }
@@ -115,7 +115,7 @@ impl Codegen {
 
     /// The real call argument for a socket handle: the `SOCKET` itself on
     /// Windows, the unpacked fd on Linux (see `net.rs`'s doc comment).
-    fn sock_arg(&mut self, handle: &str) -> String {
+    pub(super) fn sock_arg(&mut self, handle: &str) -> String {
         match self.target {
             Target::WindowsGnu => format!("i8* {}", handle),
             Target::LinuxGnu => {
@@ -128,7 +128,7 @@ impl Codegen {
     /// `ioctlsocket(FIONBIO)` / `fcntl(F_SETFL, flags | O_NONBLOCK)` on a
     /// fresh socket; the result is ignored (a socket that stays blocking
     /// is still usable, just not ideal).
-    fn emit_make_nonblocking(&mut self, handle: &str) {
+    pub(super) fn emit_make_nonblocking(&mut self, handle: &str) {
         match self.target {
             Target::WindowsGnu => {
                 const FIONBIO: i32 = 0x8004667Eu32 as i32;
@@ -150,7 +150,7 @@ impl Codegen {
 
     /// Whether the last socket call failed only because it would block
     /// (`WSAEWOULDBLOCK` / `EAGAIN`).
-    fn emit_last_error_would_block(&mut self) -> String {
+    pub(super) fn emit_last_error_would_block(&mut self) -> String {
         match self.target {
             Target::WindowsGnu => {
                 let err = self.tmp_name();
@@ -172,7 +172,7 @@ impl Codegen {
     }
 
     /// A fresh, owned empty `str` (an RC buffer holding just the NUL).
-    fn emit_empty_owned_str(&mut self) -> String {
+    pub(super) fn emit_empty_owned_str(&mut self) -> String {
         let s = self.tmp_name();
         self.line(&format!("  {} = call i8* @star_rc_alloc(i64 1, i8* null)", s));
         self.line(&format!("  store i8 0, i8* {}", s));
@@ -180,7 +180,7 @@ impl Codegen {
     }
 
     /// A 16-byte `sockaddr_in` scratch buffer, zeroed, returned as `i8*`.
-    fn emit_sockaddr_buf(&mut self) -> String {
+    pub(super) fn emit_sockaddr_buf(&mut self) -> String {
         let sa = self.tmp_name();
         self.line(&format!("  {} = alloca [16 x i8], align 8", sa));
         let p = self.tmp_name();
@@ -207,6 +207,16 @@ impl Codegen {
         let port = self.untag(&pv, &Ty::Int);
         let lv = self.emit_expr(&args[1]);
         let loopback = self.untag(&lv, &Ty::Bool);
+        // 127.0.0.1 in network byte order, read as a little-endian i32
+        let addr = self.tmp_name();
+        self.line(&format!("  {} = select i1 {}, i32 16777343, i32 0", addr, loopback));
+        self.emit_listen_on(&port, &addr)
+    }
+
+    /// The body of `tcp_listen`, shared with `crate::codegen::net_sock`'s
+    /// `tcp_listen_at`: listen on `port` (an `i32`) at `addr` (an `i32`
+    /// IPv4 address in network byte order, 0 for any).
+    pub(super) fn emit_listen_on(&mut self, port: &str, addr: &str) -> String {
         match self.target {
             Target::WindowsGnu => {
                 self.declare_lazy("declare i32 @bind(i8*, i8*, i32)");
@@ -271,9 +281,6 @@ impl Codegen {
         let pp = self.tmp_name();
         self.line(&format!("  {} = bitcast i8* {} to i16*", pp, pg));
         self.line(&format!("  store i16 {}, i16* {}", pbe, pp));
-        // 127.0.0.1 in network byte order, read as a little-endian i32
-        let addr = self.tmp_name();
-        self.line(&format!("  {} = select i1 {}, i32 16777343, i32 0", addr, loopback));
         let ag = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 4", ag, sa));
         let ap = self.tmp_name();
@@ -357,7 +364,7 @@ impl Codegen {
 
     /// `getsockname`/`getpeername` into a fresh `sockaddr_in`; returns the
     /// buffer and an `i1` that is true on success.
-    fn emit_sock_name(&mut self, handle: &str, peer: bool) -> (String, String) {
+    pub(super) fn emit_sock_name(&mut self, handle: &str, peer: bool) -> (String, String) {
         let which = if peer { "getpeername" } else { "getsockname" };
         match self.target {
             Target::WindowsGnu => self.declare_lazy(&format!("declare i32 @{}(i8*, i8*, i32*)", which)),
@@ -384,7 +391,13 @@ impl Codegen {
         let v = self.emit_expr(arg);
         let h = self.untag(&v, &Ty::Ptr);
         self.abort_if_null_socket(&h, "tcp_local_port");
-        let (sa, ok) = self.emit_sock_name(&h, false);
+        self.emit_sock_port(&h, false)
+    }
+
+    /// The port of a socket's own (`peer` false) or its peer's address, -1
+    /// on failure; shared with `crate::codegen::net_sock`'s `tcp_peer_port`.
+    pub(super) fn emit_sock_port(&mut self, h: &str, peer: bool) -> String {
+        let (sa, ok) = self.emit_sock_name(h, peer);
         let pg = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 2", pg, sa));
         let pp = self.tmp_name();
@@ -410,20 +423,33 @@ impl Codegen {
         let v = self.emit_expr(arg);
         let h = self.untag(&v, &Ty::Ptr);
         self.abort_if_null_socket(&h, "tcp_peer_ip");
-        self.declare_lazy("declare i8* @inet_ntoa(i32)");
-        let (sa, ok) = self.emit_sock_name(&h, true);
-        let have = self.block_label("tcp_peer_have");
-        let none = self.block_label("tcp_peer_none");
-        let end = self.block_label("tcp_peer_end");
-        self.line(&format!("  br i1 {}, label %{}, label %{}", ok, have, none));
+        self.emit_sock_ip(&h, true)
+    }
 
-        self.open_block(&have);
+    /// The dotted-decimal address of a socket's peer (`peer`) or its own
+    /// end, "" on failure; shared with `crate::codegen::net_sock`'s
+    /// `tcp_local_ip`.
+    pub(super) fn emit_sock_ip(&mut self, h: &str, peer: bool) -> String {
+        let (sa, ok) = self.emit_sock_name(h, peer);
         let ag = self.tmp_name();
         self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 4", ag, sa));
         let ap = self.tmp_name();
         self.line(&format!("  {} = bitcast i8* {} to i32*", ap, ag));
         let addr = self.tmp_name();
         self.line(&format!("  {} = load i32, i32* {}", addr, ap));
+        self.emit_ipv4_to_str(&addr, &ok)
+    }
+
+    /// An `i32` IPv4 address (network byte order) as a fresh dotted-decimal
+    /// `str` (`inet_ntoa`), or "" when `ok` (an `i1`) is false.
+    pub(super) fn emit_ipv4_to_str(&mut self, addr: &str, ok: &str) -> String {
+        self.declare_lazy("declare i8* @inet_ntoa(i32)");
+        let have = self.block_label("tcp_peer_have");
+        let none = self.block_label("tcp_peer_none");
+        let end = self.block_label("tcp_peer_end");
+        self.line(&format!("  br i1 {}, label %{}, label %{}", ok, have, none));
+
+        self.open_block(&have);
         // `struct in_addr` is one 32-bit field, passed by value in a
         // register on both x86-64 ABIs; the result is the C runtime's
         // static buffer, copied out at once
@@ -518,22 +544,37 @@ impl Codegen {
             self.err("tcp_wait(..) expects 2 arguments (handles, timeout_ms)", Span::dummy());
             return "i8* null".into();
         }
-        let tv = self.emit_expr(&args[1]);
+        self.emit_poll_wait(&args[0], None, &args[1])
+    }
+
+    /// The body of `tcp_wait`, shared with `crate::codegen::net_sock`'s
+    /// `tcp_wait_io`, whose `interest` (a `Bytes`, one byte per handle: 1
+    /// read, 4 write, 5 both; a handle past its end is 1) also asks for
+    /// write readiness, reported as bit 4. Without `interest` every handle
+    /// is polled for reading only, as `tcp_wait` always has been.
+    pub(super) fn emit_poll_wait(&mut self, handles: &TypedExpr, interest: Option<&TypedExpr>, timeout_e: &TypedExpr) -> String {
+        let tv = self.emit_expr(timeout_e);
         let timeout = self.untag(&tv, &Ty::Int);
-        let (data, len) = self.list_fields(&args[0], &Ty::Ptr);
+        let (data, len) = self.list_fields(handles, &Ty::Ptr);
+        let want_io = match interest {
+            Some(e) => Some(self.list_fields(e, &Ty::U8)),
+            None => None,
+        };
         // WSAPOLLFD { SOCKET fd; SHORT events; SHORT revents; } is 16 bytes,
         // glibc's pollfd { int fd; short events; short revents; } 8
-        let (stride, ev_off, rev_off, want, read_mask, hup_mask) = match self.target {
+        let (stride, ev_off, rev_off, want, read_mask, hup_mask, write_mask) = match self.target {
             Target::WindowsGnu => {
                 self.declare_lazy("declare i32 @WSAPoll(i8*, i32, i32)");
                 self.declare_lazy("declare void @Sleep(i32)");
-                // POLLRDNORM; POLLRDNORM | POLLRDBAND; POLLERR | POLLHUP | POLLNVAL
-                (16u64, 8u64, 10u64, 0x0100, 0x0300, 0x0007)
+                // POLLRDNORM; POLLRDNORM | POLLRDBAND; POLLERR | POLLHUP |
+                // POLLNVAL; POLLWRNORM
+                (16u64, 8u64, 10u64, 0x0100, 0x0300, 0x0007, 0x0010)
             }
             Target::LinuxGnu => {
                 self.declare_lazy("declare i32 @poll(i8*, i64, i32)");
-                // POLLIN; POLLIN | POLLPRI; POLLERR | POLLHUP | POLLNVAL
-                (8u64, 4u64, 6u64, 0x0001, 0x0003, 0x0038)
+                // POLLIN; POLLIN | POLLPRI; POLLERR | POLLHUP | POLLNVAL;
+                // POLLOUT
+                (8u64, 4u64, 6u64, 0x0001, 0x0003, 0x0038, 0x0004)
             }
         };
         let empty = self.block_label("tcp_wait_empty");
@@ -602,8 +643,45 @@ impl Codegen {
         self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", eg, slot, ev_off));
         let ep = self.tmp_name();
         self.line(&format!("  {} = bitcast i8* {} to i32*", ep, eg));
+        let events = match &want_io {
+            None => want.to_string(),
+            Some((idata, ilen)) => {
+                // interest byte i, or 1 (read) past the end of `interest`
+                // (an empty `Bytes` has a null data pointer, never read)
+                let inside = self.tmp_name();
+                self.line(&format!("  {} = icmp slt i64 {}, {}", inside, i, ilen));
+                let read_here = self.block_label("tcp_wait_interest");
+                let after = self.block_label("tcp_wait_interest_done");
+                let before = self.current_label.clone();
+                self.line(&format!("  br i1 {}, label %{}, label %{}", inside, read_here, after));
+                self.open_block(&read_here);
+                let bp = self.tmp_name();
+                self.line(&format!("  {} = getelementptr inbounds i8, i8* {}, i64 {}", bp, idata, i));
+                let raw = self.tmp_name();
+                self.line(&format!("  {} = load i8, i8* {}", raw, bp));
+                self.line(&format!("  br label %{}", after));
+                self.open_block(&after);
+                let iv = self.tmp_name();
+                self.line(&format!("  {} = phi i8 [ 1, %{} ], [ {}, %{} ]", iv, before, raw, read_here));
+                let rbit = self.tmp_name();
+                self.line(&format!("  {} = and i8 {}, 1", rbit, iv));
+                let rset = self.tmp_name();
+                self.line(&format!("  {} = icmp ne i8 {}, 0", rset, rbit));
+                let wbit = self.tmp_name();
+                self.line(&format!("  {} = and i8 {}, 4", wbit, iv));
+                let wset = self.tmp_name();
+                self.line(&format!("  {} = icmp ne i8 {}, 0", wset, wbit));
+                let r = self.tmp_name();
+                self.line(&format!("  {} = select i1 {}, i32 {}, i32 0", r, rset, want));
+                let w = self.tmp_name();
+                self.line(&format!("  {} = select i1 {}, i32 {}, i32 0", w, wset, write_mask));
+                let ev = self.tmp_name();
+                self.line(&format!("  {} = or i32 {}, {}", ev, r, w));
+                ev
+            }
+        };
         // events in the low half, revents (zeroed) in the high half
-        self.line(&format!("  store i32 {}, i32* {}", want, ep));
+        self.line(&format!("  store i32 {}, i32* {}", events, ep));
         let inext = self.tmp_name();
         self.line(&format!("  {} = add i64 {}, 1", inext, i));
         self.line(&format!("  store i64 {}, i64* {}", inext, idx));
@@ -661,8 +739,21 @@ impl Codegen {
         self.line(&format!("  {} = zext i1 {} to i8", b2a, is_hu));
         let b2 = self.tmp_name();
         self.line(&format!("  {} = shl i8 {}, 1", b2, b2a));
-        let fl = self.tmp_name();
-        self.line(&format!("  {} = or i8 {}, {}", fl, b1, b2));
+        let fl0 = self.tmp_name();
+        self.line(&format!("  {} = or i8 {}, {}", fl0, b1, b2));
+        let fl = if want_io.is_some() {
+            let wr = self.tmp_name();
+            self.line(&format!("  {} = and i16 {}, {}", wr, rev, write_mask));
+            let is_wr = self.tmp_name();
+            self.line(&format!("  {} = icmp ne i16 {}, 0", is_wr, wr));
+            let b4 = self.tmp_name();
+            self.line(&format!("  {} = select i1 {}, i8 4, i8 0", b4, is_wr));
+            let f = self.tmp_name();
+            self.line(&format!("  {} = or i8 {}, {}", f, fl0, b4));
+            f
+        } else {
+            fl0
+        };
         let flag = self.tmp_name();
         self.line(&format!("  {} = select i1 {}, i8 0, i8 {}", flag, failed, fl));
         let og = self.tmp_name();

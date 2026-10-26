@@ -252,6 +252,47 @@ int main(int argc, array(string) argv) {
             return 0;
         }
         int test_tel_tp(object self, mixed ob) { drv->cur_player = drv->lpc_objectp(ob) ? ob : 0; return 0; }
+        // socket hooks (todo.md HavokOS P1 #5, sockets.star efun_sock_test()):
+        // run the backend until ob->fn() is true (run_tests.pike's
+        // pump_until()), or ten 20 ms rounds with no ob; set a config value
+        mixed test_sock_pump(object self, mixed ob, mixed fn) {
+            if (!drv->lpc_objectp(ob)) { tel_pump(); return 0; }
+            mixed last;
+            for (int i = 0; i < 200; i++) {
+                last = drv->call_other(self, ob, fn, ({}));
+                if (last) break;
+                Pike.DefaultBackend(0.01);
+            }
+            return last;
+        }
+        int test_config(object self, string k, string v) { drv->config[k] = v; return 0; }
+        // extension hooks (todo.md HavokOS P1 #6, ext.star efun_ext_test()):
+        // run_tests.pike's watch, quota, dependency and profiling tests
+        // drive these by hand
+        array test_watch_poll(object self) { return drv->watch_poll(); }
+        array test_watch_state(object self) { return ({ predef::sizeof(drv->watchers), predef::sizeof(drv->watched_dirs) }); }
+        int test_run_call_out(object self, int h, void|string fun) {
+            if (!drv->callouts[h]) return 0;
+            if (fun) drv->callouts[h]->fun = fun;
+            drv->run_call_out(h);
+            return 0;
+        }
+        int test_utime(object self, string f, int age) {
+            int t = predef::time() - age;
+            return catch { System.utime(realpath(f), t, t); } ? 0 : 1;
+        }
+        int test_forget(object self, string p) { drv->compiler->forget(drv->normalize(p)); return 0; }
+        int test_profiling(object self, int on, void|int clear) {
+            drv->profiling = drv->compiler->profiling = on;
+            if (clear) { drv->efun_counts = ([]); drv->fn_profile = ([]); }
+            return predef::sizeof(drv->prof_stack);
+        }
+        int test_put(object self, string f, string text) {
+            string rp = realpath(f);
+            Stdio.mkdirhier(predef::dirname(rp));
+            return Stdio.write_file(rp, text) == predef::sizeof(text);
+        }
+        int test_rmtree(object self, string f) { Stdio.recursive_rm(realpath(f)); return 0; }
     ");
     drv->efuns = test_efuns(drv);
     add_constant("__E", drv->efuns);

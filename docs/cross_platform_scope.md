@@ -182,6 +182,33 @@ before `bind`, `MSG_NOSIGNAL` on `send` so a reset connection can't
 These externs are declared only by programs that use the builtins, since
 `bind`/`listen`/`accept`/`poll` are common Star function names.
 
+`codegen/net_sock.rs` — `tcp_listen_at`/`tcp_connect_start`/
+`tcp_sock_error`/`tcp_wait_io`/`tcp_local_ip`/`tcp_peer_port`/`udp_open`/
+`udp_send_to`/`udp_recv_from`/`host_lookup` (2026-10-25, `projects/havokos`
+HavokOS P1 #5: the LPC socket efuns). The Windows arm (a non-blocking
+`connect` with `WSAEWOULDBLOCK` as "started", `getsockopt(SOL_SOCKET 0xffff,
+SO_ERROR 0x1007)`, `POLLWRNORM` write interest in the shared `WSAPoll` body,
+`recvfrom`/`sendto`, `gethostbyname`) is run end to end by
+`tests/frontend_net_sock.rs` and by the HavokOS socket cases. The
+`Target::LinuxGnu` arm (`EINPROGRESS` 115, `SO_ERROR` 1/4, `POLLOUT` 4,
+`size_t` lengths) passes the internal IR verifier and `clang -c
+--target=x86_64-unknown-linux-gnu`, both in `tests/frontend_net_sock.rs`;
+not yet linked and run on the devbox. Declared on first use, like
+`net_server.rs`'s externs.
+
+`codegen/fs.rs` `file_set_mtime` and `codegen/procmem.rs` `process_memory`
+(2026-10-26, `projects/havokos` HavokOS P1 #6: `stale_programs()`'s tests
+age files the way the reference's do, and `memory_info()`/`malloc_status()`
+report the driver's resident memory). The Windows arms (`_utime64` with a
+16-byte `{ actime, modtime }` pair; `K32GetProcessMemoryInfo` on the
+current-process pseudo-handle, `WorkingSetSize` at offset 16 of the 72-byte
+`PROCESS_MEMORY_COUNTERS`) are run by `tests/frontend_fs.rs` and
+`tests/frontend_process_memory.rs`. The `Target::LinuxGnu` arms (`utime`,
+the same pair; `/proc/self/statm`'s resident pages through `fscanf`, times
+`sysconf(_SC_PAGESIZE = 30)`) pass the internal IR verifier and `clang -c
+--target=x86_64-unknown-linux-gnu` in `tests/frontend_process_memory.rs`;
+not yet linked and run on the devbox.
+
 ## Hard, deliberately unstarted: text rendering (`codegen/system_font.rs`)
 
 Unchanged from this module's own doc comment: GDI's font engine

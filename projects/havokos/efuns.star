@@ -5,9 +5,11 @@
 # per area (`efuns_str.star`, `efuns_arr.star`, `efuns_file.star`, ...),
 # reached by efun_table.star's code ranges, and M5 the object model's
 # (`efuns_obj.star`), M6 connections and telnet (`efuns_net.star`) and the
-# verb parser (`verbparse.star`, `verbmatch.star`). Efuns of later
-# milestones (ed, sockets, M7) still raise the reference's own "not
-# implemented" error: the compiler already resolves their names as efuns.
+# verb parser (`verbparse.star`, `verbmatch.star`), M7 the line editor
+# (`ed.star`), the LPC sockets (`sockets.star`) and the reference's
+# HavokOS-only extensions (`json.star`, `ext.star`). Efuns this VM still
+# lacks raise the reference's own "not implemented" error: the compiler
+# already resolves their names as efuns.
 # A program that includes this file uses the compiler's socket builtins,
 # so it is built with `-l ws2_32`.
 #
@@ -27,6 +29,9 @@ import "efuns_net.star" as enet
 import "verbparse.star" as vp
 import "verbmatch.star" as vpm
 import "ed.star" as edm
+import "sockets.star" as sk
+import "json.star" as js
+import "ext.star" as ext
 
 impl vm::Vm:
     fn arg(self, args: List<val::Value>, i: i32) -> val::Value:
@@ -50,6 +55,12 @@ impl vm::Vm:
             return self.efun_parse(code, name, args, self_ob)
         if code >= 370 and code < 380:
             return self.efun_ed(code, args, self_ob)
+        if code >= 380 and code < 400:
+            return self.efun_sock(code, name, args, self_ob)
+        if code == et::E_JSON_ENCODE or code == et::E_JSON_DECODE:
+            return self.efun_json(code, args)
+        if code >= 400 and code < 420:
+            return self.efun_ext(code, name, args, self_ob)
         if code >= 200:
             return self.efun_obj(code, name, args, self_ob)
         if code == et::E_MASTER:

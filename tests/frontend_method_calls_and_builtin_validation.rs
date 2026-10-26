@@ -186,7 +186,7 @@ fn codegen_impl_method_llvm_name_is_mangled_by_struct() {
     let module = Driver::parse(src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    assert!(ir.contains("define i32 @A__area(%A* %self)"), "{}", ir);
+    assert!(ir.contains("define i32 @A__area(%A* %arg.self)"), "{}", ir);
     assert!(!ir.contains("define i32 @area("), "the bare, unmangled method name must never be emitted as a global: {}", ir);
 }
 

@@ -149,6 +149,29 @@ impl vm::Vm:
             self.gc_root(c.input_fn)
             self.gc_root(c.input_owner)
             self.gc_root_all(c.input_args)
+        # an open socket holds its owner, the object it is offered to and its
+        # callbacks (the reference's LSock), and a pending resolve() its
+        # object and callback
+        for i in 0..self.socks.len():
+            let k = self.socks[i]
+            if !k.open:
+                continue
+            self.gc_root(k.owner)
+            self.gc_root(k.release_ob)
+            self.gc_root(k.read_cb)
+            self.gc_root(k.write_cb)
+            self.gc_root(k.close_cb)
+        for i in 0..self.resolves.len():
+            self.gc_root(self.resolves[i].ob)
+            self.gc_root(self.resolves[i].fun)
+        # a find_files() answer holds its object and callback, and the
+        # watcher table its objects (ext.star; the reference's watchers
+        # mapping keeps a reference)
+        for i in 0..self.finds.len():
+            self.gc_root(self.finds[i].ob)
+            self.gc_root(self.finds[i].cb)
+        for i in 0..self.watchers.len():
+            self.gc_root(self.watchers[i].ob)
         self.gc_root(self.cur_verb)
         self.gc_root(self.errv)
         if self.cur_player > 0 and self.objs[self.cur_player].alive:

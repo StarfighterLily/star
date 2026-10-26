@@ -480,7 +480,13 @@ impl Codegen {
                     // whole by-value aggregate (`todo.md` P0 #2).
                     format!("{}*", self.llvm_ty(&p.ty))
                 } else { self.llvm_ty(&p.ty) };
-                format!("{} %{}", ty, p.name)
+                // `%arg.<name>`, never the bare name: temporaries are
+                // `%t<N>` (`Codegen::tmp_name`), so a parameter spelled
+                // `t0` used to be defined twice and the IR was rejected
+                // ("multiple definition of local value named 't0'"). A `.`
+                // can't occur in a Star identifier, so the prefix can't
+                // meet a temporary, a label or `%.sret`.
+                format!("{} %arg.{}", ty, p.name)
             }).collect()
         };
         if ret_is_agg {
@@ -515,7 +521,7 @@ impl Codegen {
                 let llvm_ty = self.llvm_ty(&p.ty);
                 let alloca = self.tmp_name();
                 self.line(&format!("  {} = alloca {}", alloca, llvm_ty));
-                self.emit_memcpy_aggregate(&alloca, &format!("%{}", p.name), &p.ty);
+                self.emit_memcpy_aggregate(&alloca, &format!("%arg.{}", p.name), &p.ty);
                 self.track_owned(&alloca, &p.ty);
                 self.symbols.push((p.name.clone(), alloca, p.ty.clone()));
                 continue;
@@ -525,7 +531,7 @@ impl Codegen {
             } else { self.llvm_ty(&p.ty) };
             let alloca = self.tmp_name();
             self.line(&format!("  {} = alloca {}", alloca, ptr_ty));
-            self.line(&format!("  store {} %{}, {}* {}", ptr_ty, p.name, ptr_ty, alloca));
+            self.line(&format!("  store {} %arg.{}, {}* {}", ptr_ty, p.name, ptr_ty, alloca));
             // `self` is passed *by pointer* (a borrow of the caller's own
             // struct, see the `is_self` special-casing above), not an
             // owned copy -- unlike every other parameter, `alloca` here is

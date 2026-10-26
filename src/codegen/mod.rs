@@ -34,7 +34,9 @@ mod list;
 mod map;
 mod net;
 mod net_server;
+mod net_sock;
 mod os;
+mod procmem;
 mod par_pool;
 mod platform;
 mod rc;
@@ -641,6 +643,8 @@ impl Codegen {
         self.declare_fs_externs();
         // `clock_ms` builtin -- see `crate::codegen::clock`.
         self.declare_clock_externs();
+        // `process_memory` builtin -- see `crate::codegen::procmem`.
+        self.declare_procmem_externs();
         // `tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close`/
         // `tcp_set_nonblocking` builtins -- see
         // `crate::codegen::net`, declared for whichever `Target` this

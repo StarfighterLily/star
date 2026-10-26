@@ -81,7 +81,9 @@ impl Codegen {
         let opcode = match op {
             BinOp::Add => "fadd float", BinOp::Sub => "fsub float", BinOp::Mul => "fmul float",
             BinOp::Div => "fdiv float", BinOp::Rem => "frem float",
-            BinOp::Eq => "fcmp oeq float", BinOp::Ne => "fcmp one float",
+            // `!=` is the *unordered* compare: IEEE 754 (and C, Rust) make
+            // `nan != x` true, which `fcmp one` answered false.
+            BinOp::Eq => "fcmp oeq float", BinOp::Ne => "fcmp une float",
             BinOp::Lt => "fcmp olt float", BinOp::Gt => "fcmp ogt float",
             BinOp::Le => "fcmp ole float", BinOp::Ge => "fcmp oge float",
             BinOp::And | BinOp::Or => { self.err("internal error: `&&`/`||` should be short-circuit lowered, not reach emit_scalar_binop", Span::dummy()); "fadd float" }
@@ -234,7 +236,9 @@ impl Codegen {
         let opcode = match op {
             BinOp::Add => "fadd double", BinOp::Sub => "fsub double", BinOp::Mul => "fmul double",
             BinOp::Div => "fdiv double", BinOp::Rem => "frem double",
-            BinOp::Eq => "fcmp oeq double", BinOp::Ne => "fcmp one double",
+            // `!=` is the *unordered* compare: IEEE 754 (and C, Rust) make
+            // `nan != x` true, which `fcmp one` answered false.
+            BinOp::Eq => "fcmp oeq double", BinOp::Ne => "fcmp une double",
             BinOp::Lt => "fcmp olt double", BinOp::Gt => "fcmp ogt double",
             BinOp::Le => "fcmp ole double", BinOp::Ge => "fcmp oge double",
             BinOp::And | BinOp::Or => { self.err("internal error: `&&`/`||` should be short-circuit lowered, not reach emit_f64_binop", Span::dummy()); "fadd double" }

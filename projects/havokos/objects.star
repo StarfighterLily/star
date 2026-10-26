@@ -157,6 +157,8 @@ impl vm::Vm:
             return
         self.now_sec = vm::epoch_now()
         self.reset_eval()
+        if self.sample_interval > (0 as i64):
+            self.sample_resume()
 
     # A fresh budget for the evaluation now running (reset_eval_cost()).
     fn reset_eval(mut self):
@@ -174,6 +176,8 @@ impl vm::Vm:
         self.eval_nest = 0
         if self.pending_replace.len() > 0:
             self.apply_replaces()
+        if self.sample_interval > (0 as i64):
+            self.sample_pause()
         self.eval_deadline = 0 as i64
         self.outoftime = false
 
@@ -183,6 +187,8 @@ impl vm::Vm:
     # swallow a runaway loop.
     fn eval_tick(mut self):
         self.ticks = 0
+        if self.sample_interval > (0 as i64) and self.eval_nest > 0:
+            self.sample_tick()
         if !self.outoftime:
             if self.eval_deadline == (0 as i64) or clock_ms() <= self.eval_deadline:
                 return
@@ -349,7 +355,7 @@ impl vm::Vm:
     fn replace_vital_object(mut self, caller: i32, ob: i32):
         let name = self.objs[ob].name
         self.obj_by_name.remove(name)
-        self.prog_by_path.remove(self.objs[ob].base_prog)
+        self.forget_program(self.objs[ob].base_prog)
         let r = self.load_object(name, caller)
         let failed = self.err
         if failed:
@@ -412,6 +418,10 @@ impl vm::Vm:
         self.remove_call_outs_for(ob)
         self.remove_living_name(ob)
         self.vp_forget(ob)
+        self.sock_forget(ob)
+        if self.objs[ob].watching:
+            self.unwatch(ob, "", true)
+        self.quota_uncount_clone(ob)
         let name = self.objs[ob].name
         if let Option::Some(x) = self.obj_by_name.get(name):
             if x == ob:
@@ -431,7 +441,7 @@ impl vm::Vm:
         # `update` relies on); clones keep their program, and vital objects
         # already did
         if !vital and !self.objs[ob].clone and !self.objs[ob].is_virtual:
-            self.prog_by_path.remove(self.objs[ob].base_prog)
+            self.forget_program(self.objs[ob].base_prog)
 
     # --- inheritance --------------------------------------------------------------
 
@@ -880,6 +890,17 @@ impl vm::Vm:
         let owner = match fun:
             val::Value::Str(s) -> ob
             _ -> self.fn_owner(fun)
+        # counted against the owner's quota group (ext.star); refused over
+        # its limit, the handle already used up, as in the reference
+        let qhas = owner >= 0 and self.objs[owner].qhas
+        let quota = if qhas: self.objs[owner].qgroup else: ""
+        if qhas:
+            self.quota_check(owner, true, quota, "call_outs")
+            if self.err:
+                return 0
+            let u = self.quota_use_at(quota)
+            self.quota_uses[u].call_outs = self.quota_uses[u].call_outs + (1 as i64)
+        self.quota_total.call_outs = self.quota_total.call_outs + (1 as i64)
         let mut cs = 0 as i64
         match delay:
             val::Value::Int(x) ->
@@ -889,7 +910,7 @@ impl vm::Vm:
             _ -> 0
         if cs < (0 as i64):
             cs = 0 as i64
-        let c = vm::CallOut(handle = h, ob = self.obj_value(ob), owner = if owner >= 0: self.obj_value(owner) else: val::Value::Int(0 as i64), fun = fun, args = args, when = vm::wadd(self.call_out_clock(), cs), tp = if self.alive(self.cur_player): self.obj_value(self.cur_player) else: val::Value::Int(0 as i64))
+        let c = vm::CallOut(handle = h, ob = self.obj_value(ob), owner = if owner >= 0: self.obj_value(owner) else: val::Value::Int(0 as i64), fun = fun, args = args, when = vm::wadd(self.call_out_clock(), cs), tp = if self.alive(self.cur_player): self.obj_value(self.cur_player) else: val::Value::Int(0 as i64), quota = quota, qhas = qhas)
         # keep the queue sorted by (when, handle): the new one goes after
         # everything due no later than it
         let mut out: List<vm::CallOut> = List<vm::CallOut>()
@@ -913,6 +934,7 @@ impl vm::Vm:
     # Take a pending call_out out of the queue (it has not run).
     fn drop_call_out_at(mut self, k: i32) -> vm::CallOut:
         let c = self.callouts[k]
+        self.quota_uncount_call_out(c)
         let mut out: List<vm::CallOut> = List<vm::CallOut>()
         for i in 0..self.callouts.len():
             if i != k:
@@ -937,6 +959,7 @@ impl vm::Vm:
             let c = self.callouts[i]
             if self.lpc_eq(c.owner, ov) and !self.dead_obj(c.owner) and !val::is_zero(c.owner):
                 changed = true
+                self.quota_uncount_call_out(c)
             else:
                 out.push(c)
         if changed:
@@ -988,6 +1011,15 @@ impl vm::Vm:
             _ ->
                 return
         self.cur_player = self.obj_of(c.tp)
+        # the quota group it is charged to: the object it runs in, else its
+        # owner's (driver run_call_out())
+        let mut qo = owner
+        if qo < 0 or !self.objs[qo].qhas:
+            qo = self.obj_of(c.owner)
+        let qhas = qo >= 0 and self.objs[qo].qhas
+        let qgroup = if qhas: self.objs[qo].qgroup else: ""
+        let charged = if owner >= 0: owner else: self.obj_of(c.ob)
+        let t0 = clock_us()
         let ol = self.ostack.len()
         let sl = self.stack.len()
         self.begin_eval()
@@ -1003,6 +1035,7 @@ impl vm::Vm:
         self.truncate_stack(sl)
         self.end_eval()
         self.cur_player = -1
+        self.quota_charge_eval(qhas, qgroup, clock_us() - t0, charged)
 
     # Every call_out due now, in due order. Ones made while these run (even
     # with no delay) wait for the next round, as on the reference's backend.
@@ -1122,6 +1155,9 @@ impl vm::Vm:
                 continue
             self.objs[o].hb_ticks = self.objs[o].hb
             self.cur_player = if self.objs[o].living: o else: -1
+            let qhas = self.objs[o].qhas
+            let qgroup = self.objs[o].qgroup
+            let t0 = clock_us()
             let ol = self.ostack.len()
             let sl = self.stack.len()
             self.begin_eval()
@@ -1134,6 +1170,7 @@ impl vm::Vm:
             self.truncate_ostack(ol)
             self.truncate_stack(sl)
             self.end_eval()
+            self.quota_charge_eval(qhas, qgroup, clock_us() - t0, o)
         self.cur_player = -1
 
     # --- reset() and clean_up() (havokos docs/reset-cleanup-spec.md) ------------------------
@@ -1312,6 +1349,7 @@ impl vm::Vm:
             if now >= self.next_sweep_ms:
                 self.reset_sweep_once()
                 self.next_sweep_ms = now + sweep * (1000 as i64)
+        self.watch_tick(now)
         if self.gc_requested:
             self.gc_requested = false
             self.collect_garbage()

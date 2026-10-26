@@ -484,7 +484,7 @@ fn codegen_generic_impl_method_llvm_name_is_mangled_by_instantiation() {
     let module = Driver::parse(&src).expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    assert!(ir.contains("define i32 @Box__i32__get(%Box__i32* %self)"), "{}", ir);
+    assert!(ir.contains("define i32 @Box__i32__get(%Box__i32* %arg.self)"), "{}", ir);
     assert!(!ir.contains("define i32 @Box__get("), "the unmangled template name must never be emitted as a global: {}", ir);
     assert!(!ir.contains("define i32 @get("), "the bare method name must never be emitted as a global: {}", ir);
 }

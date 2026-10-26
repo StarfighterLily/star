@@ -48,6 +48,8 @@ import "buf.star" as bf
 import "conn.star" as cn
 import "vpdata.star" as vpd
 import "eddata.star" as edd
+import "sockdata.star" as sd
+import "extdata.star" as xd
 
 
 extern "C" fn clock() -> i32
@@ -75,6 +77,11 @@ struct Frame:
     # apply, a call_out, map()'s callback), not by an LPC call -- origin()
     # only calls a call "local" between two LPC frames
     mut driver: bool = false
+    # `havok profiling` (ext.star): its record in Vm.prof_recs (-1 when not
+    # profiled), clock_us() at entry, and microseconds spent in callees
+    mut pf: i32 = -1
+    mut pstart: i64 = 0 as i64
+    mut pchild: i64 = 0 as i64
 
 struct Handler:
     fr_index: i32
@@ -144,6 +151,13 @@ struct ObjSlot:
     # and the one switched to (query_replaced_program())
     mut replace_to: str = ""
     mut replaced: str = ""
+    # resource quotas (ext.star): its group, if the master gave it one, and
+    # whether it counts as a clone of that group
+    mut qgroup: str = ""
+    mut qhas: bool = false
+    mut qclone: bool = false
+    # it called watch_path() (ext.star)
+    mut watching: bool = false
 
 # One add_action() sentence: who defined it (an object value, so a slot
 # reused after a destruct can't inherit it), the verb, the function (a name
@@ -168,6 +182,9 @@ struct CallOut:
     args: List<val::Value>
     when: i64
     tp: val::Value
+    # the quota group it is counted in (ext.star), if any
+    quota: str = ""
+    qhas: bool = false
 
 struct Vm:
     root: str
@@ -308,6 +325,69 @@ struct Vm:
     # --- the line editor (M7; ed.star): sessions, a finished one's slot
     # reused by the next ed_start() ---
     mut eds: List<edd::EdSession> = List<edd::EdSession>()
+    # --- LPC sockets (P1 #5; sockets.star): one row per socket number ever
+    # handed out (sockdata.star), resolve() answers due on the next pass ---
+    mut socks: List<sd::LSock> = List<sd::LSock>()
+    mut resolves: List<sd::PendingResolve> = List<sd::PendingResolve>()
+    mut resolve_seq: i32 = 0
+    # --- json_encode()/json_decode() (P1 #6; json.star): the encoder's
+    # output and the containers it is inside, the decoder's text, position
+    # and first error position (-1 none) ---
+    mut jbuf: bf::Buf = bf::Buf()
+    mut jseen: List<val::Value> = List<val::Value>()
+    mut jtext: Bytes = Bytes()
+    mut jpos: i32 = 0
+    mut jerr: i32 = -1
+    # --- the other HavokOS-only extensions (P1 #6; ext.star, rows in
+    # extdata.star) ---
+    # find_files() answers due on the next pass
+    mut finds: List<xd::PendingFind> = List<xd::PendingFind>()
+    # file watching: the directories listed, the watchers, the round of
+    # stats under way, the next poll (clock_ms(), 0 = not ticking)
+    mut watch_dirs: List<xd::WatchDir> = List<xd::WatchDir>()
+    mut watchers: List<xd::Watcher> = List<xd::Watcher>()
+    mut watch_queue: List<str> = List<str>()
+    mut watch_qi: i32 = 0
+    mut next_watch_ms: i64 = 0 as i64
+    # resource quotas: each base name's group as the master answered
+    # (quota_none: it answered none), each group's limits and counts
+    mut quota_groups: Map<str, str> = Map<str, str>()
+    mut quota_none: Set<str> = Set<str>()
+    mut quota_lims: Map<str, xd::QuotaLimits> = Map<str, xd::QuotaLimits>()
+    mut quota_uses: List<xd::QuotaUse> = List<xd::QuotaUse>()
+    mut quota_idx: Map<str, i32> = Map<str, i32>()
+    mut quota_total: xd::QuotaUse = xd::QuotaUse(group = "*")
+    # dependencies (stale_programs(), dependents()): one entry per path
+    # ever compiled, the stamp of each program in memory, every path ever
+    # compiled in order, and the compile count (cache_stats())
+    mut deps: List<xd::DepEntry> = List<xd::DepEntry>()
+    mut dep_idx: Map<str, i32> = Map<str, i32>()
+    mut stamps: Map<str, str> = Map<str, str>()
+    mut prog_paths: List<str> = List<str>()
+    mut prog_path_seen: Set<str> = Set<str>()
+    mut compiled_count: i32 = 0
+    # one stale_programs()/dependents() query's verdicts and depths
+    mut dep_memo: Map<str, bool> = Map<str, bool>()
+    # recent (mtime, size) stats compiles recorded, and when they were taken
+    mut dep_stat_memo: Map<str, List<i64>> = Map<str, List<i64>>()
+    mut dep_stat_ms: i64 = 0 as i64
+    mut dep_depths: Map<str, i32> = Map<str, i32>()
+    # `havok profiling`: per-function records and efun call counts
+    mut profiling: bool = false
+    mut prof_recs: List<xd::ProfRec> = List<xd::ProfRec>()
+    mut prof_idx: Map<str, i32> = Map<str, i32>()
+    mut efun_counts: Map<str, i64> = Map<str, i64>()
+    # the sampling profiler (microseconds; interval 0 = stopped)
+    mut sample_interval: i64 = 0 as i64
+    mut sample_next: i64 = 0 as i64
+    mut sample_last: i64 = 0 as i64
+    mut sample_pending: i64 = 0 as i64
+    mut sample_left: i64 = 0 as i64
+    mut sample_recs: List<xd::SampleRec> = List<xd::SampleRec>()
+    mut sample_idx: Map<str, i32> = Map<str, i32>()
+    mut sample_count: i64 = 0 as i64
+    mut sample_time: i64 = 0 as i64
+    mut sample_started: i64 = 0 as i64
     # --- the network (M6; net.star) ---
     # connections (closed slots are reused, see conn.star) and the sequence
     # number of the latest one
@@ -1616,6 +1696,8 @@ impl Vm:
             let c = self.new_cell(self.stack[base + s])
             self.stack[base + s] = val::Value::Int(c as i64)
         self.frames.push(Frame(prog = prog, fnidx = fnidx, pc = 0, base = base, obj = obj, var_base = var_base, cells = cells, ostack_before = ostack_before))
+        if self.profiling:
+            self.prof_enter(self.frames.len() - 1)
 
     fn undefined_function(mut self, name: str, o: i32):
         let n = if o >= 0: self.objs[o].name else: "?"
@@ -1869,6 +1951,13 @@ impl Vm:
 
     # Unwind an error to the innermost handler of frames >= stop. True when
     # one caught it (execution goes on there).
+    # An unwound frame, closed for `havok profiling` first (ext.star).
+    fn pop_frame(mut self):
+        let fi = self.frames.len() - 1
+        if self.frames[fi].pf >= 0:
+            self.prof_close(fi)
+        self.frames.pop()
+
     fn unwind(mut self, stop: i32) -> bool:
         let nh = self.handlers.len()
         if nh > 0:
@@ -1876,7 +1965,7 @@ impl Vm:
             if h.fr_index >= stop:
                 self.handlers.pop()
                 while self.frames.len() > h.fr_index + 1:
-                    self.frames.pop()
+                    self.pop_frame()
                 self.truncate_stack(h.stack_len)
                 self.truncate_ostack(h.ostack_len)
                 let v = self.catch_value()
@@ -1890,7 +1979,7 @@ impl Vm:
             self.truncate_stack(f.base)
             self.truncate_ostack(f.ostack_before)
             while self.frames.len() > stop:
-                self.frames.pop()
+                self.pop_frame()
         while self.handlers.len() > 0 and self.handlers[self.handlers.len() - 1].fr_index >= stop:
             self.handlers.pop()
         false
@@ -2206,6 +2295,8 @@ impl Vm:
                     self.truncate_ostack(f.ostack_before)
                     while self.handlers.len() > 0 and self.handlers[self.handlers.len() - 1].fr_index >= fi:
                         self.handlers.pop()
+                    if f.pf >= 0:
+                        self.prof_close(fi)
                     self.frames.pop()
                     self.stack.push(v)
                     running = false
@@ -2272,6 +2363,8 @@ impl Vm:
                     pc += 4
                     self.frames[fi].pc = pc
                     let a = self.take_args(argc)
+                    if self.profiling:
+                        self.count_efun(name)
                     let r = self.efun(ecode, name, a, obj)
                     if self.err:
                         running = false
@@ -2493,7 +2586,11 @@ impl Vm:
             path = paths::combine_path(base, path)
         paths::combine_path("/", path)
 
-    fn compile_tokens(mut self, path: str, toks: List<tk::Token>) -> i32:
+    # `record`: the program comes from its file, so its dependencies are
+    # recorded (ext.star dep_compiled()); not for compile_source().
+    fn compile_tokens(mut self, path: str, toks: List<tk::Token>, record: bool) -> i32:
+        # the inherits' compiles below preprocess again
+        let incs = self.pp.included
         for i in 0..toks.len():
             if toks[i].kind == tk::Tk::Bad:
                 self.compile_error = f"{path}.c:{toks[i].line}: bad token {toks[i].text}"
@@ -2503,6 +2600,7 @@ impl Vm:
             self.compile_error = p.error
             return -1
         let mut inh: List<cc::InhIn> = List<cc::InhIn>()
+        let mut inh_paths: List<str> = List<str>()
         for i in 0..p.top.len():
             match p.nodes[p.top[i]].kind:
                 ast::NodeKind::Inherit(ipath, label, mods) ->
@@ -2515,6 +2613,7 @@ impl Vm:
                         return -1
                     let lbl = if label != "": label else: cc::base_name_of(ip)
                     inh.push(cc::InhIn(id = id, prog = self.progs[id], path = ip, label = lbl))
+                    inh_paths.push(ip)
                 _ -> 0
         let id = self.progs.len()
         let mut c = cc::new_compiler(p.nodes, self.pp.files, path, id, inh, self.sefun_names, self.sefun_types, path == self.sefun_path, self.efun_codes, self.ref_efuns, self.known_efuns)
@@ -2524,20 +2623,25 @@ impl Vm:
             return -1
         self.progs.push(prog)
         self.prog_by_path.insert(path, id)
+        self.dep_compiled(path, toks, inh_paths, incs, record)
         id
 
     fn compile_program(mut self, path: str) -> i32:
         if let Option::Some(id) = self.prog_by_path.get(path):
             return id
         self.compiling.insert(path)
+        let t0 = clock_us()
         self.pp.preprocess(concat(path, ".c"))
         if self.pp.had_error:
             self.compile_error = self.pp.error
             self.compiling.remove(path)
             return -1
         let toks = self.pp.out
-        let id = self.compile_tokens(path, toks)
+        let id = self.compile_tokens(path, toks, true)
         self.compiling.remove(path)
+        # the sampling profiler keeps compiles off the LPC clock (ext.star)
+        if self.sample_interval > (0 as i64):
+            self.sample_compile(t0)
         id
 
     # Compile LPC source text as program `path` (always afresh).
@@ -2550,7 +2654,7 @@ impl Vm:
             self.compiling.remove(path)
             return -1
         let toks = self.pp.out
-        let id = self.compile_tokens(path, toks)
+        let id = self.compile_tokens(path, toks, false)
         self.compiling.remove(path)
         id
 
@@ -2603,6 +2707,9 @@ impl Vm:
     fn register_object(mut self, o: i32):
         let name = self.objs[o].name
         self.obj_by_name.insert(name, o)
+        # its quota group, by base name (ext.star)
+        let hash = str_index_of(name, "#")
+        self.quota_assign(o, if hash >= 0: substr(name, 0, hash) else: name)
         self.objs[o].last_used = epoch_now()
         if self.reset_interval > (0 as i64):
             self.objs[o].reset_time = wadd(epoch_now(), self.reset_delay())
@@ -2744,6 +2851,8 @@ impl Vm:
             if x == vo:
                 self.obj_by_name.remove(old)
         self.objs[vo].name = path
+        self.quota_uncount_clone(vo)
+        self.quota_assign(vo, path)
         self.objs[vo].clone = false
         self.objs[vo].clone_no = 0
         self.objs[vo].is_virtual = true
@@ -2770,6 +2879,9 @@ impl Vm:
         if m < 0:
             self.fail(f"*Unable to load {path} for cloning\n")
             return val::Value::Undef
+        self.quota_check(m, self.objs[m].qhas, self.objs[m].qgroup, "clones")
+        if self.err:
+            return val::Value::Undef
         self.clone_count += 1
         # named after the blueprint's program (a virtual object's clones
         # are clones of the program compile_object() cloned)
@@ -2779,6 +2891,7 @@ impl Vm:
         if o < 0:
             return val::Value::Undef
         self.objs[o].clone_no = self.clone_count
+        self.quota_count_clone(o)
         self.call_create(o, caller, args)
         if self.err:
             return val::Value::Undef

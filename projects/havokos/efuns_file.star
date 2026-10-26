@@ -149,6 +149,8 @@ impl vm::Vm:
         ok
 
     fn efun_file(mut self, code: i32, name: str, args: List<val::Value>, self_ob: i32) -> val::Value:
+        # a file efun may change files: compiles stat afresh (ext.star dep_stat())
+        self.dep_stat_ms = 0 as i64
         # --- time
         if code == et::E_TIME or code == et::E_REAL_TIME:
             return val::Value::Int(vm::epoch_now())

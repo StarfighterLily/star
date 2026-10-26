@@ -1272,18 +1272,37 @@ impl vm::Vm:
         p
 
     # One pass: wait up to `timeout_ms` for input, take new connections, read
-    # what arrived, and write what's queued.
+    # what arrived, and write what's queued. The LPC sockets (sockets.star)
+    # share the wait: what the previous pass left for this one (resolve()
+    # answers, connects that never started) runs first, then every open
+    # socket is polled with the interest sock_interest() gives it, and
+    # what's ready is handed to sock_ready() after the telnet connections.
     fn net_poll(mut self, timeout_ms: i32):
+        self.run_resolves()
+        self.run_finds()
+        self.sock_fail_dead_connects()
         let mut handles: List<ptr> = List<ptr>()
         let mut which: List<i32> = List<i32>()
+        let mut interest = Bytes()
         for i in 0..self.listeners.len():
             handles.push(self.listeners[i])
             which.push(-1 - i)
+            interest.push(1 as u8)
         for i in 0..self.conns.len():
             if self.conn_ok(i) and !is_null(self.conns[i].sock):
                 handles.push(self.conns[i].sock)
                 which.push(i)
-        let ready = tcp_wait(handles, timeout_ms)
+                interest.push(1 as u8)
+        let first_sock = handles.len()
+        let mut sock_fds: List<i32> = List<i32>()
+        for fd in 0..self.socks.len():
+            let want = self.sock_interest(fd)
+            if want != 0:
+                handles.push(self.socks[fd].handle)
+                sock_fds.push(fd)
+                interest.push(want as u8)
+        let wait = if self.sock_work_waiting(): 0 else: timeout_ms
+        let ready = tcp_wait_io(handles, interest, wait)
         for k in 0..which.len():
             if k >= ready.len() or (ready[k] as i32) == 0:
                 continue
@@ -1296,11 +1315,17 @@ impl vm::Vm:
                     self.conn_close(w, "connection closed by peer")
                 else:
                     self.conn_input(w, d)
+        for j in 0..sock_fds.len():
+            let k = first_sock + j
+            if k < ready.len() and (ready[k] as i32) != 0:
+                self.sock_ready(sock_fds[j], handles[k], ready[k] as i32)
         self.net_flush_all()
 
     # Milliseconds the main loop may wait for input before a timer is due:
     # the next heart beat slot, call_out or reset sweep, at most a second.
     fn next_timer_ms(self) -> i32:
+        if self.sock_work_waiting():
+            return 0
         let now = clock_ms()
         let mut due = now + (1000 as i64)
         if self.next_hb_ms != (0 as i64) and self.next_hb_ms < due:

@@ -210,7 +210,7 @@ OBJ /secure/daemon/preload_check SECURE -
 OBJ /secure/daemon/reaper SECURE - HB
 OBJ /secure/daemon/reload SECURE - HB
 OBJ /secure/daemon/remotepost SECURE - HB
-OBJ /secure/daemon/resolv SECURE -
+OBJ /secure/daemon/resolv SECURE - HB
 OBJ /secure/daemon/rooms SECURE - HB
 OBJ /secure/daemon/secrets SECURE -
 OBJ /secure/daemon/snoop SECURE - HB
@@ -236,4 +236,4 @@ OBJ /secure/sefun/sefun SECURE -
 COUNT objects 235
 COUNT clones 41
 COUNT call_outs 70
-COUNT heart_beats 25
+COUNT heart_beats 26

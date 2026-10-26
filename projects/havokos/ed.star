@@ -282,6 +282,7 @@ impl vm::Vm:
     fn ed_write(mut self, ob: i32, path: str, text: str, append: bool) -> bool:
         if !self.check_write(ob, path, "ed_start"):
             return false
+        self.dep_stat_ms = 0 as i64
         self.write_whole(self.mud_real(path), text, append)
 
     fn ed_load_setup(mut self, ob: i32) -> i32:
@@ -1461,6 +1462,7 @@ impl vm::Vm:
             match path:
                 val::Value::Str(p) ->
                     if p != "":
+                        self.dep_stat_ms = 0 as i64
                         self.write_whole(self.mud_real(p), self.ed_text(e), false)
                 _ -> 0
         self.ed_drop(e)

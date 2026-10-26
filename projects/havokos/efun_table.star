@@ -17,7 +17,9 @@
 # M5 added 200-299, the object model (`efuns_obj.star`), and 900-999, the
 # test hooks (`test_efun_codes()`, below). M6 added 300-349, connections and
 # telnet (`efuns_net.star`), and 350-369, the verb parser's registry
-# (`verbparse.star`). M7 added 370-379, the line editor (`ed.star`).
+# (`verbparse.star`). M7 added 370-379, the line editor (`ed.star`), then
+# 380-399, the LPC socket efuns and resolve() (`sockets.star`), then 400-419,
+# the reference's HavokOS-only extensions (`json.star`, `ext.star`).
 
 const E_UNDEFINEDP: i32 = 1
 const E_SIZEOF: i32 = 2
@@ -274,6 +276,41 @@ const E_ED_START: i32 = 370
 const E_ED_CMD: i32 = 371
 const E_IN_EDIT: i32 = 372
 const E_QUERY_ED_MODE: i32 = 373
+# --- M7: LPC sockets (380..), sockets.star
+const E_SOCKET_CREATE: i32 = 380
+const E_SOCKET_BIND: i32 = 381
+const E_SOCKET_LISTEN: i32 = 382
+const E_SOCKET_ACCEPT: i32 = 383
+const E_SOCKET_CONNECT: i32 = 384
+const E_SOCKET_WRITE: i32 = 385
+const E_SOCKET_CLOSE: i32 = 386
+const E_SOCKET_RELEASE: i32 = 387
+const E_SOCKET_ACQUIRE: i32 = 388
+const E_SOCKET_ERROR: i32 = 389
+const E_SOCKET_ADDRESS: i32 = 390
+const E_SOCKET_STATUS: i32 = 391
+const E_RESOLVE: i32 = 392
+const E_DUMP_FILE_DESCRIPTORS: i32 = 393
+# --- M7: the reference's HavokOS-only extensions (400..): json.star, then
+# ext.star for the rest (astar_path, find_files, file watching, quotas,
+# dependencies, profiling, the status reports)
+const E_JSON_ENCODE: i32 = 400
+const E_JSON_DECODE: i32 = 401
+const E_ASTAR_PATH: i32 = 402
+const E_FIND_FILES: i32 = 403
+const E_WATCH_PATH: i32 = 404
+const E_UNWATCH_PATH: i32 = 405
+const E_QUOTA_INFO: i32 = 406
+const E_QUOTA_REFRESH: i32 = 407
+const E_STALE_PROGRAMS: i32 = 408
+const E_DEPENDENTS: i32 = 409
+const E_FUNCTION_PROFILE: i32 = 410
+const E_PROFILE_START: i32 = 411
+const E_PROFILE_STOP: i32 = 412
+const E_PROFILE_REPORT: i32 = 413
+const E_CACHE_STATS: i32 = 414
+const E_MALLOC_STATUS: i32 = 415
+const E_MEMORY_SUMMARY: i32 = 416
 # --- M5: test hooks (900..), see test_efun_codes()
 const E_TEST_HB: i32 = 900
 const E_TEST_HB_ROUND: i32 = 901
@@ -294,6 +331,18 @@ const E_TEST_TEL_HANGUP: i32 = 914
 const E_TEST_TEL_TP: i32 = 915
 const E_TEST_TEL_CONNECT: i32 = 916
 const E_TEST_TEL_USER: i32 = 917
+# --- M7: socket test hooks (sockets.star)
+const E_TEST_SOCK_PUMP: i32 = 918
+const E_TEST_CONFIG: i32 = 919
+# --- M7: extension test hooks (ext.star)
+const E_TEST_WATCH_POLL: i32 = 920
+const E_TEST_RUN_CALL_OUT: i32 = 921
+const E_TEST_UTIME: i32 = 922
+const E_TEST_FORGET: i32 = 923
+const E_TEST_PROFILING: i32 = 924
+const E_TEST_WATCH_STATE: i32 = 925
+const E_TEST_PUT: i32 = 926
+const E_TEST_RMTREE: i32 = 927
 
 fn efun_codes() -> Map<str, i32>:
     let mut m: Map<str, i32> = Map<str, i32>()
@@ -553,6 +602,37 @@ fn efun_codes() -> Map<str, i32>:
     m.insert("ed_cmd", E_ED_CMD)
     m.insert("in_edit", E_IN_EDIT)
     m.insert("query_ed_mode", E_QUERY_ED_MODE)
+    m.insert("socket_create", E_SOCKET_CREATE)
+    m.insert("socket_bind", E_SOCKET_BIND)
+    m.insert("socket_listen", E_SOCKET_LISTEN)
+    m.insert("socket_accept", E_SOCKET_ACCEPT)
+    m.insert("socket_connect", E_SOCKET_CONNECT)
+    m.insert("socket_write", E_SOCKET_WRITE)
+    m.insert("socket_close", E_SOCKET_CLOSE)
+    m.insert("socket_release", E_SOCKET_RELEASE)
+    m.insert("socket_acquire", E_SOCKET_ACQUIRE)
+    m.insert("socket_error", E_SOCKET_ERROR)
+    m.insert("socket_address", E_SOCKET_ADDRESS)
+    m.insert("socket_status", E_SOCKET_STATUS)
+    m.insert("resolve", E_RESOLVE)
+    m.insert("dump_file_descriptors", E_DUMP_FILE_DESCRIPTORS)
+    m.insert("json_encode", E_JSON_ENCODE)
+    m.insert("json_decode", E_JSON_DECODE)
+    m.insert("astar_path", E_ASTAR_PATH)
+    m.insert("find_files", E_FIND_FILES)
+    m.insert("watch_path", E_WATCH_PATH)
+    m.insert("unwatch_path", E_UNWATCH_PATH)
+    m.insert("quota_info", E_QUOTA_INFO)
+    m.insert("quota_refresh", E_QUOTA_REFRESH)
+    m.insert("stale_programs", E_STALE_PROGRAMS)
+    m.insert("dependents", E_DEPENDENTS)
+    m.insert("function_profile", E_FUNCTION_PROFILE)
+    m.insert("profile_start", E_PROFILE_START)
+    m.insert("profile_stop", E_PROFILE_STOP)
+    m.insert("profile_report", E_PROFILE_REPORT)
+    m.insert("cache_stats", E_CACHE_STATS)
+    m.insert("malloc_status", E_MALLOC_STATUS)
+    m.insert("memory_summary", E_MEMORY_SUMMARY)
     m
 
 # Driver hooks for the case runner (`tools/run_cases.star` with `-hooks`,
@@ -580,4 +660,14 @@ fn test_efun_codes() -> Map<str, i32>:
     m.insert("test_tel_tp", E_TEST_TEL_TP)
     m.insert("test_tel_connect", E_TEST_TEL_CONNECT)
     m.insert("test_tel_user", E_TEST_TEL_USER)
+    m.insert("test_sock_pump", E_TEST_SOCK_PUMP)
+    m.insert("test_config", E_TEST_CONFIG)
+    m.insert("test_watch_poll", E_TEST_WATCH_POLL)
+    m.insert("test_run_call_out", E_TEST_RUN_CALL_OUT)
+    m.insert("test_utime", E_TEST_UTIME)
+    m.insert("test_forget", E_TEST_FORGET)
+    m.insert("test_profiling", E_TEST_PROFILING)
+    m.insert("test_watch_state", E_TEST_WATCH_STATE)
+    m.insert("test_put", E_TEST_PUT)
+    m.insert("test_rmtree", E_TEST_RMTREE)
     m

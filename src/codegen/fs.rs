@@ -1,6 +1,6 @@
 //! Filesystem and calendar builtins: `dir_list`, `path_kind`, `file_size`,
-//! `file_mtime`, `dir_create`, `dir_remove`, `file_remove`, `file_rename`
-//! and `local_time` -- thin wrappers over the C runtime, the same shape as
+//! `file_mtime`, `file_set_mtime`, `dir_create`, `dir_remove`, `file_remove`,
+//! `file_rename` and `local_time` -- thin wrappers over the C runtime, the same shape as
 //! `crate::codegen::file_io`/`crate::codegen::os`.
 //!
 //! Why builtins rather than `extern "C"` in user code: every one of these
@@ -28,6 +28,14 @@
 //! `MoveFileExA` with `MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED`),
 //! because the usual reason to rename is the atomic "write a temp file,
 //! move it over the old one" save.
+//!
+//! `file_set_mtime(path, t)` sets a file's modification (and access) time to
+//! `t` seconds since the epoch, through `_utime64`/`utime`, whose argument is
+//! the same 16-byte `{ actime, modtime }` pair of `i64`s on both C runtimes.
+//! It came later (`todo.md` HavokOS P1 #6): the LPMUD driver's
+//! `stale_programs()` treats a file stamped within a second of its compile as
+//! changed, so its tests have to age files the way the reference's own tests
+//! do with Pike's `System.utime`, and Star's FFI can't build the struct.
 //!
 //! `local_time(t)` is `[sec, min, hour, mday, mon (0-11), year (e.g. 2001),
 //! wday, yday, isdst, gmtoff]`, gmtoff in seconds east of UTC. Windows has
@@ -63,6 +71,7 @@ impl Codegen {
                 self.line("declare i32 @MoveFileExA(i8*, i8*, i32)");
                 self.line("declare i32 @_localtime64_s(i8*, i64*)");
                 self.line("declare i64 @_mkgmtime64(i8*)");
+                self.line("declare i32 @_utime64(i8*, i8*)");
             }
             Target::LinuxGnu => {
                 self.line("declare i8* @opendir(i8*)");
@@ -73,6 +82,7 @@ impl Codegen {
                 self.line("declare i32 @rmdir(i8*)");
                 self.line("declare i32 @rename(i8*, i8*)");
                 self.line("declare i8* @localtime_r(i64*, i8*)");
+                self.line("declare i32 @utime(i8*, i8*)");
             }
         }
         self.line("declare i32 @remove(i8*)");
@@ -191,6 +201,37 @@ impl Codegen {
         let r = self.tmp_name();
         self.line(&format!("  {} = select i1 {}, i64 {}, i64 -1", r, ok, v));
         format!("i64 {}", r)
+    }
+
+    /// `file_set_mtime(path, t) -> bool`: modification and access time both
+    /// set to `t`.
+    pub(super) fn emit_file_set_mtime(&mut self, args: &[TypedExpr]) -> String {
+        if args.len() < 2 {
+            self.err("file_set_mtime(..) expects 2 arguments", Span::dummy());
+            return "i1 false".into();
+        }
+        let path = self.emit_raw_str_ptr(&args[0]);
+        let tv = self.emit_expr(&args[1]);
+        let t = self.untag(&tv, &Ty::I64);
+        let buf = self.tmp_name();
+        self.line(&format!("  {} = alloca [2 x i64], align 8", buf));
+        for i in 0..2 {
+            let p = self.tmp_name();
+            self.line(&format!("  {} = getelementptr inbounds [2 x i64], [2 x i64]* {}, i64 0, i64 {}", p, buf, i));
+            self.line(&format!("  store i64 {}, i64* {}", t, p));
+        }
+        let bufp = self.tmp_name();
+        self.line(&format!("  {} = bitcast [2 x i64]* {} to i8*", bufp, buf));
+        let func = match self.target {
+            Target::WindowsGnu => "_utime64",
+            Target::LinuxGnu => "utime",
+        };
+        let r = self.tmp_name();
+        self.line(&format!("  {} = call i32 @{}(i8* {}, i8* {})", r, func, path, bufp));
+        self.line(&format!("  call void @star_rc_release(i8* {})", path));
+        let ok = self.tmp_name();
+        self.line(&format!("  {} = icmp eq i32 {}, 0", ok, r));
+        format!("i1 {}", ok)
     }
 
     /// `dir_create`/`dir_remove`/`file_remove(path) -> bool`.

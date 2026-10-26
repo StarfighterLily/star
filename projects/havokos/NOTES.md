@@ -45,7 +45,9 @@ virtual machine**:
 | `havok/parser.pike` (the verb parser) | `verbparse.star` (registry) + `verbmatch.star` (parse_sentence()), data in `vpdata.star` (M6) |
 | `havok/boot.pike` and the Pike backend's event loop | `boot.star` + `config.star`: boot, then an explicit wait/read/timers/write loop (M6) |
 | `havok/ed.pike` (the line editor) and its efun glue | `ed.star` (the engine and efuns, on the Vm), session state in `eddata.star` (M7) |
-| `sockets.pike`, `http.pike`, `tls.pike` | later phases (see roadmap) |
+| `havok/sockets.pike` (LPC sockets) and `efuns.pike` resolve() | `sockets.star` (on `sockdata.star`'s LSock), polled by `net.star` net_poll(); the OS side is the compiler's (`src/codegen/net_sock.rs`, M7) |
+| `havok/efuns.pike`'s HavokOS-only extensions (JSON, astar_path, find_files, watching, quotas, dependencies, profiling, status reports) and their `driver.pike`/`compiler.pike` machinery | `json.star`, and `ext.star` with its rows in `extdata.star` (M7) |
+| `http.pike`, `tls.pike`, `sqldb.pike` | later (see roadmap) |
 
 Up to and including the parser, the port can follow the Pike code closely.
 From the compiler on, the Pike files still define the *semantics* (what each
@@ -247,9 +249,12 @@ Pike driver before it's marked done.
   It turned out to need the verb parser too (every Dead Souls object calls
   parse_init(), and entering the game runs verbs), so the parser moved
   here from M7. Done 2026-10-25, see the log.
-- **M7: the rest.** `ed` (done 2026-10-25, see the log), then the socket
-  efuns, HTTP/TLS, MCCP, and the other efuns the boot test still stubs
-  (`tests/fixtures/ds39_boot_stubs.txt`).
+- **M7: the rest.** `ed` and the LPC socket efuns (both done 2026-10-25),
+  the HavokOS-only extensions that need no outside library (done
+  2026-10-26; see the log), then HTTP/TLS, MCCP, SQLite (`db_*`, the last
+  stubs in `tests/fixtures/ds39_boot_stubs.txt` with `http_respond`), and LPC
+  buffers (`read_buffer()`, which Dead Souls' own HTTP server needs and
+  neither driver has).
 
 ## Files
 
@@ -314,6 +319,13 @@ Pike driver before it's marked done.
 | `eddata.star` | `EdSession`: one line editor session's state (`Vm.eds`, addressed from `ObjSlot.ed`) |
 | `ed.star` | the line editor (M7): `ed.pike`'s engine method for method, EdIO's file access through the master, ed_start()/ed_cmd()/query_ed_mode()/in_edit() (codes 370-379), the buffer rescue on destruct |
 | `tools/gen_m7_cases.py` | generates `m7_cases.txt` (the reference's `ed_tests()` verbatim, and this port's editor edge cases) |
+| `sockdata.star` | `LSock`: one LPC socket's state (`Vm.socks`, one row per socket number ever handed out), and `PendingResolve` |
+| `sockets.star` | the LPC socket efuns (codes 380-399): `sockets.pike` method for method, resolve(), dump_file_descriptors(), the events net_poll() hands over (sock_ready()), closing on destruct, the test_sock_pump()/test_config() hooks |
+| `tools/gen_m7_sock_cases.py` | generates `m7_sock_cases.txt` (streams, MUD mode, datagrams, release/acquire, failing connects, resolve(), over loopback) |
+| `json.star` | json_encode()/json_decode() (codes 400-401): Pike's Standards.JSON as the reference uses it, its layout, leniencies and error positions |
+| `extdata.star` | the extensions' rows: `PendingFind`, `WatchDir`/`Watcher`, `QuotaUse`/`QuotaLimits`, `DepEntry`, `ProfRec`/`SampleRec` |
+| `ext.star` | the other HavokOS-only extensions (codes 402-416): astar_path(), find_files() (answered from net_poll()), file watching (driver_tick()), resource quotas (hooked into cloning, call_outs and heart beats), stale_programs()/dependents() (stamps and stats recorded by vm.star compile_tokens()), function_profile() and the sampling profiler (frame entry/return and the evaluation-limit tick), cache_stats()/malloc_status()/memory_summary(), and the hooks their cases need (920-927) |
+| `tools/gen_m7_ext_cases.py` | generates `m7_ext_cases.txt` (the reference's own extension tests ported through the hooks, JSON edge cases, larger A* mazes) |
 
 Build the tools with the **release** compiler (`target/release/star.exe
 build ...`), and since M6 every tool that imports the efuns or the network
@@ -437,6 +449,56 @@ synchronously through a renamed temp file), and its HavokOS-only
 extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
 `astar_path`, quotas), which DS3.9 doesn't call.
 
+16. **The two TLS socket modes can be created but not used** (`sockets.star`).
+    `STREAM_TLS`/`STREAM_TLS_BINARY` sockets (the reference's additions)
+    are made, but socket_listen() on one is EELISTEN, the reference's answer
+    when it has no certificate, and socket_connect() EECONNECT: there is no
+    TLS in this driver yet. Dead Souls never asks for them.
+17. **Names resolve through the system resolver, to IPv4** (`sockets.star`).
+    resolve() calls the compiler's blocking `host_lookup()` (the reference
+    uses Pike's asynchronous DNS client), and answers a numeric address
+    with itself as the name instead of making a reverse lookup, which on
+    Windows blocks for about five seconds when it fails (the reference
+    answers 127.0.0.1 with the local network's reverse name). Connecting by
+    name is IPv4 only: the reference tries `localhost` as ::1 first, so its
+    connect to an IPv4 listener there is refused. Dead Souls resolves and
+    connects only to its intermud routers' and web hosts' names; a name that
+    doesn't resolve fails as on the reference (EECONNECT, left CONNECTING).
+    Also, from #7: a stream read or datagram holding a NUL byte reaches LPC
+    cut short at it.
+
+18. **json_decode() stays in bytes** (`json.star`). The reference decodes
+    UTF-8 text to a Pike wide string before parsing, and its strings come
+    out wide. Here text that is valid UTF-8 with nothing above U+00FF is
+    decoded to its Latin-1 bytes, which is exactly the reference's answer;
+    text holding anything above U+00FF is parsed as the bytes it is (its
+    strings stay UTF-8, error positions count bytes), and a `\u` escape above
+    U+00FF becomes UTF-8. This is deviation #14 again, for JSON; `\u0000`
+    cuts a string short (#7), and integers past 64 bits wrap (#6).
+19. **The status reports carry this driver's own numbers** (`ext.star`).
+    cache_stats() keeps the reference's heading and line order, but there is
+    no function lookup cache to count (calls resolve through per-program
+    dispatch tables built at compile time) and no disk cache of programs;
+    malloc_status() heads its table with the process's resident memory
+    (`process_memory()`; the reference reports its Pike heap) and estimates
+    each value table's size from what it holds, since Star has no allocator
+    to ask; memory_info() is that resident memory too. Dead Souls only
+    prints these.
+20. **find_files() crawls at the call** (`ext.star`). The reference crawls
+    in a thread and answers by call_out; Star has no threads the VM could
+    share, so the directory walk runs inside the efun and only the answer
+    waits for the driver's next pass, which keeps the callback out of the
+    caller's evaluation as the reference does. A crawl of the whole mudlib
+    holds up the driver for as long as it takes. There is no save store
+    (`havok save store`, off by default in the reference), so stored saves
+    are never merged in.
+21. **Profiling needs no recompile, and counts every efun call**
+    (`ext.star`). With `havok profiling` the reference instruments the code
+    it emits, so only programs compiled after it was turned on are profiled
+    and only their efun calls are counted for opcprof(); here the
+    interpreter's frame entry and return do it, so every named function
+    called while it is on is profiled and every efun call counted.
+
 ## Star compiler bugs found
 
 1. **`print`/`println` of a non-f-string `str` used it as the `printf`
@@ -530,6 +592,42 @@ extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
    result the same way. Each site now saves and restores the label beside
    `ir`; regression tests in `tests/frontend_out_of_line_current_label.rs`
    (the list and closure cases fail on the old compiler).
+
+10. **Float `!=` was ordered** (fixed, P1 #6). `!=` on `f32`/`f64` lowered
+    to LLVM's `fcmp one`, false when either side is NaN, so `nan != nan`
+    was false and the `x != x` NaN test never fired. `fmt_float()` tests
+    `v != v` for NaN and `x - x != 0.0` for infinity, so printing an infinite
+    float looped forever: `json_decode("1e400")`, or any LPC float overflow
+    that got printed, hung the whole driver. Fixed in
+    `src/codegen/vector_math.rs` (`fcmp une`); regression tests
+    `tests/frontend_float_ne_nan.rs`, all five failing on the old compiler.
+11. **A parameter spelled like a temporary broke the build** (fixed, P1
+    #6). Parameters reached the IR under their own names (`i64 %t0`), and
+    temporaries are `%t<N>`, so `fn sample_compile(mut self, t0: i64)`
+    defined `%t0` twice and clang rejected the module. Parameters are now
+    `%arg.<name>` (`src/codegen/stmt.rs`); regression tests
+    `tests/frontend_param_temp_names.rs`, and six existing IR-shape tests
+    updated to the new spelling.
+
+New compiler surface in P1 #6 (the HavokOS-only extensions), not bugs:
+`file_set_mtime(path, t)` in `src/codegen/fs.rs` (the dependency cases age
+files as the reference's tests do with `System.utime`; `_utime64`/`utime`
+take a struct) and `process_memory()` in `src/codegen/procmem.rs` (resident
+bytes, for memory_info() and malloc_status(); Windows answers through a
+struct out-parameter). Tested by `tests/frontend_fs.rs` and
+`tests/frontend_process_memory.rs`; Linux arms IR/object-verified only
+(`docs/cross_platform_scope.md`).
+
+New compiler surface in M7 (the LPC sockets), not bugs:
+`src/codegen/net_sock.rs` -- `tcp_listen_at` (a chosen address),
+`tcp_connect_start` and `tcp_sock_error` (a connect that doesn't block the
+driver, its outcome from write readiness and `SO_ERROR`), `tcp_wait_io`
+(`tcp_wait` with per-handle read/write interest, the same poll body),
+`tcp_local_ip`/`tcp_peer_port` (both ends' addresses), `udp_open`/
+`udp_send_to`/`udp_recv_from` (datagrams, each received one behind a 6-byte
+sender header since a builtin can't return a pair) and `host_lookup`
+(`gethostbyname`). Tested by `tests/frontend_net_sock.rs`; Linux arm
+IR/object-verified only (`docs/cross_platform_scope.md`).
 
 New compiler surface in M6, not bugs: the server-socket builtins
 (`tcp_listen`, `tcp_accept`, `tcp_wait`, `tcp_recv_bytes`,
@@ -964,3 +1062,129 @@ soak collecting on every tick has only the socket efuns' 7 errors.
 
 **Next: the rest of M7** (the socket efuns, HTTP/TLS, MCCP, the remaining 36
 stubs).
+
+### 2026-10-25: M7 part 2, the LPC sockets
+
+**Socket efuns done.** `sockets.star` ports `havok/sockets.pike` method for
+method (FluffOS PACKAGE_SOCKETS: MUD, STREAM, DATAGRAM and the binary modes),
+with its efun glue: socket_create/bind/listen/accept/connect/write/close/
+release/acquire/error/address/status, resolve(), dump_file_descriptors(),
+`valid_socket()` on the master, sockets closing when their owner is
+destructed, and the reference's `havok outbound sockets` gate (off unless the
+config says 1, so a test boot never dials the real intermud routers). Every
+return code, text and callback order is the reference's. Checked against the
+live Pike driver three ways:
+- **24 cases of this port's own** over loopback (`m7_sock_cases.txt`,
+  generated by `tools/gen_m7_sock_cases.py`, through two new hooks both
+  runners give: `test_sock_pump(ob, fn)` runs network passes until
+  `ob->fn()` is true, run_tests.pike's pump_until(); `test_config()` sets a
+  config value). They cover every socket_error() text, every mode's
+  socket_status() row, the state machine's errors, ownership and
+  EESECURITY, stream connect/echo/close with name and function-pointer
+  callbacks, int arrays and empty writes, 16 MB through one write, a
+  stalled peer (EECALLBACK, EEALREADY, the write callback once it drains),
+  callback errors reported without breaking the socket, destructing either
+  end, release/acquire, get_garbage() keeping a socket's owner, MUD-mode
+  values both ways and frames split or undecodable from a stream peer,
+  datagrams (NUL terminator handling, addressing errors, a bound address,
+  an unbound sender), refused, failing and unresolvable connects, and
+  resolve(). The reference's own run_tests.pike only tests the TLS modes.
+  The cases stay clear of what the two drivers can't agree on: ephemeral
+  ports, TLS, connecting by name, reverse lookups, NUL bytes, and objects in
+  results (the runners render them differently).
+- **The DS3.9 boot** with the 13 socket efuns, resolve() and
+  dump_file_descriptors() off the stub list (36 became 22, all HavokOS-only
+  extensions plus malloc_status): the reference's boot report changed in
+  one line, /secure/daemon/resolv now keeps its heart beat (its create()
+  used to fail on the stubbed resolve()), and the Star boot matches it. The
+  parser-transcript and login fixtures were re-recorded on the reference
+  with the shorter list and are unchanged under their tests' normalization,
+  and the Star driver still matches them.
+- **Dead Souls' own servers**: its inet daemon listens (HTTP, FTP, HFTP,
+  OOB), and a request to its HTTP port reaches `server.c` and `http.c` on
+  both drivers, which then fail identically on `read_buffer()`, an LPC
+  buffer efun neither driver has (now in todo.md).
+
+A 60 s soak of the booted mudlib collecting on every tick now has no runtime
+errors at all (the 7 it had were the socket efuns); Dead Souls' outbound
+connects are refused by the gate, as on the reference.
+
+The OS side needed new compiler builtins (`src/codegen/net_sock.rs`, see
+"New compiler surface in M7"): Star could listen and accept, but not connect
+without blocking the driver, wait for write readiness, use UDP, or read a
+socket's own address. Design decisions, each explained at its point in the
+code:
+- **One poll for everything.** net_poll() hands every open LPC socket to the
+  same tcp_wait_io() as the telnet listeners and connections, with the
+  interest the reference's callbacks imply (write only while a connect is
+  under way or output is queued), so the driver still sleeps in the kernel
+  between events. Work left for the next pass (resolve() answers, a connect
+  the OS refused at once) makes the wait zero.
+- **Socket numbers are never reused**, as in the reference (socket_status()
+  lists every one ever handed out), so `Vm.socks` is indexed by them.
+- **A stream read drains what has arrived** (up to 1 MB a pass), as a Pike
+  read callback does; reading one 16 KB chunk a pass made a stalled peer's
+  4 MB take 256 passes, which the stalled-peer case caught.
+
+Two new deliberate deviations (#16 the TLS modes, #17 the system resolver and
+IPv4). No Star compiler bugs this round.
+
+**Next: the rest of M7** (HTTP and TLS ports, MCCP, LPC buffers, the
+HavokOS-only efuns).
+
+### 2026-10-26: M7 part 3, the HavokOS-only extensions
+
+**17 of the 22 remaining stubs done.** Every HavokOS-only extension efun the
+boot still stubbed that needs no outside library: json_encode() and
+json_decode() (`json.star`), astar_path(), find_files(), watch_path() and
+unwatch_path(), quota_info() and quota_refresh() with the quotas themselves,
+stale_programs() and dependents(), function_profile(), profile_start(),
+profile_stop() and profile_report(), cache_stats(), malloc_status() and
+memory_summary() (`ext.star`). What's left is db_open/db_query/db_info/
+db_close (SQLite) and http_respond() (the HTTP ports). Checked against the
+live Pike driver three ways:
+- **The reference's own tests of them** (`pike/tests/run_tests.pike`):
+  its json, astar and status checks are LPC and are copied; its watch,
+  find_files, quota, dependency and profiling tests drive the driver from
+  Pike, so they're ported one case per `expect` through eight new hooks both
+  runners give (`test_watch_poll()`, `test_watch_state()`,
+  `test_run_call_out()`, `test_utime()`, `test_forget()`,
+  `test_profiling()`, `test_put()`, `test_rmtree()`), and the sampled work
+  runs through M5's `test_limited()`, since the sample clock only runs
+  inside top-level evaluations and a case body isn't one.
+- **99 cases in all** (`m7_ext_cases.txt`, generated by
+  `tools/gen_m7_ext_cases.py`), including about 40 JSON edge cases probed
+  against Pike's Standards.JSON first (its pretty-printer keeps a
+  one-element array on one line; its decoder takes trailing commas and a
+  leading point, and reports the first character it can't take, or a
+  string's opening quote when the text ends inside it), and A* mazes whose
+  whole node tables (parents, g, h, f) and heap high-water marks match.
+  Stable over 5 runs on each side.
+- **The DS3.9 boot** with the 17 off the stub list (22 -> 5): the
+  reference's report is unchanged, and so is the Star boot's. The
+  parser-transcript, login and compile-sweep tests still pass.
+
+Design decisions, each explained at its point in the code:
+- **Stamps are token hashes.** The reference stamps a program with a hash of
+  the Pike source it generated; here it's an FNV hash of the preprocessed
+  token stream and the inherits' stamps, so recompiling unchanged code keeps
+  the stamp and a comment-only edit doesn't change it. Each compile also
+  records its source's and includes' (mtime, size); those stats are
+  remembered for up to a second, which took the compile sweep from 35 s
+  (unmemoized) back to 23 s, and can only make stale_programs() err towards
+  "stale". The memo is dropped whenever the driver touches a file.
+- **Quotas count where the reference counts**: the group is asked per base
+  name when an object registers, clones are checked before creation and
+  counted after, call_outs on creation (a refused one still uses up its
+  handle) and released on every removal path, and call_out and heart beat
+  wall time is charged per minute.
+- **Profiling is the interpreter's**: frame entry opens a record, return or
+  unwinding closes it and adds its time to the nearest profiled caller's
+  callee time; the sampling profiler samples at the evaluation-limit tick,
+  the reference's own place, and pauses between evaluations.
+
+Getting there found two Star compiler bugs, both fixed (#10 float `!=`, #11
+parameter names), and needed two new builtins (`file_set_mtime()`,
+`process_memory()`). Four new deliberate deviations (#18-#21).
+
+**Next: the rest of M7** (HTTP/TLS, MCCP, SQLite, LPC buffers).

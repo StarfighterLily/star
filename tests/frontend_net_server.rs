@@ -100,7 +100,7 @@ fn codegen_declares_server_externs_only_on_use() {
     let module = Driver::parse("fn bind(x: i32) -> i32:\n    x + 1\nfn main():\n    println(f\"{bind(1)}\")\n").expect("should parse");
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
-    assert!(ir.contains("define i32 @bind(i32 %x)"), "{}", ir);
+    assert!(ir.contains("define i32 @bind(i32 %arg.x)"), "{}", ir);
     for name in ["@bind(i8*", "@listen(", "@accept(", "@WSAPoll(", "@getpeername("] {
         assert!(!ir.contains(&format!("declare i32 {}", name)) && !ir.contains(&format!("declare i8* {}", name)), "{} declared without use", name);
     }

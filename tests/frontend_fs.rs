@@ -1,6 +1,6 @@
 //! Filesystem and calendar builtins (`crate::codegen::fs`): `dir_list`,
-//! `path_kind`, `file_size`, `file_mtime`, `dir_create`, `dir_remove`,
-//! `file_remove`, `file_rename` and `local_time`.
+//! `path_kind`, `file_size`, `file_mtime`, `file_set_mtime`, `dir_create`,
+//! `dir_remove`, `file_remove`, `file_rename` and `local_time`.
 //!
 //! Added for the `projects/havokos` LPMUD driver's file and time efuns
 //! (`todo.md` HavokOS M4), which Star's FFI couldn't reach: every one of
@@ -34,6 +34,7 @@ fn typecheck_fs_builtin_result_types() {
     assert_eq!(typed_fn_result_ty("fn f() -> i64:\n    file_size(\"x\")\n"), Ty::I64);
     assert_eq!(typed_fn_result_ty("fn f() -> i64:\n    file_mtime(\"x\")\n"), Ty::I64);
     assert_eq!(typed_fn_result_ty("fn f() -> bool:\n    file_rename(\"a\", \"b\")\n"), Ty::Bool);
+    assert_eq!(typed_fn_result_ty("fn f() -> bool:\n    file_set_mtime(\"a\", 0 as i64)\n"), Ty::Bool);
     assert_eq!(typed_fn_result_ty("fn f() -> List<i64>:\n    local_time(0 as i64)\n"), Ty::List(Box::new(Ty::I64)));
 }
 
@@ -44,6 +45,8 @@ fn rejects_non_str_path_and_non_i64_time() {
         "fn main():\n    let k = path_kind(5)\n",
         "fn main():\n    let ok = file_rename(\"a\", 3)\n",
         "fn main():\n    let t = local_time(5)\n",
+        "fn main():\n    let ok = file_set_mtime(\"a\", 5)\n",
+        "fn main():\n    let ok = file_set_mtime(5, 0 as i64)\n",
     ] {
         let module = Driver::parse(src).expect("should parse");
         let diags = Driver::check(&module).expect_err("should fail to type-check");
@@ -160,6 +163,42 @@ fn runtime_file_mtime_end_to_end() {
         p = p
     );
     assert_eq!(run_ok("fs_mtime", &src), "true -1\n");
+}
+
+/// `file_set_mtime` moves a file's modification time back (read back by
+/// `file_mtime` and by Rust), and fails on a missing path.
+#[test]
+fn runtime_file_set_mtime_end_to_end() {
+    let p = scratch_file_path("star_fs_set_mtime.txt");
+    let _ = std::fs::remove_file(&p);
+    let src = format!(
+        concat!(
+            "fn main() -> i32:\n",
+            "    let p = \"{p}\"\n",
+            "    let f = file_open(p, \"wb\")\n",
+            "    file_close(f)\n",
+            "    let t = (1600000000 as i64)\n",
+            "    let ok = file_set_mtime(p, t)\n",
+            "    let missing = file_set_mtime(concat(p, \".none\"), t)\n",
+            "    println(f\"{{ok}} {{file_mtime(p)}} {{missing}}\")\n",
+            "    0\n",
+        ),
+        p = p
+    );
+    assert_eq!(run_ok("fs_set_mtime", &src), "true 1600000000 false\n");
+    let m = std::fs::metadata(&p).expect("file should exist").modified().expect("mtime");
+    let secs = m.duration_since(std::time::UNIX_EPOCH).expect("after epoch").as_secs();
+    assert_eq!(secs, 1600000000);
+    let _ = std::fs::remove_file(&p);
+}
+
+/// An extern redeclaring `_utime64` (what `file_set_mtime` calls on Windows) gets the internal-symbol diagnostic.
+#[test]
+fn rejects_extern_redeclaring_utime_symbol() {
+    let src = "extern \"C\" fn _utime64(p: str, b: ptr) -> i32\nfn main():\n    let r = 0\n";
+    let module = Driver::parse(src).expect("should parse");
+    let diags = Driver::check(&module).expect_err("should fail to type-check");
+    assert!(diags.iter().any(|d| d.message.contains("declares internally")), "{:?}", diags);
 }
 
 /// `local_time` agrees with Rust's own view of this machine's UTC offset and gives the right calendar fields.

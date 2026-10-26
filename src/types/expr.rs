@@ -2720,7 +2720,17 @@ impl Checker {
                     }
                 }
             }
-            "clock_ms" | "clock_us" => {
+            "file_set_mtime" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Str) {
+                        self.error(format!("`file_set_mtime` argument 1 expected `str`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::I64) {
+                        self.error(format!("`file_set_mtime` argument 2 expected `i64`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "clock_ms" | "clock_us" | "process_memory" => {
                 arity_ok(0, self);
             }
             "local_time" => {
@@ -2812,7 +2822,52 @@ impl Checker {
             "host_name" => {
                 arity_ok(0, self);
             }
-            "tcp_accept" | "tcp_recv_bytes" | "tcp_peer_ip" | "tcp_local_port" => {
+            "tcp_listen_at" | "tcp_connect_start" | "udp_open" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Str) {
+                        self.error(format!("`{}` argument 1 expected `str`, found `{:?}`", name, arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Int) {
+                        self.error(format!("`{}` argument 2 expected `int`, found `{:?}`", name, arg_tys[1]), span);
+                    }
+                }
+            }
+            "host_lookup" => {
+                if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Str) {
+                    self.error(format!("`host_lookup` expects a `str` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "tcp_wait_io" => {
+                if arity_ok(3, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::List(Box::new(Ty::Ptr))) {
+                        self.error(format!("`tcp_wait_io` argument 1 expected `List<ptr>`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Bytes) {
+                        self.error(format!("`tcp_wait_io` argument 2 expected `Bytes`, found `{:?}`", arg_tys[1]), span);
+                    }
+                    if !tys_eq(&arg_tys[2], &Ty::Int) {
+                        self.error(format!("`tcp_wait_io` argument 3 expected `int`, found `{:?}`", arg_tys[2]), span);
+                    }
+                }
+            }
+            "udp_send_to" => {
+                if arity_ok(4, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`udp_send_to` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Str) {
+                        self.error(format!("`udp_send_to` argument 2 expected `str`, found `{:?}`", arg_tys[1]), span);
+                    }
+                    if !tys_eq(&arg_tys[2], &Ty::Int) {
+                        self.error(format!("`udp_send_to` argument 3 expected `int`, found `{:?}`", arg_tys[2]), span);
+                    }
+                    if !tys_eq(&arg_tys[3], &Ty::Bytes) {
+                        self.error(format!("`udp_send_to` argument 4 expected `Bytes`, found `{:?}`", arg_tys[3]), span);
+                    }
+                }
+            }
+            "tcp_accept" | "tcp_recv_bytes" | "tcp_peer_ip" | "tcp_local_port" | "tcp_sock_error" | "tcp_local_ip"
+            | "tcp_peer_port" | "udp_recv_from" => {
                 if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Ptr) {
                     self.error(format!("`{}` expects a `ptr` argument, found `{:?}`", name, arg_tys[0]), span);
                 }

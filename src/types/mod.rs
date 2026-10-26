@@ -965,10 +965,13 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "dir_list" => Some(Ty::List(Box::new(Ty::Str))),
         "path_kind" => Some(Ty::Int),
         "file_size" | "file_mtime" => Some(Ty::I64),
-        "dir_create" | "dir_remove" | "file_remove" | "file_rename" => Some(Ty::Bool),
+        "dir_create" | "dir_remove" | "file_remove" | "file_rename" | "file_set_mtime" => Some(Ty::Bool),
         "local_time" => Some(Ty::List(Box::new(Ty::I64))),
         // Monotonic milliseconds -- see `crate::codegen::clock`.
         "clock_ms" | "clock_us" => Some(Ty::I64),
+        // Resident bytes of this process, -1 unknown -- see
+        // `crate::codegen::procmem`.
+        "process_memory" => Some(Ty::I64),
         // Minimal OS surface (todo.md #2) -- see `crate::codegen::list::emit_args`
         // and `crate::codegen::os`. `args()` includes `argv[0]` (the program
         // path/name), same convention the underlying OS argv itself uses.
@@ -1001,6 +1004,13 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "tcp_wait" | "tcp_recv_bytes" => Some(Ty::Bytes),
         "tcp_send_bytes" | "tcp_local_port" => Some(Ty::Int),
         "tcp_peer_ip" | "host_name" => Some(Ty::Str),
+        // Event-loop sockets -- see `crate::codegen::net_sock`. The handle
+        // makers are null on failure; `tcp_wait_io`/`udp_recv_from` give
+        // readiness bytes / a sender-prefixed datagram.
+        "tcp_listen_at" | "tcp_connect_start" | "udp_open" => Some(Ty::Ptr),
+        "tcp_wait_io" | "udp_recv_from" => Some(Ty::Bytes),
+        "tcp_sock_error" | "tcp_peer_port" | "udp_send_to" => Some(Ty::Int),
+        "tcp_local_ip" | "host_lookup" => Some(Ty::Str),
         // `docs/design.md`'s "Math and geometry" section -- see
         // `crate::codegen::geometry` for each function's lowering.
         // `quat_identity` takes no argument (the identity rotation);
@@ -1535,9 +1545,11 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     "SDL_CreateTexture", "SDL_UpdateTexture", "SDL_SetTextureBlendMode",
     "SDL_SetTextureColorMod", "SDL_SetTextureAlphaMod", "SDL_RenderCopy", "SDL_DestroyTexture",
     // `crate::codegen::fs`
-    "_findfirst64", "_findnext64", "_findclose", "_stat64", "_mkdir", "_rmdir", "MoveFileExA", "_localtime64_s", "_mkgmtime64", "opendir", "readdir", "closedir", "stat", "mkdir", "rmdir", "rename", "localtime_r", "remove",
+    "_findfirst64", "_findnext64", "_findclose", "_stat64", "_mkdir", "_rmdir", "MoveFileExA", "_localtime64_s", "_mkgmtime64", "_utime64", "opendir", "readdir", "closedir", "stat", "mkdir", "rmdir", "rename", "localtime_r", "utime", "remove",
     // `clock_ms` builtin -- see `crate::codegen::clock`.
     "GetTickCount64", "clock_gettime", "QueryPerformanceCounter", "QueryPerformanceFrequency",
+    // `process_memory` builtin -- see `crate::codegen::procmem`.
+    "K32GetProcessMemoryInfo", "fscanf",
 ];
 
 /// The error type for type checking.

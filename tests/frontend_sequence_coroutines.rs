@@ -115,7 +115,7 @@ fn codegen_sequence_uses_state_machine() {
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
     assert!(ir.contains("%Countdown = type"), "{}", ir);
-    assert!(ir.contains("define i1 @Countdown__resume(%Countdown* %self)"), "{}", ir);
+    assert!(ir.contains("define i1 @Countdown__resume(%Countdown* %arg.self)"), "{}", ir);
     assert!(ir.contains("icmp eq i32"), "state comparison should appear: {}", ir);
     assert!(ir.matches("ret i1").count() >= 2, "each segment should be able to return a bool: {}", ir);
 }

@@ -723,9 +723,14 @@ impl vm::Vm:
             return val::Value::Str(f"HavokOS: {n} objects, {self.callouts.len()} call_outs, {hb} heart beats\n")
         if code == et::E_MEMORY_INFO:
             # per object there is no cheap measure (as in the reference, which
-            # gives a nominal 1024); the whole driver: heap slots in use
+            # gives a nominal 1024); the whole driver: the process's resident
+            # bytes (process_memory(), P1 #6; it was heap slots in use times
+            # 64 until then)
             if args.len() >= 1:
                 return val::Value::Int(1024 as i64)
+            let m = process_memory()
+            if m >= (0 as i64):
+                return val::Value::Int(m)
             return val::Value::Int((self.heap_live() as i64) * (64 as i64))
         if code == et::E_DEBUG_INFO:
             return val::Value::Str("")
@@ -758,8 +763,9 @@ impl vm::Vm:
 
     # opcprof([file]): efun call counts to <file>.efun (default /OPCPROF),
     # one "name<padding>: count" line per efun, and an empty <file>.eoper.
-    # Like the reference without `havok profiling`, every count is 0, but
-    # the list is right: Dead Souls's master reads it for efuns() and
+    # The counts are the calls made while `havok profiling` was on (ext.star,
+    # P1 #6), so without it every count is 0, as in the reference, but the
+    # list is right: Dead Souls's master reads it for efuns() and
     # efun_exists(). It lists the reference's efuns, the names this driver
     # compiles as efun calls.
     fn efun_opcprof(mut self, args: List<val::Value>, self_ob: i32) -> val::Value:
@@ -772,7 +778,10 @@ impl vm::Vm:
         let names = self.sorted_ref_efuns()
         let mut b: Bytes = Bytes()
         for i in 0..names.len():
-            let line = bytes_from_str(self.lpc_sprintf("%-30s: %10d\n", [val::Value::Str(names[i]), val::Value::Int(0 as i64)]))
+            let mut n = 0 as i64
+            if let Option::Some(x) = self.efun_counts.get(names[i]):
+                n = x
+            let line = bytes_from_str(self.lpc_sprintf("%-30s: %10d\n", [val::Value::Str(names[i]), val::Value::Int(n)]))
             for j in 0..line.len():
                 b.push(line[j])
         let one = val::Value::Int(1 as i64)
@@ -830,6 +839,10 @@ impl vm::Vm:
     # The case runner's driver hooks (efun_table.star test_efun_codes()).
     fn efun_test(mut self, code: i32, args: List<val::Value>, self_ob: i32) -> val::Value:
         let zero = val::Value::Int(0 as i64)
+        if code >= et::E_TEST_WATCH_POLL:
+            return self.efun_ext_test(code, args, self_ob)
+        if code >= et::E_TEST_SOCK_PUMP:
+            return self.efun_sock_test(code, args, self_ob)
         if code >= et::E_TEST_TEL_OPEN:
             return self.efun_tel_test(code, args, self_ob)
         if code == et::E_TEST_HB:
@@ -897,7 +910,7 @@ impl vm::Vm:
     # real boot).
     fn add_test_efuns(mut self):
         let t = et::test_efun_codes()
-        let names = ["test_hb", "test_hb_round", "test_callouts", "test_reset_cfg", "test_set_reset_time", "test_set_last_used", "test_reset_time", "test_no_clean_up", "test_sweep", "test_limited", "test_eval_state", "test_tel_open", "test_tel_say", "test_tel_drain", "test_tel_hangup", "test_tel_tp", "test_tel_connect", "test_tel_user"]
+        let names = ["test_hb", "test_hb_round", "test_callouts", "test_reset_cfg", "test_set_reset_time", "test_set_last_used", "test_reset_time", "test_no_clean_up", "test_sweep", "test_limited", "test_eval_state", "test_tel_open", "test_tel_say", "test_tel_drain", "test_tel_hangup", "test_tel_tp", "test_tel_connect", "test_tel_user", "test_sock_pump", "test_config", "test_watch_poll", "test_run_call_out", "test_utime", "test_forget", "test_profiling", "test_watch_state", "test_put", "test_rmtree"]
         for i in 0..names.len():
             if let Option::Some(c) = t.get(names[i]):
                 self.efun_codes.insert(names[i], c)

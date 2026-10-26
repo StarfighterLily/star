@@ -111,7 +111,7 @@ fn codegen_large_struct_param_passed_by_pointer_with_memcpy_copy_in() {
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
     assert!(
-        ir.contains("define i32 @touch(%Big* %b)"),
+        ir.contains("define i32 @touch(%Big* %arg.b)"),
         "expected a pointer-typed parameter, not by-value: {}",
         ir
     );
@@ -133,7 +133,7 @@ fn codegen_large_array_param_and_return_use_pointers_not_by_value() {
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
     assert!(
-        ir.contains("define void @touch([1000000 x i8]* %a, [1000000 x i8]* %.sret)"),
+        ir.contains("define void @touch([1000000 x i8]* %arg.a, [1000000 x i8]* %.sret)"),
         "expected both the parameter and the hidden return slot to be pointer-typed: {}",
         ir
     );
