@@ -778,6 +778,8 @@ impl Codegen {
                     Some("null_ptr") => self.emit_null_ptr(),
                     Some("is_null") => self.emit_is_null(args),
                     Some("ptr_to_str") => self.emit_ptr_to_str(args),
+                    Some("ptr_to_bytes") => self.emit_ptr_to_bytes(args),
+                    Some("ptr_write_bytes") => self.emit_ptr_write_bytes(args),
                     Some("file_open") => self.emit_file_open(args),
                     Some("file_close") => { self.emit_file_close(args); "%undef".into() }
                     Some("file_read") => self.emit_file_read(args),

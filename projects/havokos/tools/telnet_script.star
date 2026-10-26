@@ -23,9 +23,18 @@
 # however it likes (the reference writes a prompt's IAC GA separately, for
 # instance), and a send is placed by content, not by when it happened.
 #
+# MCCP (todo.md HavokOS P1 #8): once the driver sends IAC SB COMPRESS2 IAC
+# SE (after a script's `raw ~ff~fd~56`), everything after it is one zlib
+# stream, and the transcript shows it inflated (`zlib.star`), so it reads
+# as an uncompressed session would; the two drivers compress differently,
+# and what a client inflates is what must match. The stream is taken to
+# last until the connection closes (the drivers end it only on DONT or
+# when closing).
+#
 # Build: star build projects/havokos/tools/telnet_script.star -o projects/havokos/tools/telnet_script.exe -l ws2_32
 
 import "../telcodec.star" as enet
+import "../zlib.star" as zl
 
 fn sub(s: str, a: i32, e: i32) -> str:
     let b = bytes_from_str(s)
@@ -55,6 +64,11 @@ struct Client:
     mut sent_at: List<i32> = List<i32>()
     mut sent: List<str> = List<str>()
     mut dead: bool = false
+    # MCCP: where the compressed stream starts in what arrived (-1: not
+    # compressing), the plain bytes before it, and the stream so far
+    mut z_at: i32 = -1
+    mut plain: Bytes = Bytes()
+    mut zraw: Bytes = Bytes()
 
 impl Client:
     # wait up to `ms` for data and take it
@@ -69,9 +83,38 @@ impl Client:
         if d.len() == 0:
             self.dead = true
             return false
+        if self.z_at >= 0:
+            for i in 0..d.len():
+                self.zraw.push(d[i])
+            self.reinflate()
+            return true
         for i in 0..d.len():
             self.got.push(d[i])
+        # IAC SB COMPRESS2 IAC SE: what follows is compressed
+        let n = self.got.len()
+        let mut i = 0
+        while i + 5 <= n:
+            if (self.got[i] as i32) == 255 and (self.got[i + 1] as i32) == 250 and (self.got[i + 2] as i32) == 86 and (self.got[i + 3] as i32) == 255 and (self.got[i + 4] as i32) == 240:
+                self.z_at = i + 5
+                for k in 0..self.z_at:
+                    self.plain.push(self.got[k])
+                for k in self.z_at..n:
+                    self.zraw.push(self.got[k])
+                self.reinflate()
+                return true
+            i += 1
         true
+
+    # the transcript: the plain bytes, then the stream inflated as far as
+    # it has arrived
+    fn reinflate(mut self):
+        let r = zl::inflate_zlib(self.zraw)
+        let mut g: Bytes = Bytes()
+        for i in 0..self.plain.len():
+            g.push(self.plain[i])
+        for i in 0..r.out.len():
+            g.push(r.out[i])
+        self.got = g
 
     # the end of `text`'s first occurrence after the anchor, or -1
     fn find(self, text: str) -> i32:

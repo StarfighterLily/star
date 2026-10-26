@@ -2,11 +2,12 @@
 // Pike driver serving telnet on a mudlib, set up as tools/ref_boot.pike sets
 // it up -- the efuns the Star VM doesn't have yet stubbed with the
 // reference's own "not implemented" error, so both drivers fail the same
-// calls -- and with `havok mccp : 0`, since the Star driver never offers
-// MCCP (NOTES.md deviation #13). tools/telnet_script.exe then logs in to
-// either driver with the same script.
+// calls -- and with `havok mccp : 0` (the M6/M7 login fixtures were
+// recorded without MCCP) unless a sixth argument `mccp` leaves it on, as for
+// the P1 #8 MCCP login. tools/telnet_script.exe then logs in to either
+// driver with the same script.
 //
-//   pike ref_serve.pike <havokos_pike_dir> <mudos.cfg> <mudlib dir> <stubs.txt> <port>
+//   pike ref_serve.pike <havokos_pike_dir> <mudos.cfg> <mudlib dir> <stubs.txt> <port> [mccp]
 
 mapping(string:string) read_config(string file) {
     mapping(string:string) cfg = ([]);
@@ -26,7 +27,7 @@ int main(int argc, array(string) argv) {
     array(string) stubs = filter(map(replace(Stdio.read_file(argv[4]), "\r", "") / "\n", String.trim_all_whites), sizeof);
     int port = (int)argv[5];
     cfg["port"] = (string)port;
-    cfg["havok mccp"] = "0";
+    if (argc < 7 || argv[6] != "mccp") cfg["havok mccp"] = "0";
     cfg["havok outbound sockets"] = "0";
 
     object drv = compile_file(combine_path(pike_dir, "havok/driver.pike"))(root, cfg);

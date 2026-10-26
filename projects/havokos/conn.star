@@ -14,8 +14,22 @@
 # multisets). Input and output are `Bytes` with a read offset, so a line or
 # a partly sent buffer is consumed without copying what's left on every
 # read (NOTES.md constraint #10).
+#
+# TLS and WebSockets (P1 #8): `outbuf` always holds telnet bytes (text, for
+# a WebSocket's text frames); net.star conn_pack() turns them into what goes
+# on the socket -- compressed, framed, encrypted -- in `wire`. A WebSocket
+# frames each of the reference's raw_send() calls separately, so the points
+# between them are marked (`ws_marks`) as output is queued.
+#
+# MCCP (P1 #8): once the client agreed to COMPRESS2, `outbuf` from `z_from`
+# on holds text not yet compressed; net.star conn_compress() runs it through
+# the connection's zlib stream whenever output is about to leave (each pass's
+# flush, a test hook's drain, closing), so a pass's writes share one sync
+# flush where the reference flushes each write -- the client inflates the
+# same bytes either way.
 
 import "value.star" as val
+import "zlib.star" as zl
 
 struct Conn:
     mut alive: bool = true
@@ -64,6 +78,31 @@ struct Conn:
     # bytes for the wire not yet taken by the socket, from `out_off`
     mut outbuf: Bytes = Bytes()
     mut out_off: i32 = 0
+    # MCCP: compressing, the stream, and where the uncompressed tail of
+    # `outbuf` starts
+    mut z_on: bool = false
+    mut zout: zl::Deflater = zl::Deflater()
+    mut z_from: i32 = 0
+    # TLS: the session (tls.star, -1 for none), and whether the telnet
+    # session waits for its handshake to finish
+    mut tls: i32 = -1
+    mut tls_waiting: bool = false
+    # WebSocket: 0 none, 1 text frames as lines (no telnet: `raw`), 2 binary
+    # frames carrying raw telnet; the protocol state (1 open, 2 closing:
+    # our close frame sent, 3 closed), whether the reference's WsLink has
+    # closed (writes are dropped), frame bytes not parsed yet, the marks
+    mut ws: i32 = 0
+    mut raw: bool = false
+    mut ws_state: i32 = 0
+    mut ws_gone: bool = false
+    mut ws_in: Bytes = Bytes()
+    mut ws_marks: List<i32> = List<i32>()
+    # closed for LPC, but the socket stays open until the WebSocket peer
+    # answers our close frame or hangs up (Pike's Connection CLOSING)
+    mut linger: bool = false
+    # bytes for the socket, packed (framed, encrypted), from `wire_off`
+    mut wire: Bytes = Bytes()
+    mut wire_off: i32 = 0
     # telnet parser state (net.star TS_*), the WILL/WONT/DO/DONT being
     # read, the subnegotiation being collected
     mut tstate: i32 = 0

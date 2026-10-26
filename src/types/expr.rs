@@ -625,6 +625,23 @@ impl Checker {
                 };
                 Ok(TypedExpr::Match { scrutinee: Box::new(scrutinee_expr), arms: arm_tys, ty, span: *span })
             }
+            Expr::StructLit { name, type_args, args, arg_names, span }
+                if type_args.is_empty()
+                    && self.extern_fn_decls.contains(name)
+                    && !self.structs.contains_key(name)
+                    && !self.generic_structs.contains_key(name) =>
+            {
+                // `SSL_new(ctx)`: an uppercase extern "C" fn's call, which the
+                // parser can only read as a struct literal (see
+                // `extern_fn_decls`); checked as the ordinary call it is.
+                let call = Expr::Call {
+                    callee: Box::new(Expr::Ident(name.clone(), *span)),
+                    args: args.clone(),
+                    arg_names: arg_names.clone(),
+                    span: *span,
+                };
+                self.infer_expr(&call, vars)
+            }
             Expr::StructLit { name, type_args, args, arg_names, span } => {
                 // Resolve named arguments and fill omitted-field defaults
                 // *before* inference, so every downstream path (builtin
@@ -2694,6 +2711,31 @@ impl Checker {
             "is_null" => {
                 if arity_ok(1, self) && !tys_eq(&arg_tys[0], &Ty::Ptr) && !tys_eq(&arg_tys[0], &Ty::Str) {
                     self.error(format!("`is_null` expects a `ptr` or `str` argument, found `{:?}`", arg_tys[0]), span);
+                }
+            }
+            "ptr_to_bytes" => {
+                if arity_ok(2, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`ptr_to_bytes` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Int) {
+                        self.error(format!("`ptr_to_bytes` argument 2 expected `int`, found `{:?}`", arg_tys[1]), span);
+                    }
+                }
+            }
+            "ptr_write_bytes" => {
+                if arity_ok(4, self) {
+                    if !tys_eq(&arg_tys[0], &Ty::Ptr) {
+                        self.error(format!("`ptr_write_bytes` argument 1 expected `ptr`, found `{:?}`", arg_tys[0]), span);
+                    }
+                    if !tys_eq(&arg_tys[1], &Ty::Bytes) {
+                        self.error(format!("`ptr_write_bytes` argument 2 expected `Bytes`, found `{:?}`", arg_tys[1]), span);
+                    }
+                    for i in 2..4 {
+                        if !tys_eq(&arg_tys[i], &Ty::Int) {
+                            self.error(format!("`ptr_write_bytes` argument {} expected `int`, found `{:?}`", i + 1, arg_tys[i]), span);
+                        }
+                    }
                 }
             }
             "ptr_to_str" | "file_close" | "file_read" | "file_read_bytes" | "file_read_line" | "tcp_close" | "tcp_recv" => {

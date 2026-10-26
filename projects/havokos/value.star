@@ -24,6 +24,9 @@
 #
 # Objects carry a generation next to the slot index so a slot can be reused
 # after a destruct (M5) without stale `Value::Obj`s reaching the new object.
+#
+# Buffers (P1 #8, buffers.star) are FluffOS's binary byte arrays: mutable
+# and shared by reference like arrays, so they live in `Vm.bufs` too.
 
 enum Value:
     Undef
@@ -35,6 +38,7 @@ enum Value:
     Obj(h: i32, gen: i32)
     Fn(h: i32)
     Cls(h: i32)
+    Buf(h: i32)
 
 struct ArrSlot:
     mut items: List<Value>
@@ -49,7 +53,7 @@ struct MapSlot:
     mut idx: Map<MKey, i32>
 
 # `t`: 1 int (and undefined, which is 0 as a key, as in Pike), 2 float,
-# 3 string, 4 array, 5 mapping, 6 object, 7 function, 8 class. An int is split
+# 3 string, 4 array, 5 mapping, 6 object, 7 function, 8 class, 9 buffer. An int is split
 # into two `i32` halves since `Map` keys can't hold an `i64`.
 struct MKey:
     t: i32
@@ -101,6 +105,10 @@ struct ClsSlot:
     name: str
     mut vals: List<Value>
 
+# An LPC buffer: its bytes (NULs included, unlike a string's).
+struct BufSlot:
+    mut data: Bytes
+
 fn is_zero(v: Value) -> bool:
     match v:
         Value::Undef -> true
@@ -123,3 +131,4 @@ fn mkey(v: Value) -> MKey:
         Value::Obj(h, g) -> MKey(t = 6, s = "", a = h, b = g)
         Value::Fn(h) -> MKey(t = 7, s = "", a = h, b = 0)
         Value::Cls(h) -> MKey(t = 8, s = "", a = h, b = 0)
+        Value::Buf(h) -> MKey(t = 9, s = "", a = h, b = 0)

@@ -20,7 +20,9 @@
 # (`verbparse.star`). M7 added 370-379, the line editor (`ed.star`), then
 # 380-399, the LPC socket efuns and resolve() (`sockets.star`), then 400-419,
 # the reference's HavokOS-only extensions (`json.star`, `ext.star`), and
-# 420-429 its SQLite databases (`sqldb.star`, P1 #7).
+# 420-429 its SQLite databases (`sqldb.star`, P1 #7), then 430-439 the rest of
+# the network's (`http.star`, P1 #8) and 440-449 LPC buffers (`buffers.star`,
+# P1 #8).
 
 const E_UNDEFINEDP: i32 = 1
 const E_SIZEOF: i32 = 2
@@ -317,6 +319,12 @@ const E_DB_OPEN: i32 = 420
 const E_DB_QUERY: i32 = 421
 const E_DB_INFO: i32 = 422
 const E_DB_CLOSE: i32 = 423
+# --- P1 #8: the HTTP port (http.star)
+const E_HTTP_RESPOND: i32 = 430
+# --- P1 #8: LPC buffers (buffers.star)
+const E_ALLOCATE_BUFFER: i32 = 440
+const E_READ_BUFFER: i32 = 441
+const E_WRITE_BUFFER: i32 = 442
 # --- M5: test hooks (900..), see test_efun_codes()
 const E_TEST_HB: i32 = 900
 const E_TEST_HB_ROUND: i32 = 901
@@ -349,6 +357,19 @@ const E_TEST_PROFILING: i32 = 924
 const E_TEST_WATCH_STATE: i32 = 925
 const E_TEST_PUT: i32 = 926
 const E_TEST_RMTREE: i32 = 927
+# --- P1 #8: network test hooks (efuns_net.star efun_net_test())
+const E_TEST_INFLATE: i32 = 930
+const E_TEST_CLI_OPEN: i32 = 931
+const E_TEST_CLI_SEND: i32 = 932
+const E_TEST_CLI_RECV: i32 = 933
+const E_TEST_CLI_CLOSED: i32 = 934
+const E_TEST_CLI_CLOSE: i32 = 935
+const E_TEST_SRV_LISTEN: i32 = 936
+const E_TEST_SRV_TAKE: i32 = 937
+const E_TEST_TEL_LISTEN: i32 = 938
+const E_TEST_HTTP_LISTEN: i32 = 939
+const E_TEST_PORTS_CLOSE: i32 = 940
+const E_TEST_FREE_PORT: i32 = 941
 
 fn efun_codes() -> Map<str, i32>:
     let mut m: Map<str, i32> = Map<str, i32>()
@@ -643,6 +664,10 @@ fn efun_codes() -> Map<str, i32>:
     m.insert("db_query", E_DB_QUERY)
     m.insert("db_info", E_DB_INFO)
     m.insert("db_close", E_DB_CLOSE)
+    m.insert("http_respond", E_HTTP_RESPOND)
+    m.insert("allocate_buffer", E_ALLOCATE_BUFFER)
+    m.insert("read_buffer", E_READ_BUFFER)
+    m.insert("write_buffer", E_WRITE_BUFFER)
     m
 
 # Driver hooks for the case runner (`tools/run_cases.star` with `-hooks`,
@@ -680,4 +705,16 @@ fn test_efun_codes() -> Map<str, i32>:
     m.insert("test_watch_state", E_TEST_WATCH_STATE)
     m.insert("test_put", E_TEST_PUT)
     m.insert("test_rmtree", E_TEST_RMTREE)
+    m.insert("test_inflate", E_TEST_INFLATE)
+    m.insert("test_cli_open", E_TEST_CLI_OPEN)
+    m.insert("test_cli_send", E_TEST_CLI_SEND)
+    m.insert("test_cli_recv", E_TEST_CLI_RECV)
+    m.insert("test_cli_closed", E_TEST_CLI_CLOSED)
+    m.insert("test_cli_close", E_TEST_CLI_CLOSE)
+    m.insert("test_srv_listen", E_TEST_SRV_LISTEN)
+    m.insert("test_srv_take", E_TEST_SRV_TAKE)
+    m.insert("test_tel_listen", E_TEST_TEL_LISTEN)
+    m.insert("test_http_listen", E_TEST_HTTP_LISTEN)
+    m.insert("test_ports_close", E_TEST_PORTS_CLOSE)
+    m.insert("test_free_port", E_TEST_FREE_PORT)
     m

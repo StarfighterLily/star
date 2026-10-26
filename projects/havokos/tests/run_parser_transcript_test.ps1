@@ -19,7 +19,7 @@
 #
 # Usage: powershell -File projects/havokos/tests/run_parser_transcript_test.ps1 [-DsRoot E:\ds3.9]
 # (rebuild tools/boot_ds.exe first if any VM .star file changed:
-#   target/release/star.exe build projects/havokos/tools/boot_ds.star -o projects/havokos/tools/boot_ds.exe -l ws2_32 -L sqlite/lib/x64 -l sqlite3)
+#   target/release/star.exe build projects/havokos/tools/boot_ds.star -o projects/havokos/tools/boot_ds.exe -l ws2_32 -L sqlite/lib/x64 -l sqlite3 -L openssl/lib/x64 -l ssl -l crypto)
 # Exits 0 when the transcripts match, 1 otherwise. About 10 s.
 #
 # Regenerating the fixture (only after confirming the *reference's* own

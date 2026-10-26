@@ -20,7 +20,7 @@
 # test_callouts(), ...) are always available to cases; ref_cases.pike gives
 # the reference the same ones.
 #
-# Build: star build projects/havokos/tools/run_cases.star -o projects/havokos/tools/run_cases.exe -l ws2_32 -L sqlite/lib/x64 -l sqlite3
+# Build: star build projects/havokos/tools/run_cases.star -o projects/havokos/tools/run_cases.exe -l ws2_32 -L sqlite/lib/x64 -l sqlite3 -L openssl/lib/x64 -l ssl -l crypto
 
 import "../vm.star" as vm
 import "../efuns.star" as ef
@@ -131,6 +131,8 @@ fn main() -> i32:
     else:
         m.pp.include_dirs = ["/include"]
         m.configure("HavokTest", 6699)
+        # as ref_cases.pike: MCCP off unless a case turns it on
+        m.config.insert("havok mccp", "0")
         m.config.insert("master file", "/secure/master")
         m.config.insert("simulated efun file", "/secure/sefun")
         m.config.insert("include directories", "/include")

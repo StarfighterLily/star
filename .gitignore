@@ -1,3 +1,5 @@
 /target
 /target-fix
 /editors/vscode/node_modules
+# HavokOS's generated self-signed TLS certificate and key (projects/havokos/tls.star)
+/projects/havokos/runtime/

@@ -940,6 +940,9 @@ fn builtin_return_ty(name: &str, args: &[TypedExpr]) -> Option<Ty> {
         "null_ptr" => Some(Ty::Ptr),
         "is_null" => Some(Ty::Bool),
         "ptr_to_str" => Some(Ty::Str),
+        // binary data across `extern "C"` -- `crate::codegen::ffi_bytes`
+        "ptr_to_bytes" => Some(Ty::Bytes),
+        "ptr_write_bytes" => Some(Ty::Int),
         // File I/O builtins -- see `crate::codegen::file_io`. `file_open`
         // reuses `Ty::Ptr` as an opaque file handle (null on failure, same
         // convention as `getenv`); `file_read`/`file_read_line` return an
@@ -1729,6 +1732,14 @@ pub struct Checker {
     /// case) duplicate `declare` reaches the LLVM parser -- see
     /// `check_extern_fn`.
     extern_fn_names_seen: HashSet<String>,
+    /// Every `extern "C" fn` name declared in the program, recorded in
+    /// pass 1 (before any body is checked). The parser reads `Name(args)`
+    /// with an uppercase `Name` as a struct literal, so a call to an
+    /// uppercase C symbol (`SSL_new(ctx)`, `GetTickCount()`) reaches the
+    /// checker as an `Expr::StructLit`; `infer_expr` consults this set to
+    /// check such a literal as the call it is when no struct of that name
+    /// exists (HavokOS P2 #1).
+    extern_fn_decls: HashSet<String>,
     /// Current nesting depth of generic struct/enum/fn monomorphization
     /// (`instantiate_struct`/`instantiate_enum`/`instantiate_fn`), each of
     /// which increments this for the duration of instantiating one
@@ -1811,6 +1822,7 @@ impl Checker {
             systems: HashMap::new(),
             current_ret_ty: None,
             extern_fn_names_seen: HashSet::new(),
+            extern_fn_decls: HashSet::new(),
             mono_depth: 0,
             sequence_param_counts: HashMap::new(),
             trait_sig_context: false,
@@ -2057,6 +2069,7 @@ impl Checker {
                         self.error(format!("the function `{}` is declared more than once", e.sig.name), e.span);
                     }
                     extern_fn_names_seen_pass1.insert(e.sig.name.clone());
+                    self.extern_fn_decls.insert(e.sig.name.clone());
                     let param_tys: Vec<Ty> = e.sig.params.iter().map(|p| {
                         p.ty.as_ref().and_then(|t| self.resolve_type(t)).unwrap_or(Ty::Named("infer".into()))
                     }).collect();
@@ -2464,25 +2477,23 @@ impl Checker {
         if !e.sig.type_params.is_empty() {
             self.error("extern \"C\" functions cannot be generic", e.span);
         }
-        // Star's grammar always parses `Name(args)` as a struct-literal
-        // constructor when `Name` starts with an uppercase letter
-        // (`Vec3(0, 0, 0)`, `Player(health = 100)`, ... -- see
-        // `Parser::parse_primary`'s `starts_uppercase` check in
-        // `src/parser/expr.rs`), regardless of whether any such struct is
-        // actually declared. Since the declared name here must exactly
-        // match the real foreign symbol (there's no rename/alias syntax),
-        // an extern fn bound to an uppercase-starting C symbol (common in
-        // the Win32 API, e.g. `CreateThread`) would parse at every call
-        // site as an attempt to construct a nonexistent struct instead of
-        // a call -- reported at the *call* site as a confusing "unknown
-        // struct" error with no hint of the real cause. Catching it here,
-        // at the declaration, gives an immediate and actionable diagnostic
-        // instead.
-        if e.sig.name.chars().next().is_some_and(|c| c.is_uppercase()) {
+        // Star's grammar parses `Name(args)` as a struct-literal constructor
+        // whenever `Name` starts with an uppercase letter (`Vec3(0, 0, 0)`,
+        // `Player(health = 100)`, ... -- `Parser::parse_primary`'s
+        // `starts_uppercase` check in `src/parser/expr.rs`), so a call to an
+        // uppercase C symbol (most of the Win32 API, all of OpenSSL's
+        // `SSL_*`/`BIO_*`/`X509_*`) arrives at the checker as a struct
+        // literal. `infer_expr` checks such a literal as a call when it
+        // names an extern fn and no struct (see `extern_fn_decls`); the one
+        // thing that can't work is an extern fn sharing its name with a
+        // struct, whose literal would always win, so that is the error.
+        // (Until HavokOS P2 #1 every uppercase extern name was rejected
+        // here.)
+        if self.structs.contains_key(&e.sig.name) || self.generic_structs.contains_key(&e.sig.name) {
             self.error(
                 format!(
-                    "extern \"C\" fn `{}` starts with an uppercase letter, which Star always parses as a struct-literal constructor at the call site (`Name(args)`); this symbol cannot be called directly under the current grammar",
-                    e.sig.name
+                    "extern \"C\" fn `{}` has the same name as a struct; `{}(..)` always constructs the struct, so this symbol could never be called",
+                    e.sig.name, e.sig.name
                 ),
                 e.span,
             );
@@ -2498,7 +2509,7 @@ impl Checker {
         // shadowing but its dead body is visible right above the call site;
         // an extern fn's "body" is a symbol in another library, so there is
         // nothing for the reader to notice something is wrong. Reject the
-        // collision here instead, matching the uppercase-name check above.
+        // collision here instead, matching the struct-name check above.
         if is_builtin_name(&e.sig.name) {
             self.error(
                 format!(

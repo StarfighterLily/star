@@ -467,7 +467,11 @@ impl vm::Vm:
                 _ -> Bytes()
             return val::Value::Int(crc32_of(b))
         if code == et::E_BUFFERP:
-            return val::Value::Int(0 as i64)
+            # since P1 #8 there are buffers (buffers.star); the reference has
+            # none, so its bufferp() is always 0
+            return match self.arg(args, 0):
+                val::Value::Buf(h) -> val::Value::Int(1 as i64)
+                _ -> val::Value::Int(0 as i64)
         if code == et::E_REGEXP:
             let pat = match self.arg(args, 1):
                 val::Value::Str(p) -> p

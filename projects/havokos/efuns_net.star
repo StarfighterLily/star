@@ -30,12 +30,27 @@
 # other byte (and `~`) as `~xx` (two lower-case hex digits), so telnet
 # commands and the NULs of subnegotiations survive LPC strings (NOTES.md
 # deviation #7).
+#
+# P1 #8 added the network hooks (codes 930-949, efun_net_test()):
+#   test_inflate(s)        the zlib stream s (in the `~xx` form) inflated:
+#                          MCCP output, compared as text since the two
+#                          drivers compress differently (the reference's
+#                          is Pike's Gz.inflate)
+#   test_cli_*, test_srv_*, test_tel_listen, test_http_listen,
+#   test_ports_close, test_free_port
+#                          raw clients (TLS when asked) and listeners for
+#                          the HTTP, WebSocket and TLS cases; their meanings
+#                          are spelled out in tools/ref_net_hooks.pike, the
+#                          reference's side. Pumping is the driver's network
+#                          pass (net_pass()) plus the clients' own sockets.
 
 import "value.star" as val
 import "vm.star" as vm
 import "efun_table.star" as et
 import "net.star" as net
 import "telcodec.star" as tc
+import "zlib.star" as zl
+import "netdata.star" as nd
 
 impl vm::Vm:
     # args[i] as an object, with the efun's argument-count rule: an omitted
@@ -298,3 +313,197 @@ impl vm::Vm:
             return zero
         self.fail("unknown test hook\n")
         val::Value::Undef
+
+    # The P1 #8 network hooks (see the header).
+    fn efun_net_test(mut self, code: i32, args: List<val::Value>, self_ob: i32) -> val::Value:
+        let zero = val::Value::Int(0 as i64)
+        if code == et::E_TEST_INFLATE:
+            let r = zl::inflate_zlib(tc::tel_decode(self.str_arg(args, 0)))
+            return val::Value::Str(tc::tel_encode(r.out))
+        if code == et::E_TEST_CLI_OPEN:
+            let s = tcp_connect("127.0.0.1", val::int_of(self.arg(args, 0)) as i32)
+            if is_null(s):
+                return zero
+            tcp_set_nonblocking(s, true)
+            let mut c = nd::TestCli(sock = s)
+            if self.truthy(self.arg(args, 1)):
+                c.tls = self.tls_open(self.tls_test_context(), false, "localhost")
+            let id = self.test_cli_add(c)
+            if c.tls >= 0:
+                self.test_cli_feed(id, Bytes())
+            return val::Value::Int((id + 1) as i64)
+        if code == et::E_TEST_SRV_LISTEN:
+            let l = tcp_listen(0, true)
+            if is_null(l):
+                return zero
+            let port = tcp_local_port(l)
+            self.test_srvs.push(nd::TestSrv(sock = l, port = port, secure = self.truthy(self.arg(args, 0))))
+            return val::Value::Int(port as i64)
+        if code == et::E_TEST_SRV_TAKE:
+            let port = val::int_of(self.arg(args, 0)) as i32
+            for k in 0..self.test_srvs.len():
+                if self.test_srvs[k].port == port:
+                    for i in 0..200:
+                        let a = tcp_accept(self.test_srvs[k].sock)
+                        if !is_null(a):
+                            tcp_set_nonblocking(a, true)
+                            let mut c = nd::TestCli(sock = a)
+                            if self.test_srvs[k].secure:
+                                c.tls = self.tls_open(self.tls_server_context("", ""), true, "")
+                            return val::Value::Int((self.test_cli_add(c) + 1) as i64)
+                        self.test_pump(10)
+            return zero
+        if code == et::E_TEST_TEL_LISTEN or code == et::E_TEST_HTTP_LISTEN:
+            let ctx = if self.truthy(self.arg(args, 0)): self.tls_server_context("", "") else: null_ptr()
+            let kind = if code == et::E_TEST_HTTP_LISTEN: nd::LK_HTTP else: nd::LK_TELNET
+            return val::Value::Int(self.net_listen_kind(0, kind, ctx, true) as i64)
+        if code == et::E_TEST_PORTS_CLOSE:
+            for i in 0..self.test_clis.len():
+                self.test_cli_drop(i)
+            for k in 0..self.test_srvs.len():
+                let acc = self.test_srvs[k].accepted
+                for i in 0..acc.len():
+                    tcp_close(acc[i])
+                tcp_close(self.test_srvs[k].sock)
+            self.test_srvs = List<nd::TestSrv>()
+            # the HTTP module's close_ports() closes every HTTP port
+            let mut li = self.listeners.len() - 1
+            while li >= 0:
+                if self.listener_test[li] or self.listener_kinds[li] == nd::LK_HTTP:
+                    self.net_unlisten(li)
+                li -= 1
+            for i in 0..10:
+                self.test_pump(20)
+            return zero
+        if code == et::E_TEST_FREE_PORT:
+            let l = tcp_listen(0, true)
+            let port = tcp_local_port(l)
+            tcp_close(l)
+            return val::Value::Int(port as i64)
+        let id = (val::int_of(self.arg(args, 0)) as i32) - 1
+        if id < 0 or id >= self.test_clis.len() or !self.test_clis[id].used:
+            return if code == et::E_TEST_CLI_CLOSED: val::Value::Int(1 as i64) else: zero
+        if code == et::E_TEST_CLI_SEND:
+            let data = tc::tel_decode(self.str_arg(args, 1))
+            let li = self.test_clis[id].tls
+            if li >= 0:
+                self.tls_send(li, data)
+                let c = self.tls_take(li)
+                for i in 0..c.len():
+                    self.test_clis[id].out.push(c[i])
+            else:
+                for i in 0..data.len():
+                    self.test_clis[id].out.push(data[i])
+            self.test_cli_flush(id)
+            return val::Value::Int(1 as i64)
+        if code == et::E_TEST_CLI_RECV:
+            let until = self.arg(args, 1)
+            if val::is_zero(until):
+                for i in 0..10:
+                    self.test_pump(20)
+            else:
+                let want = match until:
+                    val::Value::Str(w) -> tc::tel_decode(w)
+                    _ -> Bytes()
+                for i in 0..200:
+                    if self.test_clis[id].closed or (want.len() > 0 and bytes_find(self.test_clis[id].got, want) >= 0):
+                        break
+                    self.test_pump(10)
+            let g = self.test_clis[id].got
+            self.test_clis[id].got = Bytes()
+            return val::Value::Str(tc::tel_encode(g))
+        if code == et::E_TEST_CLI_CLOSED:
+            return self.bool_v(self.test_clis[id].closed)
+        if code == et::E_TEST_CLI_CLOSE:
+            self.test_cli_drop(id)
+            for i in 0..10:
+                self.test_pump(20)
+            return zero
+        self.fail("unknown test hook\n")
+        val::Value::Undef
+
+    # --- the case runner's clients -------------------------------------------------
+
+    fn test_cli_add(mut self, c: nd::TestCli) -> i32:
+        self.test_clis.push(c)
+        self.test_clis.len() - 1
+
+    fn test_cli_drop(mut self, id: i32):
+        if !self.test_clis[id].used:
+            return
+        let li = self.test_clis[id].tls
+        if li >= 0:
+            # SSL.File close(): a close_notify first
+            self.tls_close(li)
+            let c = self.tls_take(li)
+            for i in 0..c.len():
+                self.test_clis[id].out.push(c[i])
+            self.test_cli_flush(id)
+            self.tls_free(li)
+        if !is_null(self.test_clis[id].sock):
+            tcp_close(self.test_clis[id].sock)
+        self.test_clis[id] = nd::TestCli(used = false)
+
+    fn test_cli_flush(mut self, id: i32):
+        let s = self.test_clis[id].sock
+        while !self.test_clis[id].closed and self.test_clis[id].out_off < self.test_clis[id].out.len():
+            let n = tcp_send_bytes(s, self.test_clis[id].out, self.test_clis[id].out_off)
+            if n <= 0:
+                if n < 0:
+                    self.test_clis[id].closed = true
+                return
+            self.test_clis[id].out_off = self.test_clis[id].out_off + n
+        self.test_clis[id].out = Bytes()
+        self.test_clis[id].out_off = 0
+
+    # Socket bytes for a client: through its TLS session if it has one.
+    fn test_cli_feed(mut self, id: i32, d: Bytes):
+        let li = self.test_clis[id].tls
+        if li < 0:
+            for i in 0..d.len():
+                self.test_clis[id].got.push(d[i])
+            return
+        let plain = self.tls_feed(li, d)
+        let c = self.tls_take(li)
+        for i in 0..c.len():
+            self.test_clis[id].out.push(c[i])
+        self.test_cli_flush(id)
+        for i in 0..plain.len():
+            self.test_clis[id].got.push(plain[i])
+        if self.tlss[li].failed or self.tlss[li].peer_closed:
+            self.test_clis[id].closed = true
+
+    # One round: the driver's network pass, then the clients' sockets.
+    fn test_pump(mut self, ms: i32):
+        self.net_pass(ms)
+        for id in 0..self.test_clis.len():
+            if !self.test_clis[id].used or self.test_clis[id].closed:
+                continue
+            self.test_cli_flush(id)
+            let one: List<ptr> = [self.test_clis[id].sock]
+            let mut rounds = 0
+            while rounds < 64:
+                let r = tcp_wait(one, 0)
+                if r.len() == 0 or (r[0] as i32) == 0:
+                    break
+                let d = tcp_recv_bytes(self.test_clis[id].sock)
+                if d.len() == 0:
+                    self.test_clis[id].closed = true
+                    break
+                self.test_cli_feed(id, d)
+                rounds += 1
+
+# The first index of `want` in `b`, or -1.
+fn bytes_find(b: Bytes, want: Bytes) -> i32:
+    let n = want.len()
+    let mut i = 0
+    while i + n <= b.len():
+        let mut ok = true
+        for j in 0..n:
+            if b[i + j] != want[j]:
+                ok = false
+                break
+        if ok:
+            return i
+        i += 1
+    -1

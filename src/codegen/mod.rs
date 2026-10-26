@@ -21,6 +21,7 @@ mod closure;
 mod dialog;
 mod eq;
 mod expr;
+mod ffi_bytes;
 mod file_io;
 mod fixed;
 mod flags;

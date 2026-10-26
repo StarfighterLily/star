@@ -54,12 +54,15 @@ int query_total() { return total; }
 int query_lfd() { return lfd; }
 int query_cfd() { return cfd; }
 void on_read(int fd, mixed data) {
+    // a binary mode's buffer (this port, as FluffOS; the reference has none
+    // and delivers a string): compared as the bytes it holds
+    if (bufferp(data)) data = read_buffer(data);
     if (quiet) { total += sizeof(data); return; }
     ev(({ "read", fd, data }));
     if (boom && data == "boom") error("socket callback failure\n");
     if (echo) ev(({ "echoed", socket_write(fd, stringp(data) ? "echo:" + data : data) }));
 }
-void on_dgram(int fd, mixed data, string addr) { ev(({ "dgram", fd, data, addr })); }
+void on_dgram(int fd, mixed data, string addr) { if (bufferp(data)) data = read_buffer(data); ev(({ "dgram", fd, data, addr })); }
 void on_write(int fd) {
     ev(({ "write", fd }));
     if (sizeof(replies)) { mixed m = replies[0]; replies = replies[1..]; ev(({ "sent", socket_write(fd, m) })); }
@@ -76,7 +79,7 @@ void accept_now() {
     ev(({ "accept", lfd, n }));
     if (n >= 0) cfd = n;
 }
-void fp_read(int fd, mixed data) { ev(({ "fp_read", fd, data })); }
+void fp_read(int fd, mixed data) { if (bufferp(data)) data = read_buffer(data); ev(({ "fp_read", fd, data })); }
 void fp_close(int fd) { ev(({ "fp_close", fd })); }
 mixed *serve(int mode, int port) {
     lfd = socket_create(mode, "on_read", "on_close");

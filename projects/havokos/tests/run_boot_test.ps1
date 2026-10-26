@@ -10,7 +10,7 @@
 #
 # Usage: powershell -File projects/havokos/tests/run_boot_test.ps1 [-DsRoot E:\ds3.9]
 # (rebuild tools/boot_ds.exe first if any compiler/VM .star file changed:
-#   target/release/star.exe build projects/havokos/tools/boot_ds.star -o projects/havokos/tools/boot_ds.exe -l ws2_32 -L sqlite/lib/x64 -l sqlite3)
+#   target/release/star.exe build projects/havokos/tools/boot_ds.star -o projects/havokos/tools/boot_ds.exe -l ws2_32 -L sqlite/lib/x64 -l sqlite3 -L openssl/lib/x64 -l ssl -l crypto)
 # Exits 0 when the reports match, 1 otherwise. About 3 s.
 #
 # Regenerating the fixture (only after confirming the *reference's* own
@@ -21,7 +21,8 @@
 #   pike tools/ref_boot.pike <havokos>/pike E:/ds3.9/bin/mudos.cfg <scratch lib> tests/fixtures/ds39_boot_stubs.txt | findstr /v /b LOG > tests/fixtures/ds39_boot.expected.txt
 # ref_boot.pike stubs the listed efuns -- the ones the Star VM can't run yet
 # (verb parser, ed, sockets, network) -- with the reference's own "not
-# implemented" error, so both drivers fail the same calls.
+# implemented" error, so both drivers fail the same calls. Since P1 #8 the
+# list is empty: the Star VM runs every efun the reference implements.
 
 param([string]$DsRoot = "E:\ds3.9")
 
@@ -35,9 +36,9 @@ if (-not (Test-Path $tool)) {
 }
 
 # the stub list the fixture was made with must still be what this VM lacks
-$stubs = Get-Content (Join-Path $here "fixtures\ds39_boot_stubs.txt")
+$stubs = @(Get-Content (Join-Path $here "fixtures\ds39_boot_stubs.txt"))
 $now = @(& $tool -unimplemented)
-if (Compare-Object $stubs $now) {
+if (($stubs -join "`n") -ne ($now -join "`n")) {
     Write-Host "FAIL: the VM's unimplemented efuns changed since the fixture was made -- regenerate it (see this script's header)"
     exit 1
 }

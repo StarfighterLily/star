@@ -38,6 +38,7 @@ impl vm::Vm:
         self.gc_map = List<bool>()
         self.gc_fn = List<bool>()
         self.gc_cls = List<bool>()
+        self.gc_buf = List<bool>()
         self.gc_cell = List<bool>()
         self.gc_obj = List<bool>()
         for i in 0..self.arrs.len():
@@ -48,6 +49,8 @@ impl vm::Vm:
             self.gc_fn.push(false)
         for i in 0..self.clss.len():
             self.gc_cls.push(false)
+        for i in 0..self.bufs.len():
+            self.gc_buf.push(false)
         for i in 0..self.cells.len():
             self.gc_cell.push(false)
         for i in 0..self.objs.len():
@@ -62,6 +65,10 @@ impl vm::Vm:
             val::Value::Map(h) -> self.gc_work.push(v)
             val::Value::Fn(h) -> self.gc_work.push(v)
             val::Value::Cls(h) -> self.gc_work.push(v)
+            # a buffer holds no values: marked at once
+            val::Value::Buf(h) ->
+                if h >= 0 and h < self.gc_buf.len():
+                    self.gc_buf[h] = true
             val::Value::Obj(h, g) ->
                 if self.objs[h].alive and self.objs[h].gen == g:
                     self.gc_obj[h] = true
@@ -239,6 +246,12 @@ impl vm::Vm:
                 self.cls_free[h] = true
                 self.cls_free_list.push(h)
                 freed += 1
+        for h in 0..self.bufs.len():
+            if !self.gc_buf[h] and !self.buf_free[h]:
+                self.bufs[h] = val::BufSlot(data = Bytes())
+                self.buf_free[h] = true
+                self.buf_free_list.push(h)
+                freed += 1
         for h in 0..self.cells.len():
             if !self.gc_cell[h] and !self.cell_free[h]:
                 self.cells[h] = val::Value::Int(0 as i64)
@@ -268,7 +281,7 @@ impl vm::Vm:
 
     # Heap slots in use (all tables).
     fn heap_live(self) -> i32:
-        (self.arrs.len() - self.arr_free_list.len()) + (self.maps.len() - self.map_free_list.len()) + (self.fns.len() - self.fn_free_list.len()) + (self.clss.len() - self.cls_free_list.len()) + (self.cells.len() - self.cell_free_list.len())
+        (self.arrs.len() - self.arr_free_list.len()) + (self.maps.len() - self.map_free_list.len()) + (self.fns.len() - self.fn_free_list.len()) + (self.clss.len() - self.cls_free_list.len()) + (self.cells.len() - self.cell_free_list.len()) + (self.bufs.len() - self.buf_free_list.len())
 
     # Collect when the heap has doubled since the last collection (and is
     # past a floor where collecting isn't worth it). Call between top-level

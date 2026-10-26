@@ -23,9 +23,10 @@
 #
 # Telnet follows docs/telnet-spec.md and the reference exactly, with two
 # deliberate differences (NOTES.md deviations #13, #14):
-# - No MCCP: COMPRESS2 is never offered and is refused (WONT), as with the
-#   reference's `havok mccp : 0`. Star has no zlib, and a compression stream
-#   is an optimisation clients do without.
+# - MCCP v2 (P1 #8; COMPRESS2 offered unless `havok mccp : 0`, as in the
+#   reference) compresses with `zlib.star`, not zlib, and flushes once per
+#   pass rather than once per write (conn_compress()): the compressed bytes
+#   differ, what the client inflates doesn't.
 # - LPC strings are byte strings here (value.star), not Pike's wide strings,
 #   so a UTF-8 connection (CHARSET accepted) passes text through unchanged
 #   both ways: what a client sends arrives as its UTF-8 bytes, and the
@@ -35,10 +36,33 @@
 # Connections with no socket (`sock` null) exist only for the case runner's
 # test_tel_* hooks (efuns_net.star): their output stays in `outbuf` for the
 # test to drain, and input is fed straight to conn_input().
+#
+# P1 #8 added three kinds of connection beside plain telnet, each still a
+# Conn driven by the same code:
+# - Telnet over TLS (`external_port_N_tls`): the bytes pass through a TLS
+#   session (tls.star) both ways, and the telnet session -- offers, the
+#   master's connect(), logon() -- starts only once the handshake is done,
+#   as the reference's SSL.Port hands over only finished handshakes.
+# - WebSockets, upgraded from an HTTP request (http.star http_upgrade(),
+#   then ws_start() here): text frames are lines with no telnet at all
+#   (`raw`, net.pike's no_telnet), output going out as text frames, Latin-1
+#   re-encoded as UTF-8 as the reference does for a no-telnet connection;
+#   with the "telnet" subprotocol binary frames carry the raw telnet
+#   stream. Every one of the reference's raw_send() calls is its own frame,
+#   so output is marked where each ends (raw_mark()) and conn_pack() frames
+#   the pieces. Pings are answered, a close frame is echoed (the user goes
+#   net-dead) and closing from this side sends one; either way the socket
+#   stays open (`linger`) until the peer finishes, as Pike's WebSocket
+#   connection does.
+# - Either of those over TLS.
+# conn_pack() is where queued telnet bytes become wire bytes: compressed
+# (MCCP), framed (WebSocket), encrypted (TLS), into `wire`.
 
 import "value.star" as val
 import "vm.star" as vm
 import "conn.star" as cn
+import "zlib.star" as zl
+import "netdata.star" as nd
 
 const IAC: i32 = 255
 const DONT: i32 = 254
@@ -101,9 +125,9 @@ const TS_SB_IAC: i32 = 4
 const I_NOECHO: i32 = 1
 
 # Options this side performs (WILL) and asks the client to perform (DO).
-# COMPRESS2 is left out: see the header.
+# COMPRESS2 only while MCCP is enabled (Vm.mccp_enabled()).
 fn local_opt(o: i32) -> bool:
-    o == TELOPT_ECHO or o == TELOPT_EOR or o == TELOPT_CHARSET or o == TELOPT_MSSP or o == TELOPT_MXP or o == TELOPT_ZMP or o == TELOPT_GMCP or o == TELOPT_MSDP or o == TELOPT_MSP
+    o == TELOPT_ECHO or o == TELOPT_EOR or o == TELOPT_CHARSET or o == TELOPT_MSSP or o == TELOPT_MXP or o == TELOPT_ZMP or o == TELOPT_GMCP or o == TELOPT_MSDP or o == TELOPT_MSP or o == TELOPT_COMPRESS2
 
 fn remote_opt(o: i32) -> bool:
     o == TELOPT_TTYPE or o == TELOPT_NAWS or o == TELOPT_NEW_ENVIRON or o == TELOPT_CHARSET or o == TELOPT_MXP or o == TELOPT_GMCP
@@ -214,6 +238,16 @@ impl vm::Vm:
     fn raw_byte(mut self, ci: i32, c: i32):
         self.conns[ci].outbuf.push(c as u8)
 
+    # The end of one of the reference's raw_send() calls: a WebSocket
+    # frames each separately (conn_pack()).
+    fn raw_mark(mut self, ci: i32):
+        if self.conns[ci].ws == 0:
+            return
+        let n = self.conns[ci].outbuf.len()
+        let m = self.conns[ci].ws_marks
+        if n > self.conns[ci].out_off and (m.len() == 0 or m[m.len() - 1] < n):
+            self.conns[ci].ws_marks.push(n)
+
     # IAC <verb> <opt>
     fn tel_cmd(mut self, ci: i32, verb: i32, opt: i32):
         if !self.conn_ok(ci):
@@ -221,6 +255,7 @@ impl vm::Vm:
         self.raw_byte(ci, IAC)
         self.raw_byte(ci, verb)
         self.raw_byte(ci, opt)
+        self.raw_mark(ci)
 
     # IAC SB <opt> <data, 0xff doubled> IAC SE
     fn tel_sub(mut self, ci: i32, opt: i32, data: Bytes):
@@ -235,6 +270,7 @@ impl vm::Vm:
                 self.raw_byte(ci, IAC)
         self.raw_byte(ci, IAC)
         self.raw_byte(ci, SE)
+        self.raw_mark(ci)
 
     # Text for the user (Connection send()): `\r\n` goes out as `\n` and a
     # lone `\n` as `\r\n` -- the reference's replace(s, ({ "\r\n", "\n" }),
@@ -248,7 +284,10 @@ impl vm::Vm:
             self.deliver_snoop(ci, s)
             if !self.conn_ok(ci):
                 return
-        let b = bytes_from_str(s)
+        let raw = self.conns[ci].raw
+        # a no-telnet (WebSocket text) connection is UTF-8, and the
+        # reference's string_to_utf8() re-encodes every byte above 127
+        let b = if raw: latin1_utf8(bytes_from_str(s)) else: bytes_from_str(s)
         let n = b.len()
         let mut i = 0
         while i < n:
@@ -260,19 +299,21 @@ impl vm::Vm:
             if c == 10:
                 self.raw_byte(ci, 13)
                 self.raw_byte(ci, 10)
-            elif c == IAC:
+            elif c == IAC and !raw:
                 self.raw_byte(ci, IAC)
                 self.raw_byte(ci, IAC)
             else:
                 self.conns[ci].outbuf.push(b[i])
             i += 1
+        self.raw_mark(ci)
 
     # The end of a prompt: IAC EOR once the client asked for EOR, else IAC GA.
     fn mark_prompt(mut self, ci: i32):
-        if !self.conn_ok(ci):
+        if !self.conn_ok(ci) or self.conns[ci].raw:
             return
         self.raw_byte(ci, IAC)
         self.raw_byte(ci, if self.conns[ci].local_on.contains(TELOPT_EOR): EOR_MARK else: GA)
+        self.raw_mark(ci)
 
     # Write what is queued; false when the socket broke. A connection with no
     # socket keeps its output for the test hooks.
@@ -282,11 +323,16 @@ impl vm::Vm:
         let s = self.conns[ci].sock
         if is_null(s):
             return true
+        if self.conns[ci].ws != 0 or self.conns[ci].tls >= 0:
+            self.conn_pack(ci)
+            return self.conn_send_wire(ci)
+        self.conn_compress(ci, zl::SYNC_FLUSH)
         while self.conns[ci].out_off < self.conns[ci].outbuf.len():
             let n = tcp_send_bytes(s, self.conns[ci].outbuf, self.conns[ci].out_off)
             if n < 0:
                 self.conns[ci].outbuf = Bytes()
                 self.conns[ci].out_off = 0
+                self.conns[ci].z_from = 0
                 return false
             if n == 0:
                 break
@@ -295,32 +341,165 @@ impl vm::Vm:
         if self.conns[ci].out_off >= self.conns[ci].outbuf.len():
             self.conns[ci].outbuf = Bytes()
             self.conns[ci].out_off = 0
+            self.conns[ci].z_from = 0
         elif self.conns[ci].out_off > 65536:
             self.conns[ci].outbuf = bytes_sub(self.conns[ci].outbuf, self.conns[ci].out_off, self.conns[ci].outbuf.len())
             self.conns[ci].out_off = 0
+            self.conns[ci].z_from = self.conns[ci].outbuf.len()
         true
 
     # Everything queued on a socketless connection, taken (test hooks).
     fn conn_take_output(mut self, ci: i32) -> Bytes:
         if ci < 0 or ci >= self.conns.len():
             return Bytes()
+        self.conn_compress(ci, zl::SYNC_FLUSH)
         let b = bytes_sub(self.conns[ci].outbuf, self.conns[ci].out_off, self.conns[ci].outbuf.len())
         self.conns[ci].outbuf = Bytes()
         self.conns[ci].out_off = 0
+        self.conns[ci].z_from = 0
         b
+
+    # --- MCCP --------------------------------------------------------------------------
+
+    # `havok mccp : 0` stops COMPRESS2 being offered or accepted.
+    fn mccp_enabled(self) -> bool:
+        if let Option::Some(x) = self.config.get("havok mccp"):
+            return x != "0"
+        true
+
+    # The text queued since the last compression (from `z_from`) goes into
+    # the connection's stream, ending with a sync flush, or with the end of
+    # the stream (FINISH). Bytes before `z_from` are already wire bytes.
+    fn conn_compress(mut self, ci: i32, flush: i32):
+        if !self.conns[ci].z_on:
+            return
+        let ob = self.conns[ci].outbuf
+        let zf = self.conns[ci].z_from
+        if zf >= ob.len() and flush != zl::FINISH:
+            return
+        let packed = self.conns[ci].zout.deflate(bytes_sub(ob, zf, ob.len()), flush)
+        let mut nb = bytes_sub(ob, self.conns[ci].out_off, zf)
+        for i in 0..packed.len():
+            nb.push(packed[i])
+        self.conns[ci].outbuf = nb
+        self.conns[ci].out_off = 0
+        self.conns[ci].z_from = nb.len()
+
+    # net.pike end_compression(): the stream's end goes out, and what
+    # follows is plain again.
+    fn end_compression(mut self, ci: i32):
+        if !self.conns[ci].z_on:
+            return
+        if self.conns[ci].ws != 0:
+            # the stream's end is a frame of its own, after what is queued
+            if !is_null(self.conns[ci].sock):
+                self.conn_pack(ci)
+            let tail = self.conns[ci].zout.deflate(Bytes(), zl::FINISH)
+            self.conns[ci].z_on = false
+            for i in 0..tail.len():
+                self.conns[ci].outbuf.push(tail[i])
+            self.raw_mark(ci)
+        else:
+            self.conn_compress(ci, zl::FINISH)
+            self.conns[ci].z_on = false
+        self.conns[ci].zout = zl::Deflater()
+        self.conns[ci].local_on.remove(TELOPT_COMPRESS2)
+
+    # The queued telnet bytes (`outbuf`) to wire bytes (`wire`): compressed
+    # (MCCP), framed (a WebSocket's frames, one per marked piece), encrypted
+    # (TLS).
+    fn conn_pack(mut self, ci: i32):
+        let ob = self.conns[ci].outbuf
+        let off = self.conns[ci].out_off
+        let mut plain: Bytes = Bytes()
+        if self.conns[ci].ws != 0:
+            let mut cuts = self.conns[ci].ws_marks
+            if cuts.len() == 0 or cuts[cuts.len() - 1] < ob.len():
+                cuts.push(ob.len())
+            let mut a = off
+            for k in 0..cuts.len():
+                let b = cuts[k]
+                if b <= a:
+                    continue
+                let mut piece = bytes_sub(ob, a, b)
+                if self.conns[ci].z_on and a >= self.conns[ci].z_from:
+                    piece = self.conns[ci].zout.deflate(piece, zl::SYNC_FLUSH)
+                # the reference's WsLink drops writes once it has closed
+                if self.conns[ci].ws_state == 1 and !self.conns[ci].ws_gone:
+                    let fr = ws_frame(if self.conns[ci].ws == 2: 2 else: 1, piece)
+                    for q in 0..fr.len():
+                        plain.push(fr[q])
+                a = b
+        else:
+            self.conn_compress(ci, zl::SYNC_FLUSH)
+            plain = bytes_sub(self.conns[ci].outbuf, self.conns[ci].out_off, self.conns[ci].outbuf.len())
+        self.conns[ci].outbuf = Bytes()
+        self.conns[ci].out_off = 0
+        self.conns[ci].z_from = 0
+        self.conns[ci].ws_marks = List<i32>()
+        self.conn_wire(ci, plain)
+
+    # Bytes for the socket, encrypted on a TLS connection.
+    fn conn_wire(mut self, ci: i32, plain: Bytes):
+        let li = self.conns[ci].tls
+        if li >= 0:
+            self.tls_send(li, plain)
+            let c = self.tls_take(li)
+            for i in 0..c.len():
+                self.conns[ci].wire.push(c[i])
+        else:
+            for i in 0..plain.len():
+                self.conns[ci].wire.push(plain[i])
+
+    # Write what `wire` holds; false when the socket broke.
+    fn conn_send_wire(mut self, ci: i32) -> bool:
+        let s = self.conns[ci].sock
+        if is_null(s):
+            return true
+        while self.conns[ci].wire_off < self.conns[ci].wire.len():
+            let n = tcp_send_bytes(s, self.conns[ci].wire, self.conns[ci].wire_off)
+            if n < 0:
+                self.conns[ci].wire = Bytes()
+                self.conns[ci].wire_off = 0
+                return false
+            if n == 0:
+                break
+            self.conns[ci].wire_off = self.conns[ci].wire_off + n
+            self.count_traffic(self.conns[ci].local_port, 1, n)
+        if self.conns[ci].wire_off >= self.conns[ci].wire.len():
+            self.conns[ci].wire = Bytes()
+            self.conns[ci].wire_off = 0
+        elif self.conns[ci].wire_off > 65536:
+            self.conns[ci].wire = bytes_sub(self.conns[ci].wire, self.conns[ci].wire_off, self.conns[ci].wire.len())
+            self.conns[ci].wire_off = 0
+        true
+
+    fn conn_pending_out(self, ci: i32) -> bool:
+        self.conns[ci].outbuf.len() > self.conns[ci].out_off or self.conns[ci].wire.len() > self.conns[ci].wire_off
 
     # --- opening and closing ---------------------------------------------------------
 
     # Connection create(): the offers, in the reference's order.
     fn conn_offer(mut self, ci: i32):
+        # a no-telnet (WebSocket text) connection negotiates nothing
+        if self.conns[ci].raw:
+            return
+        # one raw_send() in the reference: one WebSocket frame
         let dos = [TELOPT_TTYPE, TELOPT_NAWS, TELOPT_NEW_ENVIRON]
         for i in 0..dos.len():
             self.conns[ci].remote_asked.insert(dos[i])
-            self.tel_cmd(ci, DO, dos[i])
-        let wills = [TELOPT_MSSP, TELOPT_GMCP, TELOPT_MSDP, TELOPT_MSP, TELOPT_ZMP, TELOPT_MXP, TELOPT_EOR, TELOPT_CHARSET]
+            self.raw_byte(ci, IAC)
+            self.raw_byte(ci, DO)
+            self.raw_byte(ci, dos[i])
+        let mut wills = [TELOPT_MSSP, TELOPT_GMCP, TELOPT_MSDP, TELOPT_MSP, TELOPT_ZMP, TELOPT_MXP, TELOPT_EOR, TELOPT_CHARSET]
+        if self.mccp_enabled():
+            wills.push(TELOPT_COMPRESS2)
         for i in 0..wills.len():
             self.conns[ci].local_asked.insert(wills[i])
-            self.tel_cmd(ci, WILL, wills[i])
+            self.raw_byte(ci, IAC)
+            self.raw_byte(ci, WILL)
+            self.raw_byte(ci, wills[i])
+        self.raw_mark(ci)
 
     # The pending input_to's values go; its function might be all that
     # holds some object.
@@ -330,14 +509,42 @@ impl vm::Vm:
         self.conns[ci].input_args = List<val::Value>()
 
     fn conn_shut(mut self, ci: i32):
+        self.end_compression(ci)
         self.conn_flush(ci)
         self.conns[ci].closed = true
         self.conns[ci].snooped_by = val::Value::Int(0 as i64)
         self.clear_input_to(ci)
         let s = self.conns[ci].sock
+        if !is_null(s) and self.conns[ci].ws != 0 and !self.conns[ci].tls_waiting:
+            # the reference's WsLink close(): a close frame (1000) unless it
+            # already closed, and the socket waits for the peer
+            if !self.conns[ci].ws_gone and self.conns[ci].ws_state == 1:
+                self.conns[ci].ws_gone = true
+                self.conns[ci].ws_state = 2
+                self.conn_wire(ci, ws_frame(8, ws_reason(1000)))
+            self.conns[ci].ws_gone = true
+            self.conns[ci].linger = true
+            if self.conn_send_wire(ci):
+                return
+        self.conn_release(ci)
+
+    # The socket goes for good (TLS: after a close_notify).
+    fn conn_release(mut self, ci: i32):
+        let s = self.conns[ci].sock
+        let li = self.conns[ci].tls
         if !is_null(s):
+            if li >= 0:
+                self.tls_close(li)
+                self.conn_wire(ci, Bytes())
+                self.conn_send_wire(ci)
             tcp_close(s)
             self.conns[ci].sock = null_ptr()
+        if li >= 0:
+            self.tls_free(li)
+            self.conns[ci].tls = -1
+        self.conns[ci].linger = false
+        self.conns[ci].wire = Bytes()
+        self.conns[ci].wire_off = 0
         self.conns[ci].alive = false
 
     # Connection close(): the user, if still attached, goes net-dead, with
@@ -496,7 +703,7 @@ impl vm::Vm:
     # so two ends can't loop.
     fn negotiate(mut self, ci: i32, verb: i32, opt: i32):
         if verb == DO:
-            if !local_opt(opt):
+            if !local_opt(opt) or (opt == TELOPT_COMPRESS2 and !self.mccp_enabled()):
                 self.tel_cmd(ci, WONT, opt)
                 return
             # only on while a noecho input_to waits
@@ -556,6 +763,12 @@ impl vm::Vm:
             for i in 0..t.len():
                 d.push(t[i])
             self.tel_sub(ci, TELOPT_CHARSET, d)
+        elif opt == TELOPT_COMPRESS2:
+            # everything after IAC SB COMPRESS2 IAC SE is compressed
+            self.tel_sub(ci, TELOPT_COMPRESS2, Bytes())
+            self.conns[ci].z_on = true
+            self.conns[ci].zout = zl::Deflater()
+            self.conns[ci].z_from = self.conns[ci].outbuf.len()
 
     fn local_disabled(mut self, ci: i32, opt: i32):
         if !self.conn_ok(ci):
@@ -572,6 +785,9 @@ impl vm::Vm:
             self.conns[ci].msdp = false
         elif opt == TELOPT_MSP:
             self.conns[ci].msp = false
+        elif opt == TELOPT_COMPRESS2:
+            self.end_compression(ci)
+            self.conn_flush(ci)
 
     fn remote_enabled(mut self, ci: i32, opt: i32):
         if opt == TELOPT_TTYPE:
@@ -1101,9 +1317,12 @@ impl vm::Vm:
             self.clear_input_to(ci)
             self.conns[ci].charmode = false
             if (flags & I_NOECHO) != 0 and self.conns[ci].noecho_active:
-                self.tel_cmd(ci, WONT, TELOPT_ECHO)
+                self.raw_byte(ci, IAC)
+                self.raw_byte(ci, WONT)
+                self.raw_byte(ci, TELOPT_ECHO)
                 self.raw_byte(ci, 13)
                 self.raw_byte(ci, 10)
+                self.raw_mark(ci)
                 self.conns[ci].noecho_active = false
             let mut all: List<val::Value> = [val::Value::Str(line)]
             for i in 0..args.len():
@@ -1190,7 +1409,7 @@ impl vm::Vm:
         self.conns[ci].input_flags = flags
         self.conns[ci].input_args = args
         self.conns[ci].charmode = is_char
-        if (flags & I_NOECHO) != 0 and !self.conns[ci].noecho_active:
+        if (flags & I_NOECHO) != 0 and !self.conns[ci].noecho_active and !self.conns[ci].raw:
             self.tel_cmd(ci, WILL, TELOPT_ECHO)
             self.conns[ci].noecho_active = true
         true
@@ -1216,6 +1435,8 @@ impl vm::Vm:
 
     # MXP: IAC SB MXP IAC SE starts MXP mode on the client.
     fn act_mxp(mut self, ci: i32):
+        if self.conns[ci].raw:
+            return
         self.tel_sub(ci, TELOPT_MXP, Bytes())
 
     # MSP trigger as a subnegotiation: the out-of-band form Mudlet reads.
@@ -1240,9 +1461,9 @@ impl vm::Vm:
                 self.map_set(em, val::Value::Str(c.env_keys[i]), val::Value::Str(v))
         self.map_set(m, val::Value::Str("environ"), val::Value::Map(em))
         self.map_set(m, val::Value::Str("utf8"), self.bool_v(c.utf8))
-        self.map_set(m, val::Value::Str("tls"), val::Value::Int(0 as i64))
-        self.map_set(m, val::Value::Str("websocket"), val::Value::Int(0 as i64))
-        self.map_set(m, val::Value::Str("mccp"), val::Value::Int(0 as i64))
+        self.map_set(m, val::Value::Str("tls"), self.bool_v(c.tls >= 0))
+        self.map_set(m, val::Value::Str("websocket"), self.bool_v(c.raw))
+        self.map_set(m, val::Value::Str("mccp"), self.bool_v(c.z_on))
         self.map_set(m, val::Value::Str("eor"), self.bool_v(c.local_on.contains(TELOPT_EOR)))
         self.map_set(m, val::Value::Str("gmcp"), self.bool_v(c.gmcp))
         self.map_set(m, val::Value::Str("msdp"), self.bool_v(c.msdp))
@@ -1261,6 +1482,12 @@ impl vm::Vm:
     # Telnet on `port` (net.pike listen()); false when the port can't be
     # bound. Port 0 binds a free port on loopback, as the reference does.
     fn net_listen(mut self, port: i32) -> i32:
+        self.net_listen_kind(port, nd::LK_TELNET, null_ptr(), false)
+
+    # A telnet or HTTP port (P1 #8), over TLS when `ctx` is a server
+    # context (net.pike / http.pike listen()); 0 when the port can't be
+    # bound. `test`: opened by a case runner hook.
+    fn net_listen_kind(mut self, port: i32, kind: i32, ctx: ptr, test: bool) -> i32:
         let l = tcp_listen(port, port == 0)
         if is_null(l):
             self.log_msg(f"Cannot bind port {port}")
@@ -1268,8 +1495,36 @@ impl vm::Vm:
         let p = tcp_local_port(l)
         self.listeners.push(l)
         self.listener_ports.push(p)
-        self.log_msg(f"Accepting connections on port {p}")
+        self.listener_kinds.push(kind)
+        self.listener_ctxs.push(ctx)
+        self.listener_test.push(test)
+        let tls = if is_null(ctx): "" else: "TLS "
+        if kind == nd::LK_HTTP:
+            self.log_msg(if is_null(ctx): f"Accepting HTTP on port {p}" else: f"Accepting HTTPS on port {p}")
+        else:
+            self.log_msg(f"Accepting {tls}connections on port {p}")
         p
+
+    # Stop listening on listener li.
+    fn net_unlisten(mut self, li: i32):
+        tcp_close(self.listeners[li])
+        let mut ls: List<ptr> = List<ptr>()
+        let mut ps: List<i32> = List<i32>()
+        let mut ks: List<i32> = List<i32>()
+        let mut cs: List<ptr> = List<ptr>()
+        let mut ts: List<bool> = List<bool>()
+        for i in 0..self.listeners.len():
+            if i != li:
+                ls.push(self.listeners[i])
+                ps.push(self.listener_ports[i])
+                ks.push(self.listener_kinds[i])
+                cs.push(self.listener_ctxs[i])
+                ts.push(self.listener_test[i])
+        self.listeners = ls
+        self.listener_ports = ps
+        self.listener_kinds = ks
+        self.listener_ctxs = cs
+        self.listener_test = ts
 
     # One pass: wait up to `timeout_ms` for input, take new connections, read
     # what arrived, and write what's queued. The LPC sockets (sockets.star)
@@ -1281,6 +1536,8 @@ impl vm::Vm:
         self.run_resolves()
         self.run_finds()
         self.sock_fail_dead_connects()
+        self.sock_deliver_early()
+        self.http_timeouts()
         let mut handles: List<ptr> = List<ptr>()
         let mut which: List<i32> = List<i32>()
         let mut interest = Bytes()
@@ -1289,10 +1546,25 @@ impl vm::Vm:
             which.push(-1 - i)
             interest.push(1 as u8)
         for i in 0..self.conns.len():
-            if self.conn_ok(i) and !is_null(self.conns[i].sock):
+            if self.conns[i].alive and !is_null(self.conns[i].sock) and (self.conn_ok(i) or self.conns[i].linger):
                 handles.push(self.conns[i].sock)
                 which.push(i)
                 interest.push(1 as u8)
+        # HTTP connections and STREAM_TLS handshakes (P1 #8) come next, coded
+        # below -1 - listeners
+        let first_http = handles.len()
+        let mut http_ids: List<i32> = List<i32>()
+        for h in 0..self.https.len():
+            let want = self.http_interest(h)
+            if want != 0:
+                handles.push(self.https[h].sock)
+                http_ids.push(h)
+                interest.push(want as u8)
+        let first_acc = handles.len()
+        let nacc = self.tls_accepting.len()
+        for a in 0..nacc:
+            handles.push(self.tls_accepting[a].sock)
+            interest.push((if self.tls_accepting[a].out.len() > 0: 5 else: 1) as u8)
         let first_sock = handles.len()
         let mut sock_fds: List<i32> = List<i32>()
         for fd in 0..self.socks.len():
@@ -1309,12 +1581,30 @@ impl vm::Vm:
             let w = which[k]
             if w < 0:
                 self.accept_all(-1 - w)
-            elif self.conn_ok(w) and !is_null(self.conns[w].sock):
+            elif w < self.conns.len() and self.conns[w].alive and !is_null(self.conns[w].sock):
                 let d = tcp_recv_bytes(self.conns[w].sock)
-                if d.len() == 0:
+                if self.conns[w].linger:
+                    self.conn_linger_input(w, d)
+                elif d.len() == 0:
                     self.conn_close(w, "connection closed by peer")
                 else:
-                    self.conn_input(w, d)
+                    self.conn_socket_input(w, d)
+        for j in 0..http_ids.len():
+            let k = first_http + j
+            if k < ready.len() and (ready[k] as i32) != 0:
+                let h = http_ids[j]
+                if ((ready[k] as i32) & 3) != 0:
+                    self.http_ready(h)
+                if self.http_ok(h):
+                    self.http_flush(h)
+        let mut acc_done = false
+        for a in 0..nacc:
+            let k = first_acc + a
+            if k < ready.len() and (ready[k] as i32) != 0:
+                if self.sock_tls_accept_ready(a):
+                    acc_done = true
+        if acc_done:
+            self.sock_tls_accept_sweep()
         for j in 0..sock_fds.len():
             let k = first_sock + j
             if k < ready.len() and (ready[k] as i32) != 0:
@@ -1336,32 +1626,259 @@ impl vm::Vm:
                 due = co
         if self.next_sweep_ms != (0 as i64) and self.next_sweep_ms < due:
             due = self.next_sweep_ms
+        let hd = self.http_next_due()
+        if hd != (0 as i64) and hd < due:
+            due = hd
         if due <= now:
             return 0
         (due - now) as i32
 
     fn net_flush_all(mut self):
         for i in 0..self.conns.len():
-            if self.conn_ok(i) and self.conns[i].outbuf.len() > self.conns[i].out_off:
+            if self.conn_ok(i) and self.conn_pending_out(i):
                 if !self.conn_flush(i):
                     self.conn_close(i, "write failed")
+            elif self.conns[i].alive and self.conns[i].linger and self.conns[i].wire.len() > self.conns[i].wire_off:
+                if !self.conn_send_wire(i):
+                    self.conn_release(i)
+        for h in 0..self.https.len():
+            if self.http_ok(h) and self.https[h].out.len() > self.https[h].out_off:
+                self.http_flush(h)
 
     fn accept_all(mut self, li: i32):
         let l = self.listeners[li]
         let port = self.listener_ports[li]
+        let kind = self.listener_kinds[li]
+        let ctx = self.listener_ctxs[li]
         let mut s = tcp_accept(l)
         while !is_null(s):
-            let ci = self.conn_new(s, port)
-            self.conns[ci].ip = tcp_peer_ip(s)
+            if kind == nd::LK_HTTP:
+                self.http_new(s, port, ctx)
+            elif !is_null(ctx):
+                # the telnet session starts once the handshake is done
+                let ci = self.conn_new(s, port)
+                self.conns[ci].ip = tcp_peer_ip(s)
+                self.conns[ci].tls = self.tls_open(ctx, true, "")
+                self.conns[ci].tls_waiting = true
+            else:
+                let ci = self.conn_new(s, port)
+                self.conns[ci].ip = tcp_peer_ip(s)
+                self.conn_offer(ci)
+                self.start_session(ci)
+                self.conn_flush(ci)
+            s = tcp_accept(l)
+
+    # --- TLS and WebSocket input (P1 #8) ---------------------------------------------
+
+    # Bytes from a connection's socket: through TLS, through the WebSocket
+    # framing, into the telnet layer.
+    fn conn_socket_input(mut self, ci: i32, d: Bytes):
+        let li = self.conns[ci].tls
+        if li < 0:
+            if self.conns[ci].ws != 0:
+                self.ws_input(ci, d)
+            else:
+                self.conn_input(ci, d)
+            return
+        let plain = self.tls_feed(li, d)
+        self.conn_wire(ci, Bytes())
+        if self.tlss[li].failed or self.tlss[li].peer_closed:
+            if self.conns[ci].tls_waiting:
+                # a failed handshake: no session ever started
+                self.conn_send_wire(ci)
+                self.conns[ci].closed = true
+                self.conn_release(ci)
+            else:
+                self.conn_close(ci, "connection closed by peer")
+            return
+        if self.conns[ci].tls_waiting:
+            if !self.tlss[li].up:
+                self.conn_send_wire(ci)
+                return
+            self.conns[ci].tls_waiting = false
+            self.conns[ci].last_input = vm::epoch_now()
             self.conn_offer(ci)
             self.start_session(ci)
+            if !self.conn_ok(ci):
+                return
+        if plain.len() > 0:
+            if self.conns[ci].ws != 0:
+                self.ws_input(ci, plain)
+            else:
+                self.conn_input(ci, plain)
+        if self.conn_ok(ci):
             self.conn_flush(ci)
-            s = tcp_accept(l)
+
+    # A lingering WebSocket (closed for LPC, the socket waiting for the
+    # peer): its close frame, answering ours, or its hang-up ends it.
+    fn conn_linger_input(mut self, ci: i32, d: Bytes):
+        if d.len() == 0:
+            self.conn_release(ci)
+            return
+        let mut plain = d
+        let li = self.conns[ci].tls
+        if li >= 0:
+            plain = self.tls_feed(li, d)
+            self.conn_wire(ci, Bytes())
+            if self.tlss[li].failed or self.tlss[li].peer_closed:
+                self.conn_release(ci)
+                return
+        for i in 0..plain.len():
+            self.conns[ci].ws_in.push(plain[i])
+        while true:
+            let f = ws_parse(self.conns[ci].ws_in)
+            if f.size == 0:
+                break
+            self.conns[ci].ws_in = bytes_sub(self.conns[ci].ws_in, f.size, self.conns[ci].ws_in.len())
+            if f.op == 8 and self.conns[ci].ws_state == 2:
+                self.conns[ci].ws_state = 3
+                self.conn_release(ci)
+                return
+
+    # An upgraded WebSocket (http.star http_upgrade()): the socket and TLS
+    # session move from the HTTP connection, the 101 reply goes first, then
+    # (telnet subprotocol) the offers, and the session starts.
+    fn ws_start(mut self, sock: ptr, tls: i32, port: i32, ip: str, binary: bool, reply: Bytes, pending: Bytes, pending_off: i32):
+        let ci = self.conn_new(sock, port)
+        self.conns[ci].ip = ip
+        self.conns[ci].tls = tls
+        self.conns[ci].ws = if binary: 2 else: 1
+        self.conns[ci].raw = !binary
+        self.conns[ci].utf8 = !binary
+        self.conns[ci].ws_state = 1
+        for i in pending_off..pending.len():
+            self.conns[ci].wire.push(pending[i])
+        self.conn_wire(ci, reply)
+        self.conn_offer(ci)
+        self.start_session(ci)
+        if self.conn_ok(ci):
+            self.conn_flush(ci)
+
+    # Pike's WebSocket connection, websocket_in(): frames as they complete.
+    fn ws_input(mut self, ci: i32, d: Bytes):
+        for i in 0..d.len():
+            self.conns[ci].ws_in.push(d[i])
+        while self.conn_ok(ci):
+            let f = ws_parse(self.conns[ci].ws_in)
+            if f.size == 0:
+                return
+            self.conns[ci].ws_in = bytes_sub(self.conns[ci].ws_in, f.size, self.conns[ci].ws_in.len())
+            if self.conns[ci].ws_state == 3:
+                continue
+            if f.op == 9:
+                if self.conns[ci].ws_state == 1:
+                    self.conn_pack(ci)
+                    self.conn_wire(ci, ws_frame(10, f.data))
+                continue
+            if f.op == 8:
+                if self.conns[ci].ws_state == 1:
+                    # echo the close, then the user goes net-dead; the socket
+                    # waits for the peer to hang up
+                    let reason = if f.data.len() >= 2: (f.data[0] as i32) * 256 + (f.data[1] as i32) else: 1000
+                    self.conn_pack(ci)
+                    self.conn_wire(ci, ws_frame(8, ws_reason(reason)))
+                    self.conns[ci].ws_state = 3
+                    self.conns[ci].ws_gone = true
+                    self.conn_send_wire(ci)
+                    self.conn_close(ci, "connection closed by peer")
+                    if ci < self.conns.len() and self.conns[ci].alive and !is_null(self.conns[ci].sock):
+                        self.conns[ci].alive = true
+                        self.conns[ci].linger = true
+                return
+            if f.op == 1:
+                let line = f.data
+                if self.conns[ci].ws == 2:
+                    self.conn_input(ci, line)
+                else:
+                    let mut l2 = line
+                    l2.push(10 as u8)
+                    self.conn_input(ci, l2)
+            elif f.op == 2:
+                self.conn_input(ci, f.data)
 
 # One parsed MSDP value and the offset after it.
 struct MsdpRead:
     v: val::Value
     pos: i32
+
+# A WebSocket frame (Pike's WebSocket Parser): its opcode, its payload
+# (unmasked) and the bytes it took; size 0 while incomplete.
+struct WsFrame:
+    op: i32
+    data: Bytes
+    size: i32
+
+fn ws_parse(b: Bytes) -> WsFrame:
+    let none = WsFrame(op = 0, data = Bytes(), size = 0)
+    if b.len() < 2:
+        return none
+    let op = (b[0] as i32) & 15
+    let masked = ((b[1] as i32) & 128) != 0
+    let mut n = (b[1] as i32) & 127
+    let mut h = 2
+    if n == 126:
+        if b.len() < 4:
+            return none
+        n = (b[2] as i32) * 256 + (b[3] as i32)
+        h = 4
+    elif n == 127:
+        if b.len() < 10:
+            return none
+        # a frame past 2 GB isn't something a MUD client sends
+        n = 0
+        for k in 6..10:
+            n = n * 256 + (b[k] as i32)
+        h = 10
+    let mh = if masked: 4 else: 0
+    if b.len() < h + mh + n:
+        return none
+    let mut data: Bytes = Bytes()
+    for i in 0..n:
+        let c = b[h + mh + i] as i32
+        data.push((if masked: c ^ (b[h + (i % 4)] as i32) else: c) as u8)
+    WsFrame(op = op, data = data, size = h + mh + n)
+
+# A server's frame: final, unmasked (Pike's Frame encode())
+fn ws_frame(op: i32, data: Bytes) -> Bytes:
+    let mut o: Bytes = Bytes()
+    o.push((128 | op) as u8)
+    let n = data.len()
+    if n > 65535:
+        o.push(127 as u8)
+        for k in 0..4:
+            o.push(0 as u8)
+        o.push(((n >> 24) & 255) as u8)
+        o.push(((n >> 16) & 255) as u8)
+        o.push(((n >> 8) & 255) as u8)
+        o.push((n & 255) as u8)
+    elif n > 125:
+        o.push(126 as u8)
+        o.push((n >> 8) as u8)
+        o.push((n & 255) as u8)
+    else:
+        o.push(n as u8)
+    for i in 0..n:
+        o.push(data[i])
+    o
+
+# a close frame's payload: the status code, big-endian
+fn ws_reason(code: i32) -> Bytes:
+    let mut o: Bytes = Bytes()
+    o.push(((code >> 8) & 255) as u8)
+    o.push((code & 255) as u8)
+    o
+
+# string_to_utf8() of an 8-bit string: bytes above 127 become two
+fn latin1_utf8(b: Bytes) -> Bytes:
+    let mut o: Bytes = Bytes()
+    for i in 0..b.len():
+        let c = b[i] as i32
+        if c < 128:
+            o.push(b[i])
+        else:
+            o.push((192 | (c >> 6)) as u8)
+            o.push((128 | (c & 63)) as u8)
+    o
 
 # Bytes in the UTF-8 sequence starting at b[p] (0: not all here yet).
 fn utf8_length(b: Bytes, p: i32) -> i32:

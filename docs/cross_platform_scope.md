@@ -221,6 +221,19 @@ the Linux IR passes the internal IR verifier and `clang -c
 on the devbox. Declared on first use, like `net_server.rs`'s externs, so no
 other program needs the library.
 
+`codegen/ffi_bytes.rs` — `ptr_to_bytes`/`ptr_write_bytes` (2026-10-26,
+`projects/havokos` HavokOS P1 #8: binary data for OpenSSL's memory BIOs,
+and the general way to read a C struct's bytes). Not OS-facing: a `malloc`
+and a `memcpy`, the same on every target, so no `Target` split. Run end to
+end by `tests/frontend_ffi_bytes.rs` (including a TLS handshake over the
+OpenSSL DLLs in `openssl/lib/x64`, see `openssl/README.md`); the Linux IR
+passes the internal IR verifier and `clang -c
+--target=x86_64-unknown-linux-gnu` in the same file. The HavokOS TLS layer
+itself is all `extern "C"` over OpenSSL 3, whose API is the same on Linux
+(the system's `libssl`/`libcrypto`); its one platform wrinkle, C `long`
+parameters, is handled by declaring them `i64` (see `openssl/README.md`).
+Not yet built and run on the devbox.
+
 ## Hard, deliberately unstarted: text rendering (`codegen/system_font.rs`)
 
 Unchanged from this module's own doc comment: GDI's font engine

@@ -11,9 +11,11 @@
 # databases (`sqldb.star`, P1 #7). Efuns this VM still lacks raise the
 # reference's own "not implemented" error: the compiler already resolves
 # their names as efuns.
-# A program that includes this file uses the compiler's socket builtins and
-# SQLite, so it is built with `-l ws2_32 -L sqlite/lib/x64 -l sqlite3` (from
-# the repository root) and runs with `sqlite3.dll` beside it.
+# A program that includes this file uses the compiler's socket builtins,
+# SQLite and (since P1 #8, for TLS) OpenSSL, so it is built with `-l ws2_32
+# -L sqlite/lib/x64 -l sqlite3 -L openssl/lib/x64 -l ssl -l crypto` (from the
+# repository root) and runs with `sqlite3.dll`, `libssl-3-x64.dll` and
+# `libcrypto-3-x64.dll` beside it.
 #
 # Every efun gets the calling object (`self_ob`, the reference's `self`) --
 # the frame's object for a direct call, the owner for an efun pointer.
@@ -35,6 +37,9 @@ import "sockets.star" as sk
 import "json.star" as js
 import "ext.star" as ext
 import "sqldb.star" as sq
+import "tls.star" as tl
+import "http.star" as htp
+import "buffers.star" as bfs
 
 impl vm::Vm:
     fn arg(self, args: List<val::Value>, i: i32) -> val::Value:
@@ -66,6 +71,10 @@ impl vm::Vm:
             return self.efun_ext(code, name, args, self_ob)
         if code >= 420 and code < 430:
             return self.efun_db(code, name, args, self_ob)
+        if code >= 430 and code < 440:
+            return self.efun_http(code, args, self_ob)
+        if code >= 440 and code < 450:
+            return self.efun_buffer(code, args, self_ob)
         if code >= 200:
             return self.efun_obj(code, name, args, self_ob)
         if code == et::E_MASTER:
@@ -98,6 +107,8 @@ impl vm::Vm:
                     return val::Value::Int(self.maps[h].keys.len() as i64)
                 val::Value::Cls(h) ->
                     return val::Value::Int(self.clss[h].vals.len() as i64)
+                val::Value::Buf(h) ->
+                    return val::Value::Int(self.bufs[h].data.len() as i64)
                 _ ->
                     return val::Value::Int(0 as i64)
         if code == et::E_EVALUATE:

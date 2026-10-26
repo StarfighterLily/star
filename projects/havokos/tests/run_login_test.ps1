@@ -13,11 +13,16 @@
 #      restricted command, undo, x and the command's callback; then
 #      `bug -r`, a `!` mud command from inside the editor, and quitting
 #      mid-edit,
+#   4. (P1 #8) logs in once more over MCCP v2, on a second driver started
+#      with the config as it is -- the reference's default offers
+#      COMPRESS2 -- where the first three run with `havok mccp : 0`
+#      appended (fixtures/ds39_login_mccp.script; telnet_script.exe shows
+#      the stream inflated, see its header),
 # and each transcript -- every byte the driver sent, telnet negotiation
 # included -- is compared with what the live Pike driver sent for the same
-# script, frozen in fixtures/ds39_login_{new,again}.expected.txt (recorded
-# with tools/ref_serve.pike: the same efun stubs as the boot test, and
-# `havok mccp : 0`).
+# script, frozen in fixtures/ds39_login_{new,again,edit,mccp}.expected.txt
+# (recorded with tools/ref_serve.pike: the same efun stubs as the boot
+# test, and `havok mccp : 0` but for the MCCP login).
 #
 # What is normalized, and why:
 # - Dead Souls rolls a new character's stats with random(), and the two
@@ -31,9 +36,9 @@
 #
 # Usage: powershell -File projects/havokos/tests/run_login_test.ps1 [-DsRoot E:\ds3.9]
 # (rebuild the tools first if any .star file changed:
-#   target/release/star.exe build projects/havokos/boot.star -o projects/havokos/tools/havokos.exe -l ws2_32 -L sqlite/lib/x64 -l sqlite3
+#   target/release/star.exe build projects/havokos/boot.star -o projects/havokos/tools/havokos.exe -l ws2_32 -L sqlite/lib/x64 -l sqlite3 -L openssl/lib/x64 -l ssl -l crypto
 #   target/release/star.exe build projects/havokos/tools/telnet_script.star -o projects/havokos/tools/telnet_script.exe -l ws2_32)
-# Exits 0 when all three transcripts match, 1 otherwise. About 25 s.
+# Exits 0 when all four transcripts match, 1 otherwise. About 30 s.
 #
 # Regenerating the fixtures (only after confirming the *reference's* own
 # behavior changed), on a fresh copy of the mudlib:
@@ -42,7 +47,9 @@
 #   tools/telnet_script.exe 7801 tests/fixtures/ds39_login_again.script > tests/fixtures/ds39_login_again.expected.txt
 #   tools/telnet_script.exe 7801 tests/fixtures/ds39_login_edit.script > tests/fixtures/ds39_login_edit.expected.txt
 # (the three in that order, on one server: each needs the character the
-# first one made)
+# first one made), then stop that server and on the same scratch copy
+#   pike tools/ref_serve.pike <havokos>/pike <scratch>/bin/mudos.cfg <scratch>/lib tests/fixtures/ds39_boot_stubs.txt 7801 mccp
+#   tools/telnet_script.exe 7801 tests/fixtures/ds39_login_mccp.script > tests/fixtures/ds39_login_mccp.expected.txt
 
 param([string]$DsRoot = "E:\ds3.9")
 
@@ -91,37 +98,59 @@ $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,
 $probe.Start()
 $port = $probe.LocalEndpoint.Port
 $probe.Stop()
-$log = Join-Path $scratch "driver.log"
-$proc = Start-Process -FilePath $driver -ArgumentList @((Join-Path $scratch "bin\mudos.cfg"), $port) -RedirectStandardOutput $log -PassThru -NoNewWindow
-try {
+$cfg = Join-Path $scratch "bin\mudos.cfg"
+$plain = Get-Content -Raw $cfg
+
+# Start the driver on the scratch mudlib; it is listening when this returns.
+function Start-Driver([string]$name) {
+    $log = Join-Path $scratch "$name.log"
+    $p = Start-Process -FilePath $driver -ArgumentList @($cfg, $port) -RedirectStandardOutput $log -PassThru -NoNewWindow
     $deadline = (Get-Date).AddSeconds(60)
     while (-not ((Test-Path $log) -and (Select-String -Path $log -Pattern "Accepting connections" -Quiet))) {
-        if ((Get-Date) -gt $deadline -or $proc.HasExited) {
+        if ((Get-Date) -gt $deadline -or $p.HasExited) {
             Write-Host "FAIL: the driver did not start listening"
+            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
             exit 1
         }
         Start-Sleep -Milliseconds 200
     }
-    $failed = 0
-    foreach ($part in @("new", "again", "edit")) {
-        $got = @(& $client $port (Join-Path $here "fixtures\ds39_login_$part.script"))
-        $want = @(Get-Content (Join-Path $here "fixtures\ds39_login_$part.expected.txt"))
-        $diff = Compare-Object (Normalize $want) (Normalize $got) -SyncWindow 0
-        if ($diff) {
-            $diff | Select-Object -First 20 | ForEach-Object { Write-Host "$($_.SideIndicator) $($_.InputObject)" }
-            Write-Host "FAIL: ds39_login_$part differs from the reference"
-            $failed++
-        } else {
-            Write-Host "ds39_login_$part`: $($want.Count) lines match"
-        }
+    return $p
+}
+
+function Stop-Driver($p) {
+    if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+    if ($p) { $p.WaitForExit() }
+}
+
+$failed = 0
+function Check([string]$part) {
+    $got = @(& $client $port (Join-Path $here "fixtures\ds39_login_$part.script"))
+    $want = @(Get-Content (Join-Path $here "fixtures\ds39_login_$part.expected.txt"))
+    $diff = Compare-Object (Normalize $want) (Normalize $got) -SyncWindow 0
+    if ($diff) {
+        $diff | Select-Object -First 20 | ForEach-Object { Write-Host "$($_.SideIndicator) $($_.InputObject)" }
+        Write-Host "FAIL: ds39_login_$part differs from the reference"
+        $script:failed++
+    } else {
+        Write-Host "ds39_login_$part`: $($want.Count) lines match"
     }
+}
+
+$proc = $null
+try {
+    [IO.File]::WriteAllText($cfg, $plain + "`nhavok mccp : 0`n")
+    $proc = Start-Driver "driver"
+    foreach ($part in @("new", "again", "edit")) { Check $part }
+    Stop-Driver $proc
+    [IO.File]::WriteAllText($cfg, $plain)
+    $proc = Start-Driver "driver_mccp"
+    Check "mccp"
     if ($failed -eq 0) {
-        Write-Host "PASS: all three logins match the reference"
+        Write-Host "PASS: all four logins match the reference"
         exit 0
     }
     exit 1
 } finally {
-    if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
-    $proc.WaitForExit()
+    Stop-Driver $proc
     Remove-Item -Recurse -Force $scratch
 }

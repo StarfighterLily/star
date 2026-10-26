@@ -48,7 +48,10 @@ virtual machine**:
 | `havok/sockets.pike` (LPC sockets) and `efuns.pike` resolve() | `sockets.star` (on `sockdata.star`'s LSock), polled by `net.star` net_poll(); the OS side is the compiler's (`src/codegen/net_sock.rs`, M7) |
 | `havok/efuns.pike`'s HavokOS-only extensions (JSON, astar_path, find_files, watching, quotas, dependencies, profiling, status reports) and their `driver.pike`/`compiler.pike` machinery | `json.star`, and `ext.star` with its rows in `extdata.star` (M7) |
 | `havok/sqldb.pike` (the SQLite efuns) | `sqldb.star`, over the real SQLite library: `extern "C"` plus the compiler's `sqlite_open()`/`sqlite_prepare()` (`src/codegen/sqlite.rs`, P1 #7) |
-| `http.pike`, `tls.pike` | later (see roadmap) |
+| `havok/http.pike` (the HTTP port, WebSockets) over Pike's Protocols.HTTP.Server and Protocols.WebSocket | `http.star` (with `sha1.star`, `mimetypes.star`), the upgraded connections in `net.star` (P1 #8) |
+| `havok/tls.pike` and Pike's SSL.File/SSL.Port | `tls.star`, over OpenSSL 3 through `extern "C"` (`openssl/`, P1 #8) |
+| Pike's Gz (MCCP's zlib stream) | `zlib.star`, a deflate compressor of this port's own (P1 #8) |
+| (none: the reference has no LPC buffers) | `buffers.star`, FluffOS's buffer type as Dead Souls' docs describe it (P1 #8) |
 
 Up to and including the parser, the port can follow the Pike code closely.
 From the compiler on, the Pike files still define the *semantics* (what each
@@ -91,11 +94,13 @@ assumed:
 6. **`i64` needs explicit casts everywhere.** Literals infer as `i32`, so
    it's `(5 as i64)`, and there's no `i64` literal above 2^31 without
    arithmetic. LPC `int` is 64-bit, so the VM uses `i64` throughout.
-7. **`extern "C"` names can't start with a capital letter.** `extern "C"
-   fn Sleep(..)` and `GetTickCount()` resolve as *type* names (`undefined
-   type 'Sleep'`). Lowercase CRT names work: `_sleep`, `clock`,
-   `_time64`. Some lowercase names (`time`) are reserved by the runtime.
-   Filed in `todo.md` as a Star compiler bug.
+7. **`extern "C"` names couldn't start with a capital letter** (fixed in
+   P1 #8, HavokOS P2 #1). `extern "C" fn Sleep(..)` and `GetTickCount()`
+   resolved as *type* names (`undefined type 'Sleep'`), and since M7 the
+   checker rejected them outright; lowercase CRT names worked (`_sleep`,
+   `clock`, `_time64`). Now a struct literal naming an extern is checked as
+   its call, which is what let `tls.star` bind OpenSSL (`SSL_new`, ...).
+   Some lowercase names (`time`) are still reserved by the runtime.
 8. **No server sockets.** `net.rs` has only `tcp_connect`/`send`/`recv`/
    `close`/`set_nonblocking`, so there's no `listen`/`accept`, and
    `extern "C"` can't easily build the `sockaddr_in` that `bind` needs.
@@ -105,13 +110,18 @@ assumed:
 
 Found during M4 (2026-10-23), each probed with a throwaway program:
 
-9. **Star's FFI can't read a C struct.** A `ptr` can be passed to C, but
-   nothing in the language loads a field back out of one, so every C call
+9. **Star's FFI couldn't read a C struct.** A `ptr` can be passed to C, but
+   nothing in the language loaded a field back out of one, so every C call
    that answers through an out-parameter (`_findfirst64`, `_stat64`,
-   `_localtime64_s`) is out of reach. M4 added filesystem and calendar
+   `_localtime64_s`) was out of reach. M4 added filesystem and calendar
    builtins to the compiler instead (`dir_list`, `path_kind`, `file_size`,
    `file_mtime`, `dir_create`, `dir_remove`, `file_remove`, `file_rename`,
-   `local_time`; `src/codegen/fs.rs`).
+   `local_time`; `src/codegen/fs.rs`). Since P1 #8 there is a general
+   answer for data in C memory: `ptr_to_bytes(p, n)` copies n bytes out
+   (a struct's fields then decode from the `Bytes`) and
+   `ptr_write_bytes(dst, b, off, n)` copies in (`src/codegen/ffi_bytes.rs`);
+   only a `T**` out-parameter still needs a builtin, there being no way to
+   make a pointer to a Star local.
 10. **`x = f(x)` on a `Bytes`/`List` is quadratic.** The caller still holds
     its reference during the call, so the first push inside `f` copies the
     whole buffer, on every call: 20k ten-byte appends take 188 ms that way
@@ -195,7 +205,8 @@ enum Value:
 - A local captured by a closure is "boxed" into a cell (`Vm.cells`), and
   both the function and its closures go through the cell, since Pike
   lambdas capture by reference. `$(expr)` values become cells too.
-- No buffers yet. DS3.9 doesn't need them for the MVP.
+- Buffers (P1 #8): `Value::Buf(h)`, a handle into `Vm.bufs` holding the
+  bytes, shared by reference like an array (`buffers.star`).
 - Strings are NUL-terminated (Star `str`), so an LPC string can't hold a
   `\0` byte (deviation #7).
 - `a += ({ x })` copies the whole left array each time, as LPC semantics
@@ -252,11 +263,10 @@ Pike driver before it's marked done.
   here from M7. Done 2026-10-25, see the log.
 - **M7: the rest.** `ed` and the LPC socket efuns (both done 2026-10-25),
   the HavokOS-only extensions that need no outside library (done
-  2026-10-26; see the log), SQLite (`db_*`, done 2026-10-26), then
-  HTTP/TLS (`http_respond`, the last stub in
-  `tests/fixtures/ds39_boot_stubs.txt`), MCCP, and LPC buffers
-  (`read_buffer()`, which Dead Souls' own HTTP server needs and neither
-  driver has).
+  2026-10-26; see the log), SQLite (`db_*`, done 2026-10-26), then MCCP,
+  the HTTP port and WebSockets (`http_respond`, the last stub), TLS, and
+  LPC buffers (all done 2026-10-26, P1 #8): the Star VM now runs every efun
+  the reference implements, and the boot test's stub list is empty.
 
 ## Files
 
@@ -316,8 +326,8 @@ Pike driver before it's marked done.
 | `tools/gen_m6_parser_cases.py` | generates `m6_parser_cases.txt` from the reference's own `pike/tests/parser_cases.txt` |
 | `tools/ref_eval.pike` | reference side of `boot_ds.exe -eval` (havok/eval.pike with the boot test's stubs) |
 | `tests/run_parser_transcript_test.ps1` | M6 regression: the reference's Dead Souls parser script (50 commands) on both drivers, against `fixtures/ds39_parser_transcript.expected.txt` |
-| `tools/telnet_script.star`, `tools/ref_serve.pike` | M6 login comparison: a scripted telnet client whose transcript is anchored by content, and the reference serving telnet with the boot test's stubs and `havok mccp : 0` |
-| `tests/run_login_test.ps1` | M6 regression: a new character and a returning one, over real sockets, against `fixtures/ds39_login_{new,again}.expected.txt`; since M7 also a session in Dead Souls' editor (`ds39_login_edit`) |
+| `tools/telnet_script.star`, `tools/ref_serve.pike` | M6 login comparison: a scripted telnet client whose transcript is anchored by content (and, since P1 #8, shows an MCCP stream inflated), and the reference serving telnet with the boot test's stubs and `havok mccp : 0` (or MCCP on, for the MCCP login) |
+| `tests/run_login_test.ps1` | M6 regression: a new character and a returning one, over real sockets, against `fixtures/ds39_login_{new,again}.expected.txt`; since M7 also a session in Dead Souls' editor (`ds39_login_edit`), since P1 #8 a login over MCCP on a second driver with MCCP on (`ds39_login_mccp`) |
 | `eddata.star` | `EdSession`: one line editor session's state (`Vm.eds`, addressed from `ObjSlot.ed`) |
 | `ed.star` | the line editor (M7): `ed.pike`'s engine method for method, EdIO's file access through the master, ed_start()/ed_cmd()/query_ed_mode()/in_edit() (codes 370-379), the buffer rescue on destruct |
 | `tools/gen_m7_cases.py` | generates `m7_cases.txt` (the reference's `ed_tests()` verbatim, and this port's editor edge cases) |
@@ -330,6 +340,20 @@ Pike driver before it's marked done.
 | `tools/gen_m7_ext_cases.py` | generates `m7_ext_cases.txt` (the reference's own extension tests ported through the hooks, JSON edge cases, larger A* mazes) |
 | `sqldb.star` | the SQLite efuns (codes 420-423, P1 #7): `sqldb.pike` method for method, the handles in `Vm.dbs` (rows: `extdata.star` SqlDb), closing on destruct |
 | `tools/gen_m7_db_cases.py` | generates `m7_db_cases.txt` (the reference's own sqlite_tests() ported, ownership through a helper object, this port's edge cases) |
+| `zlib.star` | MCCP's zlib stream (P1 #8): a deflate compressor (LZ77 with hash chains and lazy matching; each block dynamic, fixed or stored, whichever is smallest; every write sync-flushed), and an inflater for the tests |
+| `tools/zlib_check.star`, `tools/ref_zlib.pike` | the zlib check, both sides: compress with zlib.star / inflate with Pike's Gz, and the reverse |
+| `tests/run_zlib_test.ps1` | 69 round trips over a varied corpus (DS source, a binary, random bytes, long runs, an empty and a one-line file) in chunk sizes from 1 byte to whole, both directions |
+| `netdata.star` | P1 #8's rows: `TlsLink`, `HttpConn`/`HttpPending`, `TlsAccept`, the case runner's `TestCli`/`TestSrv` |
+| `tls.star` | TLS (P1 #8): tls.pike's contexts (configured files, or a self-signed certificate made once in `runtime/tls/selfsigned.pem`), sessions over OpenSSL memory BIOs that the driver's one poll feeds |
+| `http.star` | the HTTP port (P1 #8): http.pike and the Pike Request/WebSocket behavior beneath it, request parsing, the reply's exact bytes, keep-alive, timeouts, http_respond() (code 430), the WebSocket upgrade |
+| `sha1.star` | SHA-1 and Pike-lenient base64 for the WebSocket handshake |
+| `mimetypes.star` | generated by `tools/ref_mime_types.pike`: Pike's extension -> media type table (1224 extensions) |
+| `buffers.star` | LPC buffers (P1 #8): allocate_buffer(), read_buffer(), write_buffer() (codes 440-442); the type itself is in value.star/vm.star |
+| `tools/gen_m7_net_cases.py` | generates `m7_net_cases.txt` (MCCP, the HTTP port, WebSockets, TLS) |
+| `tools/ref_net_hooks.pike` | the reference's side of the network hooks (raw clients, listeners), which `ref_cases.pike` delegates to |
+| `tests/fixtures/netlib/` | laid over a scratch copy of the minilib for the network cases: a `/test/web.c` that is a superset of the reference's |
+| `tools/gen_m7_buf_cases.py` | writes `m7_buf.expected.txt` directly: the buffer cases, their expected column hand-written from Dead Souls' docs (no oracle) |
+| `tests/run_dsweb_test.ps1` | Dead Souls' own web server on the Star driver: six pages (three of them images) must come back byte for byte |
 
 Build the tools with the **release** compiler (`target/release/star.exe
 build ...`), and since M6 every tool that imports the efuns or the network
@@ -337,7 +361,9 @@ layer (run_cases, boot_ds, compile_sweep, the driver, telnet_script) with
 `-l ws2_32`. Since P1 #7 the ones that import the efuns (all but
 telnet_script) also link SQLite, `-L sqlite/lib/x64 -l sqlite3` from the
 repository root, and need `sqlite3.dll` beside them at run time
-(`tools/sqlite3.dll`; see `sqlite/README.md`). The `star` on `PATH` on this machine was a stale Sep 8
+(`tools/sqlite3.dll`; see `sqlite/README.md`); since P1 #8 OpenSSL too,
+`-L openssl/lib/x64 -l ssl -l crypto`, with `libssl-3-x64.dll` and
+`libcrypto-3-x64.dll` beside them (see `openssl/README.md`). The `star` on `PATH` on this machine was a stale Sep 8
 `target/debug` build during M2, without the `println` fix or the spill-slot
 fix below.
 
@@ -421,10 +447,15 @@ Each is also documented at the point in the code where it happens.
     here it reports the program it actually runs, as FluffOS does. The
     table's own cases, which only query fresh objects, agree.
 
-13. **No MCCP** (`net.star`). COMPRESS2 is never offered, and a client's
-    `DO COMPRESS2` is refused (`WONT`), which is the reference with `havok
-    mccp : 0`; Star has no zlib, and compression is an optimisation clients
-    do without. Every M6 comparison runs the reference that way.
+13. **MCCP's compressed bytes are this port's own** (`net.star`,
+    `zlib.star`; until P1 #8 there was no MCCP at all). COMPRESS2 is offered
+    and accepted as in the reference (unless `havok mccp : 0`), but the
+    stream comes from `zlib.star`'s compressor, not zlib, and a pass's writes
+    share one sync flush where the reference flushes each write, so the
+    bytes on the wire differ while what the client inflates is the same
+    (the MCCP cases and the MCCP login compare inflated text; the zlib test
+    checks the compressor against Pike's real zlib). On a WebSocket carrying
+    telnet each frame is compressed and flushed on its own, as there.
 14. **A UTF-8 connection passes text through unchanged** (`net.star`). LPC
     strings are byte strings here (`value.star`), not Pike's wide strings,
     so after CHARSET UTF-8 is accepted a client's UTF-8 arrives as its bytes
@@ -456,11 +487,14 @@ synchronously through a renamed temp file), and its HavokOS-only
 extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
 `astar_path`, quotas), which DS3.9 doesn't call.
 
-16. **The two TLS socket modes can be created but not used** (`sockets.star`).
-    `STREAM_TLS`/`STREAM_TLS_BINARY` sockets (the reference's additions)
-    are made, but socket_listen() on one is EELISTEN, the reference's answer
-    when it has no certificate, and socket_connect() EECONNECT: there is no
-    TLS in this driver yet. Dead Souls never asks for them.
+16. **TLS is OpenSSL's** (`tls.star`; until P1 #8 the TLS socket modes
+    couldn't be used at all). Telnet over TLS, HTTPS and the STREAM_TLS
+    modes behave as the reference's, but the handshake is OpenSSL 3.2's:
+    the protocol versions and cipher suites on offer are its defaults (TLS
+    1.3 and 1.2), not Pike 8.0's, and the self-signed certificate made when
+    none is configured is OpenSSL's (RSA 2048, SHA-256, ten years, the
+    mud's name as common name, the reference's PEM layout), kept in this
+    port's own `runtime/tls/` beside its tools.
 17. **Names resolve through the system resolver, to IPv4** (`sockets.star`).
     resolve() calls the compiler's blocking `host_lookup()` (the reference
     uses Pike's asynchronous DNS client), and answers a numeric address
@@ -532,6 +566,39 @@ extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
     column names ("a", "a:1") and error positions, and the columns after
     each kind of statement and error. Dead Souls doesn't call these efuns.
 
+23. **The HTTP port's few differences** (`http.star`). Everything a client
+    or http_request() can see follows the reference and Pike's server
+    beneath it byte for byte, quirks included, except: the Server header
+    names this driver (`HavokOS/0.2 (Star)`, where the reference's names
+    Pike's HTTP module); a malformed %-escape in the query or an urlencoded
+    body, which makes Pike's parser throw inside its event loop and leaves
+    the client unanswered for good, closes the connection; a `%uXXXX`
+    escape above U+00FF becomes UTF-8 bytes (#14); an answer's extra headers
+    go out in the mapping's order, where the reference's follow Pike's hash
+    order (which changes from run to run: the cases sort them); and a body
+    over the 1 MB request limit arrives empty rather than as whatever Pike's
+    buffer read gives.
+24. **A STREAM_TLS connect that gets no TLS back is closed** (`sockets.star`),
+    with the close callback. The reference reports nothing to LPC and
+    leaves the socket open for good (probed: no event and still open after
+    two seconds), so its case is left out of the fixture.
+25. **There are LPC buffers, and the binary socket modes deliver them**
+    (`buffers.star`, `sockets.star`). The reference has no buffer type
+    (bufferp() is always 0; read_buffer() and write_buffer() don't exist),
+    and its STREAM_BINARY/DATAGRAM_BINARY sockets deliver strings. Dead
+    Souls is written for FluffOS's: its HTTP service is a STREAM_BINARY
+    socket that reads requests with read_buffer(), and its file object
+    serves pages as buffers -- so on the reference every page request fails.
+    Here buffers follow Dead Souls' own documentation of FluffOS's
+    (doc/efun/buffers, doc/lpc/types/buffer), the binary modes deliver
+    buffers and socket_write() takes them, and Dead Souls' web server works
+    (`tests/run_dsweb_test.ps1`). The socket cases compare what binary
+    sockets deliver as the bytes it holds. With no oracle, the buffer cases'
+    expected results are hand-written from the documentation, and the
+    choices it leaves open are buffers.star's (fixed size, out-of-range
+    index errors, `%O` as `<buffer of N bytes>`, a read from a file limited
+    by `maximum byte transfer`).
+
 ## Star compiler bugs found
 
 1. **`print`/`println` of a non-f-string `str` used it as the `printf`
@@ -542,7 +609,20 @@ extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
    DS3.9's `bank.c`/`imc2.c`. Fixed in `src/codegen/builtins.rs`
    (`emit_print_like` now always formats through a constant `"%s"`), with
    regression test `tests/frontend_print_percent.rs`.
-2. **Capitalized `extern "C"` names** (constraint #7): filed, not fixed.
+2. **Capitalized `extern "C"` names** (constraint #7): filed in M1, fixed in
+   P1 #8 (HavokOS P2 #1). The parser reads `Name(args)` with an uppercase
+   name as a struct literal, so `GetTickCount()` became the construction of
+   a struct that doesn't exist, and since M7 `Checker::check_extern_fn`
+   rejected any uppercase extern. The checker now records every extern name
+   in pass 1 (`Checker::extern_fn_decls`) and checks a struct literal naming
+   one (no struct of that name, no turbofish) as the call; an extern named
+   like a struct is the error left, since that struct's literal always
+   wins. The parser can't decide it: an extern may be declared after its
+   first call, or in another module. Fix in `src/types/expr.rs` and
+   `src/types/mod.rs`; tests in `tests/frontend_ffi_extern_uppercase.rs`
+   (Win32's `GetTickCount`/`Sleep`, C helpers, an imported module, the
+   struct collision), and `tests/frontend_ffi_extern_c.rs`'s rejection test
+   became an acceptance test.
 3. **`str` indexing is O(n)** (constraint #3): filed as a performance
    issue, worked around with `Bytes`.
 4. **Releasing an uninitialized spill slot** (fixed, M2). A field read off
@@ -659,6 +739,17 @@ extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
     `Codegen::emit_builtins` while `RESERVED_RUNTIME_SYMBOLS` still listed
     `fgetc` as always declared. The five existing tests are its regression
     tests.
+
+New compiler surface in P1 #8 (the rest of M7), not bugs:
+`ptr_to_bytes(p, n)` and `ptr_write_bytes(dst, b, off, n)` in
+`src/codegen/ffi_bytes.rs`: binary data between C memory and `Bytes`, the
+binary twin of `ptr_to_str` -- what OpenSSL's `SSL_read`/`SSL_write`/
+`BIO_read`/`BIO_write` over memory BIOs need, and the general answer to
+constraint #9. Neither hands out a pointer into a `Bytes`' own storage
+(copy-on-write would make that unsafe). Tested by
+`tests/frontend_ffi_bytes.rs` (NUL bytes both ways, the clamping, both null
+aborts, an in-memory TLS 1.3 handshake through the OpenSSL DLLs); the
+Linux IR is verified and compiled to an object.
 
 New compiler surface in P1 #7 (the SQLite efuns), not bugs:
 `sqlite_open(path)` and `sqlite_prepare(db, sql)` in `src/codegen/sqlite.rs`,
@@ -1300,3 +1391,57 @@ Getting there found Star compiler bug #12 (a null `str` reaching
 P0 failure. One new deliberate deviation (#22).
 
 **Next: the rest of M7** (HTTP/TLS with http_respond(), MCCP, LPC buffers).
+
+### 2026-10-26: M7 part 5, MCCP, HTTP, WebSockets, TLS and buffers
+
+**The rest of M7 done**, which leaves the boot test's stub list empty: the
+Star VM runs every efun the reference implements.
+- **MCCP v2** (`zlib.star`, `net.star`): a deflate compressor written here
+  rather than a zlib binding, and on par with zlib -6 in size. Checked
+  against the reference by 7 cases (offers, the plain start marker, one
+  stream across writes and input, DONT ending it, a second stream, closing)
+  that compare inflated text through a `test_inflate()` hook both runners
+  give, by an MCCP login over a real socket (`ds39_login_mccp`: the
+  telnet client inflates), and by 69 round trips against Pike's own zlib
+  (`tests/run_zlib_test.ps1`).
+- **The HTTP port and WebSockets** (`http.star`): http.pike, and beneath it
+  what Pike's Protocols.HTTP.Server.Request and Protocols.WebSocket really
+  do, probed on the live reference first and read in Pike's library where
+  a probe couldn't show the rule (the pipelined second request that goes
+  unanswered is `parse_variables()` truncating its buffer; the Range
+  header's miscounted lengths are `response_and_finish()`'s arithmetic).
+  Every reference raw_send() is its own WebSocket frame, so output is
+  marked where each ends.
+- **TLS** (`tls.star`) over OpenSSL 3.2, the user's choice of library: the
+  DLLs from Git for Windows with generated import libraries (`openssl/`).
+  Getting there fixed two gaps in Star itself: uppercase extern names
+  (HavokOS P2 #1; all of OpenSSL is uppercase) and binary data across the
+  FFI (`ptr_to_bytes`/`ptr_write_bytes`). Telnet and HTTPS sessions start
+  only once the handshake is done, as the reference's SSL.Port hands over
+  only finished ones; STREAM_TLS listeners too, and a connecting STREAM_TLS
+  socket's write callback waits for its handshake.
+- **LPC buffers** (`buffers.star`), with no oracle: Dead Souls' own
+  documentation of FluffOS's, because Dead Souls' web server needs them
+  (deviation #25). Its pages now come back byte for byte, images included
+  (`tests/run_dsweb_test.ps1`), where the reference fails every request.
+
+Checked: 77 network cases (`m7_net.expected.txt`, through raw client hooks
+both runners give, on a scratch minilib whose `/test/web.c` is a superset of
+the reference's, stable over three runs), the 25 hand-checked buffer cases,
+all earlier fixtures (the socket cases re-recorded with a helper that reads
+a buffer's bytes, the reference's results unchanged), the boot (its stub
+list now empty, the reference's report unchanged), the four logins, the
+parser transcript and the compile sweep.
+
+Found along the way:
+- **The VM never frees garbage within one evaluation** (todo.md HavokOS P1
+  #9): collections run only between top-level evaluations, so an
+  `a += ({ x })` loop keeps every intermediate copy, quadratic in memory --
+  0.8 GB at 10,000 appends, 7 GB at 30,000, and at 40,000 an allocation
+  fails and the driver dies. Found when a case helper did exactly that over
+  a 120 KB reply; the helpers now build with allocate()/implode().
+- The reference's extra response headers come out in an order that changes
+  between runs (Pike's hash order): the one case with two of them sorts.
+
+Five new deliberate deviations or rewrites (#13 and #16 rewritten, #23-#25).
+

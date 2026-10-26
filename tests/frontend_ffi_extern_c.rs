@@ -76,16 +76,15 @@ fn extern_fn_missing_abi_string_is_parse_error() {
 }
 
 /// An extern fn bound to an uppercase-starting C symbol (e.g. a Win32 name
-/// like `CreateThread`) is rejected at the declaration, not left to fail
-/// confusingly at the call site -- see `Checker::check_extern_fn`'s doc
-/// comment on why such a symbol is permanently uncallable under Star's
-/// grammar (`Name(args)` always parses as a struct literal).
+/// like `GetTickCount`) is accepted. It used to be rejected here, since
+/// `Name(args)` parses as a struct literal; the checker now reads such a
+/// literal as the extern's call (HavokOS P2 #1, covered in full by
+/// `tests/frontend_ffi_extern_uppercase.rs`).
 #[test]
-fn extern_fn_rejects_uppercase_name() {
-    let src = "extern \"C\" fn CreateThread(x: int) -> ptr\n";
+fn extern_fn_accepts_uppercase_name() {
+    let src = "extern \"C\" fn GetTickCount() -> i32\n";
     let module = Driver::parse(src).expect("should parse");
-    let Err(diags) = Driver::check(&module) else { panic!("uppercase-starting extern fn name should be a type error") };
-    assert!(diags.iter().any(|d| d.message.contains("struct-literal constructor")), "{:?}", diags);
+    assert!(Driver::check(&module).is_ok(), "an uppercase-starting extern fn name should type-check");
 }
 
 /// An extern fn's signature is registered into the same call-checking path
@@ -312,15 +311,12 @@ fn runtime_extern_atoi_str_arg_end_to_end() {
 /// Deliberately avoids any Win32 API (`GetModuleHandleA`, `GlobalAlloc`,
 /// ...) for two independent reasons that make them unsuitable extern-fn
 /// test targets, not just inconvenient ones:
-/// (1) Star's grammar reserves `Name(args)` for struct-literal construction
-/// whenever `Name` starts with an uppercase letter (`Vec3(0, 0, 0)`,
-/// `Player(health = 100)`, ...) -- see `Parser::parse_primary`'s
-/// `starts_uppercase` check in `src/parser/expr.rs`. This is a deliberate,
-/// load-bearing rule used throughout the language, not something this
-/// FFI feature can special-case around -- so a call to `GetModuleHandleA(..)`
-/// parses as an attempt to construct a (nonexistent) `GetModuleHandleA`
-/// struct instead of a function call. Any extern-fn call site must name a
-/// symbol that doesn't start with an uppercase letter.
+/// (1) When this test was written, Star's grammar reserved `Name(args)` for
+/// struct-literal construction whenever `Name` started with an uppercase
+/// letter, so a call to `GetModuleHandleA(..)` couldn't be written at all.
+/// (Since HavokOS P2 #1 the checker reads such a literal as the extern's
+/// call -- `tests/frontend_ffi_extern_uppercase.rs` -- but this test keeps
+/// its portable CRT symbol.)
 /// (2) Separately, many Win32 signatures (e.g. `GlobalAlloc`'s `SIZE_T`
 /// byte count) have a parameter wider than Star's 32-bit `int` on this
 /// x86_64 target, which isn't ABI-safe to bind with the types this FFI

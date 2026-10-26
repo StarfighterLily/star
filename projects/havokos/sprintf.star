@@ -226,6 +226,7 @@ impl vm::Vm:
             val::Value::Obj(h, g) -> 5
             val::Value::Fn(h) -> 6
             val::Value::Cls(h) -> 7
+            val::Value::Buf(h) -> 8
 
     fn pike_before(self, a: val::Value, b: val::Value) -> bool:
         let ra = self.pike_rank(a)
@@ -322,6 +323,9 @@ impl vm::Vm:
                 self.dsc.add_str("class ")
                 self.dsc.add_str(self.clss[h].name)
                 self.dsc.add_str("()")
+            # (no reference to follow: the reference has no buffers)
+            val::Value::Buf(h) ->
+                self.dsc.add_str(f"<buffer of {self.bufs[h].data.len()} bytes>")
 
     fn pike_describe(mut self, v: val::Value) -> Bytes:
         self.dsc = bf::Buf()

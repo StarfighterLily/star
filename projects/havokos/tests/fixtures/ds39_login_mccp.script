@@ -1,0 +1,22 @@
+# Login comparison, part 4 (tests/run_login_test.ps1, todo.md HavokOS P1 #8):
+# the player made by ds39_login_new.script logs in over MCCP v2. The client
+# asks for compression at the name prompt; from the driver's IAC SB
+# COMPRESS2 IAC SE on, telnet_script.exe shows the stream inflated, so the
+# transcript reads like an uncompressed session's. Then a few commands with
+# long output (the stream's matches and blocks span writes), quit.
+expect What name do you wish?
+raw ~ff~fd~56
+send alice
+expect Password:
+send secret12
+expect sp: 
+send look
+expect sp: 
+send who
+expect sp: 
+send help
+expect sp: 
+send score
+expect sp: 
+send quit
+drain 3000

@@ -13,6 +13,7 @@
 //   pike ref_cases.pike <havokos_pike_dir> <selection.txt>  > m3.expected.txt
 //   pike ref_cases.pike <havokos_pike_dir> -extra <cases.txt> > m3_extra.expected.txt
 //   pike ref_cases.pike <havokos_pike_dir> -ds <ds_lib_dir> <cases.txt> > m4_ds.expected.txt
+//   pike ref_cases.pike <havokos_pike_dir> -root <lib_dir> -extra <cases.txt> > m7_net.expected.txt
 //
 // selection.txt names one case per line (blank lines and `#` comments
 // skipped); a line `error <name>` selects one of run_tests.pike's
@@ -32,6 +33,11 @@
 // mudos.cfg and boots only as far as its first step, the simul_efun object
 // (no master, no preloads -- the Star side boots the same way), so cases
 // can call the mudlib's own simul_efuns, real LPC built on the efun library.
+//
+// With -root <dir> first, the test mudlib is <dir> instead of the reference's
+// own minilib (todo.md HavokOS P1 #8: the network cases run on a scratch copy
+// of the minilib with tests/fixtures/netlib laid over it, made by
+// tests/run_cases_test.ps1).
 
 string esc_body(string s) {
     return replace(s, ({ "\\", "\n", "\t", "\r" }), ({ "\\\\", "\\n", "\\t", "\\r" }));
@@ -89,6 +95,11 @@ string safe_name(string name) {
 }
 
 int main(int argc, array(string) argv) {
+    string root_override;
+    if (argc > 3 && argv[2] == "-root") {
+        root_override = argv[3];
+        argv = argv[..1] + argv[4..];
+    }
     string pike_dir = argv[1];
     string tests = combine_path(pike_dir, "tests");
     // run_tests.pike's own helpers (run_lpc/norm), its driver boot and its
@@ -112,7 +123,7 @@ int main(int argc, array(string) argv) {
     object runner = compile_string(src, combine_path(tests, "run_tests.pike"))();
     runner->here = tests;
     int ds = argv[2] == "-ds";
-    string root = ds ? argv[3] : combine_path(tests, "minilib");
+    string root = ds ? argv[3] : root_override || combine_path(tests, "minilib");
     mapping cfg = ds ? ([
         // E:/ds3.9/bin/mudos.cfg
         "name": "DeadSoulsNew", "master file": "/secure/daemon/master",
@@ -123,8 +134,8 @@ int main(int argc, array(string) argv) {
         "simulated efun file": "/secure/sefun", "include directories": "/include",
         "global include file": "<global.h>", "port": "6699",
     ]);
-    // the Star driver never offers MCCP (NOTES.md deviation #13), which is
-    // the reference with `havok mccp : 0`
+    // MCCP off unless a case turns it on with test_config() (the M6 cases
+    // were recorded without it)
     cfg["havok mccp"] = "0";
     object drv = compile_file(combine_path(pike_dir, "havok/driver.pike"))(root, cfg);
     drv->debug_level = 0;
@@ -134,6 +145,7 @@ int main(int argc, array(string) argv) {
     // transpiled code binds __E at compile time. Each drives the driver the
     // way run_tests.pike's own Pike-level tests do.
     add_constant("__HavokEfunsBase", compile_file(combine_path(pike_dir, "havok/efuns.pike")));
+    add_constant("__HavokNetHooks", compile_file(combine_path(dirname(__FILE__), "ref_net_hooks.pike")));
     program test_efuns = compile_string(#"
         inherit __HavokEfunsBase;
         int test_hb(object self, int n) { for (int k = 0; k < n; k++) drv->heart_beat_tick(); return 0; }
@@ -265,7 +277,12 @@ int main(int argc, array(string) argv) {
             }
             return last;
         }
-        int test_config(object self, string k, string v) { drv->config[k] = v; return 0; }
+        int test_config(object self, string k, string v) {
+            drv->config[k] = v;
+            // net.pike reads `havok mccp` once, at boot
+            if (k == \"havok mccp\") drv->net->mccp_enabled = v != \"0\";
+            return 0;
+        }
         // extension hooks (todo.md HavokOS P1 #6, ext.star efun_ext_test()):
         // run_tests.pike's watch, quota, dependency and profiling tests
         // drive these by hand
@@ -293,6 +310,23 @@ int main(int argc, array(string) argv) {
             return Stdio.write_file(rp, text) == predef::sizeof(text);
         }
         int test_rmtree(object self, string f) { Stdio.recursive_rm(realpath(f)); return 0; }
+        // network hooks (todo.md HavokOS P1 #8, efuns_net.star efun_net_test())
+        string test_inflate(object self, string s) { return tel_enc(Gz.inflate()->inflate(tel_dec(s))); }
+        // the clients, listeners and ports of the HTTP/TLS/WebSocket cases:
+        // tools/ref_net_hooks.pike
+        object net_hooks;
+        object nh() { return net_hooks || (net_hooks = __HavokNetHooks(drv)); }
+        int test_cli_open(object self, int port, int secure) { return nh()->cli_open(port, secure); }
+        int test_cli_send(object self, int id, string s) { return nh()->cli_send(id, s); }
+        string test_cli_recv(object self, int id, mixed until) { return nh()->cli_recv(id, until); }
+        int test_cli_closed(object self, int id) { return nh()->cli_closed(id); }
+        int test_cli_close(object self, int id) { return nh()->cli_close(id); }
+        int test_srv_listen(object self, int secure) { return nh()->srv_listen(secure); }
+        int test_srv_take(object self, int port) { return nh()->srv_take(port); }
+        int test_tel_listen(object self, int secure) { return nh()->tel_listen(secure); }
+        int test_http_listen(object self, int secure) { return nh()->http_listen(secure); }
+        int test_ports_close(object self) { return nh()->ports_close(); }
+        int test_free_port(object self) { return nh()->free_port(); }
     ");
     drv->efuns = test_efuns(drv);
     add_constant("__E", drv->efuns);

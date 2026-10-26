@@ -750,15 +750,15 @@ fn runtime_gamepad_close_aborts_on_null_handle_end_to_end() {
 /// `SDL_JoystickSetVirtualButton`/`SetVirtualAxis`, then confirms this
 /// compiler's own `gamepad_*` builtins observe exactly that state.
 ///
-/// Those three SDL functions can't be declared directly from a `.star`
-/// program's own `extern "C" fn` -- this compiler's grammar always parses
-/// `Name(args)` as a struct-literal constructor when `Name` starts with an
-/// uppercase letter (`Checker::check_extern_fn` rejects any such extern
-/// declaration outright, with no rename/alias syntax to work around it), and
-/// every one of SDL2's real symbol names does. `compile_and_run_sdl_with_c_helper`
-/// instead compiles a small lowercase-named C wrapper (below) into the same
-/// binary, which a `.star` program's `extern "C" fn` declarations *can*
-/// legally name and call.
+/// When this test was written, those three SDL functions couldn't be
+/// declared directly from a `.star` program's own `extern "C" fn` -- the
+/// grammar parses `Name(args)` as a struct-literal constructor when `Name`
+/// starts with an uppercase letter, and `Checker::check_extern_fn` rejected
+/// any such declaration (lifted by HavokOS P2 #1, see
+/// `tests/frontend_ffi_extern_uppercase.rs`). `compile_and_run_sdl_with_c_helper`
+/// compiles a small lowercase-named C wrapper (below) into the same binary,
+/// which a `.star` program's `extern "C" fn` declarations name and call; the
+/// wrapper also keeps SDL's `Uint8`/`Sint16` parameter widths on the C side.
 #[test]
 fn runtime_gamepad_virtual_joystick_button_and_axis_round_trip_end_to_end() {
     let c_helper = concat!(

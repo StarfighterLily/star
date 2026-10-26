@@ -64,8 +64,16 @@ struct LSock:
     # a connect to a host name that didn't resolve: CONNECTING for good, as
     # in the reference (sockets.star sock_connect())
     mut stalled: bool = false
-    # a listener's accepted connections LPC hasn't socket_accept()ed yet
+    # a listener's accepted connections LPC hasn't socket_accept()ed yet,
+    # and (STREAM_TLS, P1 #8) each one's TLS session, its handshake done
     mut pending: List<ptr> = List<ptr>()
+    mut pending_tls: List<i32> = List<i32>()
+    mut pending_early: List<Bytes> = List<Bytes>()
+    # STREAM_TLS (P1 #8): the stream's TLS session (tls.star), -1 for none,
+    # and what its peer sent with the end of the handshake, delivered on the
+    # pass after socket_accept() (Pike's SSL.File holds it until then)
+    mut tls: i32 = -1
+    mut early: Bytes = Bytes()
 
 # A resolve() answer waiting for the driver's next pass (efuns.pike
 # resolve(), which delivers through a Pike call_out): callback(name, ip, key)

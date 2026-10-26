@@ -395,19 +395,101 @@ mudlib before it's marked done.
       cargo suite: 2188 pass, 0 fail.
       Every HavokOS tool that imports the efuns now builds with `-l ws2_32
       -L sqlite/lib/x64 -l sqlite3` (headers and test scripts updated).
-- [ ] **HavokOS P1 #8 (M7, part 5): the rest.** HTTP and TLS ports (the
-      reference's `http.pike`/`tls.pike`, and http_respond(), the boot's
-      last stub; TLS needs a TLS implementation, and would make the
-      STREAM_TLS socket modes usable, NOTES.md #16), MCCP (needs a deflate
-      implementation, #13), and LPC buffers (`read_buffer()`/
-      `write_buffer()`: Dead Souls' own HTTP server calls read_buffer(),
-      which neither driver has -- the reference's bufferp() is always 0 --
-      so its pages fail on both and there is no oracle).
-- [ ] **HavokOS P2 #1: Star compiler, capitalized `extern "C"` names.**
+- [x] **HavokOS P1 #8 (M7, part 5): the rest.** Done. MCCP, the HTTP
+      port and WebSockets, TLS, and LPC buffers; the Star VM now runs every
+      efun the reference implements (the boot test's stub list is empty;
+      the reference's boot report is unchanged without it).
+      - **MCCP v2**: `zlib.star`, a deflate compressor of this port's own
+        (LZ77, lazy matching, each block dynamic/fixed/stored, whichever is
+        smallest; on par with zlib -6), sync-flushed once per pass. Checked
+        by 7 cases comparing *inflated* text (a new `test_inflate()` hook
+        both runners give), an MCCP login over a real socket against the
+        reference (`ds39_login_mccp`; `telnet_script.exe` now inflates),
+        and 69 round trips against Pike's own zlib in both directions
+        (`tests/run_zlib_test.ps1`).
+      - **HTTP + WebSockets**: `http.star` (+ `sha1.star`, generated
+        `mimetypes.star`), http.pike and the Pike Request/WebSocket
+        behavior beneath it -- probed on the live reference first, then
+        read in Pike's library (the reference's runtime, not FluffOS) where
+        a probe couldn't show the rule: header order and Pike's status
+        texts, keep-alive rules, repeated headers/variables as arrays,
+        chunked bodies, multipart, 100-continue, the Range arithmetic it
+        gets wrong, the pipelined request it drops, 504 timeouts,
+        http_respond() (code 430), and upgrades with one frame per
+        raw_send() as there.
+      - **TLS**: `tls.star` over OpenSSL 3.2, the user's choice (the DLLs
+        from Git for Windows, import libraries generated; `openssl/`).
+        tls.pike's contexts (configured files or a self-signed certificate
+        made once, in `projects/havokos/runtime/`, now gitignored), sessions
+        over memory BIOs fed by the one poll; telnet/HTTPS sessions start
+        after the handshake, STREAM_TLS listeners hand over finished
+        handshakes, a connecting socket's write callback waits for its own.
+        The driver serves `external_port_N : <telnet|http> <port>` with
+        `external_port_N_tls`, and defines `__TLS_PORT__`.
+      - **LPC buffers** (no oracle): `buffers.star` + a `Value::Buf` type,
+        from Dead Souls' own docs of FluffOS buffers; binary socket modes
+        deliver buffers (deviation #25). Dead Souls' web server now serves
+        its pages byte for byte, images included (`tests/run_dsweb_test.ps1`,
+        six pages), where the reference fails every request.
+      Checked: 77 network cases against the live reference
+      (`m7_net.expected.txt`, `tools/gen_m7_net_cases.py`, raw client hooks
+      in both runners -- the reference's in `tools/ref_net_hooks.pike` --
+      on a scratch minilib with `fixtures/netlib` laid over it; stable over
+      3 runs), 25 buffer cases (`m7_buf.expected.txt`, hand-written from the
+      docs, the one fixture with no reference run), all 936 cases (M3-M7),
+      the boot, all four logins, the parser transcript, the compile sweep
+      (2378 files) and the DS web test pass; a 60 s soak collecting every
+      tick has 0 runtime errors. Token/AST sweeps not rerun (no front-end
+      change). Full cargo suite: 2207 pass, 0 fail
+      (`CARGO_TARGET_DIR=target/alt`).
+      Star compiler: fixed **HavokOS P2 #1** (below) and added
+      `ptr_to_bytes`/`ptr_write_bytes` (`src/codegen/ffi_bytes.rs`, tests in
+      `tests/frontend_ffi_bytes.rs`, 10 tests including a TLS handshake
+      through the real DLLs and the Linux object check): binary data across
+      `extern "C"`, which also answers NOTES.md constraint #9 in general.
+      Found along the way: the VM's garbage-within-one-evaluation problem
+      (filed as P1 #9 below; it crashed a case helper), and that the
+      reference's extra HTTP response headers come out in an order that
+      changes between runs. Five deviations new or rewritten in NOTES.md
+      (#13 MCCP bytes, #16 OpenSSL's handshake, #23 the HTTP port's few
+      differences, #24 a STREAM_TLS connect that gets no TLS back is closed,
+      #25 buffers). Every tool that imports the efuns now also links
+      `-L openssl/lib/x64 -l ssl -l crypto`.
+- [ ] **HavokOS P1 #9: the VM never frees garbage within one evaluation.**
+      Collections run only between top-level evaluations (gc.star: Star
+      locals in efuns halfway through their work can hold handles no root
+      reaches), so every intermediate value of one evaluation stays alive
+      until it ends. An `a += ({ x })` loop copies the whole array each
+      time, so its memory is quadratic: measured 0.8 GB at 10,000 appends,
+      3.1 GB at 20,000, 7 GB at 30,000, and at 40,000 an allocation fails
+      and the driver dies -- one modest LPC loop can take the whole MUD
+      down. Found in P1 #8 (a case helper appending a 120 KB reply byte by
+      byte). Options: reference counts on the heap tables (every Value copy
+      touches a count; cycles still need the collector), in-place append
+      when nothing else holds the array (needs those counts too), or a
+      collection at safe points mid-evaluation (the interpreter loop
+      between instructions, where every live value is on the VM stack --
+      but nested call_other()s run through native Star frames that hold
+      values). DS3.9's own `+=` loops are small, so it doesn't bite there.
+- [x] **HavokOS P2 #1: Star compiler, capitalized `extern "C"` names.**
+      Done 2026-10-26 (during HavokOS P1 #8, which needed all of OpenSSL's
+      uppercase names). The parser reads `Name(args)` with an uppercase name
+      as a struct literal, so a call to `GetTickCount()` became the
+      construction of a nonexistent struct, and the checker rejected every
+      uppercase extern at its declaration. Now the checker records extern
+      names in pass 1 (`Checker::extern_fn_decls`) and checks such a
+      literal as the call when no struct has that name (no turbofish); an
+      extern named like a struct is the one remaining error. Fix in
+      `src/types/expr.rs`/`src/types/mod.rs`; 9 tests in
+      `tests/frontend_ffi_extern_uppercase.rs` (Win32 `GetTickCount`/`Sleep`
+      called directly, C helpers, declared after use, inside an imported
+      module, arity checked, the struct collision, struct literals
+      untouched); `frontend_ffi_extern_c.rs`'s rejection test became an
+      acceptance test, and two stale comments (there and in
+      `frontend_audio_gamepad.rs`) were corrected. Original report:
       `extern "C" fn Sleep(ms: i32)` / `GetTickCount()` fail with
       "undefined type `Sleep`": a capitalized name is resolved as a type,
-      which blocks binding most of the Win32 API. Repro in
-      `projects/havokos/NOTES.md`, constraint #7.
+      which blocks binding most of the Win32 API.
 - [ ] **HavokOS P2 #2: Star compiler, O(1) `str` indexing.** `s[i]` runs
       `strlen` for its bounds check, so a char-at-a-time scan is quadratic:
       about 70 s for 1 MB, against about 1 ms over `Bytes`. Fixing it
@@ -826,3 +908,20 @@ reconciled to match whichever of the two Python sources looks more
   long-standing `@fgetc` P0. The rest of M7 (HTTP/TLS, MCCP, LPC buffers)
   is now P1 #8. Full cargo suite: 2188 pass, 0 fail
   (`CARGO_TARGET_DIR=target/alt`).
+- 2026-10-26: HavokOS P1 #8 (M7 part 5: MCCP, the HTTP port and
+  WebSockets, TLS, LPC buffers) is done. See its entry above and
+  `projects/havokos/NOTES.md` ("2026-10-26: M7 part 5", deviations #13,
+  #16, #23-#25, constraints #7 and #9), which also covers:
+  - why the TLS choice went to the user (a new third-party binary; OpenSSL
+    over a hand-written stack or SChannel) and how it is linked
+    (`openssl/README.md`);
+  - probing Pike's HTTP server on the live reference before writing any of
+    `http.star`, then reading Pike's own library for the rules a probe
+    couldn't show;
+  - why buffers follow FluffOS (Dead Souls' web server is written for it)
+    though the reference has none, and how their fixture is hand-checked.
+  Star compiler: HavokOS P2 #1 fixed (uppercase `extern "C"` names) and
+  `ptr_to_bytes`/`ptr_write_bytes` added. Filed HavokOS P1 #9 (garbage
+  within one evaluation is never freed). All 936 cases, the boot, four
+  logins, parser transcript, compile sweep and the new zlib and DS web
+  tests pass; full cargo suite 2207 pass, 0 fail.

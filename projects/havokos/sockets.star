@@ -39,11 +39,23 @@
 # dials the real intermud routers; Dead Souls' daemons then see
 # EECONNREFUSED, as on the reference.
 #
-# Deliberate deviations (NOTES.md #16, #17):
-# - The two TLS modes the reference adds (STREAM_TLS 5, STREAM_TLS_BINARY 6)
-#   can be created, but listening on one fails with EELISTEN (the
-#   reference's answer when it has no certificate) and connecting one with
-#   EECONNECT: Star has no TLS library yet (todo.md HavokOS P1 #6).
+# The two TLS modes the reference adds (STREAM_TLS 5, STREAM_TLS_BINARY 6;
+# usable since P1 #8, through tls.star): a listening TLS socket serves the
+# driver's certificate and hands LPC a connection only once its handshake
+# is done (STREAM_TLS listeners' handshakes wait in `Vm.tls_accepting`);
+# a connecting one does the client handshake, and its write callback comes
+# after it, as the reference's does. Writes on one never answer
+# EECALLBACK: Pike's SSL.File takes every write into its own buffer, so
+# the encrypted bytes the kernel doesn't take queue here.
+#
+# Deliberate deviations (NOTES.md #17, #24, #25):
+# - A STREAM_TLS connect whose peer doesn't answer with TLS is closed, with
+#   the close callback; the reference tells LPC nothing and leaves it open.
+# - The binary modes (STREAM_BINARY, DATAGRAM_BINARY, STREAM_TLS_BINARY)
+#   deliver what arrives as a buffer, as FluffOS does, and socket_write()
+#   takes a buffer in any mode but MUD; the reference, which has no buffer
+#   type, delivers strings. Dead Souls' HTTP service is a STREAM_BINARY
+#   socket that reads its requests with read_buffer() (buffers.star).
 # - resolve() looks names up with the system resolver (`host_lookup()`),
 #   which blocks the driver for as long as the lookup takes; the reference
 #   uses Pike's asynchronous DNS client. A numeric address is answered with
@@ -63,6 +75,7 @@ import "value.star" as val
 import "vm.star" as vm
 import "efun_table.star" as et
 import "sockdata.star" as sd
+import "netdata.star" as nd
 
 # socket_error() codes (sockets.pike EE*)
 const EESUCCESS: i32 = 1
@@ -146,6 +159,10 @@ fn is_dgram_mode(m: i32) -> bool:
 fn is_tls_mode(m: i32) -> bool:
     m == sd::SM_STREAM_TLS or m == sd::SM_STREAM_TLS_BINARY
 
+# The binary modes hand LPC a buffer (buffers.star; NOTES.md deviation #25).
+fn is_binary_mode(m: i32) -> bool:
+    m == sd::SM_STREAM_BINARY or m == sd::SM_DATAGRAM_BINARY or m == sd::SM_STREAM_TLS_BINARY
+
 # A dotted-decimal IPv4 address (what the compiler's socket builtins take);
 # anything else is a host name to look up.
 fn is_dotted_quad(s: str) -> bool:
@@ -225,6 +242,26 @@ impl vm::Vm:
     # unaccepted connections close.
     fn sock_shut(mut self, fd: i32, flush: bool):
         let h = self.socks[fd].handle
+        let li = self.socks[fd].tls
+        if li >= 0:
+            if flush and !is_null(h):
+                self.tls_close(li)
+                let c = self.tls_take(li)
+                for i in 0..c.len():
+                    self.socks[fd].outbuf.push(c[i])
+            self.tls_free(li)
+            self.socks[fd].tls = -1
+        let pt = self.socks[fd].pending_tls
+        for i in 0..pt.len():
+            self.tls_free(pt[i])
+        self.socks[fd].pending_tls = List<i32>()
+        self.socks[fd].pending_early = List<Bytes>()
+        self.socks[fd].early = Bytes()
+        for a in 0..self.tls_accepting.len():
+            if self.tls_accepting[a].fd == fd and !self.tls_accepting[a].done:
+                tcp_close(self.tls_accepting[a].sock)
+                self.tls_free(self.tls_accepting[a].tls)
+                self.tls_accepting[a].done = true
         if !is_null(h):
             if flush and !self.socks[fd].listener and self.socks[fd].outbuf.len() > self.socks[fd].out_off:
                 tcp_send_bytes(h, self.socks[fd].outbuf, self.socks[fd].out_off)
@@ -359,8 +396,9 @@ impl vm::Vm:
         if !self.sock_open(fd):
             return EEBADF
         if is_tls_mode(s.mode):
-            self.log_msg(f"[sockets] TLS listen on {s.local_port}: no TLS support in this driver")
-            return EELISTEN
+            if is_null(self.tls_server_context("", "")):
+                self.log_msg(concat(f"[sockets] TLS listen on {s.local_port}: ", self.tls_err))
+                return EELISTEN
         self.socks[fd].read_cb = self.arg(args, 1)
         let la = self.socks[fd].local_addr
         let ip = if la != "0.0.0.0": la else: ""
@@ -382,15 +420,24 @@ impl vm::Vm:
             return EEWOULDBLOCK
         let h = s.pending[0]
         let mut rest: List<ptr> = List<ptr>()
+        let mut rest_tls: List<i32> = List<i32>()
+        let mut rest_early: List<Bytes> = List<Bytes>()
         for i in 1..s.pending.len():
             rest.push(s.pending[i])
+            if i < s.pending_tls.len():
+                rest_tls.push(s.pending_tls[i])
+                rest_early.push(s.pending_early[i])
+        let li = if s.pending_tls.len() > 0: s.pending_tls[0] else: -1
+        let early = if s.pending_early.len() > 0: s.pending_early[0] else: Bytes()
         self.socks[fd].pending = rest
+        self.socks[fd].pending_tls = rest_tls
+        self.socks[fd].pending_early = rest_early
         let n = self.socks.len()
         let pip = tcp_peer_ip(h)
         let lip = tcp_local_ip(h)
         let pport = tcp_peer_port(h)
         let lport = tcp_local_port(h)
-        self.socks.push(sd::LSock(mode = s.mode, state = sd::SS_DATA_XFER, owner = self.obj_value(self_ob), read_cb = self.arg(args, 1), write_cb = self.arg(args, 2), close_cb = s.close_cb, handle = h, remote_addr = if pip == "": "0.0.0.0" else: pip, remote_port = if pport < 0: 0 else: pport, local_addr = if lip == "": "0.0.0.0" else: lip, local_port = if lport < 0: 0 else: lport))
+        self.socks.push(sd::LSock(mode = s.mode, state = sd::SS_DATA_XFER, owner = self.obj_value(self_ob), read_cb = self.arg(args, 1), write_cb = self.arg(args, 2), close_cb = s.close_cb, handle = h, remote_addr = if pip == "": "0.0.0.0" else: pip, remote_port = if pport < 0: 0 else: pport, local_addr = if lip == "": "0.0.0.0" else: lip, local_port = if lport < 0: 0 else: lport, tls = li, early = early))
         n
 
     fn sock_connect(mut self, fd: i32, args: List<val::Value>, self_ob: i32) -> i32:
@@ -433,9 +480,6 @@ impl vm::Vm:
         if !self.outbound_allowed():
             self.log_msg(f"[sockets] outbound connect to {host}:{port} blocked by config")
             return EECONNREFUSED
-        if is_tls_mode(s.mode):
-            self.log_msg(f"[sockets] TLS connect to {host}:{port}: no TLS support in this driver")
-            return EECONNECT
         self.socks[fd].state = sd::SS_CONNECTING
         self.socks[fd].blocked = true
         # a host name that doesn't resolve makes the reference's
@@ -490,6 +534,8 @@ impl vm::Vm:
             match msg:
                 val::Value::Str(m) ->
                     data = bytes_from_str(m)
+                val::Value::Buf(bh) ->
+                    data = self.bufs[bh].data
                 _ ->
                     return EETYPENOTSUPP
             if s.mode == sd::SM_DATAGRAM:
@@ -515,6 +561,8 @@ impl vm::Vm:
             match msg:
                 val::Value::Str(m) ->
                     data = bytes_from_str(m)
+                val::Value::Buf(bh) ->
+                    data = self.bufs[bh].data
                 val::Value::Arr(h) ->
                     let items = self.arrs[h].items
                     for i in 0..items.len():
@@ -527,6 +575,14 @@ impl vm::Vm:
                 _ ->
                     return EETYPENOTSUPP
         if data.len() == 0:
+            return EESUCCESS
+        if s.tls >= 0:
+            self.tls_send(s.tls, data)
+            if self.tlss[s.tls].failed:
+                self.sock_lost(fd)
+                return EESEND
+            if !self.sock_queue(fd, self.tls_take(s.tls)):
+                return EESEND
             return EESUCCESS
         let n = tcp_send_bytes(s.handle, data, 0)
         if n < 0:
@@ -704,6 +760,8 @@ impl vm::Vm:
             return 1
         if s.state == sd::SS_CONNECTING:
             return 4
+        if s.tls >= 0:
+            return if s.outbuf.len() > s.out_off: 5 else: 1
         if s.outbuf.len() > s.out_off:
             return 5
         1
@@ -715,6 +773,10 @@ impl vm::Vm:
         # find_files() answers (ext.star) wait for a pass too
         if self.resolves.len() > 0 or self.finds.len() > 0:
             return true
+        # so does a STREAM_TLS stream's data from the end of its handshake
+        for fd in 0..self.socks.len():
+            if self.socks[fd].open and self.socks[fd].early.len() > 0:
+                return true
         for fd in 0..self.socks.len():
             let s = self.socks[fd]
             if s.open and s.state == sd::SS_CONNECTING and is_null(s.handle) and !s.stalled:
@@ -737,6 +799,14 @@ impl vm::Vm:
             let c = tcp_accept(h)
             if is_null(c):
                 return
+            if is_tls_mode(s.mode):
+                # LPC hears of it once the handshake is done
+                let ctx = self.tls_server_context("", "")
+                if is_null(ctx):
+                    tcp_close(c)
+                    return
+                self.tls_accepting.push(nd::TlsAccept(fd = fd, sock = c, tls = self.tls_open(ctx, true, "")))
+                return
             self.socks[fd].pending.push(c)
             self.sock_callback(fd, self.socks[fd].read_cb, [val::Value::Int(fd as i64)])
             return
@@ -752,6 +822,18 @@ impl vm::Vm:
             self.socks[fd].local_addr = if lip == "": "0.0.0.0" else: lip
             let lp = tcp_local_port(h)
             self.socks[fd].local_port = if lp < 0: 0 else: lp
+            if is_tls_mode(s.mode):
+                # the client handshake; the write callback waits for its end
+                let ctx = self.tls_client_context()
+                if is_null(ctx):
+                    self.log_msg(concat(f"[sockets] TLS connect to {s.remote_addr}:{s.remote_port}: ", self.tls_err))
+                    self.sock_lost(fd)
+                    return
+                let li = self.tls_open(ctx, false, if is_dotted_quad(s.remote_addr): "" else: s.remote_addr)
+                self.socks[fd].tls = li
+                self.tls_feed(li, Bytes())
+                self.sock_queue(fd, self.tls_take(li))
+                return
             self.socks[fd].blocked = false
             self.sock_callback(fd, self.socks[fd].write_cb, [val::Value::Int(fd as i64)])
             return
@@ -782,7 +864,22 @@ impl vm::Vm:
                 for i in 0..more.len():
                     d.push(more[i])
                 chunks += 1
-            self.sock_input(fd, d)
+            let li = self.socks[fd].tls
+            if li >= 0:
+                let plain = self.tls_feed(li, d)
+                if !self.sock_queue(fd, self.tls_take(li)):
+                    return
+                if self.tlss[li].failed or self.tlss[li].peer_closed:
+                    self.sock_lost(fd)
+                    return
+                if self.socks[fd].blocked and self.tlss[li].up and self.socks[fd].outbuf.len() <= self.socks[fd].out_off:
+                    self.socks[fd].blocked = false
+                    self.sock_callback(fd, self.socks[fd].write_cb, [val::Value::Int(fd as i64)])
+                    if !self.sock_open(fd) or self.socks[fd].handle != h:
+                        return
+                d = plain
+            if d.len() > 0:
+                self.sock_input(fd, d)
             if closed and self.sock_open(fd) and self.socks[fd].handle == h:
                 self.sock_lost(fd)
 
@@ -799,15 +896,83 @@ impl vm::Vm:
             return
         self.socks[fd].outbuf = Bytes()
         self.socks[fd].out_off = 0
-        if self.socks[fd].blocked:
+        let li = self.socks[fd].tls
+        if self.socks[fd].blocked and (li < 0 or self.tlss[li].up):
             self.socks[fd].blocked = false
             self.sock_callback(fd, self.socks[fd].write_cb, [val::Value::Int(fd as i64)])
+
+    # Encrypted bytes for a STREAM_TLS socket: written now, or queued behind
+    # what the kernel hasn't taken; false when the socket broke (it is gone).
+    fn sock_queue(mut self, fd: i32, c: Bytes) -> bool:
+        if c.len() == 0:
+            return true
+        let h = self.socks[fd].handle
+        if self.socks[fd].outbuf.len() > self.socks[fd].out_off:
+            for i in 0..c.len():
+                self.socks[fd].outbuf.push(c[i])
+            return true
+        let n = tcp_send_bytes(h, c, 0)
+        if n < 0:
+            self.sock_lost(fd)
+            return false
+        self.socks[fd].outbuf = bytes_part(c, n)
+        self.socks[fd].out_off = 0
+        true
+
+    # A STREAM_TLS listener's connection in its handshake (tls_accepting[a])
+    # is readable; true once it is finished with (handed over or failed).
+    fn sock_tls_accept_ready(mut self, a: i32) -> bool:
+        let e = self.tls_accepting[a]
+        if e.done:
+            return true
+        let d = tcp_recv_bytes(e.sock)
+        let plain = if d.len() > 0: self.tls_feed(e.tls, d) else: Bytes()
+        let c = self.tls_take(e.tls)
+        for i in 0..c.len():
+            self.tls_accepting[a].out.push(c[i])
+        for i in 0..plain.len():
+            self.tls_accepting[a].early.push(plain[i])
+        let o = self.tls_accepting[a].out
+        if o.len() > 0:
+            let n = tcp_send_bytes(e.sock, o, 0)
+            self.tls_accepting[a].out = if n < 0: Bytes() else: bytes_part(o, n)
+        let fd = e.fd
+        if d.len() == 0 or self.tlss[e.tls].failed or !self.sock_open(fd) or !self.socks[fd].listener:
+            tcp_close(e.sock)
+            self.tls_free(e.tls)
+            self.tls_accepting[a].done = true
+            return true
+        if !self.tlss[e.tls].up:
+            return false
+        self.tls_accepting[a].done = true
+        self.socks[fd].pending.push(e.sock)
+        self.socks[fd].pending_tls.push(e.tls)
+        self.socks[fd].pending_early.push(self.tls_accepting[a].early)
+        self.sock_callback(fd, self.socks[fd].read_cb, [val::Value::Int(fd as i64)])
+        true
+
+    fn sock_tls_accept_sweep(mut self):
+        let mut keep: List<nd::TlsAccept> = List<nd::TlsAccept>()
+        for a in 0..self.tls_accepting.len():
+            if !self.tls_accepting[a].done:
+                keep.push(self.tls_accepting[a])
+        self.tls_accepting = keep
+
+    # A STREAM_TLS stream's data from the end of its handshake, delivered on
+    # the pass after socket_accept().
+    fn sock_deliver_early(mut self):
+        for fd in 0..self.socks.len():
+            if self.socks[fd].open and self.socks[fd].early.len() > 0:
+                let d = self.socks[fd].early
+                self.socks[fd].early = Bytes()
+                self.sock_input(fd, d)
 
     # sockets.pike handle_read(): MUD mode delivers each complete frame,
     # decoded (its text if it doesn't decode); streams deliver what arrived.
     fn sock_input(mut self, fd: i32, d: Bytes):
         if self.socks[fd].mode != sd::SM_MUD:
-            self.sock_callback(fd, self.socks[fd].read_cb, [val::Value::Int(fd as i64), val::Value::Str(str_from_bytes(d))])
+            let v = if is_binary_mode(self.socks[fd].mode): self.new_buf(d) else: val::Value::Str(str_from_bytes(d))
+            self.sock_callback(fd, self.socks[fd].read_cb, [val::Value::Int(fd as i64), v])
             return
         for i in 0..d.len():
             self.socks[fd].inbuf.push(d[i])
@@ -850,7 +1015,8 @@ impl vm::Vm:
         let mut pb = Bytes()
         for k in 6..end:
             pb.push(g[k])
-        self.sock_callback(fd, self.socks[fd].read_cb, [val::Value::Int(fd as i64), val::Value::Str(str_from_bytes(pb)), val::Value::Str(f"{ip} {port}")])
+        let v = if is_binary_mode(self.socks[fd].mode): self.new_buf(pb) else: val::Value::Str(str_from_bytes(pb))
+        self.sock_callback(fd, self.socks[fd].read_cb, [val::Value::Int(fd as i64), v, val::Value::Str(f"{ip} {port}")])
 
     # The case runner's socket hooks (efun_table.star test_efun_codes(); the
     # reference's are in tools/ref_cases.pike):
@@ -883,3 +1049,12 @@ impl vm::Vm:
     # sockets and connections, run resolve() answers.
     fn net_pass(mut self, ms: i32):
         self.net_poll(ms)
+
+# b from byte n on
+fn bytes_part(b: Bytes, n: i32) -> Bytes:
+    let mut o: Bytes = Bytes()
+    let mut i = if n < 0: 0 else: n
+    while i < b.len():
+        o.push(b[i])
+        i += 1
+    o

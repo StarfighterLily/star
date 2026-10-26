@@ -50,6 +50,7 @@ import "vpdata.star" as vpd
 import "eddata.star" as edd
 import "sockdata.star" as sd
 import "extdata.star" as xd
+import "netdata.star" as nd
 
 
 extern "C" fn clock() -> i32
@@ -201,6 +202,8 @@ struct Vm:
     mut maps: List<val::MapSlot> = List<val::MapSlot>()
     mut fns: List<val::FnSlot> = List<val::FnSlot>()
     mut clss: List<val::ClsSlot> = List<val::ClsSlot>()
+    # LPC buffers (P1 #8; buffers.star)
+    mut bufs: List<val::BufSlot> = List<val::BufSlot>()
     mut cells: List<val::Value> = List<val::Value>()
     mut stack: List<val::Value> = List<val::Value>()
     mut frames: List<Frame> = List<Frame>()
@@ -303,12 +306,14 @@ struct Vm:
     mut map_free: List<bool> = List<bool>()
     mut fn_free: List<bool> = List<bool>()
     mut cls_free: List<bool> = List<bool>()
+    mut buf_free: List<bool> = List<bool>()
     mut cell_free: List<bool> = List<bool>()
     mut obj_free: List<bool> = List<bool>()
     mut arr_free_list: List<i32> = List<i32>()
     mut map_free_list: List<i32> = List<i32>()
     mut fn_free_list: List<i32> = List<i32>()
     mut cls_free_list: List<i32> = List<i32>()
+    mut buf_free_list: List<i32> = List<i32>()
     mut cell_free_list: List<i32> = List<i32>()
     mut obj_free_list: List<i32> = List<i32>()
     # mark bits of the collection or get_garbage() pass running, and its
@@ -317,6 +322,7 @@ struct Vm:
     mut gc_map: List<bool> = List<bool>()
     mut gc_fn: List<bool> = List<bool>()
     mut gc_cls: List<bool> = List<bool>()
+    mut gc_buf: List<bool> = List<bool>()
     mut gc_cell: List<bool> = List<bool>()
     mut gc_obj: List<bool> = List<bool>()
     mut gc_work: List<val::Value> = List<val::Value>()
@@ -396,9 +402,36 @@ struct Vm:
     # number of the latest one
     mut conns: List<cn::Conn> = List<cn::Conn>()
     mut conn_seq: i32 = 0
-    # listening sockets and their ports
+    # listening sockets and their ports; since P1 #8 also what each serves
+    # (netdata.star LK_TELNET/LK_HTTP), its TLS context (null: plain) and
+    # whether a test hook opened it
     mut listeners: List<ptr> = List<ptr>()
     mut listener_ports: List<i32> = List<i32>()
+    mut listener_kinds: List<i32> = List<i32>()
+    mut listener_ctxs: List<ptr> = List<ptr>()
+    mut listener_test: List<bool> = List<bool>()
+    # --- TLS (P1 #8; tls.star): sessions (freed rows reused), server
+    # contexts by certificate and key file, the client context, the case
+    # runner's unchecking one, OpenSSL's scratch buffer, the last error ---
+    mut tlss: List<nd::TlsLink> = List<nd::TlsLink>()
+    mut tls_ctxs: Map<str, ptr> = Map<str, ptr>()
+    mut tls_client: ptr = null_ptr()
+    mut tls_test: ptr = null_ptr()
+    mut tls_buf: ptr = null_ptr()
+    mut tls_err: str = ""
+    # STREAM_TLS listeners' accepted connections still in their handshake
+    mut tls_accepting: List<nd::TlsAccept> = List<nd::TlsAccept>()
+    # --- the HTTP port (P1 #8; http.star): connections (freed rows reused),
+    # their sequence, request ids, requests awaiting http_respond(), the
+    # extension -> media type table once loaded ---
+    mut https: List<nd::HttpConn> = List<nd::HttpConn>()
+    mut http_seq: i32 = 0
+    mut http_next_id: i32 = 0
+    mut http_pending: List<nd::HttpPending> = List<nd::HttpPending>()
+    mut mime: Map<str, str> = Map<str, str>()
+    # the case runner's network clients and listeners (efuns_net.star)
+    mut test_clis: List<nd::TestCli> = List<nd::TestCli>()
+    mut test_srvs: List<nd::TestSrv> = List<nd::TestSrv>()
     # network_stats(): per user port, packets and bytes in and out
     mut traffic_ports: List<i32> = List<i32>()
     mut traffic: List<i64> = List<i64>()
@@ -795,6 +828,20 @@ impl Vm:
         self.fn_free.push(false)
         val::Value::Fn(h)
 
+    # A new buffer holding `data`.
+    fn new_buf(mut self, data: Bytes) -> val::Value:
+        let nf = self.buf_free_list.len()
+        if nf > 0:
+            let h = self.buf_free_list[nf - 1]
+            self.buf_free_list.pop()
+            self.buf_free[h] = false
+            self.bufs[h] = val::BufSlot(data = data)
+            return val::Value::Buf(h)
+        let h = self.bufs.len()
+        self.bufs.push(val::BufSlot(data = data))
+        self.buf_free.push(false)
+        val::Value::Buf(h)
+
     fn new_cls(mut self, c: val::ClsSlot) -> val::Value:
         let nf = self.cls_free_list.len()
         if nf > 0:
@@ -840,6 +887,7 @@ impl Vm:
             val::Value::Obj(h, g) -> "object"
             val::Value::Fn(h) -> "function"
             val::Value::Cls(h) -> "class"
+            val::Value::Buf(h) -> "buffer"
 
     fn to_str(self, v: val::Value) -> str:
         match v:
@@ -982,6 +1030,12 @@ impl Vm:
             val::Value::Cls(h) ->
                 match b:
                     val::Value::Cls(k) ->
+                        return h == k
+                    _ ->
+                        return false
+            val::Value::Buf(h) ->
+                match b:
+                    val::Value::Buf(k) ->
                         return h == k
                     _ ->
                         return false
@@ -1212,6 +1266,15 @@ impl Vm:
                             items.push(more[i])
                         return self.new_arr(items)
                     _ -> 0
+            val::Value::Buf(h) ->
+                match b:
+                    val::Value::Buf(k) ->
+                        let mut d = self.bufs[h].data
+                        let more = self.bufs[k].data
+                        for i in 0..more.len():
+                            d.push(more[i])
+                        return self.new_buf(d)
+                    _ -> 0
             val::Value::Map(h) ->
                 match b:
                     val::Value::Map(k) ->
@@ -1375,6 +1438,17 @@ impl Vm:
                     return self.arrs[h].items[j]
                 self.fail(f"Indexing an array with {self.describe(k)}.\n")
                 return val::Value::Undef
+            val::Value::Buf(h) ->
+                if self.is_int(k):
+                    let n = self.bufs[h].data.len() as i64
+                    let i = val::int_of(k)
+                    if i < (0 as i64) - n or i >= n:
+                        self.fail(f"Buffer index out of bounds ({i}/{n}).\n")
+                        return val::Value::Undef
+                    let j = if i < (0 as i64): (i + n) as i32 else: i as i32
+                    return val::Value::Int(self.bufs[h].data[j] as i64)
+                self.fail(f"Indexing a buffer with {self.describe(k)}.\n")
+                return val::Value::Undef
             val::Value::Map(h) ->
                 return self.map_get(h, k)
             val::Value::Cls(h) ->
@@ -1412,6 +1486,18 @@ impl Vm:
                     self.arrs[h].items[j] = v
                     return val::Value::Undef
                 self.fail(f"Indexing an array with {self.describe(k)}.\n")
+                return val::Value::Undef
+            val::Value::Buf(h) ->
+                if !self.is_int(k) or !self.is_int(v):
+                    self.fail("Bad buffer index assignment.\n")
+                    return val::Value::Undef
+                let n = self.bufs[h].data.len() as i64
+                let i = val::int_of(k)
+                if i < (0 as i64) - n or i >= n:
+                    self.fail(f"Buffer index out of bounds ({i}/{n}).\n")
+                    return val::Value::Undef
+                let j = if i < (0 as i64): (i + n) as i32 else: i as i32
+                self.bufs[h].data[j] = (val::int_of(v) & (255 as i64)) as u8
                 return val::Value::Undef
             val::Value::Map(h) ->
                 self.map_set(h, k, v)
@@ -1469,6 +1555,7 @@ impl Vm:
         match v:
             val::Value::Str(s) -> len(s)
             val::Value::Arr(h) -> self.arrs[h].items.len()
+            val::Value::Buf(h) -> self.bufs[h].data.len()
             _ -> 0
 
     # s[lo..hi] with LPC's `<n` (from the end) forms resolved and Pike's clamping
@@ -1513,6 +1600,22 @@ impl Vm:
                     out.push(items[i])
                     i += 1
                 return self.new_arr(out)
+            val::Value::Buf(h) ->
+                let d = self.bufs[h].data
+                let n = d.len()
+                let ab = self.range_bounds(n, flags, lo, hi)
+                let mut a = ab[0]
+                let mut b = ab[1]
+                if a < 0:
+                    a = 0
+                if b >= n:
+                    b = n - 1
+                let mut out: Bytes = Bytes()
+                let mut i = a
+                while i <= b:
+                    out.push(d[i])
+                    i += 1
+                return self.new_buf(out)
             _ ->
                 self.fail(f"Cannot take a range of {self.type_name(s)}.\n")
                 return val::Value::Undef
@@ -3007,3 +3110,14 @@ impl Vm:
                     parts.push(self.render(vals[i]))
                 concat(concat("({", str_join(parts, ",")), "})")
             val::Value::Fn(h) -> "FN"
+            # only this port's buffer cases show one (the reference has no
+            # buffers): its bytes in hex
+            val::Value::Buf(h) ->
+                let d = self.bufs[h].data
+                let hex = bytes_from_str("0123456789abcdef")
+                let mut o: Bytes = bytes_from_str("BUF<")
+                for i in 0..d.len():
+                    o.push(hex[(d[i] as i32) >> 4])
+                    o.push(hex[(d[i] as i32) & 15])
+                o.push(62 as u8)
+                str_from_bytes(o)
