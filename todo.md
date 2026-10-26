@@ -455,22 +455,60 @@ mudlib before it's marked done.
       differences, #24 a STREAM_TLS connect that gets no TLS back is closed,
       #25 buffers). Every tool that imports the efuns now also links
       `-L openssl/lib/x64 -l ssl -l crypto`.
-- [ ] **HavokOS P1 #9: the VM never frees garbage within one evaluation.**
-      Collections run only between top-level evaluations (gc.star: Star
-      locals in efuns halfway through their work can hold handles no root
-      reaches), so every intermediate value of one evaluation stays alive
-      until it ends. An `a += ({ x })` loop copies the whole array each
-      time, so its memory is quadratic: measured 0.8 GB at 10,000 appends,
-      3.1 GB at 20,000, 7 GB at 30,000, and at 40,000 an allocation fails
-      and the driver dies -- one modest LPC loop can take the whole MUD
-      down. Found in P1 #8 (a case helper appending a 120 KB reply byte by
-      byte). Options: reference counts on the heap tables (every Value copy
-      touches a count; cycles still need the collector), in-place append
-      when nothing else holds the array (needs those counts too), or a
-      collection at safe points mid-evaluation (the interpreter loop
-      between instructions, where every live value is on the VM stack --
-      but nested call_other()s run through native Star frames that hold
-      values). DS3.9's own `+=` loops are small, so it doesn't bite there.
+- [x] **HavokOS P1 #9: the VM never frees garbage within one evaluation.**
+      Done 2026-10-26. `gc.star` collect_young(): collections inside an
+      evaluation, at the interpreter's safe points (`vm.star` run_frames():
+      the top of the frame loop, between calls and returns, and loop back
+      edges). Each run of the interpreter loop (execute()) gets a serial,
+      every array/mapping/function/class/buffer slot records the serial it
+      was allocated under, and a collection frees only unreachable slots at
+      least as young as the running loop. That is what makes it safe with
+      native Star frames on the stack (the blocker the original report
+      named): every native frame below the running loop was suspended
+      before it began, so it can only hold older handles, and older slots
+      are never freed there -- their contents are scanned as roots instead,
+      so a young value stored into an array only a native frame holds
+      survives with no write barrier. Cells and objects are still freed only
+      between evaluations. A collection comes once as many values have been
+      allocated as were live after the last one (floor 1M values, ~16 MB);
+      the evaluation limit is extended by its time. Rejected, with reasons
+      in NOTES.md: reference counts, pinning what native code holds (about
+      100 apply/call_value/load call sites, the verb parser among them, any
+      miss a silent use-after-free), and collecting only under audited
+      top-level paths. Measured: `a += ({ i })` loops of 10k/20k/30k
+      appends peak at 27 MB (were 0.8/3.1/7 GB), 40k at 42 MB in 7.8 s
+      (was a dead driver); fib(25) plus a 1M loop is unchanged (see the
+      log). Checked:
+      - a new fixture, `gc.expected.txt` (21 cases,
+        `tools/gen_gc_cases.py`, results from the live reference): the 40k
+        loop, then values only native frames hold while collections run
+        (map() over an array and a mapping, filter(), sort_array(),
+        call_other()'s arguments while the target loads and its create()
+        makes garbage, a call_out's argument) and each kind of root
+        (outer frames, half-built expressions, closure cells, a destructed
+        object still running, class instances, a thrown value, a growing
+        young mapping, recursion with no loop). 799 collections run in it
+        without stress;
+      - a stress mode, `run_cases -gcstress` / `run_cases_test.ps1
+        -GcStress` / `boot_ds -gcstress` / `run_boot_test.ps1 -GcStress`:
+        a collection at every safe point after any allocation. All 957
+        cases pass in it (~166,000 collections inside evaluations), and the
+        DS3.9 boot gives the reference's report after 12,116 of them;
+      - the stress tests catch a broken collector: a mutant freeing young
+        slots of *any* loop fails 5 gc cases without stress, and under it
+        31 cases in four of the five older fixtures tried (m3_extra,
+        m4_extra, m5_extra, m7_ext; m6_parser passed);
+      - all 957 cases, the boot, all four logins, the parser transcript, the
+        compile sweep and the DS web test pass; 60 s soaks (`-gcevery`, and
+        `-gcstress`) have 0 runtime errors. A normal soak never reaches the
+        budget inside one evaluation, so ordinary play pays nothing.
+      Token/AST sweeps not rerun (no front-end change); no Star compiler
+      change, so the cargo suite wasn't rerun.
+      What still waits for the evaluation's end: garbage an outer loop made
+      while a nested one runs (map()'s callbacks' leftovers are freed once
+      map() returns), and what cells hold. The copies themselves remain:
+      `a += ({ x })` is still quadratic in *time* (in-place appends would
+      need reference counts).
 - [x] **HavokOS P2 #1: Star compiler, capitalized `extern "C"` names.**
       Done 2026-10-26 (during HavokOS P1 #8, which needed all of OpenSSL's
       uppercase names). The parser reads `Name(args)` with an uppercase name
@@ -925,3 +963,11 @@ reconciled to match whichever of the two Python sources looks more
   within one evaluation is never freed). All 936 cases, the boot, four
   logins, parser transcript, compile sweep and the new zlib and DS web
   tests pass; full cargo suite 2207 pass, 0 fail.
+- 2026-10-26: HavokOS P1 #9 (garbage collection inside one evaluation) is
+  done. See its entry above and `projects/havokos/NOTES.md` ("Value
+  representation" and "2026-10-26: P1 #9"), which also covers why
+  allocation serials rather than pinning or reference counts, the safety
+  argument, the stress modes, and the mutant run that shows the tests
+  catch a collector that breaks the rule. All 957 cases (normal and
+  stress), the boot (normal and stress), four logins, parser transcript,
+  compile sweep, DS web test and soaks pass. No Star compiler changes.

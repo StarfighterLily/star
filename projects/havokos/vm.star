@@ -32,7 +32,9 @@
 # limit's ticks on function entry and loop back edges, the entry names on
 # the driver stack that origin() reads, error traces with line numbers
 # (err_frames, the compiler's line tables), and loading with privs, virtual
-# objects and the full boot.
+# objects and the full boot. Since P1 #9 also each heap slot's allocation
+# serial (the running execute()'s) and the safe points in run_frames() where
+# gc.star collects inside an evaluation.
 
 import "value.star" as val
 import "program.star" as pg
@@ -328,6 +330,28 @@ struct Vm:
     mut gc_work: List<val::Value> = List<val::Value>()
     mut gc_runs: i32 = 0
     mut gc_live_at_last: i32 = 0
+    # collections inside an evaluation (gc.star collect_young()): the serial
+    # of the execute() each slot was allocated under (0: outside any), the
+    # running execute()'s serial and the last one handed out, the lowest
+    # serial the pass running may free (0: every one), words allocated since
+    # the last collection and how many may be before the next, its floor,
+    # stress mode (a collection at every safe point after any allocation:
+    # the case runner's -gcstress), and how many such collections ran
+    mut arr_ser: List<i32> = List<i32>()
+    mut map_ser: List<i32> = List<i32>()
+    mut fn_ser: List<i32> = List<i32>()
+    mut cls_ser: List<i32> = List<i32>()
+    mut buf_ser: List<i32> = List<i32>()
+    mut exec_ser: i32 = 0
+    mut ser_next: i32 = 0
+    mut gc_min: i32 = 0
+    mut gc_alloc: i64 = 0 as i64
+    mut gc_budget: i64 = (1 as i64) << 20
+    mut gc_floor: i64 = (1 as i64) << 20
+    mut gc_stress: bool = false
+    mut gc_young_runs: i32 = 0
+    # the size of what the last sweep kept, in values (gc_sweep())
+    mut gc_kept: i64 = 0 as i64
     # --- the line editor (M7; ed.star): sessions, a finished one's slot
     # reused by the next ed_start() ---
     mut eds: List<edd::EdSession> = List<edd::EdSession>()
@@ -472,6 +496,7 @@ fn new_vm(root: str) -> Vm:
     # handle 0: Pike's one shared empty array (see new_arr)
     v.arrs.push(val::ArrSlot(items = List<val::Value>()))
     v.arr_free.push(false)
+    v.arr_ser.push(0)
     v.efun_codes = et::efun_codes()
     let r = en::reference_efuns()
     v.ref_efun_list = r
@@ -737,31 +762,37 @@ impl Vm:
     fn new_arr(mut self, items: List<val::Value>) -> val::Value:
         if items.len() == 0:
             return val::Value::Arr(0)
+        self.gc_alloc += (items.len() + 1) as i64
         # a handle gc.star freed, else a new one
         let nf = self.arr_free_list.len()
         if nf > 0:
             let h = self.arr_free_list[nf - 1]
             self.arr_free_list.pop()
             self.arr_free[h] = false
+            self.arr_ser[h] = self.exec_ser
             self.arrs[h] = val::ArrSlot(items = items)
             return val::Value::Arr(h)
         let h = self.arrs.len()
         self.arrs.push(val::ArrSlot(items = items))
         self.arr_free.push(false)
+        self.arr_ser.push(self.exec_ser)
         val::Value::Arr(h)
 
     fn new_map(mut self) -> i32:
         let slot = val::MapSlot(keys = List<val::Value>(), vals = List<val::Value>(), idx = Map<val::MKey, i32>())
+        self.gc_alloc += 1 as i64
         let nf = self.map_free_list.len()
         if nf > 0:
             let h = self.map_free_list[nf - 1]
             self.map_free_list.pop()
             self.map_free[h] = false
+            self.map_ser[h] = self.exec_ser
             self.maps[h] = slot
             return h
         let h = self.maps.len()
         self.maps.push(slot)
         self.map_free.push(false)
+        self.map_ser.push(self.exec_ser)
         h
 
     fn map_find(self, h: i32, k: val::Value) -> i32:
@@ -787,6 +818,7 @@ impl Vm:
         self.maps[h].keys.push(kk)
         self.maps[h].vals.push(v)
         self.maps[h].idx.insert(val::mkey(kk), n)
+        self.gc_alloc += 2 as i64
 
     fn map_delete(mut self, h: i32, k: val::Value):
         let i = self.map_find(h, k)
@@ -803,6 +835,7 @@ impl Vm:
         self.maps[h].vals.pop()
 
     fn new_cell(mut self, v: val::Value) -> i32:
+        self.gc_alloc += 1 as i64
         let nf = self.cell_free_list.len()
         if nf > 0:
             let c = self.cell_free_list[nf - 1]
@@ -816,43 +849,53 @@ impl Vm:
         c
 
     fn new_fn(mut self, f: val::FnSlot) -> val::Value:
+        self.gc_alloc += (f.bound.len() + 1) as i64
         let nf = self.fn_free_list.len()
         if nf > 0:
             let h = self.fn_free_list[nf - 1]
             self.fn_free_list.pop()
             self.fn_free[h] = false
+            self.fn_ser[h] = self.exec_ser
             self.fns[h] = f
             return val::Value::Fn(h)
         let h = self.fns.len()
         self.fns.push(f)
         self.fn_free.push(false)
+        self.fn_ser.push(self.exec_ser)
         val::Value::Fn(h)
 
     # A new buffer holding `data`.
     fn new_buf(mut self, data: Bytes) -> val::Value:
+        # a value is 16 bytes: count a buffer's bytes in values
+        self.gc_alloc += (data.len() / 16 + 1) as i64
         let nf = self.buf_free_list.len()
         if nf > 0:
             let h = self.buf_free_list[nf - 1]
             self.buf_free_list.pop()
             self.buf_free[h] = false
+            self.buf_ser[h] = self.exec_ser
             self.bufs[h] = val::BufSlot(data = data)
             return val::Value::Buf(h)
         let h = self.bufs.len()
         self.bufs.push(val::BufSlot(data = data))
         self.buf_free.push(false)
+        self.buf_ser.push(self.exec_ser)
         val::Value::Buf(h)
 
     fn new_cls(mut self, c: val::ClsSlot) -> val::Value:
+        self.gc_alloc += (c.vals.len() + 1) as i64
         let nf = self.cls_free_list.len()
         if nf > 0:
             let h = self.cls_free_list[nf - 1]
             self.cls_free_list.pop()
             self.cls_free[h] = false
+            self.cls_ser[h] = self.exec_ser
             self.clss[h] = c
             return val::Value::Cls(h)
         let h = self.clss.len()
         self.clss.push(c)
         self.cls_free.push(false)
+        self.cls_ser.push(self.exec_ser)
         val::Value::Cls(h)
 
     fn obj_value(self, o: i32) -> val::Value:
@@ -2090,7 +2133,17 @@ impl Vm:
             self.handlers.pop()
         false
 
+    # Each run of the interpreter loop gets a serial, and every heap slot
+    # records the one it was allocated under: what a collection inside this
+    # run may free (gc.star collect_young() says why that is safe).
     fn execute(mut self, stop: i32):
+        let outer = self.exec_ser
+        self.ser_next += 1
+        self.exec_ser = self.ser_next
+        self.run_frames(stop)
+        self.exec_ser = outer
+
+    fn run_frames(mut self, stop: i32):
         while self.frames.len() > stop:
             if self.err:
                 if self.err_need_trace:
@@ -2101,6 +2154,10 @@ impl Vm:
                 if !self.unwind(stop):
                     return
                 continue
+            # a safe point: between instructions, every value this run holds
+            # is on the value stack, in a frame or in a cell
+            if self.gc_alloc >= self.gc_budget:
+                self.collect_young()
             let fi = self.frames.len() - 1
             let fr = self.frames[fi]
             let code = self.progs[fr.prog].fns[fr.fnidx].code
@@ -2150,6 +2207,8 @@ impl Vm:
                                 self.eval_tick()
                                 if self.err:
                                     running = false
+                            if self.gc_alloc >= self.gc_budget:
+                                self.collect_young()
                         pc = to
                     else:
                         pc += 2
@@ -2162,6 +2221,9 @@ impl Vm:
                             self.eval_tick()
                             if self.err:
                                 running = false
+                        # and a safe point, as at the top of run_frames()
+                        if self.gc_alloc >= self.gc_budget:
+                            self.collect_young()
                     pc = to
                 elif op == pg::OP_POP:
                     self.stack.pop()
@@ -2356,6 +2418,7 @@ impl Vm:
                                 self.stack[n - 1] = self.new_arr([v])
                             else:
                                 self.arrs[h].items.push(v)
+                                self.gc_alloc += 1 as i64
                         _ -> 0
                     pc += 1
                 elif op == pg::OP_ARR_EXTEND:
@@ -2371,6 +2434,7 @@ impl Vm:
                                     else:
                                         for i in 0..more.len():
                                             self.arrs[h].items.push(more[i])
+                                        self.gc_alloc += more.len() as i64
                                 _ -> 0
                         _ ->
                             if !val::is_zero(v):

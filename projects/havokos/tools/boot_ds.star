@@ -15,7 +15,10 @@
 #            (driver_tick(): call_outs, heart beats, garbage collection) for
 #            that many seconds, a soak test with nothing to compare against,
 #            reported as RUN lines; -gcevery collects garbage on every tick
-#            (a collector stress test on a real mudlib's heap)
+#            (a collector stress test on a real mudlib's heap); -gcstress
+#            (P1 #9, any mode) collects inside evaluations at every safe point
+#            after any allocation (gc.star collect_young()), and the report
+#            ends with how many ran, as a LOG line
 #        boot_ds.exe <mudos.cfg> [<mudlib dir>] [-wait <seconds>] -eval <file.lpc>
 #            boot, run the timers for that long, then run the file as the body
 #            of `mixed eval()` in a SECURE object, as the reference's
@@ -109,6 +112,7 @@ fn main() -> i32:
     let mut root = ""
     let mut run_s = 0
     let mut gc_every = false
+    let mut stress = false
     let mut wait_s = 0
     let mut eval_file = ""
     let mut pos: List<str> = List<str>()
@@ -116,6 +120,9 @@ fn main() -> i32:
     while k < cli.len():
         if cli[k] == "-gcevery":
             gc_every = true
+            k += 1
+        elif cli[k] == "-gcstress":
+            stress = true
             k += 1
         elif cli[k] == "-wait" and k + 1 < cli.len():
             wait_s = vm::parse_int_prefix(cli[k + 1]) as i32
@@ -137,6 +144,9 @@ fn main() -> i32:
         if k >= 0:
             root = concat(vm::substr(root, 0, k), "/lib")
     let mut m = cfgm::setup_vm(cfg, root, cfgm::telnet_ports(cfg)[0])
+    if stress:
+        m.gc_stress = true
+        m.gc_budget = 1 as i64
     let sefun = cfgm::sefun_path(cfg)
     let master = cfgm::master_path(cfg)
     let t0 = clock_ms()
@@ -176,7 +186,7 @@ fn main() -> i32:
         for i in log0..m.log.len():
             if str_starts_with(m.log[i], "*** "):
                 errors += 1
-        println(f"RUN {run_s} s: {ticks} driver ticks, {m.gc_runs - gc0} collections, heap {heap0} -> {m.heap_live()} slots, {errors} runtime errors, {m.callouts.len()} call_outs pending")
+        println(f"RUN {run_s} s: {ticks} driver ticks, {m.gc_runs - gc0} collections ({m.gc_young_runs} inside evaluations since boot), heap {heap0} -> {m.heap_live()} slots, {errors} runtime errors, {m.callouts.len()} call_outs pending")
     let mut objs: List<str> = List<str>()
     let mut nobj = 0
     let mut nclone = 0
@@ -209,4 +219,6 @@ fn main() -> i32:
     for i in 0..m.log.len():
         println(concat("LOG ", str_replace(m.log[i], "\n", "\\n")))
     println(f"LOG boot took {took} ms")
+    if stress:
+        println(f"LOG gc: {m.gc_young_runs} collections inside evaluations")
     0

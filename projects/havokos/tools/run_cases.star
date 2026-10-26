@@ -6,13 +6,17 @@
 # instantiate it, call eval() with the object on the driver stack, and
 # compare the result in the canonical form both sides print.
 #
-# Usage: run_cases.exe <minilib_root> <fixture.txt> [-v] [-ds] [-nogc] [name filter]
+# Usage: run_cases.exe <minilib_root> <fixture.txt> [-v] [-ds] [-nogc] [-gcstress] [name filter]
 #   -ds: the root is Dead Souls 3.9's mudlib, booted (as ref_cases.pike -ds
 #        does) only as far as its simul_efun object -- DS3.9's mudos.cfg
 #        names, no master
 #   -nogc: don't collect garbage between cases (M5). By default a
 #        collection runs after every case, so every fixture also checks
 #        that the collector frees nothing still in use.
+#   -gcstress: also collect inside every evaluation (gc.star collect_young(),
+#        P1 #9) at every safe point after any allocation, so a fixture
+#        checks that those collections free nothing still in use either.
+#        The summary line gives how many ran (in any mode, when any did).
 # Prints one FAIL line per mismatch (every case with -v) and a summary;
 # exits 0 when every case matched.
 #
@@ -107,6 +111,7 @@ fn main() -> i32:
     let mut verbose = false
     let mut ds = false
     let mut use_gc = true
+    let mut stress = false
     let mut filter = ""
     for i in 3..cli.len():
         if cli[i] == "-v":
@@ -115,10 +120,15 @@ fn main() -> i32:
             ds = true
         elif cli[i] == "-nogc":
             use_gc = false
+        elif cli[i] == "-gcstress":
+            stress = true
         else:
             filter = cli[i]
     let mut m = vm::new_vm(cli[1])
     m.add_test_efuns()
+    if stress:
+        m.gc_stress = true
+        m.gc_budget = 1 as i64
     let mut booted = false
     if ds:
         m.pp.include_dirs = ["/secure/include", "/include"]
@@ -179,7 +189,10 @@ fn main() -> i32:
     if verbose:
         for i in 0..m.log.len():
             println(f"log: {m.log[i]}")
-    println(f"{passed} passed, {failed} failed")
+    if m.gc_young_runs > 0:
+        println(f"{passed} passed, {failed} failed ({m.gc_young_runs} collections inside evaluations)")
+    else:
+        println(f"{passed} passed, {failed} failed")
     if failed > 0:
         return 1
     0

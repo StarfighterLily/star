@@ -38,7 +38,7 @@ virtual machine**:
 | `lpc/emitter.pike` → Pike source → Pike compiler | `compiler.star`: AST → bytecode (`program.star` format) |
 | Pike runtime executing the generated program | `vm.star`: bytecode interpreter |
 | `havok/driver.pike` object table, call stack, call_outs, heart beats | `vm.star` (programs, objects, loading, call_other, the object stack; M3) and `objects.star` (applies, top-level evaluations, destruct, environments, commands, call_outs, heart beats, resets; M5) |
-| Pike's garbage collector | `gc.star`: a mark-and-sweep of the VM's value tables between top-level evaluations (M5) |
+| Pike's garbage collector | `gc.star`: a mark-and-sweep of the VM's value tables between top-level evaluations (M5), and of the slots one interpreter loop allocated, at its safe points (P1 #9) |
 | `havok/efuns.pike` | `efuns.star` (dispatch + the M3 subset) and one file per area since M4: `efuns_str.star`, `efuns_arr.star`, `efuns_file.star`, `sprintf.star`, `sscanf.star`, `regex.star`, `md5.star`, `tcolour.star`, `numfmt.star`, and `efuns_obj.star` (the object model, M5) |
 | `havok/saveformat.pike` | `saveformat.star` (plus the emitter's `__lpc_save`/`__lpc_restore` variable walk) |
 | `havok/net.pike` (telnet, connections, sessions) | `net.star` (on `conn.star`'s Conn), its efuns `efuns_net.star`; the sockets themselves are compiler builtins (`src/codegen/net_server.rs`, M6) |
@@ -212,8 +212,11 @@ enum Value:
 - `a += ({ x })` copies the whole left array each time, as LPC semantics
   require, but the copy costs more than Pike's: 20k appends in a loop take
   3.3 s against the reference's ~0.3 s. In-place appending when nothing else
-  holds the array needs reference tracking the VM doesn't have yet; it fits
-  with the garbage collector (M5). DS3.9's `+=` loops are over small arrays.
+  holds the array needs reference tracking the VM doesn't have yet (P1 #9
+  went another way, see below). DS3.9's `+=` loops are over small arrays.
+  Since P1 #9 the copies are at least garbage that gets collected while
+  the loop runs: 40,000 appends peak at 63 MB, where 30,000 used to hold
+  7 GB.
 
 Garbage (M5, `gc.star`): a mark-and-sweep that runs only *between*
 top-level evaluations, when the VM stack is empty, so the roots are object
@@ -226,6 +229,38 @@ has doubled since the last collection, or when reclaim_objects() asked.
 Every case fixture runs with a collection after each case, and `boot_ds.exe
 -run 60 -gcevery` collects on every tick of a booted Dead Souls (about 3700
 collections a minute) and ends in the same state as without.
+
+Garbage inside an evaluation (P1 #9, `gc.star` collect_young()): until
+then one evaluation's garbage lived until it ended, so a loop of 40,000
+`a += ({ x })` (quadratic garbage) killed the driver. A collection can't
+simply run mid-evaluation, because native Star frames below the running
+LPC (an efun calling back into it, the loader running create(), the verb
+parser between applies) hold handles in locals no root reaches. Instead
+every run of the interpreter loop (`vm.star` execute()) gets a serial, every
+array/mapping/function/class/buffer slot records the serial it was
+allocated under, and at the loop's safe points (the top of `run_frames()`
+between calls and returns, and loop back edges) a collection frees only
+unreachable slots at least as young as the running loop. A native frame
+below it was suspended before the loop began, so it can only hold older
+handles, and older slots are never freed there; their contents are scanned
+as roots instead (shallowly, every time, so no write barrier is needed for
+a young value stored into an old array). Cells are all roots and objects
+aren't freed, as before. Collections come when as many values have been
+allocated since the last one as were live after it, with a floor of 1M
+values (about 16 MB); the evaluation's time limit is extended by the time
+they take. `run_cases -gcstress` (and `run_cases_test.ps1 -GcStress`,
+`boot_ds -gcstress`) collects at every safe point after any allocation.
+
+Considered and not taken: reference counts (every Value copy touches a
+count, and cycles still need a collector; they'd also allow in-place
+appends, the one thing this doesn't give); collecting at safe points with
+everything native code holds pinned on a VM-visible list (correct only if
+every native path into LPC pins exactly right: about 100 call sites of the
+apply/call_value/load family, the verb parser among them, and a miss is a
+silent use-after-free); collecting only in
+loops entered from audited top-level paths (the verb parser runs most
+commands' applies from native code, so it would have needed the same
+audit).
 
 ## Roadmap
 
@@ -312,7 +347,8 @@ Pike driver before it's marked done.
 | `tests/run_compile_sweep_test.ps1` | M3 regression: all 2378 DS3.9 files' compile results and table hashes against `fixtures/ds39_compile.expected.txt` (frozen reference output), about 21 s |
 | `objects.star` | the object model's machinery: applies, top-level evaluations and the evaluation limit, error_handler() reports, destruct, environments and init(), livings, shadows, add_action dispatch, messages, call_outs, heart beats, reset/clean_up, replace_program(), get_garbage(), the driver's timer step |
 | `efuns_obj.star` | the object-model efuns (codes 200-299) and the case runner's test_* driver hooks (900-999) |
-| `gc.star` | the garbage collector, and the marking get_garbage() uses |
+| `gc.star` | the garbage collector (between evaluations, and inside them since P1 #9), and the marking get_garbage() uses |
+| `tools/gen_gc_cases.py` | generates `gc_cases.txt` (P1 #9: collections inside evaluations; what each case covers is in its header) |
 | `tools/boot_ds.star`, `tools/ref_boot.pike` | M5 boot comparison, both sides: boot a mudlib from its mudos.cfg through every preload and print the live objects (privs, environment, heart beat, living) and counts; `boot_ds.exe -unimplemented` lists the efuns the reference side stubs, `-run N` soaks the booted driver, `-wait N -eval f.lpc` runs a script on it (M6) |
 | `tests/run_boot_test.ps1` | M5 regression: DS3.9's boot on a scratch copy of the mudlib against `fixtures/ds39_boot.expected.txt` (frozen reference output, made with `fixtures/ds39_boot_stubs.txt`), about 3 s |
 | `conn.star` | `Conn`: one connection's state (telnet options, buffers, pending input_to) |
@@ -1445,3 +1481,50 @@ Found along the way:
 
 Five new deliberate deviations or rewrites (#13 and #16 rewritten, #23-#25).
 
+
+### 2026-10-26: P1 #9, garbage collection inside one evaluation
+
+**Collections now run inside evaluations** (`gc.star` collect_young(), the
+design in "Value representation" above): every slot carries the serial of
+the interpreter loop that allocated it, and a collection at one of the
+loop's safe points frees only unreachable slots at least as young as that
+loop. Measured on `a += ({ i })` loops: 10k, 20k and 30k appends peak at
+27 MB (were 0.8, 3.1 and 7 GB), 40k at 42 MB in 7.8 s (the driver used to
+die). Against a build of the
+previous commit: 10k appends 810 MB -> 27 MB in the same 0.65 s, and
+`fib(25)` plus a 1M loop 0.42-0.44 s before, 0.42-0.45 s after, so the
+safe-point checks (a compare at each frame switch and back edge) cost
+nothing measurable.
+
+The argument for safety is short (collect_young()'s comment), so the
+checking went into making a mistake visible:
+- **A fixture of the risky shapes** (`gc.expected.txt`, 21 cases,
+  `tools/gen_gc_cases.py`, results from the live reference): values only
+  a native frame holds while LPC runs beneath it (map() over an array and
+  over a mapping, filter(), sort_array(), call_other()'s arguments while
+  the target loads and its create() makes garbage, a call_out's argument)
+  and every kind of root (outer frames, half-built expressions on the
+  stack, closure cells, a destructed object whose code runs on, class
+  instances, a thrown value crossing frames, a young mapping growing among
+  garbage, recursion with no loop back edge). Each allocates past the
+  1M-value floor, so 799 collections run in it without any stress mode.
+- **A stress mode** (`-gcstress` on run_cases and boot_ds, `-GcStress` on
+  their test scripts): a collection at every safe point after any
+  allocation. All 957 cases pass (about 166,000 collections inside
+  evaluations), and the DS3.9 boot gives the reference's report after
+  12,116.
+- **A mutant**: the same collector freeing young slots of *any* loop (the
+  rule removed) fails 5 of the gc cases without stress (map()/filter()/
+  sort_array() results freed under the efun), and under stress 31 cases of
+  m3_extra, m4_extra, m5_extra and m7_ext as well. So both the rule and
+  the tests matter.
+- Everything else as usual: all cases, the boot, four logins, the parser
+  transcript, the compile sweep, the DS web test; 60 s soaks with
+  `-gcevery` and with `-gcstress`, 0 runtime errors. A normal soak runs no
+  collection inside an evaluation at all: Dead Souls' own evaluations
+  never allocate 1M values.
+
+Left as it was: `a += ({ x })` still copies (quadratic time; in-place
+appends would need reference counts), garbage an outer loop made while a
+nested one runs waits until that loop's next safe point, and cells and
+destructed objects' slots are still freed only between evaluations.

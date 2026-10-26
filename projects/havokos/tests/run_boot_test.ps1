@@ -12,6 +12,9 @@
 # (rebuild tools/boot_ds.exe first if any compiler/VM .star file changed:
 #   target/release/star.exe build projects/havokos/tools/boot_ds.star -o projects/havokos/tools/boot_ds.exe -l ws2_32 -L sqlite/lib/x64 -l sqlite3 -L openssl/lib/x64 -l ssl -l crypto)
 # Exits 0 when the reports match, 1 otherwise. About 3 s.
+# -GcStress (P1 #9) boots with a garbage collection inside the evaluation at
+# every safe point after any allocation (boot_ds -gcstress): the same report
+# must come out, so those collections freed nothing still in use.
 #
 # Regenerating the fixture (only after confirming the *reference's* own
 # behavior changed, or when the Star VM implements more efuns -- the stub list
@@ -24,7 +27,7 @@
 # implemented" error, so both drivers fail the same calls. Since P1 #8 the
 # list is empty: the Star VM runs every efun the reference implements.
 
-param([string]$DsRoot = "E:\ds3.9")
+param([string]$DsRoot = "E:\ds3.9", [switch]$GcStress)
 
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -47,7 +50,11 @@ $scratch = Join-Path ([IO.Path]::GetTempPath()) ("havokos_boot_" + [Guid]::NewGu
 Copy-Item -Recurse (Join-Path $DsRoot "lib") $scratch
 try {
     $cfg = (Join-Path $DsRoot "bin\mudos.cfg") -replace "\\", "/"
-    $out = @(& $tool $cfg ($scratch -replace "\\", "/") | Where-Object { $_ -notlike "LOG *" })
+    $extra = @()
+    if ($GcStress) { $extra += "-gcstress" }
+    $all = @(& $tool $cfg ($scratch -replace "\\", "/") @extra)
+    $all | Where-Object { $_ -like "LOG gc: *" } | ForEach-Object { Write-Host $_.Substring(4) }
+    $out = @($all | Where-Object { $_ -notlike "LOG *" })
     $want = Get-Content (Join-Path $here "fixtures\ds39_boot.expected.txt")
     $diff = Compare-Object $want $out
     if ($diff) {
