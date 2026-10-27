@@ -499,6 +499,9 @@ impl Codegen {
             // silently discarded and reinterpreted as an out-of-range `i32`
             // constant -- invalid IR `clang` rejects outright.
             TypedExpr::Int(v, ty, _) => format!("{} {}", self.llvm_ty(ty), v),
+            // LLVM spells both widths' constants as a double's hex bits; a
+            // `float` one must be exactly representable in `f32`.
+            TypedExpr::Float(v, Ty::F64, _) => format!("double 0x{:016X}", v.to_bits()),
             TypedExpr::Float(v, _, _) => format!("float {}", format_f32_literal(*v)),
             TypedExpr::Str(s, _, _) => {
                 let escaped = s.replace("\\", "\\\\").replace("\"", "\\22").replace("\n", "\\0A");
@@ -514,10 +517,15 @@ impl Codegen {
                 // but still needs to *look* like a valid RC'd allocation to
                 // whatever generically retains/releases a `Str` value that
                 // happens to hold this literal (see `rc.rs`).
+                // The `release_fn` slot holds the cached length
+                // `@star_str_len` would otherwise store -- it can't store
+                // into a constant. Up to the first NUL, as `strlen` reads it.
+                let len = s.bytes().position(|b| b == 0).unwrap_or(s.len()) as i64;
+                let tagged = len | i64::MIN;
                 let struct_ty = format!("{{ i64, i8*, [{} x i8] }}", n);
                 self.global_defs.push(format!(
-                    "{} = private unnamed_addr constant {} {{ i64 -1, i8* null, [{} x i8] c\"{}\\00\" }}",
-                    g, struct_ty, n, escaped
+                    "{} = private unnamed_addr constant {} {{ i64 -1, i8* inttoptr (i64 {} to i8*), [{} x i8] c\"{}\\00\" }}",
+                    g, struct_ty, tagged, n, escaped
                 ));
                 let gep = self.tmp_name();
                 self.line(&format!("  {} = getelementptr inbounds {}, {}* {}, i64 0, i32 2, i64 0", gep, struct_ty, struct_ty, g));

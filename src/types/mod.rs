@@ -1205,25 +1205,14 @@ impl ConstValue {
     /// elsewhere still points at the use, not back at line 1 of some other
     /// file.
     ///
-    /// `Float(_, Ty::F64)` is deliberately never lowered to a bare
-    /// `TypedExpr::Float` directly: `Codegen::emit_expr`'s `TypedExpr::Float`
-    /// arm always renders its text via `format_f32_literal` regardless of
-    /// the node's own `Ty` tag (there is no bare-`double`-literal text
-    /// path), so a `Float(_, Ty::F64)` node would silently emit an `f32`-
-    /// shaped `float` literal wherever LLVM IR expected a `double`, a type
-    /// mismatch `clang`/`llc` would reject. Routing it through the exact
-    /// same `f32`-literal-then-`fpext` shape a real `<float literal> as f64`
-    /// already produces (`Codegen::emit_cast`'s float/float arm) reuses
-    /// already-correct, already-tested machinery instead of teaching
-    /// codegen a new literal form.
+    /// `Float(_, Ty::F64)` becomes an `f64`-typed literal, which
+    /// `Codegen::emit_expr` renders as a `double`. It used to go through an
+    /// `f32` literal and a widening cast, because codegen had no `double`
+    /// literal form, and that silently dropped every digit past the 7th
+    /// (`todo.md` HavokOS P2 #3).
     fn into_typed_expr(self, span: Span) -> TypedExpr {
         match self {
             ConstValue::Int(v, ty) => TypedExpr::Int(v, ty, span),
-            ConstValue::Float(v, Ty::F64) => TypedExpr::Cast {
-                expr: Box::new(TypedExpr::Float(v, Ty::Float, span)),
-                ty: Ty::F64,
-                span,
-            },
             ConstValue::Float(v, ty) => TypedExpr::Float(v, ty, span),
             ConstValue::Bool(v) => TypedExpr::Bool(v, Ty::Bool, span),
             ConstValue::Str(v) => TypedExpr::Str(v, Ty::Str, span),
@@ -1330,7 +1319,11 @@ fn fold_const_expr(expr: &TypedExpr) -> Result<ConstValue, (Span, String)> {
                     Ok(ConstValue::Float(f, target.clone()))
                 }
                 (ConstValue::Float(f, _), t) if t.int_shape().is_some() => Ok(ConstValue::Int(cast_float_to_int_ty(f, t), t.clone())),
-                (ConstValue::Float(f, _), Ty::Float | Ty::F64) => Ok(ConstValue::Float(f, target.clone())),
+                // Narrowing to `float` rounds here, now that an `f64`
+                // constant keeps every digit: `(x as float) as f64` must
+                // still be the rounded value.
+                (ConstValue::Float(f, _), Ty::Float) => Ok(ConstValue::Float(f as f32 as f64, Ty::Float)),
+                (ConstValue::Float(f, _), Ty::F64) => Ok(ConstValue::Float(f, Ty::F64)),
                 _ => Err((*span, "this cast is not supported in a constant expression".to_string())),
             }
         }
@@ -1518,7 +1511,7 @@ const RESERVED_RUNTIME_SYMBOLS: &[&str] = &[
     // actually building for Linux) since this list is checked at type-check
     // time, before a build's `--target` is known to codegen.
     "pthread_create", "pthread_self", "sem_init", "sem_wait", "sem_post", "sysconf",
-    "star_rc_alloc", "star_rc_retain", "star_rc_release",
+    "star_rc_alloc", "star_rc_retain", "star_rc_release", "star_str_len",
     // `env_get`/`env_set` builtins -- see `crate::codegen::os`.
     "getenv", "_putenv_s",
     // `tcp_connect`/`tcp_send`/`tcp_recv`/`tcp_close` builtins -- see

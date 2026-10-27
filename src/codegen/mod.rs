@@ -983,6 +983,24 @@ impl Codegen {
     /// nested *inside* the block (e.g. a closure's captured `str` fields) --
     /// `null` for an allocation with no such content (e.g. a plain `concat`
     /// result).
+    ///
+    /// A `str` never has a release function, so its `release_fn` slot
+    /// doubles as a cache of its length (`@star_str_len`): the length with
+    /// bit 63 set, which no code pointer has (user-space addresses sit far
+    /// below 2^63 on every target), so `star_rc_release` tells the two apart
+    /// by sign. `s[i]` used to run `strlen` for its bounds check, so a
+    /// char-at-a-time scan was quadratic -- about 70 s for 1 MB (`todo.md`
+    /// HavokOS P2 #2). The length is filled in lazily rather than stored by
+    /// each of the ~50 sites that build a `str` (any one missed would be a
+    /// wrong length, not a slow one), and computed at compile time for a
+    /// literal, whose header is a read-only constant. Caching is sound
+    /// because a `str`'s bytes never change once it is a value: there is no
+    /// index assignment and no `str`-to-`ptr` cast, so only an
+    /// `extern "C"` callee writing through a `str` argument (which C sees
+    /// as `char*`) could go stale -- and then within the original buffer,
+    /// since C can only shorten it. A wider header (a third slot) was the
+    /// alternative; it costs every list/map/closure allocation 16 bytes to
+    /// keep 16-byte data alignment, for a field only strings use.
     fn emit_rc_runtime(&mut self) {
         self.line("define i8* @star_rc_alloc(i64 %size, i8* %release_fn) {");
         self.line("entry:");
@@ -1050,7 +1068,9 @@ impl Codegen {
         self.line("  %relfn_slot_i8 = getelementptr inbounds i8, i8* %p, i64 -8");
         self.line("  %relfn_slot = bitcast i8* %relfn_slot_i8 to i8**");
         self.line("  %relfn = load i8*, i8** %relfn_slot");
-        self.line("  %relfn_isnull = icmp eq i8* %relfn, null");
+        // Null, or a `str`'s cached length (bit 63 set, see above).
+        self.line("  %relfn_int = ptrtoint i8* %relfn to i64");
+        self.line("  %relfn_isnull = icmp sle i64 %relfn_int, 0");
         self.line("  br i1 %relfn_isnull, label %dofree, label %callrelfn");
         self.line("callrelfn:");
         self.line("  %relfn_typed = bitcast i8* %relfn to void (i8*)*");
@@ -1061,6 +1081,41 @@ impl Codegen {
         self.line("  br label %done");
         self.line("done:");
         self.line("  ret void");
+        self.line("}");
+        self.line("");
+
+        // `len(s)`/`s[i]`/`ord(s)`: the cached length, or `strlen` once and
+        // cache it; `0` for a null `str`. Atomic (monotonic) because a `par`
+        // body may read one shared `str` from several threads, which then
+        // race only to store the same value. A slot holding a real function
+        // pointer is never overwritten -- no `str` builder sets one, but a
+        // wrong cache there would be a skipped release, so it is checked.
+        self.line("define i32 @star_str_len(i8* %p) {");
+        self.line("entry:");
+        self.line("  %isnull = icmp eq i8* %p, null");
+        self.line("  br i1 %isnull, label %null, label %load");
+        self.line("load:");
+        self.line("  %slot_i8 = getelementptr inbounds i8, i8* %p, i64 -8");
+        self.line("  %slot = bitcast i8* %slot_i8 to i64*");
+        self.line("  %cached = load atomic i64, i64* %slot monotonic, align 8");
+        self.line("  %is_cached = icmp slt i64 %cached, 0");
+        self.line("  br i1 %is_cached, label %hit, label %miss");
+        self.line("hit:");
+        self.line("  %len_hit = trunc i64 %cached to i32");
+        self.line("  ret i32 %len_hit");
+        self.line("miss:");
+        self.line("  %len = call i32 @strlen(i8* %p)");
+        self.line("  %is_free = icmp eq i64 %cached, 0");
+        self.line("  br i1 %is_free, label %store, label %done");
+        self.line("store:");
+        self.line("  %len64 = zext i32 %len to i64");
+        self.line("  %tagged = or i64 %len64, -9223372036854775808");
+        self.line("  store atomic i64 %tagged, i64* %slot monotonic, align 8");
+        self.line("  br label %done");
+        self.line("done:");
+        self.line("  ret i32 %len");
+        self.line("null:");
+        self.line("  ret i32 0");
         self.line("}");
         self.line("");
     }

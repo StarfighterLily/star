@@ -27,6 +27,21 @@ impl Checker {
         }
     }
 
+    /// `cast_literal_magnitude`'s float counterpart: a bare float literal,
+    /// or a unary `-` directly over one. The lexer keeps a float literal's
+    /// full `f64` value, so `<literal> as f64` can be typed `f64` outright
+    /// instead of rounding through the default `float` (`todo.md` HavokOS
+    /// P2 #3: `2.718281828459045 as f64` was 2.7182817...).
+    fn cast_float_literal(expr: &Expr) -> Option<f64> {
+        match expr {
+            Expr::Float(v, _) => Some(*v),
+            Expr::Unary { op: UnOp::Neg, operand, .. } => {
+                if let Expr::Float(v, _) = operand.as_ref() { Some(-*v) } else { None }
+            }
+            _ => None,
+        }
+    }
+
     /// The inclusive `[lo, hi]` range an `int_shape`-described integer type
     /// can hold, clamped to what an `i64`-backed literal token can actually
     /// represent (an unsigned 64-bit type's true upper bound, `u64::MAX`,
@@ -1158,6 +1173,11 @@ impl Checker {
                             );
                             return Ok(TypedExpr::Int(v, target.clone(), *span));
                         }
+                    }
+                }
+                if target == Ty::F64 {
+                    if let Some(v) = Self::cast_float_literal(expr) {
+                        return Ok(TypedExpr::Float(v, Ty::F64, *span));
                     }
                 }
                 let inner = self.infer_expr(expr, vars)?;

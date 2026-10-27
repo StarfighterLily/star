@@ -711,7 +711,7 @@ impl Codegen {
         };
         let raw = self.emit_raw_str_ptr(arg);
         let reg = self.tmp_name();
-        self.line(&format!("  {} = call i32 @strlen(i8* {})", reg, raw));
+        self.line(&format!("  {} = call i32 @star_str_len(i8* {})", reg, raw));
         // `raw` is done being read -- release whatever `emit_raw_str_ptr`
         // left us owning (see its own doc comment for why this can't happen
         // inside that function itself).
@@ -730,6 +730,8 @@ impl Codegen {
     /// `idx` is safe for the same reason `emit_list_index` is: the unsigned
     /// compare against `len` sign-extends/wraps it to a huge value, so it
     /// always fails the bounds check rather than reading before the buffer.
+    /// The bound is the length cached in the `str`'s header, so a scan is
+    /// linear (see `Codegen::emit_rc_runtime`).
     pub(super) fn emit_str_index(&mut self, base: &TypedExpr, index: &TypedExpr) -> String {
         let raw = self.emit_raw_str_ptr(base);
 
@@ -738,17 +740,13 @@ impl Codegen {
         let idx64 = self.tmp_name();
         self.line(&format!("  {} = sext i32 {} to i64", idx64, idx_bare));
 
-        let is_null = self.tmp_name();
-        self.line(&format!("  {} = icmp eq i8* {}, null", is_null, raw));
-        let chk_label = self.block_label("str_idx_chk");
         let ok_label = self.block_label("str_idx_ok");
         let oob_label = self.block_label("str_idx_oob");
         let end_label = self.block_label("str_idx_end");
-        self.line(&format!("  br i1 {}, label %{}, label %{}", is_null, oob_label, chk_label));
-
-        self.open_block(&chk_label);
+        // `@star_str_len` is the cached length, and 0 for `null`, so a null
+        // `str` fails the bounds check like an empty one.
         let len32 = self.tmp_name();
-        self.line(&format!("  {} = call i32 @strlen(i8* {})", len32, raw));
+        self.line(&format!("  {} = call i32 @star_str_len(i8* {})", len32, raw));
         let len64 = self.tmp_name();
         self.line(&format!("  {} = sext i32 {} to i64", len64, len32));
         let in_bounds = self.tmp_name();
@@ -823,7 +821,7 @@ impl Codegen {
 
         self.open_block(&ok_label);
         let len32 = self.tmp_name();
-        self.line(&format!("  {} = call i32 @strlen(i8* {})", len32, raw));
+        self.line(&format!("  {} = call i32 @star_str_len(i8* {})", len32, raw));
         let has_len = self.tmp_name();
         self.line(&format!("  {} = icmp sgt i32 {}, 0", has_len, len32));
         let read_label = self.block_label("ord_read");

@@ -12,8 +12,9 @@
 //! `.f64` intrinsics for it. `Float` and integer arguments are unchanged.
 //!
 //! Reference values in the runtime tests are computed rather than written
-//! as literals: a float literal is single precision before `as f64` widens
-//! it, so `2.718281828459045 as f64` is only 2.7182817...
+//! as literals: when they were written, a float literal was single
+//! precision before `as f64` widened it, so `2.718281828459045 as f64` was
+//! only 2.7182817... (fixed since; `tests/frontend_f64_literal.rs`).
 
 #[path = "frontend/common.rs"]
 #[allow(dead_code, unused_imports)]

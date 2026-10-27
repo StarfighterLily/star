@@ -902,6 +902,8 @@ fn codegen_method_self_param_is_not_released_at_scope_exit() {
 /// global, not a heap block, and must never actually be freed even though
 /// it flows through the same retain/release paths a heap-allocated `str`
 /// does (e.g. when copied into a struct field or `let`-bound variable).
+/// The `release_fn` slot holds the literal's length, tagged with bit 63
+/// (`tests/frontend_str_len_cache.rs`).
 #[test]
 fn codegen_string_literal_uses_immortal_rc_header() {
     let src = "fn t() -> str:\n    \"hi\"\n";
@@ -909,7 +911,7 @@ fn codegen_string_literal_uses_immortal_rc_header() {
     let typed = Driver::check(&module).expect("should type-check");
     let ir = Driver::codegen(&typed).expect("should codegen");
     assert!(ir.contains("{ i64, i8*, ["), "a string literal's global should carry the RC header shape: {}", ir);
-    assert!(ir.contains("{ i64 -1, i8* null,"), "a string literal's refcount should be the immortal sentinel: {}", ir);
+    assert!(ir.contains("{ i64 -1, i8* inttoptr (i64 -9223372036854775806 to i8*),"), "a string literal's refcount should be the immortal sentinel: {}", ir);
 }
 
 /// Runtime test: `examples/rc_strings.exe` exercises `concat`, reassignment,

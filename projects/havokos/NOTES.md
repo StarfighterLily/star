@@ -74,8 +74,11 @@ assumed:
    `self.heap.arrs[i].items.push(..)` calls take about 2 ms. So all
    driver and VM state hangs off structs and is mutated through
    `mut self` methods, never passed to free functions.
-3. **`str` indexing is O(n).** `s[i]` runs `strlen` for its bounds check,
-   so a char-by-char scan of 1 MB took about 70 s. Building strings with
+3. **`str` indexing was O(n)** (fixed 2026-10-26, todo.md HavokOS P2 #2:
+   `len`/`s[i]`/`ord` now read a length cached in the `str` header). It
+   ran `strlen` for its bounds check, so a char-by-char scan of 1 MB took
+   about 70 s. The `Bytes` design below predates the fix and stays: it is
+   still the cheaper way to build text. Building strings with
    `chr()` + `push` + `str_join` is slow too: about 15 s for 200k
    characters. **`Bytes` is O(1)**: a 1 MB scan takes about 1 ms, and
    20k `str_from_bytes` substrings take about 10 ms. The front end reads
@@ -134,10 +137,12 @@ Found during M4 (2026-10-23), each probed with a throwaway program:
     (`Wrapping<i64>`) and `wshl`/`wshr` (a shift by 64 or more is poison in
     LLVM). Until M4 the VM used plain `i64` ops, so an LPC `(1 << 62) * 4`
     killed the whole driver.
-12. **A float literal is single precision.** `2.718281828459045 as f64` is
-    2.7182817...: the literal is an `f32` before the cast widens it. Exact
-    constants are computed (`(1.0 as f64) / (3.0 as f64)`) or built from
-    integers. Filed in `todo.md`.
+12. **A float literal was single precision** (fixed 2026-10-26, todo.md
+    HavokOS P2 #3; Star compiler issue #14 below). `2.718281828459045 as
+    f64` was 2.7182817...: the literal was an `f32` before the cast widened
+    it. Exact constants were computed (`(1.0 as f64) / (3.0 as f64)`) or
+    built from integers; the ones in the port were all exactly
+    representable in `f32` anyway, so they were left as written.
 13. **Math builtins narrowed `f64` to `f32`** (fixed in M4, Star compiler
     bug #6 below).
 
@@ -659,8 +664,21 @@ extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
    (Win32's `GetTickCount`/`Sleep`, C helpers, an imported module, the
    struct collision), and `tests/frontend_ffi_extern_c.rs`'s rejection test
    became an acceptance test.
-3. **`str` indexing is O(n)** (constraint #3): filed as a performance
-   issue, worked around with `Bytes`.
+3. **`str` indexing is O(n)** (constraint #3; fixed 2026-10-26, todo.md
+   HavokOS P2 #2). `s[i]`'s bounds check ran `strlen`. A `str` never has
+   a release function, so the header's `release_fn` slot now caches the
+   length with bit 63 set (no code pointer has it), filled in by the first
+   `len`/`s[i]`/`ord` (`@star_str_len`) or at compile time for a literal,
+   whose header is a read-only constant; `star_rc_release` skips a
+   negative slot. Lazy, because ~50 builtins build a `str` and any one
+   that forgot to store a length would give a wrong answer rather than a
+   slow one; a third header slot would cost every allocation 16 bytes.
+   Sound because a `str`'s bytes never change once it is a value (only C
+   writing through a `str` argument could, and then only shorter, inside
+   the buffer). `len` of a null `str` now gives 0 (it crashed). Fix in
+   `src/codegen/mod.rs`/`builtins.rs`/`expr.rs`; tests in
+   `tests/frontend_str_len_cache.rs` (the 1 MB scan: 191 s on the old
+   compiler at `-O0`, under a second now).
 4. **Releasing an uninitialized spill slot** (fixed, M2). A field read off
    a struct-returning call, `f().field`, spills the struct into a fresh
    alloca that's released when the enclosing *scope* ends. When the read
@@ -775,6 +793,16 @@ extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
     `Codegen::emit_builtins` while `RESERVED_RUNTIME_SYMBOLS` still listed
     `fgetc` as always declared. The five existing tests are its regression
     tests.
+14. **Float literals were single precision** (constraint #12; fixed
+    2026-10-26, todo.md HavokOS P2 #3). A float literal was typed `float`
+    and widened by `as f64`, and an `f64` `const` was emitted the same way
+    since codegen had no `double` literal. Now a float literal (or `-`
+    one) directly under `as f64` is typed `f64`, as an integer literal
+    under `as i64` already was, and an `f64` literal is emitted as a
+    `double`; a `const`'s `as float` inside its initializer now rounds when
+    folded, which the old path did by accident. Fix in
+    `src/types/expr.rs`, `src/types/mod.rs`, `src/codegen/expr.rs`; tests
+    in `tests/frontend_f64_literal.rs`.
 
 New compiler surface in P1 #8 (the rest of M7), not bugs:
 `ptr_to_bytes(p, n)` and `ptr_write_bytes(dst, b, off, n)` in
@@ -1528,3 +1556,20 @@ Left as it was: `a += ({ x })` still copies (quadratic time; in-place
 appends would need reference counts), garbage an outer loop made while a
 nested one runs waits until that loop's next safe point, and cells and
 destructed objects' slots are still freed only between evaluations.
+
+### 2026-10-26: P2 #2 and P2 #3, two Star compiler fixes
+
+The last two items filed under HavokOS, both in the compiler (issues #3
+and #14 above). `str` indexing is O(1): the length is cached in the header
+slot a `str` never used, so constraint #3 no longer holds, though `Bytes`
+stays the way text is built here. A float literal under `as f64` is a
+`double`; constraint #12's workaround constants were all exactly
+representable in `f32`, so nothing in the port changed. Every tool was
+rebuilt on the new compiler (the four large ones take 9-11 min each), and
+all 957 cases, the boot, the parser transcript, the four logins, the DS
+web, zlib, compile-sweep, token/AST and pp/AST-case tests pass; a 60 s
+`-gcevery` soak has 0 runtime errors. The first full case run failed
+`m4_extra`'s "get_dir forms" once, every size doubled: `write_file`
+appends, so the scratch files of some earlier interrupted run were still
+there (the case removes them at its end). Three reruns passed.
+

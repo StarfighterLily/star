@@ -528,19 +528,61 @@ mudlib before it's marked done.
       `extern "C" fn Sleep(ms: i32)` / `GetTickCount()` fail with
       "undefined type `Sleep`": a capitalized name is resolved as a type,
       which blocks binding most of the Win32 API.
-- [ ] **HavokOS P2 #2: Star compiler, O(1) `str` indexing.** `s[i]` runs
+- [x] **HavokOS P2 #2: Star compiler, O(1) `str` indexing.** Done
+      2026-10-26. `len(s)`, `s[i]` and `ord(s)` now read a length cached in
+      the `str`'s RC header (`@star_str_len`, `src/codegen/mod.rs`). A
+      `str` never has a release function, so the header's `release_fn`
+      slot holds the length with bit 63 set (no code pointer has it on any
+      target); `star_rc_release` skips a negative slot. The length is
+      filled in by the first query rather than stored by each of the ~50
+      sites that build a `str` (any one missed would be a wrong length, not
+      a slow one), and precomputed for a literal, whose header is a
+      read-only constant (`src/codegen/expr.rs`). Sound because a `str`'s
+      bytes never change once it is a value (no index assignment, no
+      `str`-to-`ptr` cast; only C writing through a `str` argument could,
+      and then only shorter, inside the buffer). Rejected: a third header
+      slot (every list/map/closure allocation 16 bytes bigger to keep data
+      16-byte aligned). Also fixed along the way: `len` of a null `str`
+      (a field never assigned) crashed in `strlen`; it is 0 now, like
+      `s[i]` and `ord`. 9 tests in `tests/frontend_str_len_cache.rs`: the
+      IR (no `strlen` in `s[i]`, a literal's tagged header), literals, five
+      heap builders before and after the cache fills, null, freeing
+      strings and lists of them after their lengths were cached (two leak
+      checks), the reserved name, and a 1 MB byte-at-a-time scan -- 191 s
+      on the old compiler at `-O0`, under a second now. 5 of the 9 fail on
+      the old compiler; the other 4 guard the new free path. One IR-shape
+      assertion in `frontend_frame_loop_reclaim_and_alloca_hoisting.rs`
+      updated to the literal's new header. Original report: `s[i]` runs
       `strlen` for its bounds check, so a char-at-a-time scan is quadratic:
-      about 70 s for 1 MB, against about 1 ms over `Bytes`. Fixing it
-      likely means storing the length in the `str` RC header. Worked around
-      in HavokOS by using `Bytes` everywhere hot.
-- [ ] **HavokOS P2 #3: Star compiler, float literals are single
-      precision.** `2.718281828459045 as f64` is 2.7182817...: a float
-      literal is typed `f32` and only then widened, so an `f64` constant
-      silently loses everything past the 7th digit. Found in M4 while
-      writing `tests/frontend_math_f64.rs`. Worked around in HavokOS by
-      computing constants (`(1.0 as f64) / (3.0 as f64)`). A fix probably
-      means typing a literal from its `as f64` / `f64` context, the way
-      integer literals already get `as i64`.
+      about 70 s for 1 MB, against about 1 ms over `Bytes`. HavokOS keeps
+      `Bytes` where it is hot (still the cheaper way to *build* text).
+- [x] **HavokOS P2 #3: Star compiler, float literals are single
+      precision.** Done 2026-10-26. A float literal (or `-` one) directly
+      under `as f64` is now typed `f64`, as an integer literal under
+      `as i64` already was (`Checker::cast_float_literal`,
+      `src/types/expr.rs`), and an `f64` literal is emitted as an LLVM
+      `double` (`src/codegen/expr.rs`), so `f64` `const`s keep every digit
+      too (they went through an `f32` literal and `fpext`,
+      `ConstValue::into_typed_expr`). Found along the way: a `const`'s
+      `as float` inside its initializer didn't round when folded, which the
+      old emission hid; it does now (`fold_const_expr`). `let x: f64 = 2.5`
+      is still a type error, as before -- implicit coercion would be a
+      language change, and an error loses no precision. 6 tests in
+      `tests/frontend_f64_literal.rs` (the `double` constant, negated
+      literals, run-time precision of `e` and `0.1`, `f64` consts including
+      a narrowed one, plain `float` literals and other casts unchanged);
+      `frontend_math_f64.rs`'s doc updated. HavokOS's literal `as f64`s
+      are all exactly representable in `f32`, so its results don't move.
+      Original report: `2.718281828459045 as f64` is 2.7182817...: a float
+      literal is typed `f32` and only then widened.
+      Both items checked together: full cargo suite 2222 pass, 0 fail
+      (`CARGO_TARGET_DIR=target/alt`); every HavokOS tool rebuilt on the new
+      compiler, and all 957 cases, the boot, the parser transcript, all four
+      logins, the DS web, zlib, compile-sweep, token/AST and pp/AST-case
+      tests pass; a 60 s `-gcevery` soak has 0 runtime errors. One case
+      (`m4_extra` "get_dir forms") failed once in the first full run with
+      every file size doubled -- LPC `write_file` appends, so files left by
+      some earlier interrupted run -- and passed in three reruns.
 
 - [x] **P0: pre-existing test failures at HEAD `84d14e7`.** Done
       2026-10-26 (during HavokOS P1 #7): `Codegen::emit_builtins` had lost
@@ -971,3 +1013,13 @@ reconciled to match whichever of the two Python sources looks more
   catch a collector that breaks the rule. All 957 cases (normal and
   stress), the boot (normal and stress), four logins, parser transcript,
   compile sweep, DS web test and soaks pass. No Star compiler changes.
+- 2026-10-26: HavokOS P2 #2 (O(1) `str` indexing) and P2 #3 (float
+  literals under `as f64` keep double precision) are done, both Star
+  compiler changes. See their entries above and `projects/havokos/NOTES.md`
+  (Star compiler issues #3 and #14, constraints #3 and #12). `len`/`s[i]`/
+  `ord` read a length cached in the `str` header's unused `release_fn` slot
+  (bit 63 tagged); a 1 MB byte scan went from 191 s to under a second, and
+  `len` of a null `str` no longer crashes. 15 new tests
+  (`frontend_str_len_cache.rs`, `frontend_f64_literal.rs`); full cargo
+  suite 2222 pass, 0 fail; all HavokOS tools rebuilt and every HavokOS
+  test passes. With these, every HavokOS item on the board is closed.
