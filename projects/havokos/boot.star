@@ -48,6 +48,11 @@ fn main() -> i32:
     let mut m = cfgm::setup_vm(cfg, root, cfgm::first_telnet(specs))
     m.echo_log = true
     m.keep_log = false
+    # `havok save store : sqlite` (savestore.star): without its database
+    # the mudlib would boot with none of its saves
+    if !m.store_configure():
+        println("Cannot open the save store.")
+        return 1
     println(f"HavokOS (Star) booting, mudlib {root}")
     let t0 = clock_ms()
     if !m.boot(cfgm::sefun_path(cfg), cfgm::master_path(cfg)):
@@ -74,4 +79,5 @@ fn main() -> i32:
     for i in 0..m.conns.len():
         if m.conn_ok(i):
             m.conn_flush(i)
+    m.store_flush()
     m.shutdown_code

@@ -13,9 +13,9 @@
 #   and the answer comes on the driver's next pass (`run_finds()`, from
 #   net_poll(), like resolve()'s), so the callback still never runs inside
 #   the caller's evaluation. Directories the caller may not read are dropped
-#   then, through the master, as in the reference. There is no save store,
-#   so no stored saves are merged in (`havok save store`, off by default in
-#   the reference). NOTES.md deviation #20.
+#   then, through the master, as in the reference, and the matching saves
+#   the save store holds join their directories' results (P1 #10,
+#   `savestore.star`). NOTES.md deviation #20.
 # - watch_path()/unwatch_path(): driver.pike's "File watching" -- listings
 #   show added and removed files at once, `havok watch stats` (40) stats a
 #   tick spread edits out, every `havok watch interval` (2) seconds from the
@@ -482,7 +482,13 @@ impl vm::Vm:
                     todo.push(p)
             dirs.push(d)
             files.push(matched)
-        self.finds.push(xd::PendingFind(ob = self.obj_value(self_ob), root = root, dirs = dirs, files = files, cb = cb))
+        let mut saved: List<str> = List<str>()
+        if self.store.on:
+            let under = self.store_under(root)
+            for i in 0..under.len():
+                if ef::glob_match(bytes_from_str(ef::base_name_of(under[i])), pb, 0, 0):
+                    saved.push(under[i])
+        self.finds.push(xd::PendingFind(ob = self.obj_value(self_ob), root = root, dirs = dirs, files = files, cb = cb, saved = saved))
         1
 
     # The answers of the crawls the last pass made (driver found_files()),
@@ -515,7 +521,18 @@ impl vm::Vm:
                 let names = f.files[k]
                 for j in 0..names.len():
                     out.push(wjoin(d, names[j]))
+                for j in 0..f.saved.len():
+                    if paths::dirname(f.saved[j]) == d:
+                        out.push(f.saved[j])
             if !self.err:
+                # a save both stored and on disk is listed once (Array.uniq)
+                let mut seen: Set<str> = Set<str>()
+                let mut uniq: List<str> = List<str>()
+                for j in 0..out.len():
+                    if !seen.contains(out[j]):
+                        seen.insert(out[j])
+                        uniq.push(out[j])
+                out = uniq
                 let files_v = self.str_list_value(ef::sort_strs(out))
                 let dirs_v = self.str_list_value(ef::sort_strs(dirs))
                 self.run_fn_value(o, f.cb, [files_v, dirs_v])

@@ -370,6 +370,13 @@ const E_TEST_TEL_LISTEN: i32 = 938
 const E_TEST_HTTP_LISTEN: i32 = 939
 const E_TEST_PORTS_CLOSE: i32 = 940
 const E_TEST_FREE_PORT: i32 = 941
+# --- P1 #10: save store test hooks (savestore.star efun_store_test())
+const E_TEST_STORE_OPEN: i32 = 950
+const E_TEST_STORE_CLOSE: i32 = 951
+const E_TEST_STORE_FLUSH: i32 = 952
+const E_TEST_STORE_REOPEN: i32 = 953
+const E_TEST_STORE_IMPORT: i32 = 954
+const E_TEST_DISK: i32 = 955
 
 fn efun_codes() -> Map<str, i32>:
     let mut m: Map<str, i32> = Map<str, i32>()
@@ -717,4 +724,10 @@ fn test_efun_codes() -> Map<str, i32>:
     m.insert("test_http_listen", E_TEST_HTTP_LISTEN)
     m.insert("test_ports_close", E_TEST_PORTS_CLOSE)
     m.insert("test_free_port", E_TEST_FREE_PORT)
+    m.insert("test_store_open", E_TEST_STORE_OPEN)
+    m.insert("test_store_close", E_TEST_STORE_CLOSE)
+    m.insert("test_store_flush", E_TEST_STORE_FLUSH)
+    m.insert("test_store_reopen", E_TEST_STORE_REOPEN)
+    m.insert("test_store_import", E_TEST_STORE_IMPORT)
+    m.insert("test_disk", E_TEST_DISK)
     m

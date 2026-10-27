@@ -509,6 +509,63 @@ mudlib before it's marked done.
       map() returns), and what cells hold. The copies themselves remain:
       `a += ({ x })` is still quadratic in *time* (in-place appends would
       need reference counts).
+- [x] **HavokOS P1 #10: the SQLite save store (`havok save store :
+      sqlite`).** Done 2026-10-26. Reported: the stock DS3.9 mudlib runs
+      fine, but `E:\dsdev`'s (`dsdev`, ForLorne) booted with no existing
+      characters, no races in character creation, every NPC's heart beat
+      dying on `Cannot index the NULL value with "Rtype"`, and
+      `/secure/cmds/creators/showfuns` running out of evaluation time in a
+      call_out. One cause: dsdev's mudos.cfg turns on the reference's save
+      store, so its saves (players, `/save/races.o`, FUNCTION_D's
+      `/secure/save/functions.o`, 53 in all) exist only in `bin/saves.db`
+      -- the reference's first boot imported the .o files and moved them
+      out -- and M4 had left the store out as "off by default". So every
+      restore_object() found nothing: RACES_D was empty, and FUNCTION_D's
+      cache was gone, so it re-scanned all of /lib in call_outs until one
+      file's scan passed the 5 s limit. Now `savestore.star` is
+      `savestore.pike` (in-memory index of paths, sizes and mtimes;
+      writes and deletes committed in one transaction a second later, at
+      shutdown() and at exit; a new database imports the mudlib's .o files
+      and moves them to `runtime/save_import_<date>-<time>/` beside the
+      exe), and every efun the reference routes through it does too:
+      save_object/restore_object, file_size, stat, get_dir (stored saves
+      listed in their directory, -1 sizes from the index), read_file,
+      read_bytes, file_length, write_file, write_bytes, rm, rmdir (a
+      directory holding saves isn't empty), cp, rename (into and out of
+      the store; a directory takes its saves along) and find_files.
+      `boot.star` opens it from the config, stopping the boot if it can't
+      (rather than booting with no saves). The database is the reference's
+      own, unchanged schema. Checked:
+      - a new fixture, `store.expected.txt` (28 cases,
+        `tools/gen_store_cases.py`, results from the live reference): the
+        reference's own save_store_tests() ported through new
+        test_store_*()/test_disk() hooks on both runners
+        (`savestore.star` efun_store_test(), `tools/ref_cases.pike`), and
+        edge cases for every efun above. All 28 pass first time, and
+        under `-gcstress`;
+      - all 985 cases, the DS3.9 boot and the four logins pass;
+      - a copy of dsdev (mudlib + `saves.db`, ports moved) boots in 6.6 s
+        with no runtime errors over a minute's soak: an existing name
+        (`tess`) gets a password prompt, character creation lists all
+        eight races, FUNCTION_D restores its cache and rescans only files
+        whose size changed, and saves commit to the database. Daemons that
+        saved empty state to disk during the failing run left 18 stale .o
+        files in `E:\dsdev\lib`; the store holds all of them, so they are
+        shadowed and each is deleted on that daemon's next save.
+      The reference's `pike savestore.pike` command line (list/export) is
+      not ported; it works on the same database. NOTES.md deviation #26.
+- [ ] **HavokOS P2 #4: `regexp()` recompiles its pattern on every call.**
+      Found during P1 #10: `efuns_str.star` compile_re() builds the NFA
+      afresh each call, and FUNCTION_D's showfuns scan calls `regexp(line,
+      type + func)` for every function × 23 types × candidate line. On
+      dsdev's six largest `/lib` files the scans take about 16.4 s here
+      against about 1.0 s on the reference (`boot_ds -eval` vs
+      `ref_eval.pike`, boot time subtracted); in the failing run one
+      file's scan passed the 5 s evaluation limit. With the save store
+      the scan only reruns for changed files, but a big edited file can
+      still hit the limit. A small cache of compiled patterns (keyed by
+      pattern text, bounded) is the obvious first step; measure before and
+      after on the same eval.
 - [x] **HavokOS P2 #1: Star compiler, capitalized `extern "C"` names.**
       Done 2026-10-26 (during HavokOS P1 #8, which needed all of OpenSSL's
       uppercase names). The parser reads `Name(args)` with an uppercase name
@@ -1023,3 +1080,13 @@ reconciled to match whichever of the two Python sources looks more
   (`frontend_str_len_cache.rs`, `frontend_f64_literal.rs`); full cargo
   suite 2222 pass, 0 fail; all HavokOS tools rebuilt and every HavokOS
   test passes. With these, every HavokOS item on the board is closed.
+- 2026-10-26: HavokOS P1 #10 (the SQLite save store) is done. See its
+  entry above and `projects/havokos/NOTES.md` (deviation #26 and
+  "2026-10-26: P1 #10"). dsdev's mudlib keeps its saves in `bin/saves.db`
+  (`havok save store : sqlite`), which this port had left out, so it booted
+  with no players, an empty races daemon and FUNCTION_D rescanning /lib.
+  `savestore.star` ports `savestore.pike` and its hooks in every file
+  efun; a new 28-case fixture from the live reference, all 985 cases, the
+  boot, four logins and a soak of a dsdev copy pass. Filed HavokOS P2 #4
+  (`regexp()` recompiles every call; showfuns is ~16x slower than the
+  reference). No Star compiler changes, so the cargo suite wasn't rerun.

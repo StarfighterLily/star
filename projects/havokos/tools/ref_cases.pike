@@ -146,6 +146,10 @@ int main(int argc, array(string) argv) {
     // way run_tests.pike's own Pike-level tests do.
     add_constant("__HavokEfunsBase", compile_file(combine_path(pike_dir, "havok/efuns.pike")));
     add_constant("__HavokNetHooks", compile_file(combine_path(dirname(__FILE__), "ref_net_hooks.pike")));
+    // the save store's hooks (todo.md HavokOS P1 #10) make stores of their
+    // own, as run_tests.pike's save_store_tests() does
+    add_constant("__HavokSaveStore", compile_file(combine_path(pike_dir, "havok/savestore.pike")));
+    add_constant("__HavokRuntimeDir", combine_path(pike_dir, "runtime"));
     program test_efuns = compile_string(#"
         inherit __HavokEfunsBase;
         int test_hb(object self, int n) { for (int k = 0; k < n; k++) drv->heart_beat_tick(); return 0; }
@@ -327,6 +331,42 @@ int main(int argc, array(string) argv) {
         int test_http_listen(object self, int secure) { return nh()->http_listen(secure); }
         int test_ports_close(object self) { return nh()->ports_close(); }
         int test_free_port(object self) { return nh()->free_port(); }
+        // save store hooks (todo.md HavokOS P1 #10, savestore.star
+        // efun_store_test()): a store over the database at a mudlib path,
+        // made without the driver so it imports nothing
+        int test_store_open(object self, string db) {
+            test_store_close(self);
+            store = __HavokSaveStore(0, realpath(db));
+            return 1;
+        }
+        int test_store_close(object self) {
+            if (store) { store->flush(); destruct(store); store = 0; }
+            return 0;
+        }
+        int test_store_flush(object self) { if (store) store->flush(); return 0; }
+        array test_store_reopen(object self, string db, string p) {
+            object s = __HavokSaveStore(0, realpath(db));
+            array r = ({ predef::sort(indices(s->index)), s->read(absolute(p)) });
+            destruct(s);
+            return r;
+        }
+        array test_store_import(object self, string lib, string db) {
+            array(string) before = predef::get_dir(__HavokRuntimeDir) || ({});
+            // a mapping standing in for the driver, as run_tests.pike's test
+            // passes (only its mudlib_dir is read)
+            mixed fake_drv = ([ \"mudlib_dir\": realpath(lib) ]);
+            object s = __HavokSaveStore(fake_drv, realpath(db));
+            array(string) made = predef::filter((predef::get_dir(__HavokRuntimeDir) || ({})) - before,
+                                                lambda(string n) { return has_prefix(n, \"save_import_\"); });
+            string bdir = predef::sizeof(made) ? combine_path(__HavokRuntimeDir, made[0]) : 0;
+            array(string) ps = predef::sort(indices(s->index));
+            array r = ({ ps, predef::map(ps, s->read),
+                         predef::map(ps, lambda(string p) { return bdir && Stdio.read_file(bdir + p); }) });
+            destruct(s);
+            if (bdir) Stdio.recursive_rm(bdir);
+            return r;
+        }
+        mixed test_disk(object self, string p) { return Stdio.read_file(realpath(p)); }
     ");
     drv->efuns = test_efuns(drv);
     add_constant("__E", drv->efuns);

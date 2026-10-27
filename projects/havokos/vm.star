@@ -421,6 +421,9 @@ struct Vm:
     # --- SQLite databases (P1 #7; sqldb.star): one row per db_open() handle
     # ever handed out, handle = index + 1 (extdata.star SqlDb) ---
     mut dbs: List<xd::SqlDb> = List<xd::SqlDb>()
+    # --- the save store (P1 #10; savestore.star): `havok save store :
+    # sqlite`, .o files kept in one SQLite database ---
+    mut store: xd::SaveStore = xd::SaveStore()
     # --- the network (M6; net.star) ---
     # connections (closed slots are reused, see conn.star) and the sequence
     # number of the latest one

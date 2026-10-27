@@ -709,6 +709,7 @@ impl vm::Vm:
         # --- system
         if code == et::E_SHUTDOWN:
             self.log_msg(f"Shutdown requested by {self.obj_name(self_ob)}")
+            self.store_flush()
             self.shutdown_requested = true
             self.shutdown_code = val::int_of(self.arg(args, 0)) as i32
             return zero
@@ -839,6 +840,8 @@ impl vm::Vm:
     # The case runner's driver hooks (efun_table.star test_efun_codes()).
     fn efun_test(mut self, code: i32, args: List<val::Value>, self_ob: i32) -> val::Value:
         let zero = val::Value::Int(0 as i64)
+        if code >= et::E_TEST_STORE_OPEN:
+            return self.efun_store_test(code, args, self_ob)
         if code >= et::E_TEST_INFLATE:
             return self.efun_net_test(code, args, self_ob)
         if code >= et::E_TEST_WATCH_POLL:
@@ -912,7 +915,7 @@ impl vm::Vm:
     # real boot).
     fn add_test_efuns(mut self):
         let t = et::test_efun_codes()
-        let names = ["test_hb", "test_hb_round", "test_callouts", "test_reset_cfg", "test_set_reset_time", "test_set_last_used", "test_reset_time", "test_no_clean_up", "test_sweep", "test_limited", "test_eval_state", "test_tel_open", "test_tel_say", "test_tel_drain", "test_tel_hangup", "test_tel_tp", "test_tel_connect", "test_tel_user", "test_sock_pump", "test_config", "test_watch_poll", "test_run_call_out", "test_utime", "test_forget", "test_profiling", "test_watch_state", "test_put", "test_rmtree", "test_inflate", "test_cli_open", "test_cli_send", "test_cli_recv", "test_cli_closed", "test_cli_close", "test_srv_listen", "test_srv_take", "test_tel_listen", "test_http_listen", "test_ports_close", "test_free_port"]
+        let names = ["test_hb", "test_hb_round", "test_callouts", "test_reset_cfg", "test_set_reset_time", "test_set_last_used", "test_reset_time", "test_no_clean_up", "test_sweep", "test_limited", "test_eval_state", "test_tel_open", "test_tel_say", "test_tel_drain", "test_tel_hangup", "test_tel_tp", "test_tel_connect", "test_tel_user", "test_sock_pump", "test_config", "test_watch_poll", "test_run_call_out", "test_utime", "test_forget", "test_profiling", "test_watch_state", "test_put", "test_rmtree", "test_inflate", "test_cli_open", "test_cli_send", "test_cli_recv", "test_cli_closed", "test_cli_close", "test_srv_listen", "test_srv_take", "test_tel_listen", "test_http_listen", "test_ports_close", "test_free_port", "test_store_open", "test_store_close", "test_store_flush", "test_store_reopen", "test_store_import", "test_disk"]
         for i in 0..names.len():
             if let Option::Some(c) = t.get(names[i]):
                 self.efun_codes.insert(names[i], c)

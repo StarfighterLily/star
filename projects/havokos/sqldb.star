@@ -212,6 +212,32 @@ fn sq_text(st: ptr, i: i32) -> str:
         return ""
     ptr_to_str(p)
 
+# The save store's SQLite calls (savestore.star, P1 #10): a second
+# `extern "C"` declaration of these in one program would be a duplicate.
+fn sq_errcode(db: ptr) -> i32:
+    sqlite3_errcode(db)
+
+fn sq_errmsg(db: ptr) -> str:
+    ptr_to_str(sqlite3_errmsg(db))
+
+fn sq_close(db: ptr):
+    let r = sqlite3_close_v2(db)
+
+fn sq_step(st: ptr) -> i32:
+    sqlite3_step(st)
+
+fn sq_finalize(st: ptr):
+    let r = sqlite3_finalize(st)
+
+fn sq_bind_str(st: ptr, i: i32, s: str):
+    let r = sqlite3_bind_text(st, i, s, 0 - 1, (0 - 1) as i64)
+
+fn sq_bind_int(st: ptr, i: i32, v: i64):
+    let r = sqlite3_bind_int64(st, i, v)
+
+fn sq_col_int(st: ptr, i: i32) -> i64:
+    sqlite3_column_int64(st, i)
+
 # A column name, double-quoted for SQL (the reference's quote("...") minus
 # the quote()).
 fn sq_quote_name(c: str) -> str:

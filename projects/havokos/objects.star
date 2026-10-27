@@ -1334,7 +1334,8 @@ impl vm::Vm:
     # interval / slots, so a beat stays one per interval), the reset sweep
     # when resets or clean_up are on, and a garbage collection when the
     # heap has grown or reclaim_objects() asked -- only here, between
-    # top-level evaluations (gc.star).
+    # top-level evaluations (gc.star) -- and, since P1 #10, the save store's
+    # commit once its second is up (savestore.star).
     fn driver_tick(mut self):
         self.run_due_call_outs()
         let now = clock_ms()
@@ -1351,6 +1352,8 @@ impl vm::Vm:
                 self.reset_sweep_once()
                 self.next_sweep_ms = now + sweep * (1000 as i64)
         self.watch_tick(now)
+        if self.store.flush_due != (0 as i64) and now >= self.store.flush_due:
+            self.store_flush()
         if self.gc_requested:
             self.gc_requested = false
             self.collect_garbage()

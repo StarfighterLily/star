@@ -11,13 +11,15 @@ import "value.star" as val
 # find_files(): a crawl made at the call, answered on the next pass
 # (driver.pike runs the crawl in a thread and answers by call_out). `dirs`
 # are the directories visited, in visiting order, and `files[i]` the
-# matching names in `dirs[i]`.
+# matching names in `dirs[i]`; `saved` the matching paths the save store
+# holds under the root (P1 #10), joined to their directories' results.
 struct PendingFind:
     ob: val::Value
     root: str
     dirs: List<str>
     files: List<List<str>>
     cb: val::Value
+    saved: List<str> = List<str>()
 
 # A watched directory (driver.pike WatchDir): the files it held at the last
 # listing, with the (mtime, size) last seen, and its subdirectories.
@@ -98,3 +100,29 @@ struct SqlDb:
     mut owner: val::Value = val::Value::Int(0 as i64)
     mut file: str = ""
     mut columns: List<str> = List<str>()
+
+# The save store (P1 #10; savestore.star, savestore.pike). `index` is every
+# stored path's size and mtime, pending writes included, and its slot in
+# `paths`, which lists the stored paths for iteration ("" where one was
+# removed, `dead` of them, until compacted). Writes not committed yet are
+# in `pending` (path -> data) and deletes in `pend_del`, both in
+# `pend_order`; `flush_due` is when they commit (clock_ms(), 0: nothing
+# waiting). `import_dir` is where a new database's import moved the
+# mudlib's .o files.
+struct SaveEntry:
+    size: i64
+    mtime: i64
+    slot: i32
+
+struct SaveStore:
+    mut on: bool = false
+    mut db: ptr = null_ptr()
+    mut file: str = ""
+    mut index: Map<str, SaveEntry> = Map<str, SaveEntry>()
+    mut paths: List<str> = List<str>()
+    mut dead: i32 = 0
+    mut pending: Map<str, str> = Map<str, str>()
+    mut pend_del: Set<str> = Set<str>()
+    mut pend_order: List<str> = List<str>()
+    mut flush_due: i64 = 0 as i64
+    mut import_dir: str = ""

@@ -48,6 +48,7 @@ virtual machine**:
 | `havok/sockets.pike` (LPC sockets) and `efuns.pike` resolve() | `sockets.star` (on `sockdata.star`'s LSock), polled by `net.star` net_poll(); the OS side is the compiler's (`src/codegen/net_sock.rs`, M7) |
 | `havok/efuns.pike`'s HavokOS-only extensions (JSON, astar_path, find_files, watching, quotas, dependencies, profiling, status reports) and their `driver.pike`/`compiler.pike` machinery | `json.star`, and `ext.star` with its rows in `extdata.star` (M7) |
 | `havok/sqldb.pike` (the SQLite efuns) | `sqldb.star`, over the real SQLite library: `extern "C"` plus the compiler's `sqlite_open()`/`sqlite_prepare()` (`src/codegen/sqlite.rs`, P1 #7) |
+| `havok/savestore.pike` (the SQLite save store) and its hooks in `efuns.pike`'s file efuns | `savestore.star`, on `sqldb.star`'s SQLite wrappers, called from `efuns_file.star`/`ext.star` at the same points (P1 #10) |
 | `havok/http.pike` (the HTTP port, WebSockets) over Pike's Protocols.HTTP.Server and Protocols.WebSocket | `http.star` (with `sha1.star`, `mimetypes.star`), the upgraded connections in `net.star` (P1 #8) |
 | `havok/tls.pike` and Pike's SSL.File/SSL.Port | `tls.star`, over OpenSSL 3 through `extern "C"` (`openssl/`, P1 #8) |
 | Pike's Gz (MCCP's zlib stream) | `zlib.star`, a deflate compressor of this port's own (P1 #8) |
@@ -381,6 +382,8 @@ Pike driver before it's marked done.
 | `tools/gen_m7_ext_cases.py` | generates `m7_ext_cases.txt` (the reference's own extension tests ported through the hooks, JSON edge cases, larger A* mazes) |
 | `sqldb.star` | the SQLite efuns (codes 420-423, P1 #7): `sqldb.pike` method for method, the handles in `Vm.dbs` (rows: `extdata.star` SqlDb), closing on destruct |
 | `tools/gen_m7_db_cases.py` | generates `m7_db_cases.txt` (the reference's own sqlite_tests() ported, ownership through a helper object, this port's edge cases) |
+| `savestore.star` | the save store (`havok save store : sqlite`, P1 #10): `savestore.pike` (index, pending writes, the one-second commit, the import of a new database) and `efuns.pike`'s save_path()/stored_path()/save_data()/drop_disk_copy(); its state is `Vm.store` (`extdata.star` SaveStore); the test_store_*()/test_disk() hooks (codes 950-955) |
+| `tools/gen_store_cases.py` | generates `store_cases.txt` (the reference's own save_store_tests() ported through the hooks, this port's edge cases) |
 | `zlib.star` | MCCP's zlib stream (P1 #8): a deflate compressor (LZ77 with hash chains and lazy matching; each block dynamic, fixed or stored, whichever is smallest; every write sync-flushed), and an inflater for the tests |
 | `tools/zlib_check.star`, `tools/ref_zlib.pike` | the zlib check, both sides: compress with zlib.star / inflate with Pike's Gz, and the reverse |
 | `tests/run_zlib_test.ps1` | 69 round trips over a varied corpus (DS source, a binary, random bytes, long runs, an empty and a one-line file) in chunk sizes from 1 byte to whole, both directions |
@@ -523,8 +526,9 @@ same, and an M6 case pins it.
 
 Not in M4: `sprintf`'s table mode (`#`) and its `$ ~ @ / ^` modifiers
 (errors, so the format comes back; DS3.9 uses none), the reference's
-asynchronous save writer and SQLite save store (save_object() writes
-synchronously through a renamed temp file), and its HavokOS-only
+asynchronous save writer (save_object() writes synchronously through a
+renamed temp file), its SQLite save store (added in P1 #10, once a mudlib
+the reference had run with it booted here with none of its saves), and its HavokOS-only
 extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
 `astar_path`, quotas), which DS3.9 doesn't call.
 
@@ -571,9 +575,9 @@ extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
     share, so the directory walk runs inside the efun and only the answer
     waits for the driver's next pass, which keeps the callback out of the
     caller's evaluation as the reference does. A crawl of the whole mudlib
-    holds up the driver for as long as it takes. There is no save store
-    (`havok save store`, off by default in the reference), so stored saves
-    are never merged in.
+    holds up the driver for as long as it takes. Matching saves the save
+    store holds (P1 #10) are joined to their directories' results, as on
+    the reference.
 21. **Profiling needs no recompile, and counts every efun call**
     (`ext.star`). With `havok profiling` the reference instruments the code
     it emits, so only programs compiled after it was turned on are profiled
@@ -639,6 +643,17 @@ extensions (`json_encode`/`json_decode`, `find_files`, `watch_path`,
     choices it leaves open are buffers.star's (fixed size, out-of-range
     index errors, `%O` as `<buffer of N bytes>`, a read from a file limited
     by `maximum byte transfer`).
+26. **The save store's import backup lives beside the exe** (`savestore.star`,
+    P1 #10). A new database moves the mudlib's .o files to
+    `runtime/save_import_<yyyymmdd>-<time>/` beside the running exe's
+    directory (for `E:\dsdev\bin\havokos.exe`, `E:\dsdev\runtime\`), as
+    `tls.star` keeps `runtime/tls/`; the reference uses its own
+    `pike/runtime/`. A database that can't be opened stops the boot
+    ("Cannot open the save store."), where the reference's open throws out
+    of its driver's creation. Everything LPC sees -- which efuns consult
+    the store, in what order, the one-second commit -- is the reference's,
+    and the database is the same file either driver (or `pike
+    havok/savestore.pike <db> export <dir>`) can read.
 
 ## Star compiler bugs found
 
@@ -1573,3 +1588,41 @@ web, zlib, compile-sweep, token/AST and pp/AST-case tests pass; a 60 s
 appends, so the scratch files of some earlier interrupted run were still
 there (the case removes them at its end). Three reruns passed.
 
+
+### 2026-10-26: P1 #10, the SQLite save store
+
+Reported from `E:\dsdev`: stock DS3.9 runs, but this mudlib booted with no
+existing characters, no races in character creation, every NPC's heart
+beat failing on `Cannot index the NULL value with "Rtype"`, and showfuns
+out of evaluation time in a call_out. One cause. Its mudos.cfg has `havok
+save store : sqlite`, so on the reference's first boot every .o was
+imported into `bin/saves.db` and moved out of the mudlib; M4 had skipped
+the store as "off by default, changes nothing LPC sees", which is only true
+of a mudlib that never ran with it. Here every restore_object() found
+nothing: RACES_D had no races (NPCs then index a NULL race record), the
+player saves were gone, and FUNCTION_D lost its cache and queued a
+showfuns scan of every /lib file, one of which passed the 5 s limit. Those
+daemons also wrote their empty state to disk as 18 new .o files; the store
+holds all 18 paths, so they are shadowed and go on each daemon's next save.
+
+`savestore.star` follows `savestore.pike` and the store's half of
+`efuns.pike`'s file efuns point for point (see its header). The only
+mechanism change is the index: `Map` has no iteration, so the stored paths
+also sit in a list (removed ones blanked, compacted when most are). Text
+crosses SQLite as its bytes, through new wrappers in `sqldb.star`, since an
+`extern "C"` can't be declared twice in one program.
+
+The reference's tests swap stores in from Pike, so both case runners got
+hooks for that (codes 950-955: open, close, flush, reopen, import, read the
+disk directly), and `store.expected.txt` is the live reference's answers to
+its own save_store_tests() and to this port's edge cases. One check was
+dropped: the reference's rm() of a database it just closed fails, because
+Pike keeps the handle until a later collection and Windows won't delete an
+open file. That is the harness, not the driver.
+
+Checked on a copy of dsdev (mudlib and database, ports moved): boot in
+6.6 s, a minute's soak with no runtime errors, `tess` asked for a password,
+eight races offered, saves committing. What's left is speed: timed with
+`boot_ds -eval` against `ref_eval.pike`, showfuns' scans of the six
+largest /lib files take about 16 s here and about 1 s there, because
+regexp() compiles its pattern on every call (todo.md HavokOS P2 #4).

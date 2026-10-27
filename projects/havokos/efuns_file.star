@@ -17,10 +17,11 @@
 #
 # Deliberately not ported from the reference: its asynchronous save writer
 # (a thread; save_object() here writes synchronously, still through a temp
-# file renamed over the old save so a crash never loses it), the held-open
-# append handles (a Windows open/close cost optimisation), and the optional
-# SQLite save store (`havok save store`, off by default). None changes what
-# LPC code can observe.
+# file renamed over the old save so a crash never loses it) and the
+# held-open append handles (a Windows open/close cost optimisation). Neither
+# changes what LPC code can observe. The SQLite save store (`havok save
+# store`), first left out with them, does (P1 #10): each efun below consults
+# it where the reference's does, through `savestore.star`.
 #
 # ctime() follows the reference's MSVC C runtime: the day of the month is
 # zero-padded ("Sat Sep 08 20:46:40 2001"), where glibc pads with a space.
@@ -188,6 +189,10 @@ impl vm::Vm:
         if code == et::E_FILE_SIZE:
             if !is_str or !self.check_read(self_ob, path, "file_size"):
                 return val::Value::Int((0 - 1) as i64)
+            let sa = self.stored_path(path)
+            if sa != "":
+                if let Option::Some(e) = self.store.index.get(sa):
+                    return val::Value::Int(e.size)
             let rp = self.mud_real(path)
             let k = path_kind(rp)
             if k == 0:
@@ -215,7 +220,8 @@ impl vm::Vm:
         if code == et::E_READ_BYTES:
             if !is_str or !self.check_read(self_ob, path, "read_bytes"):
                 return val::Value::Int(0 as i64)
-            let ft = self.read_whole(self.mud_real(path))
+            let sa = self.stored_path(path)
+            let ft = if sa != "": self.save_data(sa) else: self.read_whole(self.mud_real(path))
             if !ft.ok:
                 return val::Value::Int(0 as i64)
             let b = bytes_from_str(ft.text)
@@ -247,6 +253,14 @@ impl vm::Vm:
                 val::Value::Real(x) -> vm::fmt_float(x)
                 _ -> ""
             let over = self.truthy(self.arg(args, 2))
+            let sa = self.save_path(path)
+            if sa != "":
+                if !self.is_dir_path(paths::dirname(sa)):
+                    return val::Value::Int(0 as i64)
+                let old = if over: "" else: self.save_data(sa).text
+                self.store_write(sa, concat(old, text))
+                self.drop_disk_copy(sa)
+                return val::Value::Int(1 as i64)
             return self.bool_v(self.write_whole(self.mud_real(path), text, !over))
         if code == et::E_WRITE_BYTES:
             if !is_str or !self.check_write(self_ob, path, "write_bytes"):
@@ -257,7 +271,8 @@ impl vm::Vm:
             let rp = self.mud_real(path)
             if !self.is_dir_path(paths::dirname(self.mud_abs(path))):
                 return val::Value::Int(0 as i64)
-            let old = bytes_from_str(self.read_whole(rp).text)
+            let sa = self.save_path(path)
+            let old = bytes_from_str(if sa != "": self.save_data(sa).text else: self.read_whole(rp).text)
             let mut start = val::int_of(self.arg(args, 1)) as i32
             if start < 0:
                 start = old.len() + start
@@ -272,6 +287,10 @@ impl vm::Vm:
             while i < old.len():
                 o.b.push(old[i])
                 i += 1
+            if sa != "":
+                self.store_write(sa, o.to_str())
+                self.drop_disk_copy(sa)
+                return val::Value::Int(1 as i64)
             return self.bool_v(self.write_whole(rp, o.to_str(), false))
         if code == et::E_GET_DIR:
             if !is_str or !self.check_read(self_ob, path, "get_dir"):
@@ -284,11 +303,20 @@ impl vm::Vm:
         if code == et::E_RMDIR:
             if !is_str or !self.check_write(self_ob, path, "rmdir"):
                 return val::Value::Int(0 as i64)
+            # a directory holding stored saves isn't empty
+            if self.store.on and self.store_under(self.mud_abs(path)).len() > 0:
+                return val::Value::Int(0 as i64)
             return self.bool_v(dir_remove(self.mud_real(path)))
         if code == et::E_RM:
             if !is_str or !self.check_write(self_ob, path, "rm"):
                 return val::Value::Int(0 as i64)
             let rp = self.mud_real(path)
+            let sa = self.stored_path(path)
+            if sa != "":
+                let r = self.store_remove(sa)
+                if path_kind(rp) == 1:
+                    file_remove(rp)
+                return val::Value::Int(1 as i64)
             if path_kind(rp) != 1:
                 return val::Value::Int(0 as i64)
             return self.bool_v(file_remove(rp))
@@ -299,6 +327,10 @@ impl vm::Vm:
         if code == et::E_RENAME:
             if !is_str or !self.check_write(self_ob, path, "rename") or !self.check_write(self_ob, to, "rename"):
                 return val::Value::Int(1 as i64)
+            if self.store.on:
+                let sr = self.store_rename(path, to)
+                if sr >= 0:
+                    return val::Value::Int(sr as i64)
             if path_kind(self.mud_real(path)) == 0:
                 return val::Value::Int(1 as i64)
             return val::Value::Int(if file_rename(self.mud_real(path), self.mud_real(to)): 0 as i64 else: 1 as i64)
@@ -310,6 +342,10 @@ impl vm::Vm:
         if code == et::E_STAT:
             if !is_str or !self.check_read(self_ob, path, "stat"):
                 return val::Value::Int(0 as i64)
+            let sa = self.stored_path(path)
+            if sa != "":
+                if let Option::Some(e) = self.store.index.get(sa):
+                    return self.new_arr([val::Value::Int(e.size), val::Value::Int(e.mtime), val::Value::Int(0 as i64)])
             let rp = self.mud_real(path)
             let k = path_kind(rp)
             if k == 0:
@@ -327,19 +363,60 @@ impl vm::Vm:
             return -1
         if !self.check_write(self_ob, to, "move_file"):
             return -2
-        let ft = self.read_whole(self.mud_real(from))
+        let fa = self.stored_path(from)
+        let ft = if fa != "": self.save_data(fa) else: self.read_whole(self.mud_real(from))
         if !ft.ok:
             return -1
         let mut dest = self.mud_real(to)
-        if self.is_dir_path(self.mud_abs(to)):
+        let mut da = self.mud_abs(to)
+        if self.is_dir_path(da):
             dest = concat(concat(dest, "/"), base_name_of(from))
+            da = paths::combine_path(da, base_name_of(from))
+        if self.save_path(da) != "":
+            if !self.is_dir_path(paths::dirname(da)):
+                return -1
+            self.store_write(da, ft.text)
+            self.drop_disk_copy(da)
+            return 1
         if self.write_whole(dest, ft.text, false):
             return 1
         -1
 
+    # rename() with the store on (efuns.pike rename()): a save, or a file
+    # moving to a save name, goes through the store, and a directory takes
+    # its stored saves along. The efun's answer (0 done, 1 failed), or -1 for
+    # a rename the store has no part in.
+    fn store_rename(mut self, from: str, to: str) -> i32:
+        let fa = self.mud_abs(from)
+        let mut ta = self.mud_abs(to)
+        if self.is_dir_path(ta) and !self.is_dir_path(fa):
+            ta = paths::combine_path(ta, base_name_of(fa))
+        let to_save = str_ends_with(ta, ".o")
+        if self.store_has(fa) or to_save:
+            let ft = self.save_data(fa)
+            if !ft.ok:
+                return 1
+            if to_save:
+                if !self.is_dir_path(paths::dirname(ta)):
+                    return 1
+                self.store_write(ta, ft.text)
+                self.drop_disk_copy(ta)
+            elif !self.write_whole(self.mud_real(ta), ft.text, false):
+                return 1
+            if !self.store_remove(fa) or path_kind(self.mud_real(fa)) == 1:
+                file_remove(self.mud_real(fa))
+            return 0
+        if self.is_dir_path(fa):
+            if !file_rename(self.mud_real(from), self.mud_real(to)):
+                return 1
+            self.store_move_tree(fa, self.mud_abs(to))
+            return 0
+        -1
+
     # read_file(path, start, lines) once the read was allowed
     fn read_text(mut self, self_ob: i32, path: str, args: List<val::Value>, ranged: bool) -> val::Value:
-        let ft = self.read_whole(self.mud_real(path))
+        let sa = self.stored_path(path)
+        let ft = if sa != "": self.save_data(sa) else: self.read_whole(self.mud_real(path))
         if !ft.ok:
             return val::Value::Int(0 as i64)
         let mut s = ft.text
@@ -369,7 +446,8 @@ impl vm::Vm:
             out = concat(out, "\n")
         val::Value::Str(out)
 
-    # get_dir(path, flag): efuns.pike get_dir() without the save store
+    # get_dir(path, flag): efuns.pike get_dir(); stored saves show up in
+    # their directory
     fn efun_get_dir(mut self, path: str, flag: i64) -> val::Value:
         let abs = self.mud_abs(path)
         let rp = self.mud_real(path)
@@ -388,6 +466,17 @@ impl vm::Vm:
             dir = paths::dirname(rp)
             has_pat = true
         let mut names = dir_list(dir)
+        let mut ldir = ""
+        if self.store.on:
+            ldir = if has_pat: paths::dirname(abs) else: strip_slash(abs)
+            let saved = self.store_list(ldir)
+            if saved.len() > 0:
+                let mut seen: Set<str> = Set<str>()
+                for i in 0..names.len():
+                    seen.insert(names[i])
+                for i in 0..saved.len():
+                    if !seen.contains(saved[i]):
+                        names.push(saved[i])
         if has_pat:
             let mut keep: List<str> = List<str>()
             if str_contains(pat, "*") or str_contains(pat, "?"):
@@ -404,6 +493,10 @@ impl vm::Vm:
         let mut out: List<val::Value> = List<val::Value>()
         for i in 0..names.len():
             if flag == ((0 - 1) as i64):
+                if self.store.on:
+                    if let Option::Some(e) = self.store.index.get(paths::combine_path(ldir, names[i])):
+                        out.push(self.new_arr([val::Value::Str(names[i]), val::Value::Int(e.size), val::Value::Int(e.mtime)]))
+                        continue
                 let p = concat(concat(dir, "/"), names[i])
                 let k = path_kind(p)
                 let size = if k == 0: (0 - 1) as i64 elif k == 2: (0 - 2) as i64 else: file_size(p)
@@ -435,6 +528,11 @@ impl vm::Vm:
             let text = self.encode_object(self_ob, (val::int_of(self.arg(args, 1)) & (1 as i64)) != (0 as i64))
             if !self.is_dir_path(paths::dirname(self.mud_abs(path))):
                 return val::Value::Int(0 as i64)
+            if self.store.on:
+                let a = self.mud_abs(path)
+                self.store_write(a, text)
+                self.drop_disk_copy(a)
+                return val::Value::Int(1 as i64)
             # a temp file renamed over the old save, so a crash mid-write
             # never leaves the save missing
             let rp = self.mud_real(path)
@@ -445,7 +543,8 @@ impl vm::Vm:
         if !self.check_read(self_ob, path, "restore_object"):
             self.fail("Denied read permission in restore_object().\n")
             return val::Value::Undef
-        let ft = self.read_whole(self.mud_real(path))
+        let sa = self.stored_path(path)
+        let ft = if sa != "": self.save_data(sa) else: self.read_whole(self.mud_real(path))
         if !ft.ok:
             return val::Value::Int(0 as i64)
         self.decode_object(self_ob, ft.text, !self.truthy(self.arg(args, 1)))

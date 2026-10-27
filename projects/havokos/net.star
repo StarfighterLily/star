@@ -1629,6 +1629,8 @@ impl vm::Vm:
         let hd = self.http_next_due()
         if hd != (0 as i64) and hd < due:
             due = hd
+        if self.store.flush_due != (0 as i64) and self.store.flush_due < due:
+            due = self.store.flush_due
         if due <= now:
             return 0
         (due - now) as i32
