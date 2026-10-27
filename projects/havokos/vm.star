@@ -53,6 +53,7 @@ import "eddata.star" as edd
 import "sockdata.star" as sd
 import "extdata.star" as xd
 import "netdata.star" as nd
+import "regex.star" as rx
 
 
 extern "C" fn clock() -> i32
@@ -480,6 +481,9 @@ struct Vm:
     mut vp_its: List<vpd::VpInterp> = List<vpd::VpInterp>()
     mut vp_vidx: Map<str, List<i32>> = Map<str, List<i32>>()
     mut vp_vidx_ok: bool = false
+    # regexp()/reg_assoc()'s compiled patterns by pattern text, emptied once
+    # past 500 (efuns.pike regexp_cache; efuns_str.star compile_re())
+    mut re_cache: Map<str, rx::Regex> = Map<str, rx::Regex>()
 
 # Object slot 0 is never a live object. It stands for a this_player() that
 # was destructed mid-command (the reference's DESTRUCTED placeholder):

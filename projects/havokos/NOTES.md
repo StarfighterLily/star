@@ -1651,3 +1651,31 @@ Five new m3_extra cases cover the `->` spread forms, with the live
 reference's answers. Checked on a copy of dsdev: Guild Square's three enters
 are set (none before), the room lists "south, enter hideout, enter keep,
 enter college", and `enter college` walks into the college.
+
+### 2026-10-26: P2 #4, regexp() caches its compiled patterns
+
+showfuns calls `regexp(line, type + func)` with the same pattern for every
+candidate line, and compile_re() parsed it afresh each time. Now it keeps
+the compiled `rx::Regex` in `Vm.re_cache`, keyed by the pattern text as the
+LPC code wrote it and emptied once past 500 entries: the reference's own
+`regexp_cache` in efuns.pike compile_re(), same key, same bound. A bad
+pattern isn't cached, so it fails on every call, as in the reference. The
+cache holds no LPC values, so the collector never needs to see it.
+
+Measured with `boot_ds -eval` on the dsdev copy (P1 #10), boot time
+subtracted: showfuns' scans of the six largest /lib files went from about
+16.5 s to about 3 s; the reference takes about 1.1 s. The slowest file,
+living.c, is about 1.1 s now, well inside the 5 s limit. What is left is
+the search itself (rx_search() tries every start position and allocates
+its memo table per call), which is a separate change.
+
+Checking the output against the reference turned up a difference, but not
+in regexp(). showfuns skips a function whose name already appears in its
+output, so what it prints depends on the order of query_local_functions(),
+and that order is different here (declaration order) from the reference's
+(Pike's hash order; LPC promises none, as with deviation #9). For the same
+scan with the function list sorted first, both drivers report identical
+match counts, output sizes and CRC-32s for all six files. Six new m4_extra
+cases (`regexp cache ...`, results from the live reference) cover repeated
+patterns, bad patterns failing twice, the flush past 500, `\<` and `\b`
+spelled differently, reg_assoc() sharing the cache, and showfuns' loop.

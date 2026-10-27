@@ -213,11 +213,18 @@ fn crc32_of(b: Bytes) -> i64:
 
 impl vm::Vm:
     # efuns.pike compile_re(): the pattern with FluffOS's \< \> word
-    # anchors made PCRE's \b, or the reference's error for a bad one
+    # anchors made PCRE's \b, or the reference's error for a bad one. Cached
+    # as the reference caches it; a bad pattern isn't, so it fails each time.
     fn compile_re(mut self, pat: str) -> rx::Regex:
+        if let Option::Some(c) = self.re_cache.get(pat):
+            return c
         let r = rx::rx_compile(rx::spencer_to_pcre(pat))
         if !r.ok:
             self.fail(concat(concat("regexp: bad pattern ", pat), "\n"))
+            return r
+        if self.re_cache.len() > 500:
+            self.re_cache = Map<str, rx::Regex>()
+        self.re_cache.insert(pat, r)
         r
 
     # reg_assoc(str, patterns, tokens, default): ({ pieces, tokens }), the

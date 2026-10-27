@@ -129,6 +129,13 @@ regexp star greedy	return ({ regexp("", "a*"), regexp("b", "^a*b$"), regexp("aaa
 reg_assoc basic	return reg_assoc("abc123def", ({ "[0-9]+" }), ({ 1 }));
 reg_assoc two	return reg_assoc("a1b22c", ({ "[0-9]", "[a-z]" }), ({ "D", "L" }), 0);
 reg_assoc default	return reg_assoc("xx", ({ "y" }), ({ 1 }), -1);
+# --- regexp()'s compiled-pattern cache (todo.md HavokOS P2 #4): a cached pattern must answer as a fresh one
+regexp cache same pattern	string *s = ({ "apple", "banana", "avocado", "", "a" }); int *r = ({}); foreach (string x in s) r += ({ regexp(x, "^a") }); return r;
+regexp cache bad pattern each time	return ({ catch(regexp("x", "(")), catch(regexp("x", "(")), regexp("x", "x"), catch(regexp(({ "x" }), "(")) });
+regexp cache past 500 patterns	int n, i; for (i = 0; i < 600; i++) n += regexp("k" + i, "^k" + i + "$"); return ({ n, regexp("k3", "^k3$"), regexp("k30", "^k3$"), regexp("k599", "^k599$"), regexp("k5", "^k599$") });
+regexp cache word anchor spellings	return ({ regexp("the cat", "\\\\<cat"), regexp("the cat", "\\\\bcat"), regexp("concat", "\\\\<cat"), regexp("concat", "\\\\bcat"), regexp("concat", "cat") });
+regexp cache shared with reg_assoc	return ({ regexp("a1", "[0-9]"), reg_assoc("a1b2", ({ "[0-9]" }), ({ 7 })), regexp("ab", "[0-9]"), reg_assoc("a1b2", ({ "[0-9]" }), ({ 7 })) });
+regexp showfuns shape	string *lines = ({ "int eventFoo(object ob) {", "string eventFoo();", "int  eventFoo()", "mixed array eventBar(int x)", "int eventFooBar()" }); string *types = ({ "int ", "int *", "string ", "mixed array " }); string *funcs = ({ "eventFoo", "eventBar" }); mixed *r = ({}); foreach (string f in funcs) foreach (string t in types) foreach (string l in lines) if (regexp(l, t + f)) r += ({ t + f + ":" + l }); return r;
 pluralize forms	return ({ pluralize("fly"), pluralize("day"), pluralize("box"), pluralize("rose"), pluralize("a sword"), pluralize("an apple"), pluralize("bag of gold"), pluralize("Child"), pluralize("sheep"), pluralize("knife"), pluralize("man"), pluralize("gas"), pluralize("HAS"), pluralize("are") });
 pluralize empty	return pluralize("");
 # --- arrays and mappings

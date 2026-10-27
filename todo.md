@@ -582,7 +582,35 @@ mudlib before it's marked done.
         college` walks into the Spellcaster College.
       No Star compiler change, so the cargo suite wasn't rerun.
       NOTES.md "2026-10-26: P1 #11".
-- [ ] **HavokOS P2 #4: `regexp()` recompiles its pattern on every call.**
+- [x] **HavokOS P2 #4: `regexp()` recompiles its pattern on every call.**
+      Done 2026-10-26. `efuns_str.star` compile_re() now keeps compiled
+      patterns in `Vm.re_cache` (`vm.star`), keyed by the pattern text and
+      emptied once past 500 entries: the reference's own `regexp_cache`
+      (efuns.pike compile_re()), same key, same bound. A bad pattern isn't
+      cached, so it fails on every call, as there. Measured with the same
+      `boot_ds -eval` on the dsdev copy, boot time subtracted: showfuns'
+      scans of the six largest /lib files went from about 16.5 s to about
+      3 s (the reference: about 1.1 s); the slowest, living.c, is about
+      1.1 s, well inside the 5 s limit. The rest of the gap is in the search
+      (rx_search() tries every start position and builds its memo table per
+      call), not filed: nothing hits the limit now. Checked:
+      - 6 new m4_extra cases (results from the live reference): one pattern
+        over hits and misses, a bad pattern failing twice, 600 distinct
+        patterns past the flush then old and new ones again, `\<` vs `\b`
+        spellings, reg_assoc() sharing the cache, and showfuns' loop shape;
+      - the same showfuns scan with its function list sorted gives identical
+        match counts, output sizes and CRC-32s on both drivers for all six
+        files;
+      - all 996 cases, the DS3.9 boot, the four logins, the parser
+        transcript, the 2378-file compile sweep and the DS web test pass.
+      Found along the way, not a regexp() difference: showfuns' own output
+      differs from the reference's for some files (living.c: 134 lines
+      against 129), because it skips a function whose name already appears
+      in its output, so the result depends on query_local_functions()'s
+      order, which is declaration order here and Pike's hash order there
+      (LPC promises none; cf. NOTES.md deviation #9). Not changed. No Star
+      compiler change, so the cargo suite wasn't rerun. NOTES.md
+      "2026-10-26: P2 #4". Original report:
       Found during P1 #10: `efuns_str.star` compile_re() builds the NFA
       afresh each call, and FUNCTION_D's showfuns scan calls `regexp(line,
       type + func)` for every function × 23 types × candidate line. On
@@ -1127,3 +1155,13 @@ reconciled to match whichever of the two Python sources looks more
   the live reference; all 990 cases, the boot, four logins, the compile
   sweep and a live `enter college` on a dsdev copy pass. No Star compiler
   change, so the cargo suite wasn't rerun.
+- 2026-10-26: HavokOS P2 #4 (`regexp()` recompiled every call) is done. See
+  its entry above and `projects/havokos/NOTES.md` ("2026-10-26: P2 #4").
+  compile_re() caches compiled patterns as the reference does (by pattern
+  text, emptied past 500); showfuns' scans of dsdev's six largest /lib files
+  went from about 16.5 s to about 3 s (reference about 1.1 s). 6 new cases
+  from the live reference; all 996 cases, the boot, four logins, parser
+  transcript, compile sweep and DS web test pass, and an order-fixed
+  showfuns scan matches the reference byte for byte. Noted, not changed:
+  query_local_functions()'s order differs from the reference's, which
+  changes showfuns' deduplicated output. No Star compiler change.
