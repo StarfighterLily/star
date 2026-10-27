@@ -90,3 +90,8 @@ clone with create args	object o = clone_object("/test/child", 3); return o->get_
 empty array is one shared object	return ({ ({}) == ({}), ({ 1 }) == ({ 1 }), ({}) == allocate(0), ({}) == ({}) - ({}), ([]) == ([]) });	({1,0,1,1,0})
 non-empty array literals are fresh	mixed *f() { return ({ 1, 2 }); } @@ mixed *a = f(); a[0] = 9; return ({ f(), a, f() == f() });	({({1,2}),({9,2}),0})
 growing the shared empty array copies it	mixed *f() { return ({}); } @@ mixed *a = f(); a += ({ 1 }); mixed *b = ({ a... }); return ({ f(), a, b, f() == f() });	({({}),({1}),({1}),1})
+arrow call with a spread	int f(int a, int b, int c) { return a * 100 + b * 10 + c; } @@ mixed *x = ({ 2, 3 }); return this_object()->f(1, x...);	123
+arrow call with only a spread	int f(int a, int b, int c) { return a * 100 + b * 10 + c; } @@ mixed *x = ({ 1, 2, 3 }); return this_object()->f(x...);	123
+arrow call spreading a string, function and int	mixed f(string a, function b, int c) { return ({ a, evaluate(b), c }); } @@ mixed *x = ({ "/r", (: 7 :), 1 }); return this_object()->f(x...);	({"/r",7,1})
+arrow call with an empty spread	mixed f(mixed *a...) { return a; } @@ return ({ this_object()->f(({})...), this_object()->f(({})..., 4) });	({({}),({4})})
+arrow call on an array of objects with a spread	int f(int a, int b) { return a + b; } @@ mixed *x = ({ 2, 3 }); return ({ this_object(), this_object() })->f(x...);	({5,5})

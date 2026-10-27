@@ -1221,17 +1221,25 @@ impl Compiler:
     # (`@arr`/`arr...`) made the count dynamic -- then one array holding
     # them all is pushed instead.
     fn args(mut self, args: List<i32>) -> i32:
-        let mut spread = false
-        for i in 0..args.len():
-            match self.nodes[args[i]].kind:
-                ast::NodeKind::Spread(x) ->
-                    spread = true
-                _ -> 0
-        if !spread:
+        if !self.has_spread(args):
             for i in 0..args.len():
                 self.expr(args[i])
             return args.len()
         self.emit2(pg::OP_MKARRAY, 0)
+        self.append_args(args)
+        -1
+
+    fn has_spread(self, args: List<i32>) -> bool:
+        for i in 0..args.len():
+            match self.nodes[args[i]].kind:
+                ast::NodeKind::Spread(x) ->
+                    return true
+                _ -> 0
+        false
+
+    # Appends each argument to the array on top of the stack, a spread's
+    # items one by one.
+    fn append_args(mut self, args: List<i32>):
         for i in 0..args.len():
             match self.nodes[args[i]].kind:
                 ast::NodeKind::Spread(x) ->
@@ -1240,7 +1248,6 @@ impl Compiler:
                 _ ->
                     self.expr(args[i])
                     self.emit(pg::OP_ARR_APPEND)
-        -1
 
     fn efun_call(mut self, name: str, args: List<i32>):
         if name == "call_other" and args.len() >= 2:
@@ -1551,14 +1558,27 @@ impl Compiler:
                 self.emit2(pg::OP_CALLV, c)
             ast::NodeKind::Scall(label, name, args, is_ref) -> self.scall(e, label, name, args, is_ref)
             ast::NodeKind::Arrow(obj, name, name_expr, args) ->
+                # OP_CALL_OTHER -1 takes one array of target, name and
+                # arguments (the call_other() efun's spread form), so a
+                # spread here packs the target and name in with the rest
+                let spread = self.has_spread(args)
+                if spread:
+                    self.emit2(pg::OP_MKARRAY, 0)
                 self.expr(obj)
+                if spread:
+                    self.emit(pg::OP_ARR_APPEND)
                 if name_expr >= 0:
                     self.expr(name_expr)
                 else:
                     let k = self.kstr(name)
                     self.emit2(pg::OP_PUSH_CONST, k)
-                let c = self.args(args)
-                self.emit2(pg::OP_CALL_OTHER, c)
+                if spread:
+                    self.emit(pg::OP_ARR_APPEND)
+                    self.append_args(args)
+                    self.emit2(pg::OP_CALL_OTHER, -1)
+                else:
+                    let c = self.args(args)
+                    self.emit2(pg::OP_CALL_OTHER, c)
             ast::NodeKind::Member(obj, name) ->
                 let p = self.member_index(obj, name, e)
                 self.expr(obj)

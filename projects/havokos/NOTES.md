@@ -1626,3 +1626,28 @@ eight races offered, saves committing. What's left is speed: timed with
 `boot_ds -eval` against `ref_eval.pike`, showfuns' scans of the six
 largest /lib files take about 16 s here and about 1 s there, because
 regexp() compiles its pattern on every call (todo.md HavokOS P2 #4).
+
+### 2026-10-26: P1 #11, `ob->f(arr...)` called the wrong function
+
+Reported from `E:\dsdev`: enters neither showed in a room's obvious exits
+nor worked (`enter college` in Guild Square). The rooms were fine; the
+bytecode wasn't. `compiler.star`'s `args()` packs a call's arguments into
+one array when one of them is a spread, and `OP_CALL_OTHER -1` reads that
+array as target, function name, then arguments -- right for the
+`call_other(ob, "f", arr...)` efun, whose target and name are among the
+arguments. The `->` form pushed its target and name first and the packed
+arguments after, so `ob->SetEnter(({ "/room", fn, 1 })...)` (exits.c
+SetEnters(), whenever an enter's value is an array) became
+`"/room"->0(fn, 1)`: "Bad argument 2 to call_other()", thrown inside
+create(), and every dsdev Guild Square enter was left unset. Stock DS3.9
+writes its enters as plain strings, so neither its boot nor its logins
+reached this. Now a spread in a `->` call packs the target and name into
+the same array. The same form is in dsdev's spell casting (magic.c
+`spell->eventParse(this_object(), args...)`), the breather shadow,
+`CHAT_D->eventSendChannel(data[6]...)` and addadverb; all were broken the
+same way.
+
+Five new m3_extra cases cover the `->` spread forms, with the live
+reference's answers. Checked on a copy of dsdev: Guild Square's three enters
+are set (none before), the room lists "south, enter hideout, enter keep,
+enter college", and `enter college` walks into the college.

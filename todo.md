@@ -554,6 +554,34 @@ mudlib before it's marked done.
         shadowed and each is deleted on that daemon's next save.
       The reference's `pike savestore.pike` command line (list/export) is
       not ported; it works on the same database. NOTES.md deviation #26.
+- [x] **HavokOS P1 #11: enters missing on dsdev (`ob->f(arr...)`).**
+      Done 2026-10-26. Reported: on `E:\dsdev` enters neither showed in
+      rooms' obvious exits nor worked. Cause: the LPC compiler, not the
+      mudlib. `compiler.star` `args()` packs a spread call's arguments
+      into one array, and `OP_CALL_OTHER -1` reads that array as target,
+      name, arguments -- right for the `call_other()` efun, but the `->`
+      form pushed target and name separately, so
+      `ob->SetEnter(room_or_arr...)` (exits.c SetEnters() whenever an
+      enter's value is an array, as all of dsdev's Guild Square's are)
+      called `"/room"->0(...)`, threw "Bad argument 2 to call_other()"
+      inside create(), and left every such enter unset. Stock DS3.9 uses
+      string-valued enters, so no existing test reached it. Now a spread
+      in a `->` call packs the target and name in with the arguments
+      (`has_spread()`/`append_args()` split out of `args()`). Not in the
+      report but fixed by the same change: dsdev's spell casting
+      (magic.c `spell->eventParse(this_object(), args...)`), the breather
+      shadow, `CHAT_D->eventSendChannel(data[6]...)` and addadverb used the
+      same form. Checked:
+      - 5 new m3_extra cases (spread after a fixed argument, spread only,
+        the mudlib's `({ file, fn, 1 })` shape, empty spreads, an array of
+        targets), results from the live reference; all 990 cases, the
+        DS3.9 boot, the four logins and the 2378-file compile sweep pass;
+      - on a copy of dsdev, `boot_ds -eval` shows Guild Square's three
+        enters set (none before), and over telnet the room lists
+        "south, enter hideout, enter keep, enter college" and `enter
+        college` walks into the Spellcaster College.
+      No Star compiler change, so the cargo suite wasn't rerun.
+      NOTES.md "2026-10-26: P1 #11".
 - [ ] **HavokOS P2 #4: `regexp()` recompiles its pattern on every call.**
       Found during P1 #10: `efuns_str.star` compile_re() builds the NFA
       afresh each call, and FUNCTION_D's showfuns scan calls `regexp(line,
@@ -1090,3 +1118,12 @@ reconciled to match whichever of the two Python sources looks more
   boot, four logins and a soak of a dsdev copy pass. Filed HavokOS P2 #4
   (`regexp()` recompiles every call; showfuns is ~16x slower than the
   reference). No Star compiler changes, so the cargo suite wasn't rerun.
+- 2026-10-26: HavokOS P1 #11 (enters missing on dsdev) is done. See its
+  entry above and `projects/havokos/NOTES.md` ("2026-10-26: P1 #11"). A
+  spread argument in an `ob->f(...)` call compiled to a call_other whose
+  target and function name were the spread array's first two items, so
+  exits.c SetEnters() failed on array-valued enters; dsdev's spells and a
+  few other `->f(x...)` sites were broken the same way. 5 new cases from
+  the live reference; all 990 cases, the boot, four logins, the compile
+  sweep and a live `enter college` on a dsdev copy pass. No Star compiler
+  change, so the cargo suite wasn't rerun.
